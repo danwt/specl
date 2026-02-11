@@ -1,0 +1,24 @@
+{
+  "name": "specl",
+  "description": "Expert skill for writing, debugging, and verifying Specl specifications. Includes knowledge of Specl syntax, model checking, distributed systems patterns, and TLA+ translation.",
+  "version": "1.0.0",
+  "author": {
+    "name": "Daniel Tisdall",
+    "email": "contact@danwt.com"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danwt/specl"
+  },
+  "homepage": "https://danieltisdall.com/specl",
+  "keywords": [
+    "model-checking",
+    "formal-verification",
+    "distributed-systems",
+    "TLA+",
+    "specification",
+    "consensus",
+    "verification"
+  ],
+  "license": "PolyForm-Noncommercial-1.0.0"
+}

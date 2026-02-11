@@ -62,6 +62,43 @@ See also: [`examples/easy/`](specl/examples/easy/) (beginner), [`examples/realis
 - **Watch mode** — `specl watch spec.specl -c N=3`
 - **TLA+ translator** — `specl translate spec.tla -o spec.specl`
 
+## Claude Code Integration
+
+Specl includes an expert skill for [Claude Code](https://code.claude.com) that teaches Claude how to write, debug, and verify Specl specifications.
+
+### Installation
+
+**Option 1: Load as plugin** (recommended for easy updates)
+
+```bash
+claude --plugin-dir /path/to/specl
+```
+
+Skills will be namespaced: `/specl:expert-specl`
+
+**Option 2: Install skill only** (lightweight)
+
+```bash
+./install-skill.sh
+```
+
+Skills will be available without namespace: `/expert-specl`
+
+### Usage
+
+Claude will automatically use the skill when you:
+- Work with `.specl` files
+- Ask about model checking or formal verification
+- Mention distributed protocols (Raft, Paxos, 2PC, etc.)
+- Debug invariant violations or deadlocks
+
+Or invoke it directly:
+```
+/expert-specl help me model a consensus protocol
+```
+
+See [PLUGIN.md](PLUGIN.md) for distribution and publishing options.
+
 ## Development
 
 ```bash
