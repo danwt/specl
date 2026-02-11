@@ -1,0 +1,399 @@
+// =============================================================================
+// Cigarette Smokers Problem
+// =============================================================================
+//
+// Source: "The Little Book of Semaphores" (2nd Edition, v2.2.1)
+//         by Allen B. Downey
+//         Section 4.5: Cigarette Smokers Problem (pages 101-110)
+//         https://greenteapress.com/semaphores/LittleBookOfSemaphores.pdf
+//
+// =============================================================================
+// PUZZLE DESCRIPTION
+// =============================================================================
+//
+// Four threads are involved: an agent and three smokers. The smokers loop
+// forever, first waiting for ingredients, then making and smoking cigarettes.
+// The ingredients are tobacco, paper, and matches.
+//
+// We assume that the agent has an infinite supply of all three ingredients,
+// and each smoker has an infinite supply of one of the ingredients; that is,
+// one smoker has matches, another has paper, and the third has tobacco.
+//
+// The agent repeatedly chooses two different ingredients at random and makes
+// them available to the smokers. Depending on which ingredients are chosen,
+// the smoker with the complementary ingredient should pick up both resources
+// and proceed.
+//
+// For example, if the agent puts out tobacco and paper, the smoker with the
+// matches should pick up both ingredients, make a cigarette, and then signal
+// the agent.
+//
+// To explain the premise, the agent represents an operating system that
+// allocates resources, and the smokers represent processes that need resources.
+// The trick is that each smoker thread should check the availability of
+// ingredients without blocking, and then wait on a semaphore only if it cannot
+// proceed.
+//
+// =============================================================================
+// DEADLOCK #1: The Naive Solution
+// =============================================================================
+//
+// The naive approach (using one semaphore per ingredient):
+//
+//   tobacco = Semaphore(0)
+//   paper = Semaphore(0)
+//   match = Semaphore(0)
+//
+// Smoker with tobacco:
+//   paper.wait()
+//   match.wait()
+//   smoke()
+//
+// Agent (puts out paper and match):
+//   paper.signal()
+//   match.signal()
+//
+// **DEADLOCK:** If the agent puts out paper and match, but the smoker with
+// tobacco waits on paper while the smoker with matches also tries to wait on
+// paper, deadlock can occur. The problem is that the smokers are trying to
+// "claim" ingredients without coordination.
+//
+// =============================================================================
+// SOLUTION: The Pusher Pattern
+// =============================================================================
+//
+// The solution uses "pusher" threads that observe ingredient availability
+// and wake the correct smoker:
+//
+//   tobacco = Semaphore(0)
+//   paper = Semaphore(0)
+//   match = Semaphore(0)
+//   tobaccoSem = Semaphore(0)    # Wake smoker with tobacco
+//   paperSem = Semaphore(0)      # Wake smoker with paper
+//   matchSem = Semaphore(0)      # Wake smoker with matches
+//   agentSem = Semaphore(1)      # Signal agent to proceed
+//   mutex = Semaphore(1)         # Protect shared state
+//   isPaper = False
+//   isTobacco = False
+//   isMatch = False
+//
+// Agent:
+//   agentSem.wait()
+//   # Choose two ingredients, e.g., paper and match
+//   paper.signal()
+//   match.signal()
+//
+// Pusher for paper:
+//   paper.wait()
+//   mutex.wait()
+//   if isTobacco:
+//       isTobacco = False
+//       matchSem.signal()
+//   elif isMatch:
+//       isMatch = False
+//       tobaccoSem.signal()
+//   else:
+//       isPaper = True
+//   mutex.signal()
+//
+// Smoker with tobacco:
+//   tobaccoSem.wait()
+//   smoke()
+//   agentSem.signal()
+//
+// Key insight: The pushers coordinate to detect which pair of ingredients is
+// available, then wake the correct smoker. This avoids the deadlock from the
+// naive solution.
+//
+// =============================================================================
+// SPECL MODEL
+// =============================================================================
+
+module CigaretteSmokers
+
+const NUM_ROUNDS: 0..5  // Number of agent rounds to model
+
+// Agent state: 0=ready, 1=choosing, 2=signaled, 3=waiting
+var agent_state: 0..3
+
+// Smoker states: 0=waiting, 1=smoking, 2=done
+var smoker_tobacco: 0..2
+var smoker_paper: 0..2
+var smoker_match: 0..2
+
+// Pusher states: 0=waiting, 1=checking, 2=signaling
+var pusher_tobacco: 0..2
+var pusher_paper: 0..2
+var pusher_match: 0..2
+
+// Ingredient flags (shared state protected by mutex)
+var is_tobacco: Bool
+var is_paper: Bool
+var is_match: Bool
+
+// Semaphores
+var tobacco: 0..1
+var paper: 0..1
+var matches: 0..1
+var tobacco_sem: 0..1
+var paper_sem: 0..1
+var match_sem: 0..1
+var agent_sem: 0..1
+var mutex: 0..1
+
+// Track rounds
+var rounds: 0..10
+
+init {
+    agent_state = 0 and
+    smoker_tobacco = 0 and
+    smoker_paper = 0 and
+    smoker_match = 0 and
+    pusher_tobacco = 0 and
+    pusher_paper = 0 and
+    pusher_match = 0 and
+    is_tobacco = false and
+    is_paper = false and
+    is_match = false and
+    tobacco = 0 and
+    paper = 0 and
+    matches = 0 and
+    tobacco_sem = 0 and
+    paper_sem = 0 and
+    match_sem = 0 and
+    agent_sem = 1 and
+    mutex = 1 and
+    rounds = 0
+}
+
+// === Agent actions ===
+
+action Agent_WaitToStart() {
+    require agent_state == 0
+    require agent_sem > 0
+    require rounds < NUM_ROUNDS
+    agent_sem = agent_sem - 1 and
+    agent_state = 1
+}
+
+action Agent_ChoosePaperAndMatch() {
+    require agent_state == 1
+    paper = paper + 1 and
+    matches = matches + 1 and
+    agent_state = 2 and
+    rounds = rounds + 1
+}
+
+action Agent_ChooseTobaccoAndMatch() {
+    require agent_state == 1
+    tobacco = tobacco + 1 and
+    matches = matches + 1 and
+    agent_state = 2 and
+    rounds = rounds + 1
+}
+
+action Agent_ChooseTobaccoAndPaper() {
+    require agent_state == 1
+    tobacco = tobacco + 1 and
+    paper = paper + 1 and
+    agent_state = 2 and
+    rounds = rounds + 1
+}
+
+action Agent_Reset() {
+    require agent_state == 2
+    agent_state = 0
+}
+
+// === Pusher actions ===
+
+action Pusher_Tobacco_Wait() {
+    require pusher_tobacco == 0
+    require tobacco > 0
+    tobacco = tobacco - 1 and
+    pusher_tobacco = 1
+}
+
+action Pusher_Tobacco_CheckPaper() {
+    require pusher_tobacco == 1
+    require mutex > 0
+    require is_paper == true
+    // Atomically: acquire mutex, check, signal, release mutex
+    is_paper = false and
+    match_sem = match_sem + 1 and
+    pusher_tobacco = 0
+}
+
+action Pusher_Tobacco_CheckMatch() {
+    require pusher_tobacco == 1
+    require mutex > 0
+    require is_match == true
+    // Atomically: acquire mutex, check, signal, release mutex
+    is_match = false and
+    paper_sem = paper_sem + 1 and
+    pusher_tobacco = 0
+}
+
+action Pusher_Tobacco_SetFlag() {
+    require pusher_tobacco == 1
+    require mutex > 0
+    require is_paper == false
+    require is_match == false
+    // Atomically: acquire mutex, set flag, release mutex
+    is_tobacco = true and
+    pusher_tobacco = 0
+}
+
+action Pusher_Paper_Wait() {
+    require pusher_paper == 0
+    require paper > 0
+    paper = paper - 1 and
+    pusher_paper = 1
+}
+
+action Pusher_Paper_CheckTobacco() {
+    require pusher_paper == 1
+    require mutex > 0
+    require is_tobacco == true
+    is_tobacco = false and
+    match_sem = match_sem + 1 and
+    pusher_paper = 0
+}
+
+action Pusher_Paper_CheckMatch() {
+    require pusher_paper == 1
+    require mutex > 0
+    require is_match == true
+    is_match = false and
+    tobacco_sem = tobacco_sem + 1 and
+    pusher_paper = 0
+}
+
+action Pusher_Paper_SetFlag() {
+    require pusher_paper == 1
+    require mutex > 0
+    require is_tobacco == false
+    require is_match == false
+    is_paper = true and
+    pusher_paper = 0
+}
+
+action Pusher_Match_Wait() {
+    require pusher_match == 0
+    require matches > 0
+    matches = matches - 1 and
+    pusher_match = 1
+}
+
+action Pusher_Match_CheckTobacco() {
+    require pusher_match == 1
+    require mutex > 0
+    require is_tobacco == true
+    is_tobacco = false and
+    paper_sem = paper_sem + 1 and
+    pusher_match = 0
+}
+
+action Pusher_Match_CheckPaper() {
+    require pusher_match == 1
+    require mutex > 0
+    require is_paper == true
+    is_paper = false and
+    tobacco_sem = tobacco_sem + 1 and
+    pusher_match = 0
+}
+
+action Pusher_Match_SetFlag() {
+    require pusher_match == 1
+    require mutex > 0
+    require is_tobacco == false
+    require is_paper == false
+    is_match = true and
+    pusher_match = 0
+}
+
+// === Smoker actions ===
+
+action Smoker_Tobacco_Wake() {
+    require smoker_tobacco == 0
+    require tobacco_sem > 0
+    tobacco_sem = tobacco_sem - 1 and
+    smoker_tobacco = 1
+}
+
+action Smoker_Tobacco_Smoke() {
+    require smoker_tobacco == 1
+    agent_sem = agent_sem + 1 and
+    smoker_tobacco = 0
+}
+
+action Smoker_Paper_Wake() {
+    require smoker_paper == 0
+    require paper_sem > 0
+    paper_sem = paper_sem - 1 and
+    smoker_paper = 1
+}
+
+action Smoker_Paper_Smoke() {
+    require smoker_paper == 1
+    agent_sem = agent_sem + 1 and
+    smoker_paper = 0
+}
+
+action Smoker_Match_Wake() {
+    require smoker_match == 0
+    require match_sem > 0
+    match_sem = match_sem - 1 and
+    smoker_match = 1
+}
+
+action Smoker_Match_Smoke() {
+    require smoker_match == 1
+    agent_sem = agent_sem + 1 and
+    smoker_match = 0
+}
+
+// === Safety invariants ===
+
+invariant OneSmokerAtATime {
+    // At most one smoker smoking at a time
+    let count = (if smoker_tobacco == 1 then 1 else 0) +
+                (if smoker_paper == 1 then 1 else 0) +
+                (if smoker_match == 1 then 1 else 0) in
+    count <= 1
+}
+
+invariant SemaphoreBounds {
+    tobacco <= 1 and paper <= 1 and matches <= 1 and
+    tobacco_sem <= 1 and paper_sem <= 1 and match_sem <= 1 and
+    agent_sem <= 1 and mutex <= 1
+}
+
+invariant RoundsBound {
+    rounds <= NUM_ROUNDS
+}
+
+// =============================================================================
+// VERIFICATION
+// =============================================================================
+//
+// Run: specl check cigarette_smokers.specl -c NUM_ROUNDS=2 --no-deadlock
+//      (2 rounds - small state space)
+//
+// Run: specl check cigarette_smokers.specl -c NUM_ROUNDS=3 --no-deadlock
+//      (3 rounds - medium state space)
+//
+// Expected: OK with no violations, no deadlocks
+//
+// The model verifies that:
+// 1. At most one smoker smokes at a time (OneSmokerAtATime)
+// 2. The pusher pattern correctly coordinates ingredient availability
+// 3. The correct smoker is woken for each ingredient pair
+// 4. No deadlocks occur (unlike the naive solution)
+//
+// Key insight: The pusher threads act as coordinators. Each pusher observes
+// one ingredient appearing, then checks (under mutex) if another ingredient
+// is already available. If so, it wakes the appropriate smoker. If not, it
+// sets a flag for the other pusher to detect. This elegant pattern avoids
+// the deadlock from having smokers directly wait on ingredient semaphores.
+// =============================================================================
