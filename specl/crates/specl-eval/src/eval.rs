@@ -1,0 +1,1654 @@
+//! Expression evaluator for Specl.
+
+use crate::value::Value;
+use specl_ir::{BinOp, CompiledExpr, UnaryOp};
+use std::sync::Arc;
+use thiserror::Error;
+
+/// Evaluation error.
+#[derive(Debug, Error)]
+pub enum EvalError {
+    #[error("type mismatch: expected {expected}, got {actual}")]
+    TypeMismatch { expected: String, actual: String },
+
+    #[error("index out of bounds: index {index}, length {length}")]
+    IndexOutOfBounds { index: i64, length: usize },
+
+    #[error("key not found: {0}")]
+    KeyNotFound(String),
+
+    #[error("division by zero")]
+    DivisionByZero,
+
+    #[error("no satisfying value for choose")]
+    ChooseFailed,
+
+    #[error("undefined variable at index {0}")]
+    UndefinedVariable(usize),
+
+    #[error("undefined constant at index {0}")]
+    UndefinedConstant(usize),
+
+    #[error("internal error: {0}")]
+    Internal(String),
+}
+
+pub type EvalResult<T> = Result<T, EvalError>;
+
+/// Evaluation context providing access to state and constants.
+pub struct EvalContext<'a> {
+    /// Current state variable values (indexed by variable index).
+    pub vars: &'a [Value],
+    /// Next state variable values (indexed by variable index).
+    pub next_vars: &'a [Value],
+    /// Constant values (indexed by constant index).
+    pub consts: &'a [Value],
+    /// Action parameters (indexed by parameter index).
+    pub params: &'a [Value],
+    /// Local variable stack (de Bruijn indexed from end).
+    pub locals: Vec<Value>,
+}
+
+impl<'a> EvalContext<'a> {
+    /// Create a new evaluation context.
+    pub fn new(
+        vars: &'a [Value],
+        next_vars: &'a [Value],
+        consts: &'a [Value],
+        params: &'a [Value],
+    ) -> Self {
+        Self {
+            vars,
+            next_vars,
+            consts,
+            params,
+            locals: Vec::new(),
+        }
+    }
+
+    /// Push a local variable onto the stack.
+    pub fn push_local(&mut self, value: Value) {
+        self.locals.push(value);
+    }
+
+    /// Pop a local variable from the stack.
+    pub fn pop_local(&mut self) -> Option<Value> {
+        self.locals.pop()
+    }
+
+    /// Get a local variable by de Bruijn index (0 = innermost).
+    pub fn get_local(&self, index: usize) -> Option<&Value> {
+        let stack_index = self.locals.len().checked_sub(1 + index)?;
+        self.locals.get(stack_index)
+    }
+}
+
+/// Evaluate a compiled expression.
+pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
+    match expr {
+        CompiledExpr::Bool(b) => Ok(Value::Bool(*b)),
+        CompiledExpr::Int(n) => Ok(Value::Int(*n)),
+        CompiledExpr::String(s) => Ok(Value::String(s.clone())),
+
+        CompiledExpr::Var(idx) => ctx
+            .vars
+            .get(*idx)
+            .cloned()
+            .ok_or(EvalError::UndefinedVariable(*idx)),
+
+        CompiledExpr::PrimedVar(idx) => ctx
+            .next_vars
+            .get(*idx)
+            .cloned()
+            .ok_or(EvalError::UndefinedVariable(*idx)),
+
+        CompiledExpr::Const(idx) => ctx
+            .consts
+            .get(*idx)
+            .cloned()
+            .ok_or(EvalError::UndefinedConstant(*idx)),
+
+        CompiledExpr::Local(idx) => ctx
+            .get_local(*idx)
+            .cloned()
+            .ok_or(EvalError::Internal(format!("local {} not found", idx))),
+
+        CompiledExpr::Param(idx) => ctx
+            .params
+            .get(*idx)
+            .cloned()
+            .ok_or(EvalError::Internal(format!("param {} not found", idx))),
+
+        CompiledExpr::Binary { op, left, right } => eval_binary(*op, left, right, ctx),
+
+        CompiledExpr::Unary { op, operand } => eval_unary(*op, operand, ctx),
+
+        CompiledExpr::SetLit(elements) => {
+            let mut set = Vec::new();
+            for elem in elements {
+                Value::set_insert(&mut set, eval(elem, ctx)?);
+            }
+            Ok(Value::Set(Arc::new(set)))
+        }
+
+        CompiledExpr::SeqLit(elements) => {
+            let seq: Vec<_> = elements
+                .iter()
+                .map(|e| eval(e, ctx))
+                .collect::<EvalResult<_>>()?;
+            Ok(Value::Seq(seq))
+        }
+
+        CompiledExpr::TupleLit(elements) => {
+            let tuple: Vec<_> = elements
+                .iter()
+                .map(|e| eval(e, ctx))
+                .collect::<EvalResult<_>>()?;
+            Ok(Value::Tuple(tuple))
+        }
+
+        CompiledExpr::DictLit(entries) => {
+            let mut dict = Vec::new();
+            for (key, value) in entries {
+                let k = eval(key, ctx)?;
+                let v = eval(value, ctx)?;
+                Value::fn_insert(&mut dict, k, v);
+            }
+            Ok(Value::Fn(Arc::new(dict)))
+        }
+
+        CompiledExpr::FnLit { domain, body } => {
+            // Fast path: Range domain avoids materializing the set
+            if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                let lo_val = expect_int(&eval(lo, ctx)?)?;
+                let hi_val = expect_int(&eval(hi, ctx)?)?;
+                let mut map = Vec::with_capacity((hi_val - lo_val + 1).max(0) as usize);
+                for i in lo_val..=hi_val {
+                    ctx.push_local(Value::Int(i));
+                    let value = eval(body, ctx)?;
+                    ctx.pop_local();
+                    map.push((Value::Int(i), value));
+                }
+                // Produce IntMap if keys start at 0 and all values are Int
+                if lo_val == 0 && map.iter().all(|(_, v)| matches!(v, Value::Int(_))) {
+                    let arr: Vec<i64> = map
+                        .iter()
+                        .map(|(_, v)| {
+                            if let Value::Int(n) = v {
+                                *n
+                            } else {
+                                unreachable!()
+                            }
+                        })
+                        .collect();
+                    return Ok(Value::IntMap(Arc::new(arr)));
+                }
+                return Ok(Value::Fn(Arc::new(map)));
+            }
+
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+            let mut map = Vec::with_capacity(domain_set.len());
+            for key in domain_set {
+                ctx.push_local(key.clone());
+                let value = eval(body, ctx)?;
+                ctx.pop_local();
+                map.push((key.clone(), value));
+            }
+            // domain_set is already sorted, so map is sorted by key
+            Ok(Value::Fn(Arc::new(map)))
+        }
+
+        CompiledExpr::Index { base, index } => {
+            let base_val = eval(base, ctx)?;
+            let index_val = eval(index, ctx)?;
+
+            match &base_val {
+                Value::Seq(seq) => {
+                    let idx = expect_int(&index_val)?;
+                    if idx < 0 || idx as usize >= seq.len() {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: idx,
+                            length: seq.len(),
+                        });
+                    }
+                    Ok(seq[idx as usize].clone())
+                }
+                Value::IntMap(arr) => {
+                    let k = expect_int(&index_val)? as usize;
+                    Ok(Value::Int(arr[k]))
+                }
+                Value::Fn(map) => Value::fn_get(map, &index_val)
+                    .cloned()
+                    .ok_or_else(|| EvalError::KeyNotFound(index_val.to_string())),
+                _ => Err(type_mismatch("Seq or Fn", &base_val)),
+            }
+        }
+
+        CompiledExpr::Slice { base, lo, hi } => {
+            let base_val = eval(base, ctx)?;
+            let lo_val = expect_int(&eval(lo, ctx)?)?;
+            let hi_val = expect_int(&eval(hi, ctx)?)?;
+
+            match base_val {
+                Value::Seq(seq) => {
+                    let start = lo_val.max(0) as usize;
+                    let end = if hi_val < 0 {
+                        0
+                    } else {
+                        (hi_val as usize).min(seq.len())
+                    };
+                    if start >= end {
+                        Ok(Value::Seq(Vec::new()))
+                    } else {
+                        Ok(Value::Seq(seq[start..end].to_vec()))
+                    }
+                }
+                _ => Err(type_mismatch("Seq", &base_val)),
+            }
+        }
+
+        CompiledExpr::Field { base, field } => {
+            let base_val = eval(base, ctx)?;
+            match &base_val {
+                Value::Record(r) => r
+                    .get(field)
+                    .cloned()
+                    .ok_or_else(|| EvalError::KeyNotFound(field.clone())),
+                _ => Err(type_mismatch("Record", &base_val)),
+            }
+        }
+
+        CompiledExpr::Call { func, args } => {
+            let func_val = eval(func, ctx)?;
+            match &func_val {
+                Value::IntMap(arr) => {
+                    if args.len() != 1 {
+                        return Err(EvalError::Internal(
+                            "function call with wrong arity".to_string(),
+                        ));
+                    }
+                    let arg = eval(&args[0], ctx)?;
+                    let k = expect_int(&arg)? as usize;
+                    Ok(Value::Int(arr[k]))
+                }
+                Value::Fn(map) => {
+                    if args.len() != 1 {
+                        return Err(EvalError::Internal(
+                            "function call with wrong arity".to_string(),
+                        ));
+                    }
+                    let arg = eval(&args[0], ctx)?;
+                    Value::fn_get(map, &arg)
+                        .cloned()
+                        .ok_or_else(|| EvalError::KeyNotFound(arg.to_string()))
+                }
+                _ => Err(type_mismatch("Fn", &func_val)),
+            }
+        }
+
+        CompiledExpr::ActionCall { .. } => {
+            // Action calls are handled specially by the model checker
+            Err(EvalError::Internal(
+                "action calls should be handled by model checker".to_string(),
+            ))
+        }
+
+        CompiledExpr::RecordUpdate { base, updates } => {
+            let mut record = match eval(base, ctx)? {
+                Value::Record(r) => r,
+                v => return Err(type_mismatch("Record", &v)),
+            };
+            for (name, value) in updates {
+                record.insert(name.clone(), eval(value, ctx)?);
+            }
+            Ok(Value::Record(record))
+        }
+
+        CompiledExpr::FnUpdate { base, key, value } => {
+            let base_val = eval(base, ctx)?;
+            let key_val = eval(key, ctx)?;
+            let value_val = eval(value, ctx)?;
+            match base_val {
+                Value::IntMap(mut arr) => {
+                    let k = expect_int(&key_val)? as usize;
+                    if let Value::Int(v) = value_val {
+                        Arc::make_mut(&mut arr)[k] = v;
+                        Ok(Value::IntMap(arr))
+                    } else {
+                        // Fall back to Fn if value isn't Int
+                        let mut fn_vec = Value::intmap_to_fn_vec(&arr);
+                        Value::fn_insert(&mut fn_vec, key_val, value_val);
+                        Ok(Value::Fn(Arc::new(fn_vec)))
+                    }
+                }
+                Value::Fn(mut map) => {
+                    Value::fn_insert(Arc::make_mut(&mut map), key_val, value_val);
+                    Ok(Value::Fn(map))
+                }
+                v => Err(type_mismatch("Fn", &v)),
+            }
+        }
+
+        CompiledExpr::SetComprehension {
+            element,
+            domain,
+            filter,
+        } => {
+            let mut result = Vec::new();
+
+            // Fast path: Range domain avoids materializing the set
+            if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                let lo_val = expect_int(&eval(lo, ctx)?)?;
+                let hi_val = expect_int(&eval(hi, ctx)?)?;
+                for i in lo_val..=hi_val {
+                    ctx.push_local(Value::Int(i));
+                    let include = if let Some(f) = filter {
+                        expect_bool(&eval(f, ctx)?)?
+                    } else {
+                        true
+                    };
+                    if include {
+                        let elem = eval(element, ctx)?;
+                        Value::set_insert(&mut result, elem);
+                    }
+                    ctx.pop_local();
+                }
+                return Ok(Value::Set(Arc::new(result)));
+            }
+
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+
+            for item in domain_set {
+                ctx.push_local(item.clone());
+
+                let include = if let Some(f) = filter {
+                    expect_bool(&eval(f, ctx)?)?
+                } else {
+                    true
+                };
+
+                if include {
+                    let elem = eval(element, ctx)?;
+                    Value::set_insert(&mut result, elem);
+                }
+
+                ctx.pop_local();
+            }
+
+            Ok(Value::Set(Arc::new(result)))
+        }
+
+        CompiledExpr::Forall { domain, body } => {
+            // Fast path: Range domain avoids materializing the set
+            if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                let lo_val = expect_int(&eval(lo, ctx)?)?;
+                let hi_val = expect_int(&eval(hi, ctx)?)?;
+                for i in lo_val..=hi_val {
+                    ctx.push_local(Value::Int(i));
+                    let result = expect_bool(&eval(body, ctx)?)?;
+                    ctx.pop_local();
+                    if !result {
+                        return Ok(Value::Bool(false));
+                    }
+                }
+                return Ok(Value::Bool(true));
+            }
+
+            // Fast path: Forall over Powerset
+            if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
+                return Ok(Value::Bool(forall_over_powerset_bool(
+                    inner_domain,
+                    body,
+                    ctx,
+                )?));
+            }
+
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+
+            for item in domain_set {
+                ctx.push_local(item.clone());
+                let result = expect_bool(&eval(body, ctx)?)?;
+                ctx.pop_local();
+                if !result {
+                    return Ok(Value::Bool(false));
+                }
+            }
+
+            Ok(Value::Bool(true))
+        }
+
+        CompiledExpr::Exists { domain, body } => {
+            // Fast path: Range domain avoids materializing the set
+            if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                let lo_val = expect_int(&eval(lo, ctx)?)?;
+                let hi_val = expect_int(&eval(hi, ctx)?)?;
+                for i in lo_val..=hi_val {
+                    ctx.push_local(Value::Int(i));
+                    let result = expect_bool(&eval(body, ctx)?)?;
+                    ctx.pop_local();
+                    if result {
+                        return Ok(Value::Bool(true));
+                    }
+                }
+                return Ok(Value::Bool(false));
+            }
+
+            // Fast path: Exists over Powerset
+            if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
+                return Ok(Value::Bool(exists_over_powerset_bool(
+                    inner_domain,
+                    body,
+                    ctx,
+                )?));
+            }
+
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+
+            for item in domain_set {
+                ctx.push_local(item.clone());
+                let result = expect_bool(&eval(body, ctx)?)?;
+                ctx.pop_local();
+                if result {
+                    return Ok(Value::Bool(true));
+                }
+            }
+
+            Ok(Value::Bool(false))
+        }
+
+        CompiledExpr::Choose { domain, predicate } => {
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+
+            // Find the first satisfying element (deterministic due to sorted ordering)
+            for item in domain_set {
+                ctx.push_local(item.clone());
+                let result = expect_bool(&eval(predicate, ctx)?)?;
+                ctx.pop_local();
+                if result {
+                    return Ok(item.clone());
+                }
+            }
+
+            Err(EvalError::ChooseFailed)
+        }
+
+        CompiledExpr::Fix { predicate: _ } => {
+            // Fix without domain cannot be evaluated directly -
+            // the spec needs to be rewritten with an explicit domain
+            Err(EvalError::ChooseFailed)
+        }
+
+        CompiledExpr::Let { value, body } => {
+            let val = eval(value, ctx)?;
+            ctx.push_local(val);
+            let result = eval(body, ctx)?;
+            ctx.pop_local();
+            Ok(result)
+        }
+
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let cond_val = expect_bool(&eval(cond, ctx)?)?;
+            if cond_val {
+                eval(then_branch, ctx)
+            } else {
+                eval(else_branch, ctx)
+            }
+        }
+
+        CompiledExpr::Changes(_) => {
+            // Changes is used during frame analysis, not runtime evaluation
+            // At runtime, we just return true (the change is allowed)
+            Ok(Value::Bool(true))
+        }
+
+        CompiledExpr::Unchanged(idx) => {
+            // Check that var' == var
+            let current = ctx
+                .vars
+                .get(*idx)
+                .ok_or(EvalError::UndefinedVariable(*idx))?;
+            let next = ctx
+                .next_vars
+                .get(*idx)
+                .ok_or(EvalError::UndefinedVariable(*idx))?;
+            Ok(Value::Bool(current == next))
+        }
+
+        CompiledExpr::Enabled(_) => {
+            // Enabled is evaluated by the model checker
+            Err(EvalError::Internal(
+                "enabled should be handled by model checker".to_string(),
+            ))
+        }
+
+        CompiledExpr::Range { lo, hi } => {
+            let lo_val = expect_int(&eval(lo, ctx)?)?;
+            let hi_val = expect_int(&eval(hi, ctx)?)?;
+            Ok(Value::range(lo_val, hi_val))
+        }
+
+        CompiledExpr::SeqHead(seq) => {
+            let seq_val = eval(seq, ctx)?;
+            match seq_val {
+                Value::Seq(s) if !s.is_empty() => Ok(s[0].clone()),
+                Value::Seq(_) => Err(EvalError::IndexOutOfBounds {
+                    index: 0,
+                    length: 0,
+                }),
+                _ => Err(type_mismatch("Seq", &seq_val)),
+            }
+        }
+
+        CompiledExpr::SeqTail(seq) => {
+            let seq_val = eval(seq, ctx)?;
+            match seq_val {
+                Value::Seq(s) if !s.is_empty() => Ok(Value::Seq(s[1..].to_vec())),
+                Value::Seq(_) => Ok(Value::Seq(vec![])),
+                _ => Err(type_mismatch("Seq", &seq_val)),
+            }
+        }
+
+        CompiledExpr::Len(expr) => {
+            // Fast path: len({x in D if pred}) → count without materializing set
+            if let CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } = expr.as_ref()
+            {
+                if matches!(element.as_ref(), CompiledExpr::Local(0)) {
+                    if let Some(filter) = filter {
+                        return Ok(Value::Int(count_filtered(domain, filter, ctx)?));
+                    }
+                }
+            }
+            let val = eval(expr, ctx)?;
+            match val {
+                Value::Seq(s) => Ok(Value::Int(s.len() as i64)),
+                Value::Set(s) => Ok(Value::Int(s.len() as i64)),
+                Value::Fn(m) => Ok(Value::Int(m.len() as i64)),
+                Value::IntMap(arr) => Ok(Value::Int(arr.len() as i64)),
+                _ => Err(type_mismatch("Seq, Set, or Fn", &val)),
+            }
+        }
+
+        CompiledExpr::Keys(expr) => {
+            let val = eval(expr, ctx)?;
+            match val {
+                // Keys of sorted fn vec are already sorted
+                Value::IntMap(arr) => Ok(Value::Set(Arc::new(
+                    (0..arr.len() as i64).map(Value::Int).collect(),
+                ))),
+                Value::Fn(m) => Ok(Value::Set(Arc::new(
+                    m.iter().map(|(k, _)| k.clone()).collect(),
+                ))),
+                // For sequences, DOMAIN returns 1..Len(seq) — already sorted
+                Value::Seq(s) => Ok(Value::Set(Arc::new(
+                    (1..=s.len() as i64).map(Value::Int).collect(),
+                ))),
+                _ => Err(type_mismatch("Fn or Seq", &val)),
+            }
+        }
+
+        CompiledExpr::Values(expr) => {
+            let val = eval(expr, ctx)?;
+            match val {
+                Value::IntMap(arr) => {
+                    let mut vals: Vec<Value> = arr.iter().map(|v| Value::Int(*v)).collect();
+                    vals.sort();
+                    vals.dedup();
+                    Ok(Value::Set(Arc::new(vals)))
+                }
+                Value::Fn(m) => {
+                    let mut vals: Vec<Value> = m.iter().map(|(_, v)| v.clone()).collect();
+                    vals.sort();
+                    vals.dedup();
+                    Ok(Value::Set(Arc::new(vals)))
+                }
+                _ => Err(type_mismatch("Fn", &val)),
+            }
+        }
+
+        CompiledExpr::BigUnion(expr) => {
+            let val = eval(expr, ctx)?;
+            let outer_set = expect_set(&val)?;
+            let mut result = Vec::new();
+            for inner in outer_set {
+                let inner_set = expect_set(inner)?;
+                for elem in inner_set {
+                    Value::set_insert(&mut result, elem.clone());
+                }
+            }
+            Ok(Value::Set(Arc::new(result)))
+        }
+
+        CompiledExpr::Powerset(expr) => {
+            let val = eval(expr, ctx)?;
+            let input_set = expect_set(&val)?;
+            let n = input_set.len();
+            let mut result = Vec::new();
+            for mask in 0..(1usize << n) {
+                let mut subset = Vec::new();
+                for (i, elem) in input_set.iter().enumerate() {
+                    if mask & (1 << i) != 0 {
+                        subset.push(elem.clone());
+                    }
+                }
+                // subset is already sorted (input_set is sorted, we iterate in order)
+                Value::set_insert(&mut result, Value::Set(Arc::new(subset)));
+            }
+            Ok(Value::Set(Arc::new(result)))
+        }
+    }
+}
+
+/// Fast path for evaluating boolean expressions.
+/// Avoids wrapping intermediate results in Value for common patterns.
+pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool> {
+    match expr {
+        CompiledExpr::Bool(b) => Ok(*b),
+
+        CompiledExpr::Binary { op, left, right } => match op {
+            BinOp::And => {
+                if !eval_bool(left, ctx)? {
+                    return Ok(false);
+                }
+                eval_bool(right, ctx)
+            }
+            BinOp::Or => {
+                if eval_bool(left, ctx)? {
+                    return Ok(true);
+                }
+                eval_bool(right, ctx)
+            }
+            BinOp::Implies => {
+                if !eval_bool(left, ctx)? {
+                    return Ok(true);
+                }
+                eval_bool(right, ctx)
+            }
+            BinOp::Iff => Ok(eval_bool(left, ctx)? == eval_bool(right, ctx)?),
+            BinOp::Eq => {
+                // Fast path: if either side is statically Int, use eval_int
+                if is_int_expr(left) || is_int_expr(right) {
+                    Ok(eval_int(left, ctx)? == eval_int(right, ctx)?)
+                } else {
+                    Ok(eval(left, ctx)? == eval(right, ctx)?)
+                }
+            }
+            BinOp::Ne => {
+                // Fast path: if either side is statically Int, use eval_int
+                if is_int_expr(left) || is_int_expr(right) {
+                    Ok(eval_int(left, ctx)? != eval_int(right, ctx)?)
+                } else {
+                    Ok(eval(left, ctx)? != eval(right, ctx)?)
+                }
+            }
+            BinOp::Lt => Ok(eval_int(left, ctx)? < eval_int(right, ctx)?),
+            BinOp::Le => Ok(eval_int(left, ctx)? <= eval_int(right, ctx)?),
+            BinOp::Gt => Ok(eval_int(left, ctx)? > eval_int(right, ctx)?),
+            BinOp::Ge => Ok(eval_int(left, ctx)? >= eval_int(right, ctx)?),
+            BinOp::In => {
+                let left_val = eval(left, ctx)?;
+                let right_val = eval(right, ctx)?;
+                let set = expect_set(&right_val)?;
+                Ok(Value::set_contains(set, &left_val))
+            }
+            BinOp::NotIn => {
+                let left_val = eval(left, ctx)?;
+                let right_val = eval(right, ctx)?;
+                let set = expect_set(&right_val)?;
+                Ok(!Value::set_contains(set, &left_val))
+            }
+            BinOp::SubsetOf => {
+                let left_val = eval(left, ctx)?;
+                let right_val = eval(right, ctx)?;
+                let a = expect_set(&left_val)?;
+                let b = expect_set(&right_val)?;
+                Ok(sorted_vec_is_subset(a, b))
+            }
+            _ => expect_bool(&eval(expr, ctx)?),
+        },
+
+        CompiledExpr::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => Ok(!eval_bool(operand, ctx)?),
+
+        CompiledExpr::Forall { domain, body } => {
+            if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                let lo_val = expect_int(&eval(lo, ctx)?)?;
+                let hi_val = expect_int(&eval(hi, ctx)?)?;
+                for i in lo_val..=hi_val {
+                    ctx.push_local(Value::Int(i));
+                    let result = eval_bool(body, ctx)?;
+                    ctx.pop_local();
+                    if !result {
+                        return Ok(false);
+                    }
+                }
+                return Ok(true);
+            }
+
+            // Fast path: Forall over Powerset — iterate bitmasks without
+            // materializing all 2^n subsets upfront
+            if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
+                return forall_over_powerset_bool(inner_domain, body, ctx);
+            }
+
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+            for item in domain_set {
+                ctx.push_local(item.clone());
+                let result = eval_bool(body, ctx)?;
+                ctx.pop_local();
+                if !result {
+                    return Ok(false);
+                }
+            }
+            Ok(true)
+        }
+
+        CompiledExpr::Exists { domain, body } => {
+            if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                let lo_val = expect_int(&eval(lo, ctx)?)?;
+                let hi_val = expect_int(&eval(hi, ctx)?)?;
+                for i in lo_val..=hi_val {
+                    ctx.push_local(Value::Int(i));
+                    let result = eval_bool(body, ctx)?;
+                    ctx.pop_local();
+                    if result {
+                        return Ok(true);
+                    }
+                }
+                return Ok(false);
+            }
+
+            // Fast path: Exists over Powerset — iterate bitmasks without
+            // materializing all 2^n subsets upfront
+            if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
+                return exists_over_powerset_bool(inner_domain, body, ctx);
+            }
+
+            let domain_val = eval(domain, ctx)?;
+            let domain_set = expect_set(&domain_val)?;
+            for item in domain_set {
+                ctx.push_local(item.clone());
+                let result = eval_bool(body, ctx)?;
+                ctx.pop_local();
+                if result {
+                    return Ok(true);
+                }
+            }
+            Ok(false)
+        }
+
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            if eval_bool(cond, ctx)? {
+                eval_bool(then_branch, ctx)
+            } else {
+                eval_bool(else_branch, ctx)
+            }
+        }
+
+        CompiledExpr::Let { value, body } => {
+            let val = eval(value, ctx)?;
+            ctx.push_local(val);
+            let result = eval_bool(body, ctx)?;
+            ctx.pop_local();
+            Ok(result)
+        }
+
+        _ => expect_bool(&eval(expr, ctx)?),
+    }
+}
+
+/// Fast path for evaluating integer expressions.
+/// Avoids wrapping intermediate results in Value for common patterns.
+pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
+    match expr {
+        CompiledExpr::Int(n) => Ok(*n),
+
+        CompiledExpr::Var(idx) => match ctx.vars.get(*idx) {
+            Some(Value::Int(n)) => Ok(*n),
+            Some(v) => Err(type_mismatch("Int", v)),
+            None => Err(EvalError::UndefinedVariable(*idx)),
+        },
+
+        CompiledExpr::Const(idx) => match ctx.consts.get(*idx) {
+            Some(Value::Int(n)) => Ok(*n),
+            Some(v) => Err(type_mismatch("Int", v)),
+            None => Err(EvalError::UndefinedConstant(*idx)),
+        },
+
+        CompiledExpr::Local(idx) => match ctx.get_local(*idx) {
+            Some(Value::Int(n)) => Ok(*n),
+            Some(v) => Err(type_mismatch("Int", v)),
+            None => Err(EvalError::Internal(format!("local {} not found", idx))),
+        },
+
+        CompiledExpr::Param(idx) => match ctx.params.get(*idx) {
+            Some(Value::Int(n)) => Ok(*n),
+            Some(v) => Err(type_mismatch("Int", v)),
+            None => Err(EvalError::Internal(format!("param {} not found", idx))),
+        },
+
+        CompiledExpr::Binary { op, left, right } => match op {
+            BinOp::Add => Ok(eval_int(left, ctx)? + eval_int(right, ctx)?),
+            BinOp::Sub => Ok(eval_int(left, ctx)? - eval_int(right, ctx)?),
+            BinOp::Mul => Ok(eval_int(left, ctx)? * eval_int(right, ctx)?),
+            BinOp::Div => {
+                let a = eval_int(left, ctx)?;
+                let b = eval_int(right, ctx)?;
+                if b == 0 {
+                    return Err(EvalError::DivisionByZero);
+                }
+                Ok(a / b)
+            }
+            BinOp::Mod => {
+                let a = eval_int(left, ctx)?;
+                let b = eval_int(right, ctx)?;
+                if b == 0 {
+                    return Err(EvalError::DivisionByZero);
+                }
+                Ok(a % b)
+            }
+            _ => expect_int(&eval(expr, ctx)?),
+        },
+
+        CompiledExpr::Index { base, index } => {
+            let base_val = eval(base, ctx)?;
+            let index_val = eval(index, ctx)?;
+            match &base_val {
+                Value::IntMap(arr) => {
+                    let k = expect_int(&index_val)? as usize;
+                    Ok(arr[k])
+                }
+                Value::Fn(map) => match Value::fn_get(map, &index_val) {
+                    Some(Value::Int(n)) => Ok(*n),
+                    Some(v) => Err(type_mismatch("Int", v)),
+                    None => Err(EvalError::KeyNotFound(index_val.to_string())),
+                },
+                Value::Seq(seq) => {
+                    let idx = expect_int(&index_val)?;
+                    match seq.get(idx as usize) {
+                        Some(Value::Int(n)) => Ok(*n),
+                        Some(v) => Err(type_mismatch("Int", v)),
+                        None => Err(EvalError::IndexOutOfBounds {
+                            index: idx,
+                            length: seq.len(),
+                        }),
+                    }
+                }
+                _ => expect_int(&eval(expr, ctx)?),
+            }
+        }
+
+        CompiledExpr::Len(inner) => {
+            // Fast path: len({x in D if pred}) → count without materializing set
+            if let CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } = inner.as_ref()
+            {
+                if matches!(element.as_ref(), CompiledExpr::Local(0)) {
+                    if let Some(filter) = filter {
+                        return count_filtered(domain, filter, ctx);
+                    }
+                }
+            }
+            let val = eval(inner, ctx)?;
+            match &val {
+                Value::Set(s) => Ok(s.len() as i64),
+                Value::Seq(s) => Ok(s.len() as i64),
+                Value::Fn(f) => Ok(f.len() as i64),
+                Value::IntMap(arr) => Ok(arr.len() as i64),
+                _ => Err(type_mismatch("Set, Seq, or Fn", &val)),
+            }
+        }
+
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            if eval_bool(cond, ctx)? {
+                eval_int(then_branch, ctx)
+            } else {
+                eval_int(else_branch, ctx)
+            }
+        }
+
+        CompiledExpr::Let { value, body } => {
+            let val = eval(value, ctx)?;
+            ctx.push_local(val);
+            let result = eval_int(body, ctx)?;
+            ctx.pop_local();
+            Ok(result)
+        }
+
+        _ => expect_int(&eval(expr, ctx)?),
+    }
+}
+
+/// Check if an expression is statically known to produce an Int.
+#[inline]
+fn is_int_expr(expr: &CompiledExpr) -> bool {
+    matches!(
+        expr,
+        CompiledExpr::Int(_)
+            | CompiledExpr::Len(_)
+            | CompiledExpr::Binary {
+                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod,
+                ..
+            }
+    )
+}
+
+/// Exists over powerset: iterate bitmasks without materializing all 2^n subsets.
+fn exists_over_powerset_bool(
+    domain_expr: &CompiledExpr,
+    body: &CompiledExpr,
+    ctx: &mut EvalContext,
+) -> EvalResult<bool> {
+    let base = eval_set_domain(domain_expr, ctx)?;
+    let n = base.len();
+    let mut subset_buf = Vec::with_capacity(n);
+    for mask in 0..(1usize << n) {
+        subset_buf.clear();
+        for (i, elem) in base.iter().enumerate() {
+            if mask & (1 << i) != 0 {
+                subset_buf.push(elem.clone());
+            }
+        }
+        ctx.push_local(Value::Set(Arc::new(subset_buf.clone())));
+        let result = eval_bool(body, ctx)?;
+        ctx.pop_local();
+        if result {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+/// Forall over powerset: iterate bitmasks without materializing all 2^n subsets.
+fn forall_over_powerset_bool(
+    domain_expr: &CompiledExpr,
+    body: &CompiledExpr,
+    ctx: &mut EvalContext,
+) -> EvalResult<bool> {
+    let base = eval_set_domain(domain_expr, ctx)?;
+    let n = base.len();
+    let mut subset_buf = Vec::with_capacity(n);
+    for mask in 0..(1usize << n) {
+        subset_buf.clear();
+        for (i, elem) in base.iter().enumerate() {
+            if mask & (1 << i) != 0 {
+                subset_buf.push(elem.clone());
+            }
+        }
+        ctx.push_local(Value::Set(Arc::new(subset_buf.clone())));
+        let result = eval_bool(body, ctx)?;
+        ctx.pop_local();
+        if !result {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
+/// Evaluate a domain expression and return the elements as a Vec.
+/// Handles Range fast path and general set expressions.
+fn eval_set_domain(domain_expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Vec<Value>> {
+    if let CompiledExpr::Range { lo, hi } = domain_expr {
+        let lo_val = expect_int(&eval(lo, ctx)?)?;
+        let hi_val = expect_int(&eval(hi, ctx)?)?;
+        return Ok((lo_val..=hi_val).map(Value::Int).collect());
+    }
+    let domain_val = eval(domain_expr, ctx)?;
+    let domain_set = expect_set(&domain_val)?;
+    Ok(domain_set.to_vec())
+}
+
+/// Count items in a domain that satisfy a filter, without materializing a Set.
+/// Used as fast path for `len({x in D if pred})`.
+fn count_filtered(
+    domain: &CompiledExpr,
+    filter: &CompiledExpr,
+    ctx: &mut EvalContext,
+) -> EvalResult<i64> {
+    let mut count = 0i64;
+    if let CompiledExpr::Range { lo, hi } = domain {
+        let lo_val = expect_int(&eval(lo, ctx)?)?;
+        let hi_val = expect_int(&eval(hi, ctx)?)?;
+        for i in lo_val..=hi_val {
+            ctx.push_local(Value::Int(i));
+            if eval_bool(filter, ctx)? {
+                count += 1;
+            }
+            ctx.pop_local();
+        }
+    } else {
+        let domain_val = eval(domain, ctx)?;
+        let domain_set = expect_set(&domain_val)?;
+        for item in domain_set {
+            ctx.push_local(item.clone());
+            if eval_bool(filter, ctx)? {
+                count += 1;
+            }
+            ctx.pop_local();
+        }
+    }
+    Ok(count)
+}
+
+fn eval_binary(
+    op: BinOp,
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    ctx: &mut EvalContext,
+) -> EvalResult<Value> {
+    // Short-circuit evaluation for logical operators
+    match op {
+        BinOp::And => {
+            let left_val = expect_bool(&eval(left, ctx)?)?;
+            if !left_val {
+                return Ok(Value::Bool(false));
+            }
+            return Ok(Value::Bool(expect_bool(&eval(right, ctx)?)?));
+        }
+        BinOp::Or => {
+            let left_val = expect_bool(&eval(left, ctx)?)?;
+            if left_val {
+                return Ok(Value::Bool(true));
+            }
+            return Ok(Value::Bool(expect_bool(&eval(right, ctx)?)?));
+        }
+        BinOp::Implies => {
+            let left_val = expect_bool(&eval(left, ctx)?)?;
+            if !left_val {
+                return Ok(Value::Bool(true));
+            }
+            return Ok(Value::Bool(expect_bool(&eval(right, ctx)?)?));
+        }
+        _ => {}
+    }
+
+    let left_val = eval(left, ctx)?;
+    let right_val = eval(right, ctx)?;
+
+    match op {
+        BinOp::And | BinOp::Or | BinOp::Implies => unreachable!("handled above"),
+
+        BinOp::Iff => {
+            let a = expect_bool(&left_val)?;
+            let b = expect_bool(&right_val)?;
+            Ok(Value::Bool(a == b))
+        }
+
+        BinOp::Eq => Ok(Value::Bool(left_val == right_val)),
+        BinOp::Ne => Ok(Value::Bool(left_val != right_val)),
+
+        BinOp::Lt => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Bool(a < b))
+        }
+        BinOp::Le => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Bool(a <= b))
+        }
+        BinOp::Gt => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Bool(a > b))
+        }
+        BinOp::Ge => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Bool(a >= b))
+        }
+
+        BinOp::Add => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Int(a + b))
+        }
+        BinOp::Sub => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Int(a - b))
+        }
+        BinOp::Mul => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            Ok(Value::Int(a * b))
+        }
+        BinOp::Div => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            if b == 0 {
+                return Err(EvalError::DivisionByZero);
+            }
+            Ok(Value::Int(a / b))
+        }
+        BinOp::Mod => {
+            let a = expect_int(&left_val)?;
+            let b = expect_int(&right_val)?;
+            if b == 0 {
+                return Err(EvalError::DivisionByZero);
+            }
+            Ok(Value::Int(a % b))
+        }
+
+        BinOp::In => {
+            let set = expect_set(&right_val)?;
+            Ok(Value::Bool(Value::set_contains(set, &left_val)))
+        }
+        BinOp::NotIn => {
+            let set = expect_set(&right_val)?;
+            Ok(Value::Bool(!Value::set_contains(set, &left_val)))
+        }
+
+        BinOp::Union => {
+            match (left_val, right_val) {
+                (Value::Set(a), Value::Set(b)) => {
+                    if b.len() <= 4 {
+                        // Small right side: insert into left via CoW
+                        let mut result = a;
+                        let inner = Arc::make_mut(&mut result);
+                        for v in b.iter() {
+                            Value::set_insert(inner, v.clone());
+                        }
+                        Ok(Value::Set(result))
+                    } else if a.len() <= 4 {
+                        let mut result = b;
+                        let inner = Arc::make_mut(&mut result);
+                        for v in a.iter() {
+                            Value::set_insert(inner, v.clone());
+                        }
+                        Ok(Value::Set(result))
+                    } else {
+                        Ok(Value::Set(Arc::new(sorted_vec_union(&a, &b))))
+                    }
+                }
+                (Value::IntMap(mut a), Value::IntMap(b)) => {
+                    // Right overrides left for IntMap union
+                    let arr = Arc::make_mut(&mut a);
+                    for (i, v) in b.iter().enumerate() {
+                        if i < arr.len() {
+                            arr[i] = *v;
+                        }
+                    }
+                    Ok(Value::IntMap(a))
+                }
+                (Value::IntMap(a), Value::Fn(b)) => {
+                    let mut fn_vec = Value::intmap_to_fn_vec(&a);
+                    for (key, value) in b.iter() {
+                        Value::fn_insert(&mut fn_vec, key.clone(), value.clone());
+                    }
+                    Ok(Value::Fn(Arc::new(fn_vec)))
+                }
+                (Value::Fn(a), Value::IntMap(b)) => {
+                    let mut fn_a = a;
+                    let inner = Arc::make_mut(&mut fn_a);
+                    for (i, v) in b.iter().enumerate() {
+                        Value::fn_insert(inner, Value::Int(i as i64), Value::Int(*v));
+                    }
+                    Ok(Value::Fn(fn_a))
+                }
+                (Value::Fn(mut a), Value::Fn(b)) => {
+                    // Insert right entries into left via CoW
+                    let inner = Arc::make_mut(&mut a);
+                    for (key, value) in b.iter() {
+                        Value::fn_insert(inner, key.clone(), value.clone());
+                    }
+                    Ok(Value::Fn(a))
+                }
+                (a, b) => {
+                    let a = expect_set(&a)?;
+                    let b = expect_set(&b)?;
+                    Ok(Value::Set(Arc::new(sorted_vec_union(a, b))))
+                }
+            }
+        }
+        BinOp::Intersect => {
+            let a = expect_set(&left_val)?;
+            let b = expect_set(&right_val)?;
+            Ok(Value::Set(Arc::new(sorted_vec_intersect(a, b))))
+        }
+        BinOp::Diff => {
+            let a = expect_set(&left_val)?;
+            let b = expect_set(&right_val)?;
+            Ok(Value::Set(Arc::new(sorted_vec_diff(a, b))))
+        }
+        BinOp::SubsetOf => {
+            let a = expect_set(&left_val)?;
+            let b = expect_set(&right_val)?;
+            Ok(Value::Bool(sorted_vec_is_subset(a, b)))
+        }
+
+        BinOp::Concat => match (left_val, right_val) {
+            (Value::Seq(mut a), Value::Seq(b)) => {
+                a.extend(b);
+                Ok(Value::Seq(a))
+            }
+            (Value::String(a), Value::String(b)) => Ok(Value::String(a + &b)),
+            (a, b) => Err(EvalError::TypeMismatch {
+                expected: "Seq or String".to_string(),
+                actual: format!("{} and {}", type_name(&a), type_name(&b)),
+            }),
+        },
+    }
+}
+
+fn eval_unary(op: UnaryOp, operand: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
+    let val = eval(operand, ctx)?;
+
+    match op {
+        UnaryOp::Not => {
+            let b = expect_bool(&val)?;
+            Ok(Value::Bool(!b))
+        }
+        UnaryOp::Neg => {
+            let n = expect_int(&val)?;
+            Ok(Value::Int(-n))
+        }
+    }
+}
+
+pub fn expect_bool(val: &Value) -> EvalResult<bool> {
+    match val {
+        Value::Bool(b) => Ok(*b),
+        _ => Err(type_mismatch("Bool", val)),
+    }
+}
+
+pub fn expect_int(val: &Value) -> EvalResult<i64> {
+    match val {
+        Value::Int(n) => Ok(*n),
+        _ => Err(type_mismatch("Int", val)),
+    }
+}
+
+pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
+    match val {
+        Value::Set(s) => Ok(s),
+        _ => Err(type_mismatch("Set", val)),
+    }
+}
+
+/// Merge-based union of two sorted, deduplicated Vecs.
+fn sorted_vec_union(a: &[Value], b: &[Value]) -> Vec<Value> {
+    let mut result = Vec::with_capacity(a.len() + b.len());
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => {
+                result.push(a[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => {
+                result.push(b[j].clone());
+                j += 1;
+            }
+            std::cmp::Ordering::Equal => {
+                result.push(a[i].clone());
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    while i < a.len() {
+        result.push(a[i].clone());
+        i += 1;
+    }
+    while j < b.len() {
+        result.push(b[j].clone());
+        j += 1;
+    }
+    result
+}
+
+/// Merge-based intersection of two sorted, deduplicated Vecs.
+fn sorted_vec_intersect(a: &[Value], b: &[Value]) -> Vec<Value> {
+    let mut result = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => i += 1,
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                result.push(a[i].clone());
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    result
+}
+
+/// Merge-based difference of two sorted, deduplicated Vecs.
+fn sorted_vec_diff(a: &[Value], b: &[Value]) -> Vec<Value> {
+    let mut result = Vec::new();
+    let (mut i, mut j) = (0, 0);
+    while i < a.len() && j < b.len() {
+        match a[i].cmp(&b[j]) {
+            std::cmp::Ordering::Less => {
+                result.push(a[i].clone());
+                i += 1;
+            }
+            std::cmp::Ordering::Greater => j += 1,
+            std::cmp::Ordering::Equal => {
+                i += 1;
+                j += 1;
+            }
+        }
+    }
+    while i < a.len() {
+        result.push(a[i].clone());
+        i += 1;
+    }
+    result
+}
+
+/// Check if sorted Vec a is a subset of sorted Vec b.
+fn sorted_vec_is_subset(a: &[Value], b: &[Value]) -> bool {
+    let mut j = 0;
+    for item in a {
+        while j < b.len() && b[j] < *item {
+            j += 1;
+        }
+        if j >= b.len() || b[j] != *item {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+fn type_mismatch(expected: &str, actual: &Value) -> EvalError {
+    EvalError::TypeMismatch {
+        expected: expected.to_string(),
+        actual: type_name(actual),
+    }
+}
+
+fn type_name(val: &Value) -> String {
+    match val {
+        Value::Bool(_) => "Bool".to_string(),
+        Value::Int(_) => "Int".to_string(),
+        Value::String(_) => "String".to_string(),
+        Value::Set(_) => "Set".to_string(),
+        Value::Seq(_) => "Seq".to_string(),
+        Value::Fn(_) | Value::IntMap(_) => "Fn".to_string(),
+        Value::Record(_) => "Record".to_string(),
+        Value::Tuple(_) => "Tuple".to_string(),
+        Value::None => "None".to_string(),
+        Value::Some(_) => "Some".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn eval_simple(expr: &CompiledExpr) -> EvalResult<Value> {
+        let mut ctx = EvalContext::new(&[], &[], &[], &[]);
+        eval(expr, &mut ctx)
+    }
+
+    #[test]
+    fn test_literals() {
+        assert_eq!(
+            eval_simple(&CompiledExpr::Bool(true)).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(eval_simple(&CompiledExpr::Int(42)).unwrap(), Value::Int(42));
+        assert_eq!(
+            eval_simple(&CompiledExpr::String("hello".to_string())).unwrap(),
+            Value::String("hello".to_string())
+        );
+    }
+
+    #[test]
+    fn test_arithmetic() {
+        let add = CompiledExpr::Binary {
+            op: BinOp::Add,
+            left: Box::new(CompiledExpr::Int(2)),
+            right: Box::new(CompiledExpr::Int(3)),
+        };
+        assert_eq!(eval_simple(&add).unwrap(), Value::Int(5));
+
+        let mul = CompiledExpr::Binary {
+            op: BinOp::Mul,
+            left: Box::new(CompiledExpr::Int(4)),
+            right: Box::new(CompiledExpr::Int(5)),
+        };
+        assert_eq!(eval_simple(&mul).unwrap(), Value::Int(20));
+    }
+
+    #[test]
+    fn test_comparison() {
+        let lt = CompiledExpr::Binary {
+            op: BinOp::Lt,
+            left: Box::new(CompiledExpr::Int(2)),
+            right: Box::new(CompiledExpr::Int(3)),
+        };
+        assert_eq!(eval_simple(&lt).unwrap(), Value::Bool(true));
+
+        let eq = CompiledExpr::Binary {
+            op: BinOp::Eq,
+            left: Box::new(CompiledExpr::Int(2)),
+            right: Box::new(CompiledExpr::Int(2)),
+        };
+        assert_eq!(eval_simple(&eq).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_logical() {
+        let and = CompiledExpr::Binary {
+            op: BinOp::And,
+            left: Box::new(CompiledExpr::Bool(true)),
+            right: Box::new(CompiledExpr::Bool(false)),
+        };
+        assert_eq!(eval_simple(&and).unwrap(), Value::Bool(false));
+
+        let or = CompiledExpr::Binary {
+            op: BinOp::Or,
+            left: Box::new(CompiledExpr::Bool(true)),
+            right: Box::new(CompiledExpr::Bool(false)),
+        };
+        assert_eq!(eval_simple(&or).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_set_operations() {
+        let set1 = CompiledExpr::SetLit(vec![CompiledExpr::Int(1), CompiledExpr::Int(2)]);
+        let set2 = CompiledExpr::SetLit(vec![CompiledExpr::Int(2), CompiledExpr::Int(3)]);
+
+        let union = CompiledExpr::Binary {
+            op: BinOp::Union,
+            left: Box::new(set1.clone()),
+            right: Box::new(set2.clone()),
+        };
+
+        let result = eval_simple(&union).unwrap();
+        if let Value::Set(s) = &result {
+            assert_eq!(s.len(), 3);
+        } else {
+            panic!("expected set");
+        }
+
+        let in_op = CompiledExpr::Binary {
+            op: BinOp::In,
+            left: Box::new(CompiledExpr::Int(1)),
+            right: Box::new(set1),
+        };
+        assert_eq!(eval_simple(&in_op).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_forall() {
+        let domain = CompiledExpr::Range {
+            lo: Box::new(CompiledExpr::Int(1)),
+            hi: Box::new(CompiledExpr::Int(5)),
+        };
+
+        // forall x in 1..5: x > 0
+        let forall = CompiledExpr::Forall {
+            domain: Box::new(domain.clone()),
+            body: Box::new(CompiledExpr::Binary {
+                op: BinOp::Gt,
+                left: Box::new(CompiledExpr::Local(0)),
+                right: Box::new(CompiledExpr::Int(0)),
+            }),
+        };
+        assert_eq!(eval_simple(&forall).unwrap(), Value::Bool(true));
+
+        // forall x in 1..5: x > 3
+        let forall2 = CompiledExpr::Forall {
+            domain: Box::new(domain),
+            body: Box::new(CompiledExpr::Binary {
+                op: BinOp::Gt,
+                left: Box::new(CompiledExpr::Local(0)),
+                right: Box::new(CompiledExpr::Int(3)),
+            }),
+        };
+        assert_eq!(eval_simple(&forall2).unwrap(), Value::Bool(false));
+    }
+
+    #[test]
+    fn test_exists() {
+        let domain = CompiledExpr::Range {
+            lo: Box::new(CompiledExpr::Int(1)),
+            hi: Box::new(CompiledExpr::Int(5)),
+        };
+
+        // exists x in 1..5: x == 3
+        let exists = CompiledExpr::Exists {
+            domain: Box::new(domain),
+            body: Box::new(CompiledExpr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(CompiledExpr::Local(0)),
+                right: Box::new(CompiledExpr::Int(3)),
+            }),
+        };
+        assert_eq!(eval_simple(&exists).unwrap(), Value::Bool(true));
+    }
+
+    #[test]
+    fn test_let() {
+        // let x = 5 in x + 3
+        let expr = CompiledExpr::Let {
+            value: Box::new(CompiledExpr::Int(5)),
+            body: Box::new(CompiledExpr::Binary {
+                op: BinOp::Add,
+                left: Box::new(CompiledExpr::Local(0)),
+                right: Box::new(CompiledExpr::Int(3)),
+            }),
+        };
+        assert_eq!(eval_simple(&expr).unwrap(), Value::Int(8));
+    }
+
+    #[test]
+    fn test_if() {
+        let if_true = CompiledExpr::If {
+            cond: Box::new(CompiledExpr::Bool(true)),
+            then_branch: Box::new(CompiledExpr::Int(1)),
+            else_branch: Box::new(CompiledExpr::Int(2)),
+        };
+        assert_eq!(eval_simple(&if_true).unwrap(), Value::Int(1));
+
+        let if_false = CompiledExpr::If {
+            cond: Box::new(CompiledExpr::Bool(false)),
+            then_branch: Box::new(CompiledExpr::Int(1)),
+            else_branch: Box::new(CompiledExpr::Int(2)),
+        };
+        assert_eq!(eval_simple(&if_false).unwrap(), Value::Int(2));
+    }
+
+    #[test]
+    fn test_state_vars() {
+        let vars = vec![Value::Int(10), Value::Int(20)];
+        let next_vars = vec![Value::Int(15), Value::Int(25)];
+        let mut ctx = EvalContext::new(&vars, &next_vars, &[], &[]);
+
+        // Read current state
+        assert_eq!(
+            eval(&CompiledExpr::Var(0), &mut ctx).unwrap(),
+            Value::Int(10)
+        );
+        assert_eq!(
+            eval(&CompiledExpr::Var(1), &mut ctx).unwrap(),
+            Value::Int(20)
+        );
+
+        // Read next state
+        assert_eq!(
+            eval(&CompiledExpr::PrimedVar(0), &mut ctx).unwrap(),
+            Value::Int(15)
+        );
+        assert_eq!(
+            eval(&CompiledExpr::PrimedVar(1), &mut ctx).unwrap(),
+            Value::Int(25)
+        );
+    }
+
+    #[test]
+    fn test_unchanged() {
+        let vars = vec![Value::Int(10), Value::Int(20)];
+        let next_vars = vec![Value::Int(10), Value::Int(25)]; // 0 unchanged, 1 changed
+        let mut ctx = EvalContext::new(&vars, &next_vars, &[], &[]);
+
+        assert_eq!(
+            eval(&CompiledExpr::Unchanged(0), &mut ctx).unwrap(),
+            Value::Bool(true)
+        );
+        assert_eq!(
+            eval(&CompiledExpr::Unchanged(1), &mut ctx).unwrap(),
+            Value::Bool(false)
+        );
+    }
+
+    #[test]
+    fn test_set_comprehension() {
+        // {x * 2 for x in 1..3}
+        let comp = CompiledExpr::SetComprehension {
+            element: Box::new(CompiledExpr::Binary {
+                op: BinOp::Mul,
+                left: Box::new(CompiledExpr::Local(0)),
+                right: Box::new(CompiledExpr::Int(2)),
+            }),
+            domain: Box::new(CompiledExpr::Range {
+                lo: Box::new(CompiledExpr::Int(1)),
+                hi: Box::new(CompiledExpr::Int(3)),
+            }),
+            filter: None,
+        };
+
+        let result = eval_simple(&comp).unwrap();
+        if let Value::Set(s) = &result {
+            assert!(Value::set_contains(s, &Value::Int(2)));
+            assert!(Value::set_contains(s, &Value::Int(4)));
+            assert!(Value::set_contains(s, &Value::Int(6)));
+        } else {
+            panic!("expected set");
+        }
+    }
+}

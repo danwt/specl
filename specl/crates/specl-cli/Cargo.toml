@@ -1,0 +1,34 @@
+[package]
+name = "specl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Command-line interface for Specl model checker"
+
+[[bin]]
+name = "specl"
+path = "src/main.rs"
+
+[dependencies]
+specl-syntax.workspace = true
+specl-types.workspace = true
+specl-ir.workspace = true
+specl-eval.workspace = true
+specl-mc.workspace = true
+specl-tla.workspace = true
+clap.workspace = true
+indicatif.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+thiserror.workspace = true
+miette.workspace = true
+notify.workspace = true
+
+[dev-dependencies]
+specl-syntax.workspace = true
+specl-types.workspace = true
+specl-ir.workspace = true
+specl-eval.workspace = true
+specl-mc.workspace = true

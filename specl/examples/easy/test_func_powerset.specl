@@ -1,0 +1,29 @@
+// Test module for func and powerset features
+// Use: No constants needed
+module TestFuncPowerset
+
+var selected: Set[1..3]
+
+// User-defined helper function
+func IsQuorum(s) {
+    len(s) >= 2
+}
+
+init {
+    selected = {}
+}
+
+// Choose any subset of {1,2,3} - powerset has 2^3 = 8 elements
+action Choose(s: Set[1..3]) {
+    require s in powerset({1, 2, 3})
+    selected = s
+}
+
+invariant SelectedValid {
+    len(selected) <= 3
+}
+
+// IsQuorum correctly identifies quorums
+invariant QuorumCheck {
+    selected == {1, 2} implies IsQuorum(selected)
+}

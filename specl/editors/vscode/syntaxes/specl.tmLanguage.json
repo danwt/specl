@@ -1,0 +1,157 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Specl",
+  "scopeName": "source.specl",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#operators" },
+    { "include": "#constants" },
+    { "include": "#numbers" },
+    { "include": "#identifiers" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.specl",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.specl",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.specl",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.specl",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "name": "keyword.control.specl",
+          "match": "\\b(module|const|var|type|action|init|invariant|property|fairness|use|require|func)\\b"
+        },
+        {
+          "name": "keyword.control.conditional.specl",
+          "match": "\\b(if|then|else)\\b"
+        },
+        {
+          "name": "keyword.control.specl",
+          "match": "\\b(let|in|for|with|fn)\\b"
+        },
+        {
+          "name": "keyword.control.quantifier.specl",
+          "match": "\\b(forall|exists|choose|all|any)\\b"
+        },
+        {
+          "name": "keyword.control.temporal.specl",
+          "match": "\\b(always|eventually|leads_to)\\b"
+        },
+        {
+          "name": "keyword.other.specl",
+          "match": "\\b(changes|enabled)\\b"
+        },
+        {
+          "name": "keyword.other.fairness.specl",
+          "match": "\\b(weak|strong)\\b"
+        },
+        {
+          "name": "support.function.builtin.specl",
+          "match": "\\b(head|tail|len|keys|values|powerset|union_all)\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "support.type.primitive.specl",
+          "match": "\\b(Bool|Nat|Int|String)\\b"
+        },
+        {
+          "name": "support.type.generic.specl",
+          "match": "\\b(Set|Seq|Fn|Dict|Option)\\b"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "name": "keyword.operator.logical.specl",
+          "match": "\\b(and|or|not|implies|iff)\\b"
+        },
+        {
+          "name": "keyword.operator.set.specl",
+          "match": "\\b(union|intersect|diff|subset_of)\\b"
+        },
+        {
+          "name": "keyword.operator.membership.specl",
+          "match": "\\b(in)\\b(?!\\s*\\{)"
+        },
+        {
+          "name": "keyword.operator.comparison.specl",
+          "match": "(==|!=|<=|>=|<|>)"
+        },
+        {
+          "name": "keyword.operator.arithmetic.specl",
+          "match": "(\\+|-|\\*|/|%)"
+        },
+        {
+          "name": "keyword.operator.implication.specl",
+          "match": "(=>|<=>)"
+        },
+        {
+          "name": "keyword.operator.concat.specl",
+          "match": "(\\+\\+)"
+        },
+        {
+          "name": "keyword.operator.range.specl",
+          "match": "\\.\\."
+        },
+        {
+          "name": "keyword.operator.prime.specl",
+          "match": "'"
+        }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        {
+          "name": "constant.language.boolean.specl",
+          "match": "\\b(true|false|Some|None)\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.specl",
+          "match": "\\b\\d+\\b"
+        }
+      ]
+    },
+    "identifiers": {
+      "patterns": [
+        {
+          "name": "variable.other.specl",
+          "match": "\\b[a-zA-Z_][a-zA-Z0-9_]*\\b"
+        }
+      ]
+    }
+  }
+}

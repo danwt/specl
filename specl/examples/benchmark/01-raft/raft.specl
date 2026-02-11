@@ -1,0 +1,155 @@
+module Raft
+
+// Raft consensus algorithm - leader election and log replication
+// From: Ongaro & Ousterhout, "In Search of an Understandable Consensus Algorithm"
+// N is the last server index (N+1 servers total)
+// Use: specl check raft.specl -c N=2 -c MaxTerm=3 -c MaxLogLen=3 --no-deadlock
+// Verified: N=2 MaxTerm=3 MaxLogLen=3 -> 1578502 states, ElectionSafety + LogMatching + CommitSafety OK
+
+const N: Int
+const MaxTerm: Int
+const MaxLogLen: Int
+
+// Role encoding: 0=Follower, 1=Candidate, 2=Leader
+var currentTerm: Dict[Int, Int]
+var role: Dict[Int, Int]
+var votedFor: Dict[Int, Int]
+var votesGranted: Dict[Int, Dict[Int, Bool]]
+var log: Dict[Int, Seq[Int]]
+var commitIndex: Dict[Int, Int]
+
+// Last term in a log (0 if empty)
+func LastLogTerm(l) {
+    if len(l) == 0 then 0 else l[len(l) - 1]
+}
+
+init {
+    currentTerm = {s: 0 for s in 0..N}
+    and role = {s: 0 for s in 0..N}
+    and votedFor = {s: -1 for s in 0..N}
+    and votesGranted = {s: {t: false for t in 0..N} for s in 0..N}
+    and log = {s: [] for s in 0..N}
+    and commitIndex = {s: 0 for s in 0..N}
+}
+
+// Server i starts an election
+action Timeout(i: 0..N) {
+    require role[i] != 2
+    require currentTerm[i] < MaxTerm
+    currentTerm = currentTerm | {i: currentTerm[i] + 1}
+    and role = role | {i: 1}
+    and votedFor = votedFor | {i: i}
+    and votesGranted = votesGranted | {i: {t: (t == i) for t in 0..N}}
+}
+
+// Candidate i gets vote from server j (atomic RPC)
+action RequestVote(i: 0..N, j: 0..N) {
+    require i != j
+    require role[i] == 1
+    require currentTerm[i] >= currentTerm[j]
+    require currentTerm[j] < currentTerm[i] or votedFor[j] == -1 or votedFor[j] == i
+    // Election restriction (section 5.4.1)
+    require LastLogTerm(log[i]) > LastLogTerm(log[j])
+        or (LastLogTerm(log[i]) == LastLogTerm(log[j]) and len(log[i]) >= len(log[j]))
+    currentTerm = currentTerm | {j: currentTerm[i]}
+    and role = role | {j: (if currentTerm[j] < currentTerm[i] then 0 else role[j])}
+    and votedFor = votedFor | {j: i}
+    and votesGranted = votesGranted | {i: (votesGranted[i] | {j: true})}
+}
+
+// Candidate i becomes leader with majority votes
+// Uses persistent votesGranted rather than global votedFor state,
+// so votes aren't lost when voters advance to higher terms via UpdateTerm
+action BecomeLeader(i: 0..N) {
+    require role[i] == 1
+    require len({k in 0..N if votesGranted[i][k]}) * 2 > N + 1
+    role = role | {i: 2}
+}
+
+// Leader i appends client entry to own log
+action ClientRequest(i: 0..N) {
+    require role[i] == 2
+    require len(log[i]) < MaxLogLen
+    log = log | {i: log[i] ++ [currentTerm[i]]}
+}
+
+// Leader i replicates one entry to follower j
+// Also propagates leaderCommit: follower advances commitIndex to
+// min(leaderCommit, new log length), matching Raft section 5.3
+action AppendEntries(i: 0..N, j: 0..N) {
+    require i != j
+    require role[i] == 2
+    require currentTerm[i] >= currentTerm[j]
+    require len(log[j]) < len(log[i])
+    // Prefix consistency: j's log matches i's log up to j's length
+    require len(log[j]) == 0 or log[j][len(log[j]) - 1] == log[i][len(log[j]) - 1]
+    currentTerm = currentTerm | {j: currentTerm[i]}
+    and role = role | {j: (if currentTerm[j] < currentTerm[i] then 0 else role[j])}
+    and votedFor = votedFor | {j: (if currentTerm[j] < currentTerm[i] then -1 else votedFor[j])}
+    and log = log | {j: log[j] ++ [log[i][len(log[j])]]}
+    and commitIndex = commitIndex | {j:
+        if commitIndex[i] <= commitIndex[j] then commitIndex[j]
+        else (if commitIndex[i] <= len(log[j]) + 1 then commitIndex[i] else len(log[j]) + 1)}
+}
+
+// Follower i rolls back last log entry when it conflicts with leader j
+action RollbackLog(i: 0..N, j: 0..N) {
+    require i != j
+    require role[j] == 2
+    require currentTerm[j] >= currentTerm[i]
+    require len(log[i]) > 0
+    // Follower's log is NOT a prefix of leader's: either longer or mismatched
+    require len(log[i]) > len(log[j])
+        or log[i][len(log[i]) - 1] != log[j][len(log[i]) - 1]
+    currentTerm = currentTerm | {i: currentTerm[j]}
+    and role = role | {i: (if currentTerm[i] < currentTerm[j] then 0 else role[i])}
+    and votedFor = votedFor | {i: (if currentTerm[i] < currentTerm[j] then -1 else votedFor[i])}
+    and log = log | {i: log[i][0..len(log[i]) - 1]}
+}
+
+// Leader i advances commit index to k
+// Note: majority check reads global log state (over-approximation vs real matchIndex).
+// This is safe for model checking — explores more states than the real system.
+action AdvanceCommitIndex(i: 0..N, k: 0..MaxLogLen) {
+    require role[i] == 2
+    require k > 0
+    require k > commitIndex[i]
+    require k <= len(log[i])
+    // Only commit entries from current term (section 5.4.2)
+    require log[i][k - 1] == currentTerm[i]
+    // Majority have matching entry at position k-1
+    require len({j in 0..N if len(log[j]) >= k and log[j][k - 1] == log[i][k - 1]}) * 2 > N + 1
+    commitIndex = commitIndex | {i: k}
+}
+
+// Server i discovers server j has a higher term, steps down
+action UpdateTerm(i: 0..N, j: 0..N) {
+    require i != j
+    require currentTerm[j] > currentTerm[i]
+    currentTerm = currentTerm | {i: currentTerm[j]}
+    and role = role | {i: 0}
+    and votedFor = votedFor | {i: -1}
+}
+
+// Election safety: at most one leader per term
+invariant ElectionSafety {
+    all i in 0..N: all j in 0..N:
+        (role[i] == 2 and role[j] == 2 and currentTerm[i] == currentTerm[j])
+        implies i == j
+}
+
+// Log matching: if two servers have the same term at the same index,
+// all preceding entries must also match
+invariant LogMatching {
+    all i in 0..N: all j in 0..N: all k in 0..MaxLogLen:
+        (k < len(log[i]) and k < len(log[j]) and log[i][k] == log[j][k])
+        implies (k == 0 or log[i][k - 1] == log[j][k - 1])
+}
+
+// Commit safety: if two servers have both committed up to index k,
+// they must agree on the entry at that position
+invariant CommitSafety {
+    all i in 0..N: all j in 0..N: all k in 1..MaxLogLen:
+        (commitIndex[i] >= k and commitIndex[j] >= k)
+        implies log[i][k - 1] == log[j][k - 1]
+}

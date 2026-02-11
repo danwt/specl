@@ -1,0 +1,89 @@
+// Two-Phase Commit Protocol
+// A transaction manager (TM) coordinates resource managers (RMs) to commit or abort.
+// Use: -c MAX_RM=1 (gives RMs 0, 1)
+
+module TwoPhaseCommit
+
+// Upper bound on RM ID (0..MAX_RM gives MAX_RM+1 RMs)
+const MAX_RM: 0..3
+
+// RMState: 0=working, 1=prepared, 2=committed, 3=aborted
+// TMState: 0=init, 1=committed, 2=aborted
+var rmState: Dict[0..MAX_RM, 0..3]
+var tmState: 0..2
+var tmPrepared: Set[0..MAX_RM]
+var preparedMsgs: Set[0..MAX_RM]
+var commitSent: Bool
+var abortSent: Bool
+
+init {
+    rmState = {r: 0 for r in 0..MAX_RM}
+    and tmState = 0
+    and tmPrepared = {}
+    and preparedMsgs = {}
+    and commitSent = false
+    and abortSent = false
+}
+
+// RM prepares
+action RMPrepare(r: 0..MAX_RM) {
+    require rmState[r] == 0
+    rmState = rmState | { r: 1 }
+    and preparedMsgs = preparedMsgs union { r }
+}
+
+// RM aborts before preparing
+action RMChooseToAbort(r: 0..MAX_RM) {
+    require rmState[r] == 0
+    rmState = rmState | { r: 3 }
+}
+
+// RM receives Commit
+action RMRcvCommitMsg(r: 0..MAX_RM) {
+    require commitSent == true
+    rmState = rmState | { r: 2 }
+}
+
+// RM receives Abort
+action RMRcvAbortMsg(r: 0..MAX_RM) {
+    require abortSent == true
+    rmState = rmState | { r: 3 }
+}
+
+// TM receives Prepared
+action TMRcvPrepared(r: 0..MAX_RM) {
+    require tmState == 0
+    require r in preparedMsgs
+    tmPrepared = tmPrepared union { r }
+}
+
+// TM commits
+action TMCommit() {
+    require tmState == 0
+    require tmPrepared == { r in 0..MAX_RM if true }
+    tmState = 1
+    and commitSent = true
+}
+
+// TM aborts
+action TMAbort() {
+    require tmState == 0
+    tmState = 2
+    and abortSent = true
+}
+
+// Safety: No RM commits while another aborts
+invariant Consistency {
+    not (any r1 in 0..MAX_RM: any r2 in 0..MAX_RM:
+        rmState[r1] == 2 and rmState[r2] == 3)
+}
+
+// Safety: If TM committed, no RM is aborted
+invariant TMCommitImpliesNoAbort {
+    (tmState == 1) implies (all r in 0..MAX_RM: rmState[r] != 3)
+}
+
+// Safety: If TM aborted, no RM is committed
+invariant TMAbortImpliesNoCommit {
+    (tmState == 2) implies (all r in 0..MAX_RM: rmState[r] != 2)
+}

@@ -1,0 +1,10 @@
+/target/
+
+# TLC model checker outputs
+states/
+*_TTrace_*.tla
+*_TTrace_*.bin
+*.toolbox/
+MC.out
+MC*.out
+.deps/

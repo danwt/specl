@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <!-- Simplified face-only icon for small sizes -->
+
+  <!-- Head circle -->
+  <circle cx="128" cy="138" r="110" fill="#3B2F4A"/>
+
+  <!-- Ear tufts -->
+  <polygon points="58,60 42,10 82,48" fill="#3B2F4A"/>
+  <polygon points="198,60 214,10 174,48" fill="#3B2F4A"/>
+
+  <!-- Facial disc -->
+  <circle cx="128" cy="142" r="88" fill="#4E3F63"/>
+
+  <!-- Spectacle patches -->
+  <circle cx="100" cy="138" r="44" fill="#F5E6C8"/>
+  <circle cx="156" cy="138" r="44" fill="#F5E6C8"/>
+
+  <!-- Spectacle inner -->
+  <circle cx="100" cy="138" r="33" fill="#261C34"/>
+  <circle cx="156" cy="138" r="33" fill="#261C34"/>
+
+  <!-- Bridge -->
+  <rect x="120" y="133" width="16" height="10" rx="4" fill="#F5E6C8"/>
+
+  <!-- Iris -->
+  <circle cx="100" cy="137" r="20" fill="#E8A317"/>
+  <circle cx="156" cy="137" r="20" fill="#E8A317"/>
+
+  <!-- Inner iris -->
+  <circle cx="100" cy="137" r="15" fill="#D4922A"/>
+  <circle cx="156" cy="137" r="15" fill="#D4922A"/>
+
+  <!-- Pupils -->
+  <circle cx="104" cy="135" r="10" fill="#0E0A14"/>
+  <circle cx="160" cy="135" r="10" fill="#0E0A14"/>
+
+  <!-- Eye highlights -->
+  <circle cx="108" cy="130" r="5" fill="#FFF" opacity="0.85"/>
+  <circle cx="164" cy="130" r="5" fill="#FFF" opacity="0.85"/>
+
+  <!-- Beak -->
+  <path d="M 128,162 L 120,178 Q 128,182 136,178 Z" fill="#D4922A"/>
+  <path d="M 128,162 L 122,174 Q 128,177 134,174 Z" fill="#E8A317"/>
+</svg>

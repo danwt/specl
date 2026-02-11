@@ -1,0 +1,2999 @@
+//! BFS state space explorer for model checking.
+
+use crate::direct_eval::{
+    apply_action_direct, apply_effects_bytecode, extract_effect_assignments,
+    generate_initial_states_direct,
+};
+use crate::state::{hash_var, Fingerprint, State};
+use crate::store::StateStore;
+use memory_stats::memory_stats;
+use rayon::prelude::*;
+use smallvec::SmallVec;
+use specl_eval::bytecode::{compile_expr, vm_eval_bool, Bytecode};
+use specl_eval::{eval, EvalContext, EvalError, Value};
+use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, UnaryOp};
+use specl_syntax::{ExprKind, TypeExpr};
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use thiserror::Error;
+use tracing::{debug, error, info, trace};
+
+/// Returns current process memory usage in MB, or None if unavailable.
+fn current_memory_mb() -> Option<usize> {
+    memory_stats().map(|stats| stats.physical_mem / (1024 * 1024))
+}
+
+/// Model checking error.
+#[derive(Debug, Error)]
+pub enum CheckError {
+    #[error("evaluation error: {0}")]
+    Eval(#[from] EvalError),
+
+    #[error("invariant '{name}' violated")]
+    InvariantViolation { name: String, state: State },
+
+    #[error("deadlock: no enabled actions")]
+    Deadlock { state: State },
+
+    #[error("no initial states satisfy init predicate")]
+    NoInitialStates,
+
+    #[error("constant '{name}' not provided")]
+    MissingConstant { name: String },
+}
+
+pub type CheckResult<T> = Result<T, CheckError>;
+
+/// Result of model checking.
+#[derive(Debug)]
+pub enum CheckOutcome {
+    /// All states explored, no errors found.
+    Ok {
+        states_explored: usize,
+        max_depth: usize,
+    },
+    /// Invariant violation found.
+    InvariantViolation {
+        invariant: String,
+        trace: Vec<(State, Option<String>)>,
+    },
+    /// Deadlock found.
+    Deadlock { trace: Vec<(State, Option<String>)> },
+    /// Exploration stopped due to state limit.
+    StateLimitReached {
+        states_explored: usize,
+        max_depth: usize,
+    },
+    /// Exploration stopped due to memory limit.
+    MemoryLimitReached {
+        states_explored: usize,
+        max_depth: usize,
+        memory_mb: usize,
+    },
+}
+
+/// Result from parallel state processing.
+enum ParallelResult {
+    /// State was depth-limited, no further exploration.
+    DepthLimited,
+    /// Invariant violation found.
+    InvariantViolation { fp: Fingerprint, invariant: String },
+    /// Deadlock found.
+    Deadlock { fp: Fingerprint },
+    /// New states inserted into store by worker.
+    NewStates {
+        new_entries: Vec<(Fingerprint, State, usize, u64)>,
+        max_depth: usize,
+    },
+}
+
+/// Configuration for the model checker.
+#[derive(Debug, Clone)]
+pub struct CheckConfig {
+    /// Whether to check for deadlocks.
+    pub check_deadlock: bool,
+    /// Maximum number of states to explore (0 = unlimited).
+    pub max_states: usize,
+    /// Maximum depth to explore (0 = unlimited).
+    pub max_depth: usize,
+    /// Maximum memory usage in MB (0 = unlimited).
+    pub memory_limit_mb: usize,
+    /// Whether to use parallel exploration.
+    pub parallel: bool,
+    /// Number of threads for parallel exploration (0 = use all available).
+    pub num_threads: usize,
+    /// Whether to use partial order reduction.
+    pub use_por: bool,
+    /// Whether to use symmetry reduction.
+    pub use_symmetry: bool,
+    /// Fast check mode: minimal memory, re-explore for traces on violation.
+    /// When enabled, only stores fingerprints during exploration. If a violation
+    /// is found, re-explores with full tracking to reconstruct the trace.
+    /// Trade-off: Uses ~10x less memory but violations take 2x time to report.
+    pub fast_check: bool,
+}
+
+impl Default for CheckConfig {
+    fn default() -> Self {
+        Self {
+            check_deadlock: true,
+            max_states: 0,
+            max_depth: 0,
+            memory_limit_mb: 0,
+            parallel: true,
+            num_threads: 0,
+            use_por: false,
+            use_symmetry: false,
+            fast_check: false,
+        }
+    }
+}
+
+/// Model checker explorer.
+pub struct Explorer {
+    /// Compiled specification.
+    spec: CompiledSpec,
+    /// Constant values.
+    consts: Vec<Value>,
+    /// State store.
+    store: StateStore,
+    /// Configuration.
+    config: CheckConfig,
+    /// Precomputed effect assignments per action (None = needs enumeration).
+    cached_effects: Vec<Option<CachedEffect>>,
+    /// Cached parameter domains per action.
+    cached_param_domains: Vec<Vec<Vec<Value>>>,
+    /// Actions relevant to invariants (COI reduction). None = all actions relevant.
+    relevant_actions: Option<Vec<usize>>,
+    /// Compiled bytecode for action guards.
+    compiled_guards: Vec<Bytecode>,
+    /// Compiled bytecode for invariant bodies.
+    compiled_invariants: Vec<Bytecode>,
+    /// Bitmask of variables each invariant depends on.
+    inv_dep_masks: Vec<u64>,
+    /// Bitmask of variables each action writes.
+    action_write_masks: Vec<u64>,
+    /// Guard indexing for early parameter pruning (None = no indexing benefit).
+    guard_indices: Vec<Option<GuardIndex>>,
+    /// Action names for trace reconstruction (avoids formatting per-successor).
+    action_names: Vec<String>,
+}
+
+/// Precomputed effect assignments for an action.
+struct CachedEffect {
+    /// Pre-compiled bytecode for each assignment's RHS expression.
+    compiled_assignments: Vec<(usize, Bytecode)>,
+    /// Whether re-verification is needed (true if effect has current-state constraints).
+    needs_reverify: bool,
+}
+
+/// Precomputed guard indexing for early parameter pruning.
+/// Reorders parameter binding and checks guard conjuncts incrementally.
+struct GuardIndex {
+    /// binding_order[i] = original param index to bind at position i.
+    binding_order: Vec<usize>,
+    /// Prefix guard bytecode at each binding level.
+    /// prefix_guards[i] checks conjuncts that become fully evaluable after binding position i.
+    prefix_guards: Vec<Option<Bytecode>>,
+    /// Pre-guard: conjuncts with no param refs, checked once before enumeration.
+    pre_guard: Option<Bytecode>,
+    /// If true, all guard conjuncts are covered by prefix guards; skip final full guard check.
+    all_covered: bool,
+}
+
+/// Size of the per-action operation cache (must be power of 2).
+const OP_CACHE_SIZE: usize = 1 << 14; // 16K entries
+
+/// Sentinel value indicating guard failed or no transition.
+const OP_NO_SUCCESSOR: u64 = u64::MAX;
+
+/// Per-action direct-mapped operation cache with adaptive disabling.
+/// Caches the write_new_hash (XOR of hash_var for changed variables in the successor)
+/// keyed on (params, read_variables). Uses XOR-decomposable fingerprinting to
+/// reconstruct the full successor fingerprint from any parent state:
+///   predicted_fp = parent_fp ^ write_old_hash ^ write_new_hash
+///
+/// After a warmup period, disables itself if hit rate is too low (overhead > benefit).
+struct OpCache {
+    keys: Vec<u64>,
+    write_new_hashes: Vec<u64>,
+    mask: usize,
+    hits: u32,
+    probes: u32,
+    disabled: bool,
+}
+
+/// Number of probes before evaluating whether to disable the cache.
+const OP_CACHE_WARMUP: u32 = 2048;
+/// Minimum hit rate (hits/probes) to keep cache enabled.
+const OP_CACHE_MIN_HIT_RATE: u32 = 50; // 50/2048 ~= 2.4%
+
+impl OpCache {
+    fn new() -> Self {
+        Self {
+            keys: vec![0; OP_CACHE_SIZE],
+            write_new_hashes: vec![0; OP_CACHE_SIZE],
+            mask: OP_CACHE_SIZE - 1,
+            hits: 0,
+            probes: 0,
+            disabled: false,
+        }
+    }
+
+    #[inline]
+    fn probe(&mut self, key: u64) -> Option<u64> {
+        if self.disabled {
+            return None;
+        }
+        let slot = key as usize & self.mask;
+        let k = unsafe { *self.keys.get_unchecked(slot) };
+        if k == key {
+            self.hits += 1;
+            Some(unsafe { *self.write_new_hashes.get_unchecked(slot) })
+        } else {
+            self.probes += 1;
+            if self.probes == OP_CACHE_WARMUP && self.hits < OP_CACHE_MIN_HIT_RATE {
+                self.disabled = true;
+            }
+            None
+        }
+    }
+
+    #[inline]
+    fn is_enabled(&self) -> bool {
+        !self.disabled
+    }
+
+    #[inline]
+    fn store(&mut self, key: u64, write_new_hash: u64) {
+        let slot = key as usize & self.mask;
+        unsafe {
+            *self.keys.get_unchecked_mut(slot) = key;
+            *self.write_new_hashes.get_unchecked_mut(slot) = write_new_hash;
+        }
+    }
+}
+
+/// Compute a cache key from action parameters and precomputed read-vars hash.
+/// read_xor is precomputed once per (state, action) via xor_hash_vars.
+#[inline]
+fn op_cache_key(params: &[Value], read_xor: u64) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = ahash::AHasher::default();
+    read_xor.hash(&mut hasher);
+    for p in params {
+        p.hash(&mut hasher);
+    }
+    let key = hasher.finish();
+    if key == 0 {
+        1
+    } else {
+        key
+    }
+}
+
+/// Compute XOR of hash_var for a subset of variables (used for cache delta).
+#[inline]
+fn xor_hash_vars(vars: &[Value], indices: &[usize]) -> u64 {
+    indices
+        .iter()
+        .fold(0u64, |acc, &i| acc ^ hash_var(i, &vars[i]))
+}
+
+/// Decompose a guard expression into top-level AND-conjuncts.
+fn decompose_conjuncts(expr: &CompiledExpr) -> Vec<&CompiledExpr> {
+    match expr {
+        CompiledExpr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+        } => {
+            let mut conjuncts = decompose_conjuncts(left);
+            conjuncts.extend(decompose_conjuncts(right));
+            conjuncts
+        }
+        _ => vec![expr],
+    }
+}
+
+/// Collect all Param indices referenced in an expression.
+fn collect_param_refs_in_expr(expr: &CompiledExpr) -> std::collections::HashSet<usize> {
+    let mut params = std::collections::HashSet::new();
+    collect_param_refs_recursive(expr, &mut params);
+    params
+}
+
+fn collect_param_refs_recursive(
+    expr: &CompiledExpr,
+    params: &mut std::collections::HashSet<usize>,
+) {
+    match expr {
+        CompiledExpr::Param(idx) => {
+            params.insert(*idx);
+        }
+        CompiledExpr::Binary { left, right, .. } => {
+            collect_param_refs_recursive(left, params);
+            collect_param_refs_recursive(right, params);
+        }
+        CompiledExpr::Unary { operand, .. } => {
+            collect_param_refs_recursive(operand, params);
+        }
+        CompiledExpr::Index { base, index } => {
+            collect_param_refs_recursive(base, params);
+            collect_param_refs_recursive(index, params);
+        }
+        CompiledExpr::FnUpdate { base, key, value } => {
+            collect_param_refs_recursive(base, params);
+            collect_param_refs_recursive(key, params);
+            collect_param_refs_recursive(value, params);
+        }
+        CompiledExpr::FnLit { domain, body } => {
+            collect_param_refs_recursive(domain, params);
+            collect_param_refs_recursive(body, params);
+        }
+        CompiledExpr::SetComprehension {
+            element,
+            domain,
+            filter,
+        } => {
+            collect_param_refs_recursive(element, params);
+            collect_param_refs_recursive(domain, params);
+            if let Some(f) = filter {
+                collect_param_refs_recursive(f, params);
+            }
+        }
+        CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
+            collect_param_refs_recursive(domain, params);
+            collect_param_refs_recursive(body, params);
+        }
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_param_refs_recursive(cond, params);
+            collect_param_refs_recursive(then_branch, params);
+            collect_param_refs_recursive(else_branch, params);
+        }
+        CompiledExpr::Let { value, body } => {
+            collect_param_refs_recursive(value, params);
+            collect_param_refs_recursive(body, params);
+        }
+        CompiledExpr::Len(e)
+        | CompiledExpr::Keys(e)
+        | CompiledExpr::Values(e)
+        | CompiledExpr::Powerset(e)
+        | CompiledExpr::BigUnion(e) => {
+            collect_param_refs_recursive(e, params);
+        }
+        CompiledExpr::Choose { domain, predicate } => {
+            collect_param_refs_recursive(domain, params);
+            collect_param_refs_recursive(predicate, params);
+        }
+        CompiledExpr::Range { lo, hi } => {
+            collect_param_refs_recursive(lo, params);
+            collect_param_refs_recursive(hi, params);
+        }
+        CompiledExpr::Call { func, args } => {
+            collect_param_refs_recursive(func, params);
+            for a in args {
+                collect_param_refs_recursive(a, params);
+            }
+        }
+        CompiledExpr::SetLit(elems)
+        | CompiledExpr::SeqLit(elems)
+        | CompiledExpr::TupleLit(elems) => {
+            for e in elems {
+                collect_param_refs_recursive(e, params);
+            }
+        }
+        CompiledExpr::Field { base, .. } => {
+            collect_param_refs_recursive(base, params);
+        }
+        // Leaves with no param refs
+        CompiledExpr::Bool(_)
+        | CompiledExpr::Int(_)
+        | CompiledExpr::String(_)
+        | CompiledExpr::Const(_)
+        | CompiledExpr::Var(_)
+        | CompiledExpr::PrimedVar(_)
+        | CompiledExpr::Local(_)
+        | CompiledExpr::Unchanged(_)
+        | CompiledExpr::Changes(_)
+        | CompiledExpr::Enabled(_) => {}
+        // Remaining complex expressions
+        _ => {
+            // Conservative: don't collect from unknown patterns.
+            // This means some conjuncts may not be attributed to params,
+            // which is safe (just less optimization).
+        }
+    }
+}
+
+/// Heuristic selectivity score for a guard conjunct.
+/// Higher = more selective (filters out more parameter combinations).
+fn score_conjunct_selectivity(expr: &CompiledExpr) -> f64 {
+    match expr {
+        // dict[p1][p2] == const or const == dict[p1][p2]
+        CompiledExpr::Binary {
+            op: BinOp::Eq,
+            left,
+            right,
+        } => {
+            if has_index_chain(left) || has_index_chain(right) {
+                10.0
+            } else {
+                1.0
+            }
+        }
+        // dict[p1][p2] != const
+        CompiledExpr::Binary {
+            op: BinOp::Ne,
+            left,
+            right,
+        } => {
+            if has_index_chain(left) || has_index_chain(right) {
+                5.0
+            } else {
+                1.0
+            }
+        }
+        // not expr (e.g., not preAcceptReplied[o][s][r])
+        CompiledExpr::Unary {
+            op: UnaryOp::Not,
+            operand,
+        } => {
+            if has_index_chain(operand) {
+                5.0
+            } else {
+                2.0
+            }
+        }
+        // Comparison operators with dict lookups
+        CompiledExpr::Binary {
+            op: BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge,
+            left,
+            right,
+        } => {
+            if has_index_chain(left) || has_index_chain(right) {
+                8.0
+            } else {
+                2.0
+            }
+        }
+        _ => 2.0,
+    }
+}
+
+/// Check if an expression contains a dict index chain (var[...][...]).
+fn has_index_chain(expr: &CompiledExpr) -> bool {
+    match expr {
+        CompiledExpr::Index { base, .. } => {
+            matches!(
+                base.as_ref(),
+                CompiledExpr::Var(_) | CompiledExpr::Index { .. }
+            )
+        }
+        _ => false,
+    }
+}
+
+/// Build a conjunction (AND) of multiple expressions.
+fn build_conjunction(conjuncts: &[&CompiledExpr]) -> CompiledExpr {
+    assert!(!conjuncts.is_empty());
+    let mut result = conjuncts[0].clone();
+    for conj in &conjuncts[1..] {
+        result = CompiledExpr::Binary {
+            op: BinOp::And,
+            left: Box::new(result),
+            right: Box::new((*conj).clone()),
+        };
+    }
+    result
+}
+
+/// Compute guard indexing for an action.
+/// Returns None if the action has no params or indexing provides no benefit.
+fn compute_guard_index(guard: &CompiledExpr, num_params: usize) -> Option<GuardIndex> {
+    if num_params == 0 {
+        return None;
+    }
+
+    let conjuncts = decompose_conjuncts(guard);
+    if conjuncts.len() <= 1 {
+        return None;
+    }
+
+    // Collect param references for each conjunct
+    let conjunct_params: Vec<std::collections::HashSet<usize>> = conjuncts
+        .iter()
+        .map(|c| collect_param_refs_in_expr(c))
+        .collect();
+
+    // Compute selectivity score for each parameter
+    let mut param_scores = vec![0.0f64; num_params];
+    for (conj_idx, params) in conjunct_params.iter().enumerate() {
+        if params.is_empty() {
+            continue;
+        }
+        let selectivity = score_conjunct_selectivity(conjuncts[conj_idx]);
+        let share = selectivity / params.len() as f64;
+        for &p in params {
+            if p < num_params {
+                param_scores[p] += share;
+            }
+        }
+    }
+
+    // Sort params by score descending to get binding order
+    let mut binding_order: Vec<usize> = (0..num_params).collect();
+    binding_order.sort_by(|&a, &b| {
+        param_scores[b]
+            .partial_cmp(&param_scores[a])
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
+    // Build pre-guard from conjuncts with no param refs
+    let pre_guard_conjuncts: Vec<&CompiledExpr> = conjuncts
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| conjunct_params[*i].is_empty())
+        .map(|(_, c)| *c)
+        .collect();
+    let pre_guard = if pre_guard_conjuncts.is_empty() {
+        None
+    } else {
+        Some(compile_expr(&build_conjunction(&pre_guard_conjuncts)))
+    };
+
+    // Build prefix guards at each binding level
+    let mut bound_params = std::collections::HashSet::new();
+    let mut used_conjuncts = std::collections::HashSet::new();
+    // Mark pre-guard conjuncts as used
+    for (i, params) in conjunct_params.iter().enumerate() {
+        if params.is_empty() {
+            used_conjuncts.insert(i);
+        }
+    }
+
+    let mut prefix_guards = Vec::new();
+    for &orig_idx in &binding_order {
+        bound_params.insert(orig_idx);
+
+        // Find conjuncts that are now fully evaluable
+        let new_conjuncts: Vec<usize> = conjunct_params
+            .iter()
+            .enumerate()
+            .filter(|(i, params)| {
+                !used_conjuncts.contains(i)
+                    && !params.is_empty()
+                    && params.iter().all(|p| bound_params.contains(p))
+            })
+            .map(|(i, _)| i)
+            .collect();
+
+        if new_conjuncts.is_empty() {
+            prefix_guards.push(None);
+        } else {
+            let conjs: Vec<&CompiledExpr> = new_conjuncts.iter().map(|&i| conjuncts[i]).collect();
+            let bc = compile_expr(&build_conjunction(&conjs));
+            prefix_guards.push(Some(bc));
+            for i in new_conjuncts {
+                used_conjuncts.insert(i);
+            }
+        }
+    }
+
+    let all_covered = used_conjuncts.len() == conjuncts.len();
+
+    // Check if we got any useful prefix guards before the last level
+    let has_useful_prefix = prefix_guards
+        .iter()
+        .take(num_params.saturating_sub(1))
+        .any(|pg| pg.is_some())
+        || pre_guard.is_some();
+
+    if !has_useful_prefix {
+        return None;
+    }
+
+    debug!(
+        binding_order = ?binding_order,
+        prefix_count = prefix_guards.iter().filter(|p| p.is_some()).count(),
+        all_covered,
+        has_pre_guard = pre_guard.is_some(),
+        "guard index computed"
+    );
+
+    Some(GuardIndex {
+        binding_order,
+        prefix_guards,
+        pre_guard,
+        all_covered,
+    })
+}
+
+/// Enumerate parameter combinations with guard indexing for early pruning.
+/// `params_buf` must be pre-allocated to `num_params` size.
+fn enumerate_params_indexed<F>(
+    domains: &[Vec<Value>],
+    guard_index: &GuardIndex,
+    guard_bc: &Bytecode,
+    vars: &[Value],
+    consts: &[Value],
+    params_buf: &mut Vec<Value>,
+    level: usize,
+    callback: &mut F,
+) where
+    F: FnMut(&[Value]),
+{
+    if level >= domains.len() {
+        // All params bound
+        if !guard_index.all_covered {
+            // Check full guard for any remaining conjuncts
+            if !vm_eval_bool(guard_bc, vars, vars, consts, params_buf).unwrap_or(false) {
+                return;
+            }
+        }
+        callback(params_buf);
+        return;
+    }
+
+    let orig_idx = guard_index.binding_order[level];
+    for value in &domains[orig_idx] {
+        params_buf[orig_idx] = value.clone();
+
+        // Check prefix guard at this level
+        if let Some(ref prefix_bc) = guard_index.prefix_guards[level] {
+            if !vm_eval_bool(prefix_bc, vars, vars, consts, params_buf).unwrap_or(false) {
+                continue;
+            }
+        }
+
+        enumerate_params_indexed(
+            domains,
+            guard_index,
+            guard_bc,
+            vars,
+            consts,
+            params_buf,
+            level + 1,
+            callback,
+        );
+    }
+}
+
+impl Explorer {
+    /// Create a new explorer.
+    pub fn new(spec: CompiledSpec, consts: Vec<Value>, config: CheckConfig) -> Self {
+        // In fast_check mode, only track fingerprints (not full states)
+        let store = StateStore::with_tracking(!config.fast_check);
+
+        // Precompute effect assignments for each action
+        let cached_effects = spec
+            .actions
+            .iter()
+            .map(|action| {
+                extract_effect_assignments(&action.effect).map(|e| {
+                    let compiled_assignments = e
+                        .assignments
+                        .iter()
+                        .map(|(idx, expr)| (*idx, compile_expr(expr)))
+                        .collect();
+                    CachedEffect {
+                        compiled_assignments,
+                        needs_reverify: e.needs_reverify,
+                    }
+                })
+            })
+            .collect();
+
+        // Compute COI reduction: identify actions relevant to invariants
+        let relevant_actions = Self::compute_coi(&spec);
+
+        // Compile guard bytecode for each action
+        let compiled_guards: Vec<Bytecode> = spec
+            .actions
+            .iter()
+            .map(|action| compile_expr(&action.guard))
+            .collect();
+
+        // Compile invariant bytecode
+        let compiled_invariants: Vec<Bytecode> = spec
+            .invariants
+            .iter()
+            .map(|inv| compile_expr(&inv.body))
+            .collect();
+
+        // Compute invariant dependency bitmasks
+        let inv_dep_masks: Vec<u64> = spec
+            .invariants
+            .iter()
+            .map(|inv| {
+                let mut vars = std::collections::HashSet::new();
+                Self::collect_var_refs(&inv.body, &mut vars);
+                vars.iter().fold(
+                    0u64,
+                    |mask, &v| {
+                        if v < 64 {
+                            mask | (1u64 << v)
+                        } else {
+                            mask
+                        }
+                    },
+                )
+            })
+            .collect();
+
+        // Compute action write bitmasks
+        let action_write_masks: Vec<u64> = spec
+            .actions
+            .iter()
+            .map(|action| {
+                action.changes.iter().fold(
+                    0u64,
+                    |mask, &v| {
+                        if v < 64 {
+                            mask | (1u64 << v)
+                        } else {
+                            mask
+                        }
+                    },
+                )
+            })
+            .collect();
+
+        // Compute guard indexing for early parameter pruning
+        let guard_indices: Vec<Option<GuardIndex>> = spec
+            .actions
+            .iter()
+            .map(|action| compute_guard_index(&action.guard, action.params.len()))
+            .collect();
+
+        let indexed_count = guard_indices.iter().filter(|g| g.is_some()).count();
+        if indexed_count > 0 {
+            debug!(
+                indexed_count,
+                total = spec.actions.len(),
+                "guard indexing enabled"
+            );
+        }
+
+        let mut explorer = Self {
+            spec,
+            consts,
+            store,
+            config,
+            cached_effects,
+            cached_param_domains: Vec::new(),
+            relevant_actions,
+            compiled_guards,
+            compiled_invariants,
+            inv_dep_masks,
+            action_write_masks,
+            guard_indices,
+            action_names: Vec::new(),
+        };
+
+        // Precompute action names for trace reconstruction
+        explorer.action_names = explorer
+            .spec
+            .actions
+            .iter()
+            .map(|action| action.name.clone())
+            .collect();
+
+        // Precompute parameter domains for each action
+        explorer.cached_param_domains = explorer
+            .spec
+            .actions
+            .iter()
+            .map(|action| explorer.get_param_domains(action))
+            .collect();
+
+        explorer
+    }
+
+    /// Compute Cone-of-Influence reduction.
+    /// Returns None if all actions are relevant (no reduction possible).
+    fn compute_coi(spec: &CompiledSpec) -> Option<Vec<usize>> {
+        if spec.invariants.is_empty() {
+            return None;
+        }
+
+        // Collect variables referenced by all invariants
+        let mut coi_vars = std::collections::HashSet::new();
+        for inv in &spec.invariants {
+            Self::collect_var_refs(&inv.body, &mut coi_vars);
+        }
+
+        // Transitive closure: if an action writes to a COI variable,
+        // all variables it reads are also in the COI
+        let mut changed = true;
+        while changed {
+            changed = false;
+            for action in &spec.actions {
+                let writes_coi = action.changes.iter().any(|v| coi_vars.contains(v));
+                if writes_coi {
+                    for &v in &action.reads {
+                        if coi_vars.insert(v) {
+                            changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Collect relevant action indices
+        let relevant: Vec<usize> = spec
+            .actions
+            .iter()
+            .enumerate()
+            .filter(|(_, action)| action.changes.iter().any(|v| coi_vars.contains(v)))
+            .map(|(idx, _)| idx)
+            .collect();
+
+        if relevant.len() == spec.actions.len() {
+            None // All actions relevant, no reduction
+        } else {
+            debug!(
+                total = spec.actions.len(),
+                relevant = relevant.len(),
+                "COI reduction"
+            );
+            Some(relevant)
+        }
+    }
+
+    /// Collect variable indices referenced in an expression.
+    fn collect_var_refs(expr: &CompiledExpr, vars: &mut std::collections::HashSet<usize>) {
+        match expr {
+            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+                vars.insert(*idx);
+            }
+            CompiledExpr::Binary { left, right, .. } => {
+                Self::collect_var_refs(left, vars);
+                Self::collect_var_refs(right, vars);
+            }
+            CompiledExpr::Unary { operand, .. } => {
+                Self::collect_var_refs(operand, vars);
+            }
+            CompiledExpr::Index { base, index } => {
+                Self::collect_var_refs(base, vars);
+                Self::collect_var_refs(index, vars);
+            }
+            CompiledExpr::FnUpdate { base, key, value } => {
+                Self::collect_var_refs(base, vars);
+                Self::collect_var_refs(key, vars);
+                Self::collect_var_refs(value, vars);
+            }
+            CompiledExpr::FnLit { domain, body } => {
+                Self::collect_var_refs(domain, vars);
+                Self::collect_var_refs(body, vars);
+            }
+            CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } => {
+                Self::collect_var_refs(element, vars);
+                Self::collect_var_refs(domain, vars);
+                if let Some(f) = filter {
+                    Self::collect_var_refs(f, vars);
+                }
+            }
+            CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
+                Self::collect_var_refs(domain, vars);
+                Self::collect_var_refs(body, vars);
+            }
+            CompiledExpr::Choose { domain, predicate } => {
+                Self::collect_var_refs(domain, vars);
+                Self::collect_var_refs(predicate, vars);
+            }
+            CompiledExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                Self::collect_var_refs(cond, vars);
+                Self::collect_var_refs(then_branch, vars);
+                Self::collect_var_refs(else_branch, vars);
+            }
+            CompiledExpr::Let { value, body } => {
+                Self::collect_var_refs(value, vars);
+                Self::collect_var_refs(body, vars);
+            }
+            CompiledExpr::SetLit(elems)
+            | CompiledExpr::SeqLit(elems)
+            | CompiledExpr::TupleLit(elems) => {
+                for e in elems {
+                    Self::collect_var_refs(e, vars);
+                }
+            }
+            CompiledExpr::DictLit(pairs) => {
+                for (k, v) in pairs {
+                    Self::collect_var_refs(k, vars);
+                    Self::collect_var_refs(v, vars);
+                }
+            }
+            CompiledExpr::RecordUpdate { base, updates } => {
+                Self::collect_var_refs(base, vars);
+                for (_, v) in updates {
+                    Self::collect_var_refs(v, vars);
+                }
+            }
+            CompiledExpr::Field { base, .. } => {
+                Self::collect_var_refs(base, vars);
+            }
+            CompiledExpr::Range { lo, hi } => {
+                Self::collect_var_refs(lo, vars);
+                Self::collect_var_refs(hi, vars);
+            }
+            CompiledExpr::Slice { base, lo, hi } => {
+                Self::collect_var_refs(base, vars);
+                Self::collect_var_refs(lo, vars);
+                Self::collect_var_refs(hi, vars);
+            }
+            CompiledExpr::Len(e)
+            | CompiledExpr::Keys(e)
+            | CompiledExpr::Values(e)
+            | CompiledExpr::BigUnion(e)
+            | CompiledExpr::Powerset(e)
+            | CompiledExpr::SeqHead(e)
+            | CompiledExpr::SeqTail(e)
+            | CompiledExpr::Fix { predicate: e } => {
+                Self::collect_var_refs(e, vars);
+            }
+            CompiledExpr::Call { func, args } => {
+                Self::collect_var_refs(func, vars);
+                for a in args {
+                    Self::collect_var_refs(a, vars);
+                }
+            }
+            CompiledExpr::ActionCall { args, .. } => {
+                for a in args {
+                    Self::collect_var_refs(a, vars);
+                }
+            }
+            CompiledExpr::Unchanged(idx) | CompiledExpr::Changes(idx) => {
+                vars.insert(*idx);
+            }
+            // Leaves with no var refs
+            CompiledExpr::Bool(_)
+            | CompiledExpr::Int(_)
+            | CompiledExpr::String(_)
+            | CompiledExpr::Const(_)
+            | CompiledExpr::Local(_)
+            | CompiledExpr::Param(_)
+            | CompiledExpr::Enabled(_) => {}
+        }
+    }
+
+    /// Canonicalize a state if symmetry reduction is enabled.
+    fn maybe_canonicalize(&self, state: State) -> State {
+        if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
+            state.canonicalize(&self.spec.symmetry_groups)
+        } else {
+            state
+        }
+    }
+
+    /// Run the model checker.
+    pub fn check(&mut self) -> CheckResult<CheckOutcome> {
+        // Configure rayon thread pool if specified
+        if self.config.num_threads > 0 {
+            if let Err(e) = rayon::ThreadPoolBuilder::new()
+                .num_threads(self.config.num_threads)
+                .build_global()
+            {
+                debug!(error = %e, "thread pool already initialized, using existing pool");
+            }
+        }
+
+        info!(
+            parallel = self.config.parallel,
+            fast_check = self.config.fast_check,
+            threads = if self.config.num_threads > 0 {
+                self.config.num_threads
+            } else {
+                rayon::current_num_threads()
+            },
+            "starting model checking"
+        );
+
+        let result = if self.config.fast_check {
+            self.check_fast()
+        } else {
+            self.check_full()
+        };
+
+        let collisions = self.store.collisions();
+        if collisions > 0 {
+            error!(
+                collisions,
+                "hash collisions detected: results may be unsound, re-run to verify"
+            );
+        }
+
+        result
+    }
+
+    /// Full model checking with trace reconstruction support.
+    fn check_full(&mut self) -> CheckResult<CheckOutcome> {
+        // Generate initial states
+        let initial_states = self.generate_initial_states()?;
+        if initial_states.is_empty() {
+            return Err(CheckError::NoInitialStates);
+        }
+
+        info!(count = initial_states.len(), "generated initial states");
+
+        if self.config.parallel {
+            let mut queue: VecDeque<(Fingerprint, State, usize, u64)> = VecDeque::new();
+            let mut max_depth = 0;
+
+            for state in initial_states {
+                let canonical = self.maybe_canonicalize(state);
+                let fp = canonical.fingerprint();
+                if self.store.insert(canonical.clone(), None, None, 0) {
+                    queue.push_back((fp, canonical, 0, u64::MAX));
+                }
+            }
+
+            self.check_parallel(&mut queue, &mut max_depth)
+        } else {
+            // Sequential: carry state through queue to avoid store.get() cloning
+            let mut queue: VecDeque<(Fingerprint, State, usize, u64)> = VecDeque::new();
+            let mut max_depth = 0;
+
+            for state in initial_states {
+                let canonical = self.maybe_canonicalize(state);
+                let fp = canonical.fingerprint();
+                if self.store.insert(canonical.clone(), None, None, 0) {
+                    queue.push_back((fp, canonical, 0, u64::MAX));
+                }
+            }
+
+            self.check_sequential(&mut queue, &mut max_depth)
+        }
+    }
+
+    /// Fast model checking with minimal memory.
+    /// Only stores fingerprints during exploration. If a violation is found,
+    /// re-explores with full tracking to reconstruct the trace.
+    fn check_fast(&mut self) -> CheckResult<CheckOutcome> {
+        // Phase 1: Fast check with minimal memory
+        let result = self.check_fast_phase1()?;
+
+        match &result {
+            CheckOutcome::Ok { .. }
+            | CheckOutcome::StateLimitReached { .. }
+            | CheckOutcome::MemoryLimitReached { .. } => Ok(result),
+            CheckOutcome::InvariantViolation { invariant, .. } => {
+                // Phase 2: Re-explore with full tracking to get trace
+                info!(invariant = %invariant, "violation found, re-exploring for trace");
+                self.check_fast_phase2(invariant.clone(), None)
+            }
+            CheckOutcome::Deadlock { .. } => {
+                // Phase 2: Re-explore with full tracking to get trace
+                info!("deadlock found, re-exploring for trace");
+                self.check_fast_phase2_deadlock()
+            }
+        }
+    }
+
+    /// Phase 1: Fast exploration storing only fingerprints.
+    /// Returns violation type (with empty trace) or Ok.
+    fn check_fast_phase1(&mut self) -> CheckResult<CheckOutcome> {
+        let mut queue: VecDeque<(Fingerprint, State, usize, u64)> = VecDeque::new();
+        let mut max_depth = 0;
+        let mut next_vars_buf = Vec::new();
+
+        // Generate initial states
+        let initial_states = self.generate_initial_states()?;
+        if initial_states.is_empty() {
+            return Err(CheckError::NoInitialStates);
+        }
+
+        info!(count = initial_states.len(), "generated initial states");
+
+        // Add initial states
+        for state in initial_states {
+            let canonical = self.maybe_canonicalize(state);
+            let fp = canonical.fingerprint();
+            if self.store.insert(canonical.clone(), None, None, 0) {
+                queue.push_back((fp, canonical, 0, u64::MAX));
+            }
+        }
+
+        while let Some((fp, state, depth, change_mask)) = queue.pop_front() {
+            trace!(depth, fp = %fp, "exploring state");
+
+            // Check depth limit
+            if self.config.max_depth > 0 && depth >= self.config.max_depth {
+                continue;
+            }
+
+            // Check state limit
+            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
+                info!(states = self.store.len(), "reached state limit");
+                return Ok(CheckOutcome::StateLimitReached {
+                    states_explored: self.store.len(),
+                    max_depth,
+                });
+            }
+
+            // Check memory limit (every 1000 states to reduce overhead)
+            if self.config.memory_limit_mb > 0 && self.store.len() % 1000 == 0 {
+                if let Some(mem_mb) = current_memory_mb() {
+                    if mem_mb >= self.config.memory_limit_mb {
+                        info!(
+                            memory_mb = mem_mb,
+                            limit_mb = self.config.memory_limit_mb,
+                            "reached memory limit"
+                        );
+                        return Ok(CheckOutcome::MemoryLimitReached {
+                            states_explored: self.store.len(),
+                            max_depth,
+                            memory_mb: mem_mb,
+                        });
+                    }
+                }
+            }
+
+            // Check invariants (skip if no relevant variables changed)
+            for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if change_mask & self.inv_dep_masks[inv_idx] == 0 {
+                    continue;
+                }
+                if !self.check_invariant_bc(inv_idx, &state)? {
+                    // Return violation with empty trace (phase 2 will find it)
+                    return Ok(CheckOutcome::InvariantViolation {
+                        invariant: inv.name.clone(),
+                        trace: vec![],
+                    });
+                }
+            }
+
+            // Generate successor states
+            let mut successors = Vec::new();
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf)?;
+
+            if successors.is_empty() && self.config.check_deadlock {
+                let any_enabled = self.any_action_enabled(&state)?;
+                if !any_enabled {
+                    // Return deadlock with empty trace (phase 2 will find it)
+                    return Ok(CheckOutcome::Deadlock { trace: vec![] });
+                }
+            }
+
+            // Add successors to queue
+            for (next_state, action_idx) in successors {
+                let canonical = self.maybe_canonicalize(next_state);
+                let next_fp = canonical.fingerprint();
+                if self.store.insert(canonical.clone(), None, None, depth + 1) {
+                    max_depth = max_depth.max(depth + 1);
+                    queue.push_back((
+                        next_fp,
+                        canonical,
+                        depth + 1,
+                        self.action_write_masks[action_idx],
+                    ));
+                }
+            }
+
+            // Progress logging
+            if self.store.len() % 10000 == 0 {
+                info!(
+                    states = self.store.len(),
+                    queue_len = queue.len(),
+                    max_depth,
+                    "progress"
+                );
+            }
+        }
+
+        info!(
+            states = self.store.len(),
+            max_depth, "model checking complete"
+        );
+
+        Ok(CheckOutcome::Ok {
+            states_explored: self.store.len(),
+            max_depth,
+        })
+    }
+
+    /// Phase 2: Re-explore with full tracking to find invariant violation trace.
+    fn check_fast_phase2(
+        &mut self,
+        target_invariant: String,
+        _target_fp: Option<Fingerprint>,
+    ) -> CheckResult<CheckOutcome> {
+        // Reset store with full tracking
+        self.store.clear(true);
+
+        let mut queue: VecDeque<Fingerprint> = VecDeque::new();
+        let mut next_vars_buf = Vec::new();
+
+        // Generate initial states
+        let initial_states = self.generate_initial_states()?;
+        for state in initial_states {
+            let canonical = self.maybe_canonicalize(state);
+            let fp = canonical.fingerprint();
+            if self.store.insert(canonical, None, None, 0) {
+                queue.push_back(fp);
+            }
+        }
+
+        while let Some(fp) = queue.pop_front() {
+            let info = self.store.get(&fp).unwrap();
+            let state = &info.state;
+            let depth = info.depth;
+
+            // Check target invariant
+            for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if inv.name == target_invariant && !self.check_invariant_bc(inv_idx, state)? {
+                    let trace = self.store.trace_to(&fp, &self.action_names);
+                    return Ok(CheckOutcome::InvariantViolation {
+                        invariant: inv.name.clone(),
+                        trace,
+                    });
+                }
+            }
+
+            // Generate successors
+            let mut successors = Vec::new();
+            self.generate_successors(state, &mut successors, &mut next_vars_buf)?;
+            for (next_state, action_idx) in successors {
+                let canonical = self.maybe_canonicalize(next_state);
+                let next_fp = canonical.fingerprint();
+                if self
+                    .store
+                    .insert(canonical, Some(fp), Some(action_idx), depth + 1)
+                {
+                    queue.push_back(next_fp);
+                }
+            }
+        }
+
+        // Shouldn't reach here - violation should be found
+        Err(CheckError::Eval(EvalError::Internal(
+            "failed to reproduce violation in phase 2".to_string(),
+        )))
+    }
+
+    /// Phase 2: Re-explore with full tracking to find deadlock trace.
+    fn check_fast_phase2_deadlock(&mut self) -> CheckResult<CheckOutcome> {
+        // Reset store with full tracking
+        self.store.clear(true);
+
+        let mut queue: VecDeque<Fingerprint> = VecDeque::new();
+        let mut next_vars_buf = Vec::new();
+
+        // Generate initial states
+        let initial_states = self.generate_initial_states()?;
+        for state in initial_states {
+            let canonical = self.maybe_canonicalize(state);
+            let fp = canonical.fingerprint();
+            if self.store.insert(canonical, None, None, 0) {
+                queue.push_back(fp);
+            }
+        }
+
+        while let Some(fp) = queue.pop_front() {
+            let info = self.store.get(&fp).unwrap();
+            let state = &info.state;
+            let depth = info.depth;
+
+            // Check for deadlock
+            let mut successors = Vec::new();
+            self.generate_successors(state, &mut successors, &mut next_vars_buf)?;
+            if successors.is_empty() && self.config.check_deadlock {
+                let any_enabled = self.any_action_enabled(state)?;
+                if !any_enabled {
+                    let trace = self.store.trace_to(&fp, &self.action_names);
+                    return Ok(CheckOutcome::Deadlock { trace });
+                }
+            }
+
+            // Generate successors
+            for (next_state, action_idx) in successors {
+                let canonical = self.maybe_canonicalize(next_state);
+                let next_fp = canonical.fingerprint();
+                if self
+                    .store
+                    .insert(canonical, Some(fp), Some(action_idx), depth + 1)
+                {
+                    queue.push_back(next_fp);
+                }
+            }
+        }
+
+        // Shouldn't reach here - deadlock should be found
+        Err(CheckError::Eval(EvalError::Internal(
+            "failed to reproduce deadlock in phase 2".to_string(),
+        )))
+    }
+
+    /// Sequential BFS exploration.
+    fn check_sequential(
+        &mut self,
+        queue: &mut VecDeque<(Fingerprint, State, usize, u64)>,
+        max_depth: &mut usize,
+    ) -> CheckResult<CheckOutcome> {
+        let mut hit_state_limit = false;
+        let mut hit_memory_limit = false;
+        let mut memory_at_limit = 0usize;
+        let mut next_vars_buf = Vec::new();
+
+        while let Some((fp, state, depth, change_mask)) = queue.pop_front() {
+            trace!(depth, fp = %fp, "exploring state");
+
+            // Check depth limit
+            if self.config.max_depth > 0 && depth >= self.config.max_depth {
+                continue;
+            }
+
+            // Check state limit
+            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
+                info!(states = self.store.len(), "reached state limit");
+                hit_state_limit = true;
+                break;
+            }
+
+            // Check memory limit (every 1000 states to reduce overhead)
+            if self.config.memory_limit_mb > 0 && self.store.len() % 1000 == 0 {
+                if let Some(mem_mb) = current_memory_mb() {
+                    if mem_mb >= self.config.memory_limit_mb {
+                        info!(
+                            memory_mb = mem_mb,
+                            limit_mb = self.config.memory_limit_mb,
+                            "reached memory limit"
+                        );
+                        hit_memory_limit = true;
+                        memory_at_limit = mem_mb;
+                        break;
+                    }
+                }
+            }
+
+            // Check invariants (skip if no relevant variables changed)
+            for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if change_mask & self.inv_dep_masks[inv_idx] == 0 {
+                    continue;
+                }
+                if !self.check_invariant_bc(inv_idx, &state)? {
+                    let trace = self.store.trace_to(&fp, &self.action_names);
+                    return Ok(CheckOutcome::InvariantViolation {
+                        invariant: inv.name.clone(),
+                        trace,
+                    });
+                }
+            }
+
+            // Generate successor states
+            let mut successors = Vec::new();
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf)?;
+
+            if successors.is_empty() && self.config.check_deadlock {
+                // Check if any action is enabled
+                let any_enabled = self.any_action_enabled(&state)?;
+                if !any_enabled {
+                    let trace = self.store.trace_to(&fp, &self.action_names);
+                    return Ok(CheckOutcome::Deadlock { trace });
+                }
+            }
+
+            // Add successors to queue
+            for (next_state, action_idx) in successors {
+                let canonical = self.maybe_canonicalize(next_state);
+                let next_fp = canonical.fingerprint();
+                if self
+                    .store
+                    .insert(canonical.clone(), Some(fp), Some(action_idx), depth + 1)
+                {
+                    *max_depth = (*max_depth).max(depth + 1);
+                    queue.push_back((
+                        next_fp,
+                        canonical,
+                        depth + 1,
+                        self.action_write_masks[action_idx],
+                    ));
+                }
+            }
+
+            // Progress logging
+            if self.store.len() % 10000 == 0 {
+                info!(
+                    states = self.store.len(),
+                    queue_len = queue.len(),
+                    max_depth = *max_depth,
+                    "progress"
+                );
+            }
+        }
+
+        info!(
+            states = self.store.len(),
+            max_depth = *max_depth,
+            "model checking complete"
+        );
+
+        if hit_memory_limit {
+            Ok(CheckOutcome::MemoryLimitReached {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+                memory_mb: memory_at_limit,
+            })
+        } else if hit_state_limit {
+            Ok(CheckOutcome::StateLimitReached {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+            })
+        } else {
+            Ok(CheckOutcome::Ok {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+            })
+        }
+    }
+
+    /// Parallel BFS exploration.
+    fn check_parallel(
+        &self,
+        queue: &mut VecDeque<(Fingerprint, State, usize, u64)>,
+        max_depth: &mut usize,
+    ) -> CheckResult<CheckOutcome> {
+        // Flags to stop early
+        let found_violation = AtomicBool::new(false);
+        let batch_size = 512;
+        let mut hit_state_limit = false;
+        let mut hit_memory_limit = false;
+        let mut memory_at_limit = 0usize;
+
+        while !queue.is_empty() && !found_violation.load(Ordering::Relaxed) {
+            // Check state limit
+            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
+                info!(states = self.store.len(), "reached state limit");
+                hit_state_limit = true;
+                break;
+            }
+
+            // Check memory limit (every batch to reduce overhead)
+            if self.config.memory_limit_mb > 0 {
+                if let Some(mem_mb) = current_memory_mb() {
+                    if mem_mb >= self.config.memory_limit_mb {
+                        info!(
+                            memory_mb = mem_mb,
+                            limit_mb = self.config.memory_limit_mb,
+                            "reached memory limit"
+                        );
+                        hit_memory_limit = true;
+                        memory_at_limit = mem_mb;
+                        break;
+                    }
+                }
+            }
+
+            // Take a batch of states from the queue
+            let batch: Vec<(Fingerprint, State, usize, u64)> =
+                queue.drain(..queue.len().min(batch_size)).collect();
+
+            // Process batch in parallel
+            let results: Vec<_> = batch
+                .par_iter()
+                .filter_map(|(fp, state, depth, change_mask)| {
+                    if found_violation.load(Ordering::Relaxed) {
+                        return None;
+                    }
+
+                    let depth = *depth;
+
+                    // Check depth limit
+                    if self.config.max_depth > 0 && depth >= self.config.max_depth {
+                        return Some(Ok(ParallelResult::DepthLimited));
+                    }
+
+                    // Check invariants (skip if no relevant variables changed)
+                    for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                        if change_mask & self.inv_dep_masks[inv_idx] == 0 {
+                            continue;
+                        }
+                        match self.check_invariant_bc(inv_idx, state) {
+                            Ok(true) => {}
+                            Ok(false) => {
+                                found_violation.store(true, Ordering::Relaxed);
+                                return Some(Ok(ParallelResult::InvariantViolation {
+                                    fp: *fp,
+                                    invariant: inv.name.clone(),
+                                }));
+                            }
+                            Err(e) => return Some(Err(e)),
+                        }
+                    }
+
+                    // Generate successor states
+                    let mut successors = Vec::new();
+                    let mut next_vars_buf = Vec::new();
+                    match self.generate_successors(state, &mut successors, &mut next_vars_buf) {
+                        Ok(()) => {
+                            if successors.is_empty() && self.config.check_deadlock {
+                                match self.any_action_enabled(state) {
+                                    Ok(false) => {
+                                        found_violation.store(true, Ordering::Relaxed);
+                                        return Some(Ok(ParallelResult::Deadlock { fp: *fp }));
+                                    }
+                                    Ok(true) => {}
+                                    Err(e) => return Some(Err(e)),
+                                }
+                            }
+                            // Insert successors into store directly (parallel)
+                            let mut new_entries = Vec::new();
+                            let mut batch_max_depth = 0;
+                            for (next_state, action_idx) in successors {
+                                let canonical = self.maybe_canonicalize(next_state);
+                                let next_fp = canonical.fingerprint();
+                                if self.store.contains(&next_fp) {
+                                    continue;
+                                }
+                                if self.store.insert_with_fp(
+                                    next_fp,
+                                    canonical.clone(),
+                                    Some(*fp),
+                                    Some(action_idx),
+                                    depth + 1,
+                                ) {
+                                    batch_max_depth = batch_max_depth.max(depth + 1);
+                                    new_entries.push((
+                                        next_fp,
+                                        canonical,
+                                        depth + 1,
+                                        self.action_write_masks[action_idx],
+                                    ));
+                                }
+                            }
+                            Some(Ok(ParallelResult::NewStates {
+                                new_entries,
+                                max_depth: batch_max_depth,
+                            }))
+                        }
+                        Err(e) => Some(Err(e)),
+                    }
+                })
+                .collect();
+
+            // Process results
+            for result in results {
+                match result? {
+                    ParallelResult::DepthLimited => {}
+                    ParallelResult::InvariantViolation { fp, invariant } => {
+                        let trace = self.store.trace_to(&fp, &self.action_names);
+                        return Ok(CheckOutcome::InvariantViolation { invariant, trace });
+                    }
+                    ParallelResult::Deadlock { fp } => {
+                        let trace = self.store.trace_to(&fp, &self.action_names);
+                        return Ok(CheckOutcome::Deadlock { trace });
+                    }
+                    ParallelResult::NewStates {
+                        new_entries,
+                        max_depth: d,
+                    } => {
+                        *max_depth = (*max_depth).max(d);
+                        queue.extend(new_entries);
+                    }
+                }
+            }
+
+            // Progress logging
+            if self.store.len() % 10000 == 0 {
+                info!(
+                    states = self.store.len(),
+                    queue_len = queue.len(),
+                    max_depth = *max_depth,
+                    "progress"
+                );
+            }
+        }
+
+        info!(
+            states = self.store.len(),
+            max_depth = *max_depth,
+            "model checking complete"
+        );
+
+        if hit_memory_limit {
+            Ok(CheckOutcome::MemoryLimitReached {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+                memory_mb: memory_at_limit,
+            })
+        } else if hit_state_limit {
+            Ok(CheckOutcome::StateLimitReached {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+            })
+        } else {
+            Ok(CheckOutcome::Ok {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+            })
+        }
+    }
+
+    /// Generate all initial states satisfying the init predicate.
+    fn generate_initial_states(&self) -> CheckResult<Vec<State>> {
+        // Try direct evaluation first (fast path)
+        match generate_initial_states_direct(&self.spec, &self.consts) {
+            Ok(states) => {
+                debug!(
+                    count = states.len(),
+                    "generated initial states via direct evaluation"
+                );
+                return Ok(states);
+            }
+            Err(_) => {
+                debug!("falling back to enumeration for initial states");
+            }
+        }
+
+        // Fallback: enumerate all combinations (exponential but works for small domains)
+        let mut states = Vec::new();
+        let domains = self.get_variable_domains();
+
+        self.enumerate_states(
+            &domains,
+            0,
+            vec![Value::None; self.spec.vars.len()],
+            &mut |state: State| {
+                let mut ctx = EvalContext::new(&state.vars, &state.vars, &self.consts, &[]);
+                match eval(&self.spec.init, &mut ctx) {
+                    Ok(Value::Bool(true)) => {
+                        states.push(state);
+                    }
+                    Ok(_) => {}
+                    Err(e) => {
+                        debug!(error = %e, "error evaluating init");
+                    }
+                }
+            },
+        );
+
+        Ok(states)
+    }
+
+    /// Enumerate all states from variable domains.
+    fn enumerate_states<F>(
+        &self,
+        domains: &[Vec<Value>],
+        var_idx: usize,
+        current: Vec<Value>,
+        callback: &mut F,
+    ) where
+        F: FnMut(State),
+    {
+        if var_idx >= domains.len() {
+            callback(State::new(current));
+            return;
+        }
+
+        for value in &domains[var_idx] {
+            let mut next = current.clone();
+            next[var_idx] = value.clone();
+            self.enumerate_states(domains, var_idx + 1, next, callback);
+        }
+    }
+
+    /// Get domains for each variable based on their types.
+    fn get_variable_domains(&self) -> Vec<Vec<Value>> {
+        self.spec
+            .vars
+            .iter()
+            .map(|v| self.type_domain(&v.ty))
+            .collect()
+    }
+
+    /// Get the domain of a type.
+    fn type_domain(&self, ty: &specl_types::Type) -> Vec<Value> {
+        match ty {
+            specl_types::Type::Bool => vec![Value::Bool(false), Value::Bool(true)],
+            specl_types::Type::Nat | specl_types::Type::Int => {
+                // Default to small range for now
+                (0..=10).map(Value::Int).collect()
+            }
+            specl_types::Type::Range(lo, hi) => (*lo..=*hi).map(Value::Int).collect(),
+            specl_types::Type::Set(elem_ty) => {
+                // Generate power set of element domain (limited)
+                let elem_domain = self.type_domain(elem_ty);
+                self.power_set(&elem_domain)
+            }
+            specl_types::Type::Record(record_type) => {
+                // Generate cartesian product of all field domains
+                self.record_domain(record_type)
+            }
+            specl_types::Type::Tuple(elem_types) => {
+                // Generate cartesian product of all element domains
+                self.tuple_domain(elem_types)
+            }
+            specl_types::Type::Fn(key_ty, val_ty) => {
+                // Generate all possible functions from key domain to value domain
+                self.fn_domain(key_ty, val_ty)
+            }
+            specl_types::Type::Seq(elem_ty) => {
+                // Generate sequences of lengths 0, 1, 2, 3 (limited to avoid explosion)
+                self.seq_domain(elem_ty)
+            }
+            _ => {
+                // Default domain
+                vec![Value::None]
+            }
+        }
+    }
+
+    /// Generate all possible record values for a record type.
+    fn record_domain(&self, record_type: &specl_types::RecordType) -> Vec<Value> {
+        use std::collections::BTreeMap;
+
+        let field_names: Vec<&str> = record_type
+            .fields
+            .keys()
+            .map(|name| name.as_str())
+            .collect();
+        let field_domains: Vec<Vec<Value>> = record_type
+            .fields
+            .values()
+            .map(|ty| self.type_domain(ty))
+            .collect();
+
+        if field_domains.is_empty() {
+            return vec![Value::Record(BTreeMap::new())];
+        }
+
+        // Compute cartesian product
+        let mut result = vec![];
+        self.enumerate_record_fields(
+            &field_names,
+            &field_domains,
+            0,
+            BTreeMap::new(),
+            &mut |record| {
+                result.push(Value::Record(record));
+            },
+        );
+        result
+    }
+
+    fn enumerate_record_fields<F>(
+        &self,
+        field_names: &[&str],
+        field_domains: &[Vec<Value>],
+        idx: usize,
+        current: std::collections::BTreeMap<String, Value>,
+        callback: &mut F,
+    ) where
+        F: FnMut(std::collections::BTreeMap<String, Value>),
+    {
+        if idx >= field_names.len() {
+            callback(current);
+            return;
+        }
+
+        for value in &field_domains[idx] {
+            let mut next = current.clone();
+            next.insert(field_names[idx].to_string(), value.clone());
+            self.enumerate_record_fields(field_names, field_domains, idx + 1, next, callback);
+        }
+    }
+
+    /// Generate all possible tuple values (cartesian product of element domains).
+    fn tuple_domain(&self, elem_types: &[specl_types::Type]) -> Vec<Value> {
+        let elem_domains: Vec<Vec<Value>> =
+            elem_types.iter().map(|ty| self.type_domain(ty)).collect();
+
+        if elem_domains.is_empty() {
+            return vec![Value::Tuple(vec![])];
+        }
+
+        let mut result = vec![];
+        self.enumerate_tuple_elements(&elem_domains, 0, vec![], &mut |tuple| {
+            result.push(Value::Tuple(tuple));
+        });
+        result
+    }
+
+    fn enumerate_tuple_elements<F>(
+        &self,
+        elem_domains: &[Vec<Value>],
+        idx: usize,
+        current: Vec<Value>,
+        callback: &mut F,
+    ) where
+        F: FnMut(Vec<Value>),
+    {
+        if idx >= elem_domains.len() {
+            callback(current);
+            return;
+        }
+
+        for value in &elem_domains[idx] {
+            let mut next = current.clone();
+            next.push(value.clone());
+            self.enumerate_tuple_elements(elem_domains, idx + 1, next, callback);
+        }
+    }
+
+    /// Generate all possible functions from key domain to value domain.
+    fn fn_domain(&self, key_ty: &specl_types::Type, val_ty: &specl_types::Type) -> Vec<Value> {
+        let key_domain = self.type_domain(key_ty);
+        let val_domain = self.type_domain(val_ty);
+
+        if key_domain.is_empty() {
+            return vec![Value::Fn(std::sync::Arc::new(Vec::new()))];
+        }
+
+        let mut result = vec![];
+        self.enumerate_fn_values(&key_domain, &val_domain, 0, Vec::new(), &mut |map| {
+            result.push(Value::Fn(std::sync::Arc::new(map)));
+        });
+        result
+    }
+
+    fn enumerate_fn_values<F>(
+        &self,
+        key_domain: &[Value],
+        val_domain: &[Value],
+        idx: usize,
+        current: Vec<(Value, Value)>,
+        callback: &mut F,
+    ) where
+        F: FnMut(Vec<(Value, Value)>),
+    {
+        if idx >= key_domain.len() {
+            callback(current);
+            return;
+        }
+
+        for value in val_domain {
+            let mut next = current.clone();
+            // key_domain is sorted so appending in order keeps the vec sorted
+            next.push((key_domain[idx].clone(), value.clone()));
+            self.enumerate_fn_values(key_domain, val_domain, idx + 1, next, callback);
+        }
+    }
+
+    /// Generate all possible sequences of an element type up to a max length.
+    fn seq_domain(&self, elem_ty: &specl_types::Type) -> Vec<Value> {
+        let elem_domain = self.type_domain(elem_ty);
+        let max_len = 4; // Limit sequence length to avoid explosion
+
+        let mut result = vec![Value::Seq(vec![])]; // Empty sequence
+
+        // Generate sequences of length 1, 2, ..., max_len
+        for len in 1..=max_len {
+            self.enumerate_seqs(&elem_domain, len, vec![], &mut |seq| {
+                result.push(Value::Seq(seq));
+            });
+        }
+
+        result
+    }
+
+    fn enumerate_seqs<F>(
+        &self,
+        elem_domain: &[Value],
+        len: usize,
+        current: Vec<Value>,
+        callback: &mut F,
+    ) where
+        F: FnMut(Vec<Value>),
+    {
+        if current.len() >= len {
+            callback(current);
+            return;
+        }
+
+        for elem in elem_domain {
+            let mut next = current.clone();
+            next.push(elem.clone());
+            self.enumerate_seqs(elem_domain, len, next, callback);
+        }
+    }
+
+    /// Generate power set of a domain (limited to small sets).
+    fn power_set(&self, domain: &[Value]) -> Vec<Value> {
+        let max_elems = domain.len().min(5); // Limit to avoid explosion
+        let mut result = vec![Value::empty_set()];
+
+        for elem in domain.iter().take(max_elems) {
+            let mut new_sets = Vec::new();
+            for set in &result {
+                if let Value::Set(s) = set {
+                    let mut new_set: Vec<Value> = (**s).clone();
+                    Value::set_insert(&mut new_set, elem.clone());
+                    new_sets.push(Value::Set(std::sync::Arc::new(new_set)));
+                }
+            }
+            result.extend(new_sets);
+        }
+
+        result
+    }
+
+    /// Generate successor states from a state.
+    /// Successor: (next_state, action_index, params) - name formatting deferred.
+    /// Uses per-thread operation cache to skip redundant evaluations.
+    fn generate_successors(
+        &self,
+        state: &State,
+        buf: &mut Vec<(State, usize)>,
+        next_vars_buf: &mut Vec<Value>,
+    ) -> CheckResult<()> {
+        use std::cell::RefCell;
+
+        thread_local! {
+            static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
+        }
+
+        buf.clear();
+
+        // Get the set of actions to explore
+        let actions_to_explore = if self.config.use_por {
+            self.compute_ample_set(state)?
+        } else if let Some(ref relevant) = self.relevant_actions {
+            relevant.clone()
+        } else {
+            (0..self.spec.actions.len()).collect()
+        };
+
+        let num_actions = self.spec.actions.len();
+        OP_CACHES.with(|cell| {
+            let mut caches = cell.borrow_mut();
+            if caches.len() != num_actions {
+                *caches = (0..num_actions).map(|_| OpCache::new()).collect();
+            }
+            for action_idx in actions_to_explore {
+                self.apply_action(
+                    state,
+                    action_idx,
+                    buf,
+                    next_vars_buf,
+                    &mut caches[action_idx],
+                )?;
+            }
+            Ok::<(), CheckError>(())
+        })?;
+
+        Ok(())
+    }
+
+    /// Get indices of all enabled actions for a state.
+    fn get_enabled_actions(&self, state: &State) -> CheckResult<Vec<usize>> {
+        let mut enabled = Vec::new();
+
+        for (idx, action) in self.spec.actions.iter().enumerate() {
+            if self.is_action_enabled(state, action, idx)? {
+                enabled.push(idx);
+            }
+        }
+
+        Ok(enabled)
+    }
+
+    /// Check if an action is enabled (guard satisfied for some parameter values).
+    fn is_action_enabled(
+        &self,
+        state: &State,
+        _action: &CompiledAction,
+        action_idx: usize,
+    ) -> CheckResult<bool> {
+        let param_domains = &self.cached_param_domains[action_idx];
+        let guard_bc = &self.compiled_guards[action_idx];
+        let mut enabled = false;
+
+        if let Some(guard_index) = &self.guard_indices[action_idx] {
+            if let Some(ref pre_guard) = guard_index.pre_guard {
+                if !vm_eval_bool(pre_guard, &state.vars, &state.vars, &self.consts, &[])
+                    .unwrap_or(false)
+                {
+                    return Ok(false);
+                }
+            }
+            let mut params_buf = vec![Value::None; param_domains.len()];
+            enumerate_params_indexed(
+                param_domains,
+                guard_index,
+                guard_bc,
+                &state.vars,
+                &self.consts,
+                &mut params_buf,
+                0,
+                &mut |_params: &[Value]| {
+                    enabled = true;
+                },
+            );
+        } else {
+            let mut params_buf = SmallVec::new();
+            self.enumerate_params(param_domains, &mut params_buf, &mut |params: &[Value]| {
+                if !enabled {
+                    if let Ok(true) =
+                        vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                    {
+                        enabled = true;
+                    }
+                }
+            });
+        }
+
+        Ok(enabled)
+    }
+
+    /// Compute the ample set for partial order reduction.
+    /// Returns indices of actions to explore (a subset of enabled actions).
+    ///
+    /// For BFS with safety properties, we use a conservative stubborn set algorithm:
+    /// - Start with each enabled action as a potential seed
+    /// - Build closure under dependency (add all dependent enabled actions)
+    /// - Pick the smallest non-singleton ample set
+    ///
+    /// Key constraint: For BFS soundness, we can only reduce when the ample set
+    /// contains at least 2 actions due to dependencies. If an ample set is a
+    /// singleton (all other actions are independent), we must explore all enabled
+    /// actions to ensure we don't miss reachable states.
+    fn compute_ample_set(&self, state: &State) -> CheckResult<Vec<usize>> {
+        use std::collections::HashSet;
+
+        let enabled = self.get_enabled_actions(state)?;
+        if enabled.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // If only one action enabled, no reduction possible
+        if enabled.len() == 1 {
+            return Ok(enabled);
+        }
+
+        // Try each enabled action as a seed and find the smallest valid ample set
+        let mut best_ample: Option<Vec<usize>> = None;
+
+        for &seed in &enabled {
+            let mut ample: HashSet<usize> = HashSet::new();
+            let mut to_add = vec![seed];
+
+            // Build closure under dependency
+            while let Some(a) = to_add.pop() {
+                if ample.insert(a) {
+                    // Add all enabled actions that are dependent on a
+                    for &b in &enabled {
+                        if !self.spec.independent[a][b] && !ample.contains(&b) {
+                            to_add.push(b);
+                        }
+                    }
+                }
+            }
+
+            // For BFS soundness, only use ample sets that grew beyond the seed
+            // (i.e., dependencies pulled in more actions). Singleton ample sets
+            // would cause us to miss states reachable via independent actions.
+            if ample.len() > 1 {
+                let ample_vec: Vec<usize> = ample.into_iter().collect();
+                if best_ample.is_none() || ample_vec.len() < best_ample.as_ref().unwrap().len() {
+                    best_ample = Some(ample_vec);
+                }
+            }
+        }
+
+        // If we found a valid ample set (non-singleton), use it
+        if let Some(result) = best_ample {
+            if result.len() < enabled.len() {
+                trace!(
+                    enabled = enabled.len(),
+                    ample = result.len(),
+                    "POR: reduced action set"
+                );
+            }
+            return Ok(result);
+        }
+
+        // No valid reduction found - all enabled actions are pairwise independent
+        // Must explore all to ensure we find all reachable states
+        Ok(enabled)
+    }
+
+    /// Apply an action to a state and push successor states into buffer.
+    /// Uses operation cache to skip redundant evaluations when the successor
+    /// fingerprint is already in the seen set.
+    fn apply_action(
+        &self,
+        state: &State,
+        action_idx: usize,
+        buf: &mut Vec<(State, usize)>,
+        next_vars_buf: &mut Vec<Value>,
+        cache: &mut OpCache,
+    ) -> CheckResult<()> {
+        let action = &self.spec.actions[action_idx];
+        let param_domains = &self.cached_param_domains[action_idx];
+        let guard_bc = &self.compiled_guards[action_idx];
+        let reads = &action.reads;
+        let changes = &action.changes;
+        let use_cache = cache.is_enabled();
+
+        // Precompute per-(state, action) hashes only when cache is active.
+        let (write_old_hash, read_xor, parent_fp) = if use_cache {
+            (
+                xor_hash_vars(&state.vars, changes),
+                xor_hash_vars(&state.vars, reads),
+                state.fingerprint().as_u64(),
+            )
+        } else {
+            (0, 0, 0)
+        };
+
+        // Use guard indexing when available for early parameter pruning
+        if let Some(guard_index) = &self.guard_indices[action_idx] {
+            // Check pre-guard (state-only conjuncts) once before enumeration
+            if let Some(ref pre_guard) = guard_index.pre_guard {
+                if !vm_eval_bool(pre_guard, &state.vars, &state.vars, &self.consts, &[])
+                    .unwrap_or(false)
+                {
+                    return Ok(());
+                }
+            }
+
+            let mut params_buf = vec![Value::None; param_domains.len()];
+            enumerate_params_indexed(
+                param_domains,
+                guard_index,
+                guard_bc,
+                &state.vars,
+                &self.consts,
+                &mut params_buf,
+                0,
+                &mut |params: &[Value]| {
+                    // Guard already passed. Check operation cache.
+                    if use_cache {
+                        let key = op_cache_key(params, read_xor);
+                        if let Some(cached_wnh) = cache.probe(key) {
+                            if cached_wnh == OP_NO_SUCCESSOR {
+                                return;
+                            }
+                            let predicted_fp = parent_fp ^ write_old_hash ^ cached_wnh;
+                            if self.store.contains(&Fingerprint::from_u64(predicted_fp)) {
+                                return;
+                            }
+                        }
+
+                        // Cache miss or new state: evaluate effects
+                        if let Some(cached) = &self.cached_effects[action_idx] {
+                            if let Ok(result) = apply_effects_bytecode(
+                                state,
+                                params,
+                                &self.consts,
+                                &cached.compiled_assignments,
+                                cached.needs_reverify,
+                                next_vars_buf,
+                                &action.effect,
+                            ) {
+                                if let Some(next_state) = result {
+                                    cache.store(key, xor_hash_vars(&next_state.vars, changes));
+                                    buf.push((next_state, action_idx));
+                                } else {
+                                    cache.store(key, OP_NO_SUCCESSOR);
+                                }
+                                return;
+                            }
+                        }
+                    } else {
+                        // No cache: evaluate effects directly
+                        if let Some(cached) = &self.cached_effects[action_idx] {
+                            if let Ok(result) = apply_effects_bytecode(
+                                state,
+                                params,
+                                &self.consts,
+                                &cached.compiled_assignments,
+                                cached.needs_reverify,
+                                next_vars_buf,
+                                &action.effect,
+                            ) {
+                                if let Some(next_state) = result {
+                                    buf.push((next_state, action_idx));
+                                } else {
+                                    // Guard reverification failed, no successor
+                                }
+                                return;
+                            }
+                        }
+                    }
+
+                    if let Ok(next_states) = self.find_next_states(state, action, params) {
+                        for next_state in next_states {
+                            buf.push((next_state, action_idx));
+                        }
+                    }
+                },
+            );
+        } else {
+            let mut params_buf = SmallVec::new();
+            self.enumerate_params(param_domains, &mut params_buf, &mut |params: &[Value]| {
+                if use_cache {
+                    let key = op_cache_key(params, read_xor);
+                    if let Some(cached_wnh) = cache.probe(key) {
+                        if cached_wnh == OP_NO_SUCCESSOR {
+                            return;
+                        }
+                        let predicted_fp = parent_fp ^ write_old_hash ^ cached_wnh;
+                        if self.store.contains(&Fingerprint::from_u64(predicted_fp)) {
+                            return;
+                        }
+                    }
+
+                    let guard_ok =
+                        vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                            .unwrap_or(false);
+                    if !guard_ok {
+                        cache.store(key, OP_NO_SUCCESSOR);
+                        return;
+                    }
+
+                    if let Some(cached) = &self.cached_effects[action_idx] {
+                        if let Ok(result) = apply_effects_bytecode(
+                            state,
+                            params,
+                            &self.consts,
+                            &cached.compiled_assignments,
+                            cached.needs_reverify,
+                            next_vars_buf,
+                            &action.effect,
+                        ) {
+                            if let Some(next_state) = result {
+                                cache.store(key, xor_hash_vars(&next_state.vars, changes));
+                                buf.push((next_state, action_idx));
+                            } else {
+                                cache.store(key, OP_NO_SUCCESSOR);
+                            }
+                            return;
+                        }
+                    }
+                } else {
+                    let guard_ok =
+                        vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                            .unwrap_or(false);
+                    if !guard_ok {
+                        return;
+                    }
+
+                    if let Some(cached) = &self.cached_effects[action_idx] {
+                        if let Ok(result) = apply_effects_bytecode(
+                            state,
+                            params,
+                            &self.consts,
+                            &cached.compiled_assignments,
+                            cached.needs_reverify,
+                            next_vars_buf,
+                            &action.effect,
+                        ) {
+                            if let Some(next_state) = result {
+                                buf.push((next_state, action_idx));
+                            }
+                            return;
+                        }
+                    }
+                }
+
+                // Fallback: full eval path
+                if let Ok(next_states) = self.find_next_states(state, action, params) {
+                    for next_state in next_states {
+                        buf.push((next_state, action_idx));
+                    }
+                }
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Enumerate all parameter combinations.
+    fn enumerate_params<F>(
+        &self,
+        domains: &[Vec<Value>],
+        buf: &mut SmallVec<[Value; 4]>,
+        callback: &mut F,
+    ) where
+        F: FnMut(&[Value]),
+    {
+        let idx = buf.len();
+        if idx >= domains.len() {
+            callback(buf);
+            return;
+        }
+
+        for value in &domains[idx] {
+            buf.push(value.clone());
+            self.enumerate_params(domains, buf, callback);
+            buf.pop();
+        }
+    }
+
+    /// Get parameter domains for an action.
+    /// Uses param_type_exprs to resolve ranges that reference constants.
+    fn get_param_domains(&self, action: &CompiledAction) -> Vec<Vec<Value>> {
+        action
+            .params
+            .iter()
+            .enumerate()
+            .map(|(i, (_, ty))| {
+                // Try to resolve from TypeExpr first (handles 0..NUM_READERS)
+                if let Some(type_expr) = action.param_type_exprs.get(i) {
+                    if let Some(domain) = self.resolve_type_expr_domain(type_expr) {
+                        return domain;
+                    }
+                }
+                // Fall back to resolved Type
+                self.type_domain(ty)
+            })
+            .collect()
+    }
+
+    /// Try to resolve a TypeExpr to a domain, evaluating constant references.
+    fn resolve_type_expr_domain(&self, type_expr: &TypeExpr) -> Option<Vec<Value>> {
+        match type_expr {
+            TypeExpr::Range(lo, hi, _) => {
+                let lo_val = self.eval_const_expr(lo)?;
+                let hi_val = self.eval_const_expr(hi)?;
+                Some((lo_val..=hi_val).map(Value::Int).collect())
+            }
+            _ => None, // Other types fall through to type_domain
+        }
+    }
+
+    /// Evaluate an expression that may reference constants.
+    fn eval_const_expr(&self, expr: &specl_syntax::Expr) -> Option<i64> {
+        match &expr.kind {
+            ExprKind::Int(n) => Some(*n),
+            ExprKind::Ident(name) => {
+                // Look up constant by name
+                for (i, c) in self.spec.consts.iter().enumerate() {
+                    if c.name == *name {
+                        return self.consts.get(i).and_then(|v| {
+                            if let Value::Int(n) = v {
+                                Some(*n)
+                            } else {
+                                None
+                            }
+                        });
+                    }
+                }
+                None
+            }
+            _ => None, // Could extend to handle simple arithmetic
+        }
+    }
+
+    /// Find all next states satisfying the effect relation.
+    fn find_next_states(
+        &self,
+        state: &State,
+        action: &CompiledAction,
+        params: &[Value],
+    ) -> CheckResult<Vec<State>> {
+        // Try direct evaluation first (fast path)
+        let mut buf = Vec::new();
+        match apply_action_direct(
+            state,
+            action,
+            params,
+            &self.consts,
+            self.spec.vars.len(),
+            &mut buf,
+        ) {
+            Ok(Some(next_state)) => {
+                return Ok(vec![next_state]);
+            }
+            Ok(None) => {
+                // Guard not satisfied or effect not satisfied
+                return Ok(vec![]);
+            }
+            Err(_) => {
+                // Fall back to enumeration
+                trace!(action = %action.name, "falling back to enumeration for successors");
+            }
+        }
+
+        // Fallback: enumerate possible values for changed variables
+        let changed_domains: Vec<Vec<Value>> = action
+            .changes
+            .iter()
+            .map(|&idx| self.type_domain(&self.spec.vars[idx].ty))
+            .collect();
+
+        let mut next_states = Vec::new();
+
+        self.enumerate_changed(
+            &changed_domains,
+            0,
+            (*state.vars).clone(),
+            &mut |next_vars: Vec<Value>| {
+                let mut ctx = EvalContext::new(&state.vars, &next_vars, &self.consts, params);
+                if let Ok(Value::Bool(true)) = eval(&action.effect, &mut ctx) {
+                    next_states.push(State::new(next_vars));
+                }
+            },
+            &action.changes,
+        );
+
+        Ok(next_states)
+    }
+
+    /// Enumerate changed variable combinations.
+    fn enumerate_changed<F>(
+        &self,
+        domains: &[Vec<Value>],
+        idx: usize,
+        mut current: Vec<Value>,
+        callback: &mut F,
+        changes: &[usize],
+    ) where
+        F: FnMut(Vec<Value>),
+    {
+        if idx >= domains.len() {
+            callback(current);
+            return;
+        }
+
+        let var_idx = changes[idx];
+        for value in &domains[idx] {
+            current[var_idx] = value.clone();
+            self.enumerate_changed(domains, idx + 1, current.clone(), callback, changes);
+        }
+    }
+
+    /// Check if an invariant holds in a state using bytecode VM.
+    fn check_invariant_bc(&self, inv_idx: usize, state: &State) -> CheckResult<bool> {
+        let bc = &self.compiled_invariants[inv_idx];
+        Ok(vm_eval_bool(
+            bc,
+            &state.vars,
+            &state.vars,
+            &self.consts,
+            &[],
+        )?)
+    }
+
+    /// Check if any action is enabled in a state.
+    fn any_action_enabled(&self, state: &State) -> CheckResult<bool> {
+        for (action_idx, action) in self.spec.actions.iter().enumerate() {
+            if self.is_action_enabled(state, action, action_idx)? {
+                return Ok(true);
+            }
+        }
+
+        Ok(false)
+    }
+
+    /// Get the state store for inspection.
+    pub fn store(&self) -> &StateStore {
+        &self.store
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use specl_ir::compile;
+    use specl_syntax::parse;
+
+    fn check_spec(source: &str, consts: Vec<Value>) -> CheckResult<CheckOutcome> {
+        check_spec_with_config(source, consts, CheckConfig::default())
+    }
+
+    fn check_spec_with_config(
+        source: &str,
+        consts: Vec<Value>,
+        config: CheckConfig,
+    ) -> CheckResult<CheckOutcome> {
+        let module = parse(source).expect("parse failed");
+        let spec = compile(&module).expect("compile failed");
+        let mut explorer = Explorer::new(spec, consts, config);
+        explorer.check()
+    }
+
+    #[test]
+    fn test_simple_counter() {
+        let source = r#"
+module Counter
+const MAX: 0..5
+var count: 0..5
+init { count == 0 }
+action Inc() {
+    require count < MAX
+    count = count + 1
+}
+invariant Bounded { count <= MAX }
+"#;
+
+        // Disable deadlock checking since a bounded counter naturally deadlocks at MAX
+        let config = CheckConfig {
+            check_deadlock: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![Value::Int(3)], config);
+        match result {
+            Ok(CheckOutcome::Ok {
+                states_explored, ..
+            }) => {
+                assert!(states_explored > 0);
+                assert_eq!(states_explored, 4); // States: 0, 1, 2, 3
+            }
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_counter_deadlock() {
+        let source = r#"
+module Counter
+const MAX: 0..5
+var count: 0..5
+init { count == 0 }
+action Inc() {
+    require count < MAX
+    count = count + 1
+}
+"#;
+
+        // With deadlock checking, should report deadlock when count reaches MAX
+        let result = check_spec(source, vec![Value::Int(2)]);
+        match result {
+            Ok(CheckOutcome::Deadlock { trace }) => {
+                // Should deadlock after reaching count == 2
+                assert!(!trace.is_empty());
+            }
+            other => panic!("expected Deadlock, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_invariant_violation() {
+        let source = r#"
+module BadCounter
+const MAX: 0..5
+var count: 0..10
+init { count == 0 }
+action Inc() {
+    count = count + 1
+}
+invariant TooHigh { count <= 3 }
+"#;
+
+        let result = check_spec(source, vec![Value::Int(5)]).unwrap();
+        match result {
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                assert_eq!(invariant, "TooHigh");
+                assert!(!trace.is_empty());
+            }
+            _ => panic!("expected invariant violation"),
+        }
+    }
+
+    #[test]
+    fn test_transfer_successors() {
+        let source = r#"
+module Test
+var alice: 0..20
+var bob: 0..20
+init { alice == 10 and bob == 10 }
+action BrokenDeposit() {
+    bob = bob + 5
+}
+invariant MoneyConserved { alice + bob == 20 }
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        println!("Spec vars: {:?}", spec.vars);
+        println!("Spec actions: {:?}", spec.actions);
+
+        let config = CheckConfig {
+            check_deadlock: true,
+            ..Default::default()
+        };
+        let mut explorer = Explorer::new(spec, vec![], config);
+        let result = explorer.check();
+
+        println!("Result: {:?}", result);
+    }
+
+    #[test]
+    fn test_independence_matrix() {
+        // Two counters x and y that are independent (different variables)
+        let source = r#"
+module TwoCounters
+var x: 0..3
+var y: 0..3
+init { x == 0 and y == 0 }
+action IncX() {
+    require x < 3
+    x = x + 1
+}
+action IncY() {
+    require y < 3
+    y = y + 1
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        // Check that we have 2 actions
+        assert_eq!(spec.actions.len(), 2);
+        assert_eq!(spec.actions[0].name, "IncX");
+        assert_eq!(spec.actions[1].name, "IncY");
+
+        // Check reads and writes
+        // IncX reads x (index 0), writes x (index 0)
+        // IncY reads y (index 1), writes y (index 1)
+        println!(
+            "IncX changes: {:?}, reads: {:?}",
+            spec.actions[0].changes, spec.actions[0].reads
+        );
+        println!(
+            "IncY changes: {:?}, reads: {:?}",
+            spec.actions[1].changes, spec.actions[1].reads
+        );
+
+        // Check independence matrix
+        // IncX and IncY should be independent since they don't share variables
+        println!("Independent matrix: {:?}", spec.independent);
+        assert!(
+            spec.independent[0][1],
+            "IncX and IncY should be independent"
+        );
+        assert!(
+            spec.independent[1][0],
+            "IncY and IncX should be independent"
+        );
+    }
+
+    #[test]
+    fn test_por_reduces_states() {
+        // With POR, exploring IncX->IncY is equivalent to IncY->IncX
+        // So we should explore fewer states
+        let source = r#"
+module TwoCounters
+var x: 0..2
+var y: 0..2
+init { x == 0 and y == 0 }
+action IncX() {
+    require x < 2
+    x = x + 1
+}
+action IncY() {
+    require y < 2
+    y = y + 1
+}
+"#;
+        // Without POR
+        let config_no_por = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_no_por = check_spec_with_config(source, vec![], config_no_por).unwrap();
+        let states_no_por = match result_no_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // With POR
+        let config_por = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_por = check_spec_with_config(source, vec![], config_por).unwrap();
+        let states_por = match result_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        println!("States without POR: {}", states_no_por);
+        println!("States with POR: {}", states_por);
+
+        // Both should explore all reachable states (9 states: 3x3 grid)
+        // But with POR, we should see the same number since all states are reachable
+        // The reduction comes from exploring fewer transitions, not fewer states
+        assert_eq!(states_no_por, 9, "Should have 9 states (3x3 grid)");
+        assert_eq!(states_por, 9, "POR should also find all 9 states");
+    }
+
+    #[test]
+    fn test_por_with_dependent_actions() {
+        // Two counters where one action depends on the other's state
+        // IncX increments x
+        // IncY increments y but only if x > 0 (reads x)
+        // These are DEPENDENT because IncX writes x and IncY reads x
+        let source = r#"
+module DependentCounters
+var x: 0..2
+var y: 0..2
+init { x == 0 and y == 0 }
+action IncX() {
+    require x < 2
+    x = x + 1
+}
+action IncY() {
+    require y < 2
+    require x > 0
+    y = y + 1
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        // IncX writes x, reads x
+        // IncY writes y, reads x and y
+        // They should be dependent because IncX writes x and IncY reads x
+        println!(
+            "IncX changes: {:?}, reads: {:?}",
+            spec.actions[0].changes, spec.actions[0].reads
+        );
+        println!(
+            "IncY changes: {:?}, reads: {:?}",
+            spec.actions[1].changes, spec.actions[1].reads
+        );
+        println!("Independent matrix: {:?}", spec.independent);
+
+        // Verify they are dependent
+        assert!(!spec.independent[0][1], "IncX and IncY should be dependent");
+        assert!(!spec.independent[1][0], "IncY and IncX should be dependent");
+
+        // With dependent actions, POR should still find all reachable states
+        // but may reduce transitions explored
+        let config_por = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config_por).unwrap();
+        match result {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                println!("States with POR (dependent): {}", states_explored);
+                // Should find states: (0,0), (1,0), (2,0), (1,1), (2,1), (2,2)
+                // That's 6 reachable states (y can only increment when x > 0)
+                assert!(states_explored >= 5, "Should find at least 5 states");
+            }
+            _ => panic!("expected Ok"),
+        }
+    }
+
+    #[test]
+    fn test_symmetry_detection() {
+        // Test that symmetry groups are detected for Dict[0..N, T] types
+        let source = r#"
+module SymmetricTest
+var state: Dict[0..2, Bool]
+var count: Dict[0..2, 0..3]
+var other: Bool
+init {
+    state == {i: false for i in 0..2}
+    and count == {i: 0 for i in 0..2}
+    and other == true
+}
+action Toggle(i: 0..2) {
+    state = state | { i: not state[i] }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        // Should detect one symmetry group with domain size 3 (0..2 means 0,1,2)
+        // containing variables state and count
+        println!("Symmetry groups: {:?}", spec.symmetry_groups);
+        assert!(
+            !spec.symmetry_groups.is_empty(),
+            "Should detect symmetry groups"
+        );
+
+        // Find the group with domain size 3
+        let group = spec.symmetry_groups.iter().find(|g| g.domain_size == 3);
+        assert!(group.is_some(), "Should have a group with domain size 3");
+        let group = group.unwrap();
+        assert_eq!(
+            group.variables.len(),
+            2,
+            "Should have 2 variables in the group"
+        );
+    }
+
+    #[test]
+    fn test_symmetry_reduces_states() {
+        // Symmetric state space should be smaller with symmetry reduction
+        let source = r#"
+module SymmetricCounter
+var state: Dict[0..2, Bool]
+init { state == {i: false for i in 0..2} }
+action Toggle(i: 0..2) {
+    state = state | { i: not state[i] }
+}
+"#;
+        // Without symmetry
+        let config_no_sym = CheckConfig {
+            check_deadlock: false,
+            use_symmetry: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_no_sym = check_spec_with_config(source, vec![], config_no_sym).unwrap();
+        let states_no_sym = match result_no_sym {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // With symmetry
+        let config_sym = CheckConfig {
+            check_deadlock: false,
+            use_symmetry: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_sym = check_spec_with_config(source, vec![], config_sym).unwrap();
+        let states_sym = match result_sym {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        println!("States without symmetry: {}", states_no_sym);
+        println!("States with symmetry: {}", states_sym);
+
+        // Without symmetry: 2^3 = 8 states (each of 3 bools can be T/F)
+        assert_eq!(states_no_sym, 8, "Should have 8 states without symmetry");
+
+        // With symmetry: states are grouped by equivalence class
+        // States differ by permutation of indices should be in same class
+        // {F,F,F}, {T,F,F}/{F,T,F}/{F,F,T} -> 2 classes, {T,T,F}/{T,F,T}/{F,T,T} -> 1 class, {T,T,T} -> 1 class
+        // Total: 4 equivalence classes
+        assert!(
+            states_sym < states_no_sym,
+            "Symmetry should reduce state count"
+        );
+        assert!(
+            states_sym >= 4,
+            "Should have at least 4 equivalence classes"
+        );
+    }
+
+    #[test]
+    fn test_fast_check_finds_violation() {
+        // Test that fast_check mode correctly finds violations and reconstructs traces
+        let source = r#"
+module BadCounter
+var count: 0..10
+init { count == 0 }
+action Inc() {
+    count = count + 1
+}
+invariant TooHigh { count <= 3 }
+"#;
+
+        let config = CheckConfig {
+            check_deadlock: false,
+            fast_check: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config).unwrap();
+        match result {
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                assert_eq!(invariant, "TooHigh");
+                // Phase 2 should have reconstructed the trace
+                assert!(!trace.is_empty(), "fast_check should reconstruct trace");
+                assert!(trace.len() >= 4, "trace should show path to violation");
+            }
+            _ => panic!("expected invariant violation"),
+        }
+    }
+
+    #[test]
+    fn test_fast_check_ok_result() {
+        // Test that fast_check mode works for specs with no violations
+        let source = r#"
+module SafeCounter
+var count: 0..5
+init { count == 0 }
+action Inc() {
+    require count < 3
+    count = count + 1
+}
+invariant InRange { count <= 5 }
+"#;
+
+        let config = CheckConfig {
+            check_deadlock: false,
+            fast_check: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config).unwrap();
+        match result {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                assert_eq!(states_explored, 4, "should explore 4 states: 0,1,2,3");
+            }
+            _ => panic!("expected Ok"),
+        }
+    }
+
+    #[test]
+    fn test_large_domain_symmetry() {
+        // Test symmetry reduction with domain size > 6 (previously unsupported)
+        // Using 0..9 gives 10 elements - would be 10! = 3,628,800 permutations
+        // The new O(n log n) algorithm handles this efficiently
+        let source = r#"
+module LargeSymmetry
+var flags: Dict[0..9, Bool]
+init { flags == {i: false for i in 0..9} }
+action SetFlag(i: 0..9) {
+    require flags[i] == false
+    flags = flags | { i: true }
+}
+"#;
+        // Without symmetry: 2^10 = 1024 states
+        let config_no_sym = CheckConfig {
+            check_deadlock: false,
+            use_symmetry: false,
+            parallel: false,
+            max_states: 2000, // Limit to avoid long test
+            ..Default::default()
+        };
+        let result_no_sym = check_spec_with_config(source, vec![], config_no_sym).unwrap();
+        let states_no_sym = match result_no_sym {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // With symmetry: should have much fewer equivalence classes
+        let config_sym = CheckConfig {
+            check_deadlock: false,
+            use_symmetry: true,
+            parallel: false,
+            max_states: 2000,
+            ..Default::default()
+        };
+        let result_sym = check_spec_with_config(source, vec![], config_sym).unwrap();
+        let states_sym = match result_sym {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        println!("States without symmetry (10 flags): {}", states_no_sym);
+        println!("States with symmetry (10 flags): {}", states_sym);
+
+        // Symmetry should significantly reduce state count
+        // With 10 boolean flags, states are characterized by the NUMBER of true flags
+        // So equivalence classes: 0, 1, 2, ..., 10 flags set = 11 classes
+        assert!(
+            states_sym < states_no_sym,
+            "Symmetry should reduce state count"
+        );
+        assert!(
+            states_sym <= 15,
+            "Should have at most ~11-15 equivalence classes (0-10 flags set)"
+        );
+    }
+}

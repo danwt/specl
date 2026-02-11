@@ -1,0 +1,41 @@
+// Stress test: State hashing and storage
+// Large state with many variables - 11^5 = 161,051 states
+// Use: No constants needed
+module StressHash
+
+var a: 0..10
+var b: 0..10
+var c: 0..10
+var d: 0..10
+var e: 0..10
+
+init {
+    a == 0 and b == 0 and c == 0 and d == 0 and e == 0
+}
+
+action IncA() {
+    require a < 10
+    a = a + 1
+}
+
+action IncB() {
+    require b < 10
+    b = b + 1
+}
+
+action IncC() {
+    require c < 10
+    c = c + 1
+}
+
+action IncD() {
+    require d < 10
+    d = d + 1
+}
+
+action IncE() {
+    require e < 10
+    e = e + 1
+}
+
+invariant Bound { a <= 10 and b <= 10 and c <= 10 and d <= 10 and e <= 10 }

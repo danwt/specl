@@ -1,0 +1,164 @@
+module PBFT
+
+// Practical Byzantine Fault Tolerance (normal case + view change)
+// From: Castro & Liskov, "Practical Byzantine Fault Tolerance" (OSDI 1999)
+// N+1 replicas (0..N), tolerating F Byzantine faults where N+1 >= 3F+1
+// Simplified: bounded views, bounded sequence numbers, crash-only faults
+// Use: specl check pbft.specl -c N=3 -c F=1 -c MaxView=0 -c MaxSeq=0 -c V=1 --no-deadlock
+// Verified: N=3 F=1 MaxView=0 MaxSeq=0 V=1 -> 10065 states, Agreement + Validity OK
+
+const N: Int
+const F: Int
+const MaxView: Int
+const MaxSeq: Int
+const V: Int
+
+// Per replica: current view
+var view: Dict[Int, Int]
+// Per replica: status (0=Normal, 1=ViewChange)
+var status: Dict[Int, Int]
+
+// Per view per seq: pre-prepared value (-1 = none)
+var prePrepared: Dict[Int, Dict[Int, Int]]
+// Per view per seq per replica: prepared? (sent prepare)
+var prepared: Dict[Int, Dict[Int, Dict[Int, Bool]]]
+// Per view per seq per replica: committed? (sent commit)
+var committed: Dict[Int, Dict[Int, Dict[Int, Bool]]]
+
+// Per replica per seq: executed value (-1 = none)
+var executed: Dict[Int, Dict[Int, Int]]
+
+// Per replica: whether it has crashed
+var crashed: Dict[Int, Bool]
+
+// View change messages: per target-view per replica: has sent view-change?
+var vcSent: Dict[Int, Dict[Int, Bool]]
+// Per target-view: new-view sent?
+var nvSent: Dict[Int, Bool]
+
+func Primary(v) { v % (N + 1) }
+
+func PrepareCount(v, seq, val) {
+    len({r in 0..N if prepared[v][seq][r] and prePrepared[v][seq] == val})
+}
+
+func CommitCount(v, seq, val) {
+    len({r in 0..N if committed[v][seq][r] and prePrepared[v][seq] == val})
+}
+
+func VCCount(v) {
+    len({r in 0..N if vcSent[v][r]})
+}
+
+init {
+    view = {r: 0 for r in 0..N}
+    and status = {r: 0 for r in 0..N}
+    and prePrepared = {v: {s: -1 for s in 0..MaxSeq} for v in 0..MaxView}
+    and prepared = {v: {s: {r: false for r in 0..N} for s in 0..MaxSeq} for v in 0..MaxView}
+    and committed = {v: {s: {r: false for r in 0..N} for s in 0..MaxSeq} for v in 0..MaxView}
+    and executed = {r: {s: -1 for s in 0..MaxSeq} for r in 0..N}
+    and crashed = {r: false for r in 0..N}
+    and vcSent = {v: {r: false for r in 0..N} for v in 0..MaxView}
+    and nvSent = {v: false for v in 0..MaxView}
+}
+
+// Replica crashes (at most F can crash)
+action Crash(r: 0..N) {
+    require not crashed[r]
+    require len({i in 0..N if crashed[i]}) < F
+    crashed = crashed | {r: true}
+}
+
+// Primary pre-prepares a value for a sequence number
+action PrePrepare(v: 0..MaxView, seq: 0..MaxSeq, val: 0..V) {
+    require not crashed[Primary(v)]
+    require view[Primary(v)] == v
+    require status[Primary(v)] == 0
+    require prePrepared[v][seq] == -1
+    prePrepared = prePrepared | {v: (prePrepared[v] | {seq: val})}
+}
+
+// Backup replica sends prepare (accepts the pre-prepare)
+action SendPrepare(r: 0..N, v: 0..MaxView, seq: 0..MaxSeq) {
+    require not crashed[r]
+    require r != Primary(v)
+    require view[r] == v
+    require status[r] == 0
+    require prePrepared[v][seq] != -1
+    require not prepared[v][seq][r]
+    prepared = prepared | {v: (prepared[v] | {seq: (prepared[v][seq] | {r: true})})}
+}
+
+// Primary implicitly prepares (its pre-prepare counts as prepare)
+// We model this by the primary also marking prepared
+action PrimaryPrepare(v: 0..MaxView, seq: 0..MaxSeq) {
+    require not crashed[Primary(v)]
+    require view[Primary(v)] == v
+    require status[Primary(v)] == 0
+    require prePrepared[v][seq] != -1
+    require not prepared[v][seq][Primary(v)]
+    prepared = prepared | {v: (prepared[v] | {seq: (prepared[v][seq] | {Primary(v): true})})}
+}
+
+// Replica sends commit after seeing 2F prepares + pre-prepare
+action SendCommit(r: 0..N, v: 0..MaxView, seq: 0..MaxSeq) {
+    require not crashed[r]
+    require view[r] == v
+    require status[r] == 0
+    require prePrepared[v][seq] != -1
+    require PrepareCount(v, seq, prePrepared[v][seq]) >= 2 * F
+    require not committed[v][seq][r]
+    committed = committed | {v: (committed[v] | {seq: (committed[v][seq] | {r: true})})}
+}
+
+// Replica executes after seeing 2F+1 commits
+action Execute(r: 0..N, v: 0..MaxView, seq: 0..MaxSeq) {
+    require not crashed[r]
+    require executed[r][seq] == -1
+    require prePrepared[v][seq] != -1
+    require CommitCount(v, seq, prePrepared[v][seq]) >= 2 * F + 1
+    executed = executed | {r: (executed[r] | {seq: prePrepared[v][seq]})}
+}
+
+// Replica initiates view change (non-deterministic timeout)
+action StartViewChange(r: 0..N, v: 0..MaxView) {
+    require not crashed[r]
+    require view[r] == v
+    require v < MaxView
+    require not vcSent[v + 1][r]
+    status = status | {r: 1}
+    and vcSent = vcSent | {v + 1: (vcSent[v + 1] | {r: true})}
+}
+
+// New primary for view v+1 sends new-view after 2F view-change messages
+action SendNewView(v: 0..MaxView) {
+    require v > 0
+    require not nvSent[v]
+    require not crashed[Primary(v)]
+    require VCCount(v) >= 2 * F + 1
+    nvSent = nvSent | {v: true}
+}
+
+// Replica enters new view after new-view message
+action EnterNewView(r: 0..N, v: 0..MaxView) {
+    require not crashed[r]
+    require v > 0
+    require nvSent[v]
+    require view[r] < v
+    view = view | {r: v}
+    and status = status | {r: 0}
+}
+
+// Agreement: no two non-crashed replicas execute different values for the same seq
+invariant Agreement {
+    all r1 in 0..N: all r2 in 0..N: all s in 0..MaxSeq:
+        (not crashed[r1] and not crashed[r2]
+         and executed[r1][s] != -1 and executed[r2][s] != -1)
+        implies executed[r1][s] == executed[r2][s]
+}
+
+// Validity: executed values are in valid range
+invariant Validity {
+    all r in 0..N: all s in 0..MaxSeq:
+        executed[r][s] != -1 implies (executed[r][s] >= 0 and executed[r][s] <= V)
+}

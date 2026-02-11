@@ -1,0 +1,99 @@
+// Alternating Bit Protocol - reliable data transfer
+// Sender and receiver use alternating bits to track sequence
+// Use: No constants needed
+
+module ABProtocol
+
+// Data being sent (0=none, 1=data)
+var senderData: 0..1
+var receiverData: 0..1
+
+// Sequence bits
+var senderBit: 0..1
+var receiverBit: 0..1
+
+// Channel contents (0=empty, 1=data with bit 0, 2=data with bit 1)
+var dataChannel: 0..2
+var ackChannel: 0..1
+
+init {
+    (senderData = 1) and (receiverData = 0)
+    and (senderBit = 0) and (receiverBit = 0)
+    and (dataChannel = 0) and (ackChannel = 0)
+}
+
+// Sender transmits data with current bit
+action SendData() {
+    require senderData == 1
+    require dataChannel == 0
+
+    dataChannel = senderBit + 1
+}
+
+// Data is lost (channel failure)
+action LoseData() {
+    require dataChannel != 0
+
+    dataChannel = 0
+}
+
+// Receiver gets data with matching bit - accept and ack
+action ReceiveDataMatch() {
+    require dataChannel != 0
+    require ackChannel == 0
+    require dataChannel - 1 == receiverBit
+
+    receiverData = 1
+    and dataChannel = 0
+    and ackChannel = 1
+    and receiverBit = 1 - receiverBit
+}
+
+// Receiver gets data with wrong bit - discard
+action ReceiveDataMismatch() {
+    require dataChannel != 0
+    require ackChannel == 0
+    require dataChannel - 1 != receiverBit
+
+    dataChannel = 0
+}
+
+// Ack is lost
+action LoseAck() {
+    require ackChannel == 1
+
+    ackChannel = 0
+}
+
+// Sender receives ack
+action ReceiveAck() {
+    require ackChannel == 1
+
+    senderBit = 1 - senderBit
+    and senderData = 0
+    and ackChannel = 0
+}
+
+// Sender can retransmit
+action Retransmit() {
+    require senderData == 1
+    require dataChannel == 0
+    require ackChannel == 0
+
+    dataChannel = senderBit + 1
+}
+
+// Stutter when done
+action Done() {
+    require senderData == 0 and receiverData == 1
+}
+
+// Safety: receiver never has wrong data
+invariant ReceiverCorrect {
+    receiverData == 0 or receiverData == 1
+}
+
+// Safety: if sender finished, receiver has data
+invariant EventualDelivery {
+    (senderData == 0) implies (receiverData == 1)
+}

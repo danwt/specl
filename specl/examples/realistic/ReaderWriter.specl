@@ -1,0 +1,80 @@
+// Readers-Writers Lock
+// Multiple readers can read simultaneously, but writers need exclusive access.
+// Use: -c MAX_READER=1 -c MAX_WRITER=0
+
+module ReaderWriter
+
+// Upper bounds on reader/writer IDs
+const MAX_READER: 0..3
+const MAX_WRITER: 0..2
+
+// States: 0=idle, 1=waiting, 2=active
+var readerState: Dict[0..MAX_READER, 0..2]
+var writerState: Dict[0..MAX_WRITER, 0..2]
+var activeReaders: 0..4
+var activeWriter: Bool
+
+init {
+    readerState = {r: 0 for r in 0..MAX_READER}
+    and writerState = {w: 0 for w in 0..MAX_WRITER}
+    and activeReaders = 0
+    and activeWriter = false
+}
+
+// Reader wants to read
+action ReaderWant(r: 0..MAX_READER) {
+    require readerState[r] == 0
+    readerState = readerState | { r: 1 }
+}
+
+// Reader starts reading (if no active writer)
+action ReaderStart(r: 0..MAX_READER) {
+    require readerState[r] == 1
+    require activeWriter == false
+    readerState = readerState | { r: 2 }
+    and activeReaders = activeReaders + 1
+}
+
+// Reader finishes reading
+action ReaderFinish(r: 0..MAX_READER) {
+    require readerState[r] == 2
+    readerState = readerState | { r: 0 }
+    and activeReaders = activeReaders - 1
+}
+
+// Writer wants to write
+action WriterWant(w: 0..MAX_WRITER) {
+    require writerState[w] == 0
+    writerState = writerState | { w: 1 }
+}
+
+// Writer starts writing (if no active readers/writer)
+action WriterStart(w: 0..MAX_WRITER) {
+    require writerState[w] == 1
+    require activeReaders == 0
+    require activeWriter == false
+    writerState = writerState | { w: 2 }
+    and activeWriter = true
+}
+
+// Writer finishes writing
+action WriterFinish(w: 0..MAX_WRITER) {
+    require writerState[w] == 2
+    writerState = writerState | { w: 0 }
+    and activeWriter = false
+}
+
+// Safety: No reader and writer active simultaneously
+invariant NoReaderWriterConflict {
+    not (activeReaders > 0 and activeWriter == true)
+}
+
+// Safety: At most one writer active
+invariant AtMostOneWriter {
+    len({ w in 0..MAX_WRITER if writerState[w] == 2 }) <= 1
+}
+
+// Safety: Active reader count matches actual readers
+invariant ReaderCountCorrect {
+    activeReaders == len({ r in 0..MAX_READER if readerState[r] == 2 })
+}

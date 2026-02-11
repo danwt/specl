@@ -1,0 +1,47 @@
+// Banking example (simplified)
+// Demonstrates: state variables, actions with preconditions
+// Use: No constants needed
+
+module BankingRecords
+
+// Account balances
+var aliceBalance: 0..100
+var bobBalance: 0..100
+
+// Frozen status
+var aliceFrozen: Bool
+var bobFrozen: Bool
+
+init {
+    aliceBalance = 50 and bobBalance = 50
+    and aliceFrozen = false and bobFrozen = false
+}
+
+action Transfer(amount: 1..10) {
+    require not aliceFrozen
+    require not bobFrozen
+    require aliceBalance >= amount
+
+    aliceBalance = aliceBalance - amount
+    and bobBalance = bobBalance + amount
+}
+
+action FreezeAlice() {
+    require not aliceFrozen
+    aliceFrozen = true
+}
+
+action UnfreezeAlice() {
+    require aliceFrozen
+    aliceFrozen = false
+}
+
+// Money is conserved
+invariant MoneyConserved {
+    aliceBalance + bobBalance == 100
+}
+
+// Balances are non-negative
+invariant NonNegative {
+    aliceBalance >= 0 and bobBalance >= 0
+}

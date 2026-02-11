@@ -1,0 +1,31 @@
+// N-Counter Benchmark
+// State space: (MAX+1)^(N+1) reachable states
+// Example: N=2, MAX=3: 4^3 = 64 states (indices 0,1,2)
+// Use: -c N=2 -c MAX=3
+
+module Counters
+
+// N is highest index, so 0..N gives N+1 counters
+// Fixed domain 0..5 supports up to N=5 (6 counters)
+const N: 0..5
+const MAX: 0..20
+
+var counters: Dict[0..N, 0..MAX]
+
+init {
+    counters = {i: 0 for i in 0..N}
+}
+
+action Increment(i: 0..N) {
+    require counters[i] < MAX
+    counters = counters | { i: counters[i] + 1 }
+}
+
+action Reset(i: 0..N) {
+    require counters[i] > 0
+    counters = counters | { i: 0 }
+}
+
+invariant AllInRange {
+    all i in 0..N: counters[i] >= 0 and counters[i] <= MAX
+}

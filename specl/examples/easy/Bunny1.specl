@@ -1,0 +1,42 @@
+// Use: No constants needed
+// Puzzle: invariant violation is intentional (counterexample IS the solution)
+module Bunny1Compact
+
+// Bunny puzzle - easy version (compact encoding)
+// Nodes: A=0, B=1, C=2, D=3, E=4
+// Animals: dog=0, r1=1, r2=2
+// Goal: dog at D (bone), both rabbits at E (carrot)
+
+var pos: Dict[0..2, 0..4]
+
+init {
+    pos = {a: (if a == 0 then 0 else if a == 1 then 1 else 2) for a in 0..2}
+}
+
+invariant NotSolved {
+    not (pos[0] == 3 and pos[1] == 4 and pos[2] == 4)
+}
+
+action Move(animal: 0..2, from: 0..4, to: 0..4) {
+    require pos[animal] == from
+    require from != to
+
+    // Edge check and guard satisfied
+    require
+        // A-B (unguarded)
+        ((from == 0 and to == 1) or (from == 1 and to == 0))
+        // B-C (unguarded)
+        or ((from == 1 and to == 2) or (from == 2 and to == 1))
+        // D-E (unguarded)
+        or ((from == 3 and to == 4) or (from == 4 and to == 3))
+        // A-E (unguarded)
+        or ((from == 0 and to == 4) or (from == 4 and to == 0))
+        // C-D (guard: someone at E=4)
+        or (((from == 2 and to == 3) or (from == 3 and to == 2))
+            and (any a in 0..2: pos[a] == 4))
+        // B-D (guard: someone at A=0)
+        or (((from == 1 and to == 3) or (from == 3 and to == 1))
+            and (any a in 0..2: pos[a] == 0))
+
+    pos = pos | { animal: to }
+}

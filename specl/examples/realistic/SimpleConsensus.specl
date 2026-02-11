@@ -1,0 +1,44 @@
+// Simple Consensus - Basic single-round voting
+// Demonstrates consensus invariant: at most one value decided
+// Use: -c MAX_NODE=1 -c MAX_VALUE=1
+// With MAX_NODE=1, nodes are {0, 1} (2 nodes total)
+
+module SimpleConsensus
+
+// Upper bounds (0..MAX_NODE gives MAX_NODE+1 nodes)
+const MAX_NODE: 0..2
+const MAX_VALUE: 0..2
+
+// 0=no vote, 1+=voted for (value-1)
+var votes: Dict[0..MAX_NODE, 0..MAX_VALUE]
+// 0=none, 1+=decided (value-1)
+var decided: 0..MAX_VALUE
+
+init {
+    votes = {n: 0 for n in 0..MAX_NODE}
+    and decided = 0
+}
+
+// Node votes for a value
+action Vote(node: 0..MAX_NODE, value: 0..MAX_VALUE) {
+    require votes[node] == 0
+    votes = votes | { node: value + 1 }
+}
+
+// Decide when majority agrees
+action Decide(value: 0..MAX_VALUE) {
+    require decided == 0
+    require len({ n in 0..MAX_NODE if votes[n] == value + 1 }) > (MAX_NODE + 1) / 2
+    decided = value + 1
+}
+
+// Stutter when decided
+action Done() {
+    require decided > 0
+}
+
+// Safety: At most one value can be decided
+invariant ConsistentDecision {
+    decided > 0 implies
+        len({ n in 0..MAX_NODE if votes[n] == decided }) > (MAX_NODE + 1) / 2
+}

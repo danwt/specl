@@ -1,0 +1,7 @@
+# Binary files
+*.png filter=lfs diff=lfs merge=lfs -text
+*.ico filter=lfs diff=lfs merge=lfs -text
+*.wasm filter=lfs diff=lfs merge=lfs -text
+
+# Generated (treat as binary for diff purposes)
+specl/tree-sitter-specl/src/parser.c linguist-generated=true
