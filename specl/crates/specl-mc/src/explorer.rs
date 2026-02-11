@@ -157,6 +157,9 @@ pub struct Explorer {
     guard_indices: Vec<Option<GuardIndex>>,
     /// Action names for trace reconstruction (avoids formatting per-successor).
     action_names: Vec<String>,
+    /// For each action, for each param: Some(var_idx) if domain comes from state variable.
+    /// Detected from `require param in var` guard patterns.
+    state_dep_domains: Vec<Vec<Option<usize>>>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -613,6 +616,33 @@ fn compute_guard_index(guard: &CompiledExpr, num_params: usize) -> Option<GuardI
     })
 }
 
+/// Detect `require param in var` patterns in guard conjuncts.
+/// Returns a vec of length `num_params` where `Some(var_idx)` means the param's
+/// domain should be extracted from `state.vars[var_idx]` at runtime.
+fn detect_state_dep_domains(guard: &CompiledExpr, num_params: usize) -> Vec<Option<usize>> {
+    let mut result = vec![None; num_params];
+    if num_params == 0 {
+        return result;
+    }
+    for conjunct in decompose_conjuncts(guard) {
+        if let CompiledExpr::Binary {
+            op: BinOp::In,
+            left,
+            right,
+        } = conjunct
+        {
+            if let (CompiledExpr::Param(param_idx), CompiledExpr::Var(var_idx)) =
+                (left.as_ref(), right.as_ref())
+            {
+                if *param_idx < num_params {
+                    result[*param_idx] = Some(*var_idx);
+                }
+            }
+        }
+    }
+    result
+}
+
 /// Enumerate parameter combinations with guard indexing for early pruning.
 /// `params_buf` must be pre-allocated to `num_params` size.
 fn enumerate_params_indexed<F>(
@@ -750,6 +780,25 @@ impl Explorer {
             .map(|action| compute_guard_index(&action.guard, action.params.len()))
             .collect();
 
+        // Detect state-dependent parameter domains (require param in var)
+        let state_dep_domains: Vec<Vec<Option<usize>>> = spec
+            .actions
+            .iter()
+            .map(|action| detect_state_dep_domains(&action.guard, action.params.len()))
+            .collect();
+
+        let dep_count = state_dep_domains
+            .iter()
+            .filter(|d| d.iter().any(|p| p.is_some()))
+            .count();
+        if dep_count > 0 {
+            debug!(
+                dep_count,
+                total = spec.actions.len(),
+                "state-dependent parameter domains detected"
+            );
+        }
+
         let indexed_count = guard_indices.iter().filter(|g| g.is_some()).count();
         if indexed_count > 0 {
             debug!(
@@ -773,6 +822,7 @@ impl Explorer {
             action_write_masks,
             guard_indices,
             action_names: Vec::new(),
+            state_dep_domains,
         };
 
         // Precompute action names for trace reconstruction
@@ -784,11 +834,33 @@ impl Explorer {
             .collect();
 
         // Precompute parameter domains for each action
+        // State-dependent params get empty placeholder (domain extracted from state at runtime)
         explorer.cached_param_domains = explorer
             .spec
             .actions
             .iter()
-            .map(|action| explorer.get_param_domains(action))
+            .enumerate()
+            .map(|(action_idx, action)| {
+                let deps = &explorer.state_dep_domains[action_idx];
+                action
+                    .params
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (_, ty))| {
+                        if deps[i].is_some() {
+                            // State-dependent: placeholder, will be replaced at runtime
+                            Vec::new()
+                        } else if let Some(type_expr) = action.param_type_exprs.get(i) {
+                            if let Some(domain) = explorer.resolve_type_expr_domain(type_expr) {
+                                return domain;
+                            }
+                            explorer.type_domain(ty)
+                        } else {
+                            explorer.type_domain(ty)
+                        }
+                    })
+                    .collect()
+            })
             .collect();
 
         explorer
@@ -1986,7 +2058,13 @@ impl Explorer {
         _action: &CompiledAction,
         action_idx: usize,
     ) -> CheckResult<bool> {
-        let param_domains = &self.cached_param_domains[action_idx];
+        let dynamic;
+        let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
+            dynamic = d;
+            &dynamic
+        } else {
+            &self.cached_param_domains[action_idx]
+        };
         let guard_bc = &self.compiled_guards[action_idx];
         let mut enabled = false;
 
@@ -2111,7 +2189,13 @@ impl Explorer {
         cache: &mut OpCache,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
-        let param_domains = &self.cached_param_domains[action_idx];
+        let dynamic;
+        let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
+            dynamic = d;
+            &dynamic
+        } else {
+            &self.cached_param_domains[action_idx]
+        };
         let guard_bc = &self.compiled_guards[action_idx];
         let reads = &action.reads;
         let changes = &action.changes;
@@ -2313,24 +2397,30 @@ impl Explorer {
         }
     }
 
-    /// Get parameter domains for an action.
-    /// Uses param_type_exprs to resolve ranges that reference constants.
-    fn get_param_domains(&self, action: &CompiledAction) -> Vec<Vec<Value>> {
-        action
-            .params
-            .iter()
-            .enumerate()
-            .map(|(i, (_, ty))| {
-                // Try to resolve from TypeExpr first (handles 0..NUM_READERS)
-                if let Some(type_expr) = action.param_type_exprs.get(i) {
-                    if let Some(domain) = self.resolve_type_expr_domain(type_expr) {
-                        return domain;
+    /// Build effective parameter domains, substituting state-dependent domains at runtime.
+    /// Returns None if no params are state-dependent (zero overhead fast path).
+    fn get_effective_domains(&self, action_idx: usize, state: &State) -> Option<Vec<Vec<Value>>> {
+        let deps = &self.state_dep_domains[action_idx];
+        if !deps.iter().any(|d| d.is_some()) {
+            return None;
+        }
+        let static_domains = &self.cached_param_domains[action_idx];
+        Some(
+            static_domains
+                .iter()
+                .enumerate()
+                .map(|(i, static_domain)| {
+                    if let Some(var_idx) = deps[i] {
+                        match &state.vars[var_idx] {
+                            Value::Set(elems) => (**elems).clone(),
+                            _ => static_domain.clone(),
+                        }
+                    } else {
+                        static_domain.clone()
                     }
-                }
-                // Fall back to resolved Type
-                self.type_domain(ty)
-            })
-            .collect()
+                })
+                .collect(),
+        )
     }
 
     /// Try to resolve a TypeExpr to a domain, evaluating constant references.
