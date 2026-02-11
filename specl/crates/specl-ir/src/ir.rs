@@ -249,6 +249,179 @@ pub enum CompiledExpr {
     },
 }
 
+impl CompiledExpr {
+    /// Shift all free Local indices up by `amount`.
+    /// Used when an expression compiled in one scope is placed inside
+    /// nested Let bindings that add locals before it executes.
+    /// `depth` tracks how many binders we're inside (don't shift bound locals).
+    pub fn shift_locals(&self, amount: usize) -> CompiledExpr {
+        self.shift_locals_inner(amount, 0)
+    }
+
+    fn shift_locals_inner(&self, amount: usize, depth: usize) -> CompiledExpr {
+        match self {
+            CompiledExpr::Local(idx) => {
+                if *idx >= depth {
+                    CompiledExpr::Local(*idx + amount)
+                } else {
+                    self.clone()
+                }
+            }
+            CompiledExpr::Binary { op, left, right } => CompiledExpr::Binary {
+                op: *op,
+                left: Box::new(left.shift_locals_inner(amount, depth)),
+                right: Box::new(right.shift_locals_inner(amount, depth)),
+            },
+            CompiledExpr::Unary { op, operand } => CompiledExpr::Unary {
+                op: *op,
+                operand: Box::new(operand.shift_locals_inner(amount, depth)),
+            },
+            CompiledExpr::Index { base, index } => CompiledExpr::Index {
+                base: Box::new(base.shift_locals_inner(amount, depth)),
+                index: Box::new(index.shift_locals_inner(amount, depth)),
+            },
+            CompiledExpr::Slice { base, lo, hi } => CompiledExpr::Slice {
+                base: Box::new(base.shift_locals_inner(amount, depth)),
+                lo: Box::new(lo.shift_locals_inner(amount, depth)),
+                hi: Box::new(hi.shift_locals_inner(amount, depth)),
+            },
+            CompiledExpr::Len(inner) => {
+                CompiledExpr::Len(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => CompiledExpr::If {
+                cond: Box::new(cond.shift_locals_inner(amount, depth)),
+                then_branch: Box::new(then_branch.shift_locals_inner(amount, depth)),
+                else_branch: Box::new(else_branch.shift_locals_inner(amount, depth)),
+            },
+            // Binders: increase depth by 1
+            CompiledExpr::Let { value, body } => CompiledExpr::Let {
+                value: Box::new(value.shift_locals_inner(amount, depth)),
+                body: Box::new(body.shift_locals_inner(amount, depth + 1)),
+            },
+            CompiledExpr::Forall { domain, body } => CompiledExpr::Forall {
+                domain: Box::new(domain.shift_locals_inner(amount, depth)),
+                body: Box::new(body.shift_locals_inner(amount, depth + 1)),
+            },
+            CompiledExpr::Exists { domain, body } => CompiledExpr::Exists {
+                domain: Box::new(domain.shift_locals_inner(amount, depth)),
+                body: Box::new(body.shift_locals_inner(amount, depth + 1)),
+            },
+            CompiledExpr::FnLit { domain, body } => CompiledExpr::FnLit {
+                domain: Box::new(domain.shift_locals_inner(amount, depth)),
+                body: Box::new(body.shift_locals_inner(amount, depth + 1)),
+            },
+            CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } => CompiledExpr::SetComprehension {
+                element: Box::new(element.shift_locals_inner(amount, depth + 1)),
+                domain: Box::new(domain.shift_locals_inner(amount, depth)),
+                filter: filter
+                    .as_ref()
+                    .map(|f| Box::new(f.shift_locals_inner(amount, depth + 1))),
+            },
+            CompiledExpr::Choose { domain, predicate } => CompiledExpr::Choose {
+                domain: Box::new(domain.shift_locals_inner(amount, depth)),
+                predicate: Box::new(predicate.shift_locals_inner(amount, depth + 1)),
+            },
+            CompiledExpr::Call { func, args } => CompiledExpr::Call {
+                func: Box::new(func.shift_locals_inner(amount, depth)),
+                args: args
+                    .iter()
+                    .map(|a| a.shift_locals_inner(amount, depth))
+                    .collect(),
+            },
+            CompiledExpr::FnUpdate { base, key, value } => CompiledExpr::FnUpdate {
+                base: Box::new(base.shift_locals_inner(amount, depth)),
+                key: Box::new(key.shift_locals_inner(amount, depth)),
+                value: Box::new(value.shift_locals_inner(amount, depth)),
+            },
+            CompiledExpr::SeqLit(elems) => CompiledExpr::SeqLit(
+                elems
+                    .iter()
+                    .map(|e| e.shift_locals_inner(amount, depth))
+                    .collect(),
+            ),
+            CompiledExpr::SetLit(elems) => CompiledExpr::SetLit(
+                elems
+                    .iter()
+                    .map(|e| e.shift_locals_inner(amount, depth))
+                    .collect(),
+            ),
+            CompiledExpr::TupleLit(elems) => CompiledExpr::TupleLit(
+                elems
+                    .iter()
+                    .map(|e| e.shift_locals_inner(amount, depth))
+                    .collect(),
+            ),
+            CompiledExpr::DictLit(pairs) => CompiledExpr::DictLit(
+                pairs
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.shift_locals_inner(amount, depth),
+                            v.shift_locals_inner(amount, depth),
+                        )
+                    })
+                    .collect(),
+            ),
+            CompiledExpr::RecordUpdate { base, updates } => CompiledExpr::RecordUpdate {
+                base: Box::new(base.shift_locals_inner(amount, depth)),
+                updates: updates
+                    .iter()
+                    .map(|(k, v)| (k.clone(), v.shift_locals_inner(amount, depth)))
+                    .collect(),
+            },
+            CompiledExpr::Range { lo, hi } => CompiledExpr::Range {
+                lo: Box::new(lo.shift_locals_inner(amount, depth)),
+                hi: Box::new(hi.shift_locals_inner(amount, depth)),
+            },
+            CompiledExpr::SeqHead(inner) => {
+                CompiledExpr::SeqHead(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::SeqTail(inner) => {
+                CompiledExpr::SeqTail(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::Keys(inner) => {
+                CompiledExpr::Keys(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::Values(inner) => {
+                CompiledExpr::Values(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::BigUnion(inner) => {
+                CompiledExpr::BigUnion(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::Powerset(inner) => {
+                CompiledExpr::Powerset(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::Field { base, field } => CompiledExpr::Field {
+                base: Box::new(base.shift_locals_inner(amount, depth)),
+                field: field.clone(),
+            },
+            CompiledExpr::Fix { predicate } => CompiledExpr::Fix {
+                predicate: Box::new(predicate.shift_locals_inner(amount, depth + 1)),
+            },
+            // Leaves: no locals to shift
+            CompiledExpr::Bool(_)
+            | CompiledExpr::Int(_)
+            | CompiledExpr::String(_)
+            | CompiledExpr::Var(_)
+            | CompiledExpr::PrimedVar(_)
+            | CompiledExpr::Const(_)
+            | CompiledExpr::Param(_)
+            | CompiledExpr::Changes(_)
+            | CompiledExpr::Unchanged(_)
+            | CompiledExpr::Enabled(_)
+            | CompiledExpr::ActionCall { .. } => self.clone(),
+        }
+    }
+}
+
 /// Binary operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinOp {
