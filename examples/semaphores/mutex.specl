@@ -76,8 +76,8 @@ module Mutex
 
 const N: 0..10  // Number of threads
 
-// Thread states: 0=outside, 1=waiting, 2=in_critical_section, 3=done
-var threads: Dict[Int, 0..3]
+// Thread states: 0=outside, 1=waiting, 2=in_critical_section, 3=incremented, 4=exited, 5=done
+var threads: Dict[Int, 0..5]
 
 // Mutex semaphore (0=locked, 1=unlocked)
 var mutex: 0..1
@@ -86,51 +86,48 @@ var mutex: 0..1
 var count: 0..100
 
 init {
-    threads = {} and
+    threads = {i: 0 for i in 0..N} and
     mutex = 1 and
     count = 0
 }
 
 // === Thread actions ===
 
-action Thread_Arrive(i: 0..N) {
-    require not has_key(threads, i)
-    threads = threads | {i: 0}
-}
-
 action Thread_Wait(i: 0..N) {
-    require has_key(threads, i) and threads[i] == 0
+    require threads[i] == 0
     require mutex == 1
     threads = threads | {i: 1} and
     mutex = 0
 }
 
 action Thread_EnterCritical(i: 0..N) {
-    require has_key(threads, i) and threads[i] == 1
+    require threads[i] == 1
     threads = threads | {i: 2}
 }
 
 action Thread_Increment(i: 0..N) {
-    require has_key(threads, i) and threads[i] == 2
-    count = count + 1
-}
-
-action Thread_ExitCritical(i: 0..N) {
-    require has_key(threads, i) and threads[i] == 2
+    require threads[i] == 2
+    count = count + 1 and
     threads = threads | {i: 3}
 }
 
+action Thread_ExitCritical(i: 0..N) {
+    require threads[i] == 3
+    threads = threads | {i: 4}
+}
+
 action Thread_Signal(i: 0..N) {
-    require has_key(threads, i) and threads[i] == 3
+    require threads[i] == 4
     require mutex == 0
-    mutex = 1
+    mutex = 1 and
+    threads = threads | {i: 5}
 }
 
 // === Safety invariants ===
 
 invariant MutualExclusion {
     // At most one thread in critical section at a time
-    let in_cs = len({i in 0..N if has_key(threads, i) and threads[i] == 2}) in
+    let in_cs = len({i in 0..N if threads[i] == 2}) in
     in_cs <= 1
 }
 
@@ -141,7 +138,7 @@ invariant MutexBinary {
 
 invariant CountCorrect {
     // Count equals number of threads that have incremented
-    let done_count = len({i in 0..N if has_key(threads, i) and threads[i] >= 2}) in
+    let done_count = len({i in 0..N if threads[i] >= 3}) in
     count == done_count
 }
 
