@@ -37,7 +37,7 @@ invariant Bounded { count >= 0 and count <= MAX }
 
 ## Performance
 
-Faster than TLC (the standard TLA+ model checker) on all benchmarks tested, with verified identical state counts. Written in Rust with a bytecode VM, incremental fingerprinting, guard indexing, and parallel BFS.
+Faster than TLC (the standard TLA+ model checker) on all benchmarks tested. Written in Rust with a bytecode VM, incremental fingerprinting, guard indexing, and parallel BFS.
 
 With parallelism: 1M+ states/second on typical workloads.
 
