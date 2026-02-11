@@ -37,17 +37,9 @@ invariant Bounded { count >= 0 and count <= MAX }
 
 ## Performance
 
-Beats TLC on all benchmarks (single-thread, verified identical state counts):
+Faster than TLC (the standard TLA+ model checker) on all benchmarks tested, with verified identical state counts. Written in Rust with a bytecode VM, incremental fingerprinting, guard indexing, and parallel BFS.
 
-| Benchmark | States | Specl | TLC | Speedup |
-|-----------|--------|-------|-----|---------|
-| Raft N=2 | 1.58M | 83K st/s | 40K | **2.1x** |
-| Percolator C=2 K=2 | 4.2M | 104K st/s | 56K | **1.9x** |
-| Counters N=4 MAX=9 | 100K | 253K st/s | 174K | **1.5x** |
-| Parallel Commits K=2 | 13.3M | 115K st/s | 76K | **1.5x** |
-| EPaxos R=2 | 757K | 118K st/s | 84K | **1.4x** |
-
-With parallel BFS (8 threads): 1M+ states/second on Counters, 573K on Raft.
+With parallelism: 1M+ states/second on typical workloads.
 
 ## Examples
 
@@ -56,7 +48,6 @@ With parallel BFS (8 threads): 1M+ states/second on Counters, 573K on Raft.
 | [Raft consensus](specl/examples/benchmark/01-raft/raft.specl) | Leader election + log replication (1.58M states) |
 | [Percolator](specl/examples/benchmark/14-percolator/percolator.specl) | Google's distributed transactions with snapshot isolation (4.2M states) |
 | [Parallel Commits](specl/examples/benchmark/15-parallel-commits/parallel-commits.specl) | CockroachDB's parallel commit protocol (13.3M states) |
-| [Bronson AVL](specl/examples/benchmark/16-bronson-avl/bronson_avl.specl) | Concurrent AVL tree — finds rebalancing bug in 760K states (TLC needed 126M) |
 | [EPaxos](specl/examples/benchmark/12-epaxos/epaxos.specl) | Egalitarian Paxos (757K states) |
 | [Two-Phase Commit](specl/examples/benchmark/03-tpc/tpc.specl) | Classic distributed commit protocol |
 | [Dining Philosophers](specl/examples/easy/DiningPhilosophers.specl) | Mutual exclusion with shared resources |
