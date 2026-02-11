@@ -391,13 +391,8 @@ impl Compiler {
                         // pushed, so shift its Local indices up by i.
                         let mut result = body;
                         for (i, _param) in func_def.params.iter().enumerate().rev() {
-                            let shifted_arg = if i > 0 {
-                                compiled_args[i].shift_locals(i)
-                            } else {
-                                compiled_args[i].clone()
-                            };
                             result = CompiledExpr::Let {
-                                value: Box::new(shifted_arg),
+                                value: Box::new(compiled_args[i].shift_locals(i)),
                                 body: Box::new(result),
                             };
                         }

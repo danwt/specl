@@ -62,13 +62,13 @@ func LastLogIndex(l) {
 }
 
 func LastLogTerm(l) {
-    if len(l) == 0 then 0 else l[len(l)]
+    if len(l) == 0 then 0 else l[len(l) - 1]
 }
 
 func LogTerm(l, i) {
     if i == 0 then 0
     else if i > len(l) then -1
-    else l[i]
+    else l[i - 1]
 }
 
 func Min(a, b) {
@@ -134,14 +134,14 @@ action HandleRequestVoteRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
     and votedFor = votedFor | {j:
         if msg[3] > currentTerm[j] then
             (if msg[3] >= currentTerm[j]
-             and (msg[4] > LastLogTerm(log[j])
-                  or (msg[4] == LastLogTerm(log[j]) and msg[5] >= LastLogIndex(log[j])))
+             and (msg[5] > LastLogTerm(log[j])
+                  or (msg[5] == LastLogTerm(log[j]) and msg[4] >= LastLogIndex(log[j])))
              then i else -1)
         else
             (if msg[3] >= currentTerm[j]
              and (votedFor[j] == -1 or votedFor[j] == i)
-             and (msg[4] > LastLogTerm(log[j])
-                  or (msg[4] == LastLogTerm(log[j]) and msg[5] >= LastLogIndex(log[j])))
+             and (msg[5] > LastLogTerm(log[j])
+                  or (msg[5] == LastLogTerm(log[j]) and msg[4] >= LastLogIndex(log[j])))
              then i else votedFor[j])
     }
 
@@ -151,12 +151,12 @@ action HandleRequestVoteRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
         2, j, i,
         if msg[3] > currentTerm[j] then msg[3] else currentTerm[j],
         if (msg[3] > currentTerm[j] and msg[3] >= currentTerm[j]
-            and (msg[4] > LastLogTerm(log[j])
-                 or (msg[4] == LastLogTerm(log[j]) and msg[5] >= LastLogIndex(log[j]))))
+            and (msg[5] > LastLogTerm(log[j])
+                 or (msg[5] == LastLogTerm(log[j]) and msg[4] >= LastLogIndex(log[j]))))
            or (msg[3] <= currentTerm[j] and msg[3] >= currentTerm[j]
                and (votedFor[j] == -1 or votedFor[j] == i)
-               and (msg[4] > LastLogTerm(log[j])
-                    or (msg[4] == LastLogTerm(log[j]) and msg[5] >= LastLogIndex(log[j]))))
+               and (msg[5] > LastLogTerm(log[j])
+                    or (msg[5] == LastLogTerm(log[j]) and msg[4] >= LastLogIndex(log[j]))))
         then 1 else 0,
         0
     ]}
@@ -164,29 +164,17 @@ action HandleRequestVoteRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
 
 // Candidate i receives RequestVote response
 // msg = [2, src=j, dest=i, term, voteGranted, 0]
+// Candidate i receives RequestVote response from current term
+// Stale responses (msg[3] != currentTerm[i]) are handled by DropRequestVoteResp
+// Higher-term discovery is handled by UpdateTerm
 action HandleRequestVoteResponse(i: 0..N, j: 0..N, msg: Seq[Int]) {
     require i != j
     require role[i] == 1
     require msg in requestVoteResps
     require msg[0] == 2 and msg[1] == j and msg[2] == i
+    require msg[3] == currentTerm[i]  // only process votes from current term
 
-    currentTerm = currentTerm | {i:
-        if msg[3] > currentTerm[i] then msg[3] else currentTerm[i]
-    }
-
-    and role = role | {i:
-        if msg[3] > currentTerm[i] then 0 else role[i]
-    }
-
-    and votedFor = votedFor | {i:
-        if msg[3] > currentTerm[i] then -1 else votedFor[i]
-    }
-
-    and votesGranted = votesGranted | {i:
-        if msg[3] > currentTerm[i] then votesGranted[i]
-        else (votesGranted[i] | {j: msg[4] == 1})
-    }
-
+    votesGranted = votesGranted | {i: (votesGranted[i] | {j: msg[4] == 1})}
     and requestVoteResps = requestVoteResps diff {msg}
 }
 
@@ -257,20 +245,11 @@ action HandleAppendEntriesRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
              else log[j][0 .. msg[4]] ++ log[i][msg[4] .. len(log[i])])
     }
 
-    // Update commitIndex if success
+    // Update commitIndex if success: min(leaderCommit, len(leader_log))
     and commitIndex = commitIndex | {j:
         if (msg[3] >= currentTerm[j]
             and (msg[4] == 0 or (msg[4] <= len(log[j]) and LogTerm(log[j], msg[4]) == msg[5])))
-        then Min(commitIndex[i], len(
-            if not (msg[3] >= currentTerm[j]
-                    and (msg[4] == 0 or (msg[4] <= len(log[j]) and LogTerm(log[j], msg[4]) == msg[5])))
-            then log[j]
-            else if msg[4] + 1 > len(log[i]) then
-                (if msg[4] == 0 then log[j] else log[j][0 .. msg[4]])
-            else
-                (if msg[4] == 0 then log[i][msg[4] .. len(log[i])]
-                 else log[j][0 .. msg[4]] ++ log[i][msg[4] .. len(log[i])])
-        )) else commitIndex[j]
+        then Min(commitIndex[i], len(log[i])) else commitIndex[j]
     }
 
     // Send response: [4, src=j, dest=i, term, success, matchIdx]
@@ -283,48 +262,27 @@ action HandleAppendEntriesRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
         then 1 else 0,
         if (msg[3] >= currentTerm[j]
             and (msg[4] == 0 or (msg[4] <= len(log[j]) and LogTerm(log[j], msg[4]) == msg[5])))
-        then len(
-            if not (msg[3] >= currentTerm[j]
-                    and (msg[4] == 0 or (msg[4] <= len(log[j]) and LogTerm(log[j], msg[4]) == msg[5])))
-            then log[j]
-            else if msg[4] + 1 > len(log[i]) then
-                (if msg[4] == 0 then log[j] else log[j][0 .. msg[4]])
-            else
-                (if msg[4] == 0 then log[i][msg[4] .. len(log[i])]
-                 else log[j][0 .. msg[4]] ++ log[i][msg[4] .. len(log[i])])
-        ) else 0
+        then len(log[i]) else 0
     ]}
 }
 
-// Leader receives AppendEntries response
-// msg = [4, src=j, dest=i, term, success, matchIdx]
+// Leader receives AppendEntries response from current term
+// Stale responses are handled by DropAppendEntriesResp
+// Higher-term discovery is handled by UpdateTerm
 action HandleAppendEntriesResponse(i: 0..N, j: 0..N, msg: Seq[Int]) {
     require i != j
     require role[i] == 2
     require msg in appendEntriesResps
     require msg[0] == 4 and msg[1] == j and msg[2] == i
+    require msg[3] == currentTerm[i]  // only process responses from current term
 
-    currentTerm = currentTerm | {i:
-        if msg[3] > currentTerm[i] then msg[3] else currentTerm[i]
-    }
-
-    and role = role | {i:
-        if msg[3] > currentTerm[i] then 0 else role[i]
-    }
-
-    and votedFor = votedFor | {i:
-        if msg[3] > currentTerm[i] then -1 else votedFor[i]
-    }
-
-    and nextIndex = nextIndex | {i:
-        if msg[3] > currentTerm[i] then nextIndex[i]
-        else if msg[4] == 1 then nextIndex[i] | {j: msg[5] + 1}
+    nextIndex = nextIndex | {i:
+        if msg[4] == 1 then nextIndex[i] | {j: msg[5] + 1}
         else nextIndex[i] | {j: if nextIndex[i][j] > 1 then nextIndex[i][j] - 1 else 1}
     }
 
     and matchIndex = matchIndex | {i:
-        if msg[3] > currentTerm[i] then matchIndex[i]
-        else if msg[4] == 1 then matchIndex[i] | {j: msg[5]}
+        if msg[4] == 1 then matchIndex[i] | {j: msg[5]}
         else matchIndex[i]
     }
 
