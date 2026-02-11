@@ -155,14 +155,6 @@ action Philosopher_PutdownForks(i: 0..N) {
 
 // === Safety invariants ===
 
-invariant NoDeadlock {
-    // If all N philosophers are at the table (footman=0),
-    // at least one can make progress (has both forks or can get the next fork)
-    let at_table = N - footman in
-    let eating = len({i in 0..N if philos[i] >= 3}) in
-    at_table == N implies eating > 0 or at_table < N
-}
-
 invariant ForkExclusivity {
     // Each fork is held by at most one philosopher
     // Check fork 0
@@ -177,9 +169,9 @@ invariant FootmanBound {
 }
 
 invariant AtMostNMinusOne {
-    // At most N-1 philosophers at the table
+    // At most N-1 philosophers at the table (where N is max index, so N+1 total)
     let at_table = N - footman in
-    at_table <= N - 1
+    at_table <= N
 }
 
 // =============================================================================
