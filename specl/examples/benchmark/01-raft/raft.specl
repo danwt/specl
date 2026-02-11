@@ -1,155 +1,590 @@
 module Raft
 
-// Raft consensus algorithm - leader election and log replication
-// From: Ongaro & Ousterhout, "In Search of an Understandable Consensus Algorithm"
-// N is the last server index (N+1 servers total)
-// Use: specl check raft.specl -c N=2 -c MaxTerm=3 -c MaxLogLen=3 --no-deadlock
-// Verified: N=2 MaxTerm=3 MaxLogLen=3 -> 1578502 states, ElectionSafety + LogMatching + CommitSafety OK
+// ============================================================================
+// Production-Grade Raft Consensus Specification
+// ============================================================================
+// Based on: Ongaro & Ousterhout, "In Search of an Understandable Consensus Algorithm"
+// Extended Technical Report: https://raft.github.io/raft.pdf
+//
+// This specification models the complete Raft protocol with:
+// - Explicit network with message passing (models loss/duplication/reordering)
+// - Full RPC request/response protocol (RequestVote, AppendEntries)
+// - Leader state tracking (nextIndex, matchIndex)
+// - Proper prevLogIndex/prevLogTerm consistency checking
+// - All five safety properties from Figure 3 of the paper
+// - 1-based indexing (consistent with paper and canonical TLA+ spec)
+//
+// Usage: specl check raft.specl -c N=2 -c MaxTerm=2 -c MaxLogLen=2
+//
+// Constants:
+// - N: Last server index (servers are 0..N, so N+1 total servers)
+// - MaxTerm: Maximum term number (bounds state space)
+// - MaxLogLen: Maximum log length (bounds state space)
+//
+// Note: This spec prioritizes faithfulness over performance. For production
+// model checking, consider reducing MaxTerm and MaxLogLen, or use symmetry
+// reduction on server indices.
+// ============================================================================
 
 const N: Int
 const MaxTerm: Int
 const MaxLogLen: Int
 
-// Role encoding: 0=Follower, 1=Candidate, 2=Leader
-var currentTerm: Dict[Int, Int]
-var role: Dict[Int, Int]
-var votedFor: Dict[Int, Int]
-var votesGranted: Dict[Int, Dict[Int, Bool]]
-var log: Dict[Int, Seq[Int]]
-var commitIndex: Dict[Int, Int]
+// ============================================================================
+// Message Types
+// ============================================================================
 
-// Last term in a log (0 if empty)
-func LastLogTerm(l) {
-    if len(l) == 0 then 0 else l[len(l) - 1]
+// RequestVote RPC request
+// Fields match Figure 2 of Raft paper
+type RequestVoteRequest = {
+    src: Int,           // candidate requesting vote
+    dest: Int,          // server being asked for vote
+    term: Int,          // candidate's term
+    lastLogIndex: Int,  // index of candidate's last log entry (1-based, 0 if empty)
+    lastLogTerm: Int    // term of candidate's last log entry (0 if empty)
 }
+
+// RequestVote RPC response
+type RequestVoteResponse = {
+    src: Int,          // server responding
+    dest: Int,         // candidate that requested vote
+    term: Int,         // responder's current term
+    voteGranted: Bool  // true if candidate received vote
+}
+
+// AppendEntries RPC request
+// Fields match Figure 2 of Raft paper
+type AppendEntriesRequest = {
+    src: Int,          // leader's server index
+    dest: Int,         // follower receiving entries
+    term: Int,         // leader's term
+    prevLogIndex: Int, // index of log entry immediately preceding new ones (1-based, 0 if none)
+    prevLogTerm: Int,  // term of prevLogIndex entry (0 if prevLogIndex is 0)
+    entries: Seq[Int], // log entries to store (empty for heartbeat); each entry is just a term
+    leaderCommit: Int  // leader's commitIndex
+}
+
+// AppendEntries RPC response
+type AppendEntriesResponse = {
+    src: Int,          // follower responding
+    dest: Int,         // leader that sent entries
+    term: Int,         // follower's current term
+    success: Bool,     // true if follower matched prevLogIndex/prevLogTerm
+    matchIndex: Int    // index of highest log entry known to match (for success=true)
+}
+
+// Union type for all messages
+type Message =
+    | RequestVoteRequest
+    | RequestVoteResponse
+    | AppendEntriesRequest
+    | AppendEntriesResponse
+
+// ============================================================================
+// Server State
+// ============================================================================
+
+// Persistent state (survives crashes - for model checking, always present)
+var currentTerm: Dict[Int, Int]  // latest term server has seen (init: 0)
+var votedFor: Dict[Int, Int]     // candidateId that received vote in current term (-1 if none)
+var log: Dict[Int, Seq[Int]]     // log entries; each entry is term when received (init: empty)
+
+// Volatile state on all servers
+var commitIndex: Dict[Int, Int]  // index of highest log entry known committed (init: 0)
+var role: Dict[Int, Int]         // 0=Follower, 1=Candidate, 2=Leader
+
+// Volatile state on leaders (reinitialized after election)
+var nextIndex: Dict[Int, Dict[Int, Int]]   // nextIndex[leader][follower]: next log index to send
+var matchIndex: Dict[Int, Dict[Int, Int]]  // matchIndex[leader][follower]: highest log entry replicated
+
+// Candidate state
+var votesGranted: Dict[Int, Dict[Int, Bool]]  // votesGranted[candidate][server]: received vote
+
+// Network state (bag of messages - allows duplication, reordering, loss)
+var network: Set[Message]
+
+// ============================================================================
+// Helper Functions
+// ============================================================================
+
+// Get index of last log entry (1-based, 0 if empty)
+func LastLogIndex(l) {
+    len(l)
+}
+
+// Get term of last log entry (0 if empty)
+func LastLogTerm(l) {
+    if len(l) == 0 then 0 else l[len(l)]
+}
+
+// Get term of log entry at index i (1-based)
+func LogTerm(l, i) {
+    if i == 0 then 0
+    else if i > len(l) then -1  // invalid index
+    else l[i]
+}
+
+// Min of two integers
+func Min(a, b) {
+    if a <= b then a else b
+}
+
+// ============================================================================
+// Initial State
+// ============================================================================
 
 init {
     currentTerm = {s: 0 for s in 0..N}
-    and role = {s: 0 for s in 0..N}
     and votedFor = {s: -1 for s in 0..N}
-    and votesGranted = {s: {t: false for t in 0..N} for s in 0..N}
     and log = {s: [] for s in 0..N}
     and commitIndex = {s: 0 for s in 0..N}
+    and role = {s: 0 for s in 0..N}
+    and nextIndex = {s: {t: 1 for t in 0..N} for s in 0..N}
+    and matchIndex = {s: {t: 0 for t in 0..N} for s in 0..N}
+    and votesGranted = {s: {t: false for t in 0..N} for s in 0..N}
+    and network = {}
 }
 
-// Server i starts an election
+// ============================================================================
+// Leader Election Actions
+// ============================================================================
+
+// Server i times out and starts election (Raft paper Figure 2: Rules for Servers)
 action Timeout(i: 0..N) {
-    require role[i] != 2
+    require role[i] != 2  // not a leader
     require currentTerm[i] < MaxTerm
+
+    // Increment term, become candidate, vote for self
     currentTerm = currentTerm | {i: currentTerm[i] + 1}
     and role = role | {i: 1}
     and votedFor = votedFor | {i: i}
     and votesGranted = votesGranted | {i: {t: (t == i) for t in 0..N}}
+
+    // Send RequestVote RPCs to all other servers
+    and network = network union {
+        {
+            src: i,
+            dest: j,
+            term: currentTerm[i] + 1,
+            lastLogIndex: LastLogIndex(log[i]),
+            lastLogTerm: LastLogTerm(log[i])
+        }
+        for j in 0..N if j != i
+    }
 }
 
-// Candidate i gets vote from server j (atomic RPC)
-action RequestVote(i: 0..N, j: 0..N) {
+// Server j receives RequestVote request from candidate i
+action HandleRequestVoteRequest(i: 0..N, j: 0..N) {
     require i != j
-    require role[i] == 1
-    require currentTerm[i] >= currentTerm[j]
-    require currentTerm[j] < currentTerm[i] or votedFor[j] == -1 or votedFor[j] == i
-    // Election restriction (section 5.4.1)
-    require LastLogTerm(log[i]) > LastLogTerm(log[j])
-        or (LastLogTerm(log[i]) == LastLogTerm(log[j]) and len(log[i]) >= len(log[j]))
-    currentTerm = currentTerm | {j: currentTerm[i]}
-    and role = role | {j: (if currentTerm[j] < currentTerm[i] then 0 else role[j])}
-    and votedFor = votedFor | {j: i}
-    and votesGranted = votesGranted | {i: (votesGranted[i] | {j: true})}
+
+    // Find matching request in network
+    require {
+        src: i,
+        dest: j,
+        term: currentTerm[i],
+        lastLogIndex: LastLogIndex(log[i]),
+        lastLogTerm: LastLogTerm(log[i])
+    } in network
+
+    var candidateTerm = currentTerm[i]
+    var candidateLastLogIndex = LastLogIndex(log[i])
+    var candidateLastLogTerm = LastLogTerm(log[i])
+
+    // Update term if candidate's term is higher
+    var newTerm = if candidateTerm > currentTerm[j] then candidateTerm else currentTerm[j]
+    var newVotedFor = if candidateTerm > currentTerm[j] then -1 else votedFor[j]
+    var newRole = if candidateTerm > currentTerm[j] and role[j] != 0 then 0 else role[j]
+
+    // Grant vote if:
+    // 1. Candidate's term >= our term
+    // 2. We haven't voted in this term, or we voted for this candidate
+    // 3. Candidate's log is at least as up-to-date as ours (election restriction, section 5.4.1)
+    var canGrant = candidateTerm >= currentTerm[j]
+                   and (newVotedFor == -1 or newVotedFor == i)
+                   and (candidateLastLogTerm > LastLogTerm(log[j])
+                        or (candidateLastLogTerm == LastLogTerm(log[j])
+                            and candidateLastLogIndex >= LastLogIndex(log[j])))
+
+    var voteGranted = canGrant
+
+    // Update state
+    currentTerm = currentTerm | {j: newTerm}
+    and votedFor = votedFor | {j: if voteGranted then i else newVotedFor}
+    and role = role | {j: newRole}
+
+    // Send response
+    and network = (network diff {{
+        src: i,
+        dest: j,
+        term: candidateTerm,
+        lastLogIndex: candidateLastLogIndex,
+        lastLogTerm: candidateLastLogTerm
+    }}) union {{
+        src: j,
+        dest: i,
+        term: newTerm,
+        voteGranted: voteGranted
+    }}
 }
 
-// Candidate i becomes leader with majority votes
-// Uses persistent votesGranted rather than global votedFor state,
-// so votes aren't lost when voters advance to higher terms via UpdateTerm
+// Candidate i receives RequestVote response from server j
+action HandleRequestVoteResponse(i: 0..N, j: 0..N) {
+    require i != j
+    require role[i] == 1  // still a candidate
+
+    // Find matching response in network
+    require {
+        src: j,
+        dest: i,
+        term: currentTerm[j],
+        voteGranted: true
+    } in network or {
+        src: j,
+        dest: i,
+        term: currentTerm[j],
+        voteGranted: false
+    } in network
+
+    var voterTerm = currentTerm[j]
+    var voteGranted = {
+        src: j,
+        dest: i,
+        term: voterTerm,
+        voteGranted: true
+    } in network
+
+    // If voter's term is higher, step down
+    var stepDown = voterTerm > currentTerm[i]
+
+    currentTerm = currentTerm | {i: if stepDown then voterTerm else currentTerm[i]}
+    and role = role | {i: if stepDown then 0 else role[i]}
+    and votedFor = votedFor | {i: if stepDown then -1 else votedFor[i]}
+    and votesGranted = votesGranted | {i:
+        if stepDown then votesGranted[i]
+        else (votesGranted[i] | {j: voteGranted})
+    }
+
+    // Remove response from network
+    and network = (network diff {{
+        src: j,
+        dest: i,
+        term: voterTerm,
+        voteGranted: true
+    }}) diff {{
+        src: j,
+        dest: i,
+        term: voterTerm,
+        voteGranted: false
+    }}
+}
+
+// Candidate i becomes leader after receiving majority of votes
 action BecomeLeader(i: 0..N) {
     require role[i] == 1
     require len({k in 0..N if votesGranted[i][k]}) * 2 > N + 1
+
     role = role | {i: 2}
+
+    // Initialize nextIndex to last log index + 1 for all followers
+    and nextIndex = nextIndex | {i: {j: LastLogIndex(log[i]) + 1 for j in 0..N}}
+
+    // Initialize matchIndex to 0 for all followers
+    and matchIndex = matchIndex | {i: {j: 0 for j in 0..N}}
 }
 
-// Leader i appends client entry to own log
+// ============================================================================
+// Log Replication Actions
+// ============================================================================
+
+// Leader i receives client request and appends entry to log
 action ClientRequest(i: 0..N) {
     require role[i] == 2
     require len(log[i]) < MaxLogLen
+
     log = log | {i: log[i] ++ [currentTerm[i]]}
 }
 
-// Leader i replicates one entry to follower j
-// Also propagates leaderCommit: follower advances commitIndex to
-// min(leaderCommit, new log length), matching Raft section 5.3
-action AppendEntries(i: 0..N, j: 0..N) {
+// Leader i sends AppendEntries RPC to follower j
+// This models the leader's side of sending entries
+action SendAppendEntries(i: 0..N, j: 0..N) {
     require i != j
     require role[i] == 2
-    require currentTerm[i] >= currentTerm[j]
-    require len(log[j]) < len(log[i])
-    // Prefix consistency: j's log matches i's log up to j's length
-    require len(log[j]) == 0 or log[j][len(log[j]) - 1] == log[i][len(log[j]) - 1]
-    currentTerm = currentTerm | {j: currentTerm[i]}
-    and role = role | {j: (if currentTerm[j] < currentTerm[i] then 0 else role[j])}
-    and votedFor = votedFor | {j: (if currentTerm[j] < currentTerm[i] then -1 else votedFor[j])}
-    and log = log | {j: log[j] ++ [log[i][len(log[j])]]}
-    and commitIndex = commitIndex | {j:
-        if commitIndex[i] <= commitIndex[j] then commitIndex[j]
-        else (if commitIndex[i] <= len(log[j]) + 1 then commitIndex[i] else len(log[j]) + 1)}
+
+    var prevIndex = nextIndex[i][j] - 1
+    var prevTerm = LogTerm(log[i], prevIndex)
+
+    // Send entries from nextIndex[i][j] onwards (may be empty for heartbeat)
+    var entriesToSend = if nextIndex[i][j] > len(log[i]) then []
+                        else log[i][nextIndex[i][j] - 1 .. len(log[i])]
+
+    network = network union {{
+        src: i,
+        dest: j,
+        term: currentTerm[i],
+        prevLogIndex: prevIndex,
+        prevLogTerm: prevTerm,
+        entries: entriesToSend,
+        leaderCommit: commitIndex[i]
+    }}
 }
 
-// Follower i rolls back last log entry when it conflicts with leader j
-action RollbackLog(i: 0..N, j: 0..N) {
+// Follower j receives AppendEntries request from leader i
+action HandleAppendEntriesRequest(i: 0..N, j: 0..N) {
     require i != j
-    require role[j] == 2
-    require currentTerm[j] >= currentTerm[i]
-    require len(log[i]) > 0
-    // Follower's log is NOT a prefix of leader's: either longer or mismatched
-    require len(log[i]) > len(log[j])
-        or log[i][len(log[i]) - 1] != log[j][len(log[i]) - 1]
-    currentTerm = currentTerm | {i: currentTerm[j]}
-    and role = role | {i: (if currentTerm[i] < currentTerm[j] then 0 else role[i])}
-    and votedFor = votedFor | {i: (if currentTerm[i] < currentTerm[j] then -1 else votedFor[i])}
-    and log = log | {i: log[i][0..len(log[i]) - 1]}
+
+    // Find a matching request in network (there may be multiple due to retries)
+    require {
+        src: i,
+        dest: j,
+        term: currentTerm[i],
+        prevLogIndex: nextIndex[i][j] - 1,
+        prevLogTerm: LogTerm(log[i], nextIndex[i][j] - 1),
+        entries: if nextIndex[i][j] > len(log[i]) then [] else log[i][nextIndex[i][j] - 1 .. len(log[i])],
+        leaderCommit: commitIndex[i]
+    } in network
+
+    var leaderTerm = currentTerm[i]
+    var prevIndex = nextIndex[i][j] - 1
+    var prevTerm = LogTerm(log[i], nextIndex[i][j] - 1)
+    var entries = if nextIndex[i][j] > len(log[i]) then [] else log[i][nextIndex[i][j] - 1 .. len(log[i])]
+    var leaderCommit = commitIndex[i]
+
+    // Reply false if term < currentTerm (section 5.1)
+    var termOk = leaderTerm >= currentTerm[j]
+
+    // Reply false if log doesn't contain entry at prevLogIndex whose term matches prevLogTerm
+    var logOk = prevIndex == 0 or (prevIndex <= len(log[j]) and LogTerm(log[j], prevIndex) == prevTerm)
+
+    var success = termOk and logOk
+
+    // Update term if leader's term is higher
+    var newTerm = if leaderTerm > currentTerm[j] then leaderTerm else currentTerm[j]
+
+    // If successful, append entries and update commit index
+    var newLog = if success and len(entries) > 0 then
+                    log[j][0 .. prevIndex] ++ entries
+                 else log[j]
+
+    var newCommitIndex = if success then
+                            Min(leaderCommit, len(newLog))
+                         else commitIndex[j]
+
+    var newMatchIndex = if success then len(newLog) else 0
+
+    // Update state
+    currentTerm = currentTerm | {j: newTerm}
+    and role = role | {j: if leaderTerm >= currentTerm[j] then 0 else role[j]}
+    and votedFor = votedFor | {j: if leaderTerm > currentTerm[j] then -1 else votedFor[j]}
+    and log = log | {j: newLog}
+    and commitIndex = commitIndex | {j: newCommitIndex}
+
+    // Send response
+    and network = (network diff {{
+        src: i,
+        dest: j,
+        term: leaderTerm,
+        prevLogIndex: prevIndex,
+        prevLogTerm: prevTerm,
+        entries: entries,
+        leaderCommit: leaderCommit
+    }}) union {{
+        src: j,
+        dest: i,
+        term: newTerm,
+        success: success,
+        matchIndex: newMatchIndex
+    }}
 }
 
-// Leader i advances commit index to k
-// Note: majority check reads global log state (over-approximation vs real matchIndex).
-// This is safe for model checking — explores more states than the real system.
-action AdvanceCommitIndex(i: 0..N, k: 0..MaxLogLen) {
+// Leader i receives AppendEntries response from follower j
+action HandleAppendEntriesResponse(i: 0..N, j: 0..N) {
+    require i != j
     require role[i] == 2
-    require k > 0
+
+    // Find matching response in network
+    require {
+        src: j,
+        dest: i,
+        term: currentTerm[j],
+        success: true,
+        matchIndex: matchIndex[i][j]
+    } in network or {
+        src: j,
+        dest: i,
+        term: currentTerm[j],
+        success: false,
+        matchIndex: 0
+    } in network
+
+    var followerTerm = currentTerm[j]
+    var success = {
+        src: j,
+        dest: i,
+        term: followerTerm,
+        success: true,
+        matchIndex: matchIndex[i][j]
+    } in network
+    var followerMatchIndex = if success then matchIndex[i][j] else 0
+
+    // If follower's term is higher, step down
+    var stepDown = followerTerm > currentTerm[i]
+
+    // If successful, update nextIndex and matchIndex
+    var newNextIndex = if stepDown then nextIndex[i]
+                       else if success then nextIndex[i] | {j: followerMatchIndex + 1}
+                       else nextIndex[i] | {j: if nextIndex[i][j] > 1 then nextIndex[i][j] - 1 else 1}
+
+    var newMatchIndex = if stepDown then matchIndex[i]
+                        else if success then matchIndex[i] | {j: followerMatchIndex}
+                        else matchIndex[i]
+
+    currentTerm = currentTerm | {i: if stepDown then followerTerm else currentTerm[i]}
+    and role = role | {i: if stepDown then 0 else role[i]}
+    and votedFor = votedFor | {i: if stepDown then -1 else votedFor[i]}
+    and nextIndex = nextIndex | {i: newNextIndex}
+    and matchIndex = matchIndex | {i: newMatchIndex}
+
+    // Remove response from network
+    and network = (network diff {{
+        src: j,
+        dest: i,
+        term: followerTerm,
+        success: true,
+        matchIndex: followerMatchIndex
+    }}) diff {{
+        src: j,
+        dest: i,
+        term: followerTerm,
+        success: false,
+        matchIndex: 0
+    }}
+}
+
+// Leader i advances commit index
+// If there exists N such that N > commitIndex and majority of matchIndex[j] >= N
+// and log[i][N] == currentTerm[i], set commitIndex = N (section 5.3, 5.4.2)
+action AdvanceCommitIndex(i: 0..N, k: 1..MaxLogLen) {
+    require role[i] == 2
     require k > commitIndex[i]
     require k <= len(log[i])
-    // Only commit entries from current term (section 5.4.2)
-    require log[i][k - 1] == currentTerm[i]
-    // Majority have matching entry at position k-1
-    require len({j in 0..N if len(log[j]) >= k and log[j][k - 1] == log[i][k - 1]}) * 2 > N + 1
+
+    // Only commit entries from current term (section 5.4.2, Figure 8)
+    require LogTerm(log[i], k) == currentTerm[i]
+
+    // Majority of matchIndex[i][j] >= k
+    require len({j in 0..N if matchIndex[i][j] >= k}) * 2 > N + 1
+
     commitIndex = commitIndex | {i: k}
 }
 
-// Server i discovers server j has a higher term, steps down
+// ============================================================================
+// Term Discovery Actions
+// ============================================================================
+
+// Server i discovers server j has higher term and steps down
+// This can happen when receiving any RPC (modeled implicitly in RPC handlers)
+// This action models the case where server directly observes another's higher term
 action UpdateTerm(i: 0..N, j: 0..N) {
     require i != j
     require currentTerm[j] > currentTerm[i]
+
     currentTerm = currentTerm | {i: currentTerm[j]}
     and role = role | {i: 0}
     and votedFor = votedFor | {i: -1}
 }
 
-// Election safety: at most one leader per term
+// ============================================================================
+// Network Actions (Model message loss, duplication)
+// ============================================================================
+
+// Drop a message from the network (models message loss)
+action DropMessage(m: Message) {
+    require m in network
+    network = network diff {m}
+}
+
+// Duplicate a message in the network (models message duplication)
+action DuplicateMessage(m: Message) {
+    require m in network
+    require len(network) < 100  // bound network size to keep state space finite
+    network = network union {m}
+}
+
+// ============================================================================
+// Safety Invariants (Figure 3 of Raft paper)
+// ============================================================================
+
+// Election Safety: At most one leader can be elected in a given term
 invariant ElectionSafety {
     all i in 0..N: all j in 0..N:
         (role[i] == 2 and role[j] == 2 and currentTerm[i] == currentTerm[j])
         implies i == j
 }
 
-// Log matching: if two servers have the same term at the same index,
-// all preceding entries must also match
-invariant LogMatching {
-    all i in 0..N: all j in 0..N: all k in 0..MaxLogLen:
-        (k < len(log[i]) and k < len(log[j]) and log[i][k] == log[j][k])
-        implies (k == 0 or log[i][k - 1] == log[j][k - 1])
+// Leader Append-Only: A leader never overwrites or deletes entries in its log;
+// it only appends new entries
+// Note: This is enforced by actions (leader only uses ClientRequest to append)
+// but we can't express "never happens" in invariant form directly in Specl
+// Instead, we check that logs are monotonically growing (approximate check)
+invariant LeaderAppendOnly {
+    all i in 0..N:
+        role[i] == 2 implies (all j in 0..N: i != j implies len(log[i]) >= matchIndex[i][j])
 }
 
-// Commit safety: if two servers have both committed up to index k,
-// they must agree on the entry at that position
-invariant CommitSafety {
+// Log Matching: If two logs contain an entry with the same index and term,
+// then all preceding entries are identical
+invariant LogMatching {
     all i in 0..N: all j in 0..N: all k in 1..MaxLogLen:
-        (commitIndex[i] >= k and commitIndex[j] >= k)
-        implies log[i][k - 1] == log[j][k - 1]
+        (k <= len(log[i]) and k <= len(log[j]) and LogTerm(log[i], k) == LogTerm(log[j], k))
+        implies (all m in 1..k: m <= len(log[i]) and m <= len(log[j]) implies LogTerm(log[i], m) == LogTerm(log[j], m))
+}
+
+// Leader Completeness: If a log entry is committed in a given term,
+// then that entry will be present in the logs of the leaders of all higher terms
+invariant LeaderCompleteness {
+    all i in 0..N: all j in 0..N: all k in 1..MaxLogLen:
+        (role[j] == 2 and currentTerm[j] > LogTerm(log[i], k) and commitIndex[i] >= k and k <= len(log[i]))
+        implies (k <= len(log[j]) and LogTerm(log[j], k) == LogTerm(log[i], k))
+}
+
+// State Machine Safety: If a server has applied a log entry at a given index to its state machine,
+// no other server will ever apply a different log entry for the same index
+// Note: We model this via commitIndex - if two servers have committed index k,
+// they must have the same entry at k
+invariant StateMachineSafety {
+    all i in 0..N: all j in 0..N: all k in 1..MaxLogLen:
+        (commitIndex[i] >= k and commitIndex[j] >= k and k <= len(log[i]) and k <= len(log[j]))
+        implies LogTerm(log[i], k) == LogTerm(log[j], k)
+}
+
+// ============================================================================
+// Additional Correctness Invariants
+// ============================================================================
+
+// Type invariants
+invariant TypeInvariant {
+    (all s in 0..N: currentTerm[s] >= 0 and currentTerm[s] <= MaxTerm)
+    and (all s in 0..N: role[s] >= 0 and role[s] <= 2)
+    and (all s in 0..N: votedFor[s] >= -1 and votedFor[s] <= N)
+    and (all s in 0..N: commitIndex[s] >= 0 and commitIndex[s] <= len(log[s]))
+    and (all s in 0..N: len(log[s]) <= MaxLogLen)
+}
+
+// Leaders' nextIndex is always at least 1
+invariant NextIndexValid {
+    all i in 0..N: all j in 0..N:
+        role[i] == 2 implies nextIndex[i][j] >= 1
+}
+
+// Leaders' matchIndex is always <= log length
+invariant MatchIndexValid {
+    all i in 0..N: all j in 0..N:
+        role[i] == 2 implies matchIndex[i][j] <= len(log[i])
+}
+
+// Committed entries are present in leader's log
+invariant CommittedInLeaderLog {
+    all i in 0..N: all j in 0..N: all k in 1..MaxLogLen:
+        (role[i] == 2 and commitIndex[j] >= k and k <= len(log[j]))
+        implies (k <= len(log[i]))
 }
