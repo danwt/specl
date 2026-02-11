@@ -5,6 +5,7 @@
 <h1 align="center">Specl</h1>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/License-PolyForm_Noncommercial-blue.svg" alt="License">
   <img src="https://img.shields.io/badge/Rust-1.75+-orange.svg" alt="Rust">
   <img src="https://img.shields.io/badge/Status-Alpha-yellow.svg" alt="Status">
 </p>
@@ -78,4 +79,4 @@ cargo test --workspace && cargo clippy --workspace
 
 ## License
 
-Dual-licensed under [AGPL-3.0](LICENSE) and a [commercial license](COMMERCIAL-LICENSE.md). Free for open source use; contact **contact@danwt.com** for commercial licensing.
+[PolyForm Noncommercial 1.0.0](LICENSE) — free for non-commercial use. See [commercial licensing](COMMERCIAL-LICENSE.md) for commercial use. Contact **contact@danwt.com**.

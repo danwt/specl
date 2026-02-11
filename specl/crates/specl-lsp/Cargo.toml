@@ -2,7 +2,7 @@
 name = "specl-lsp"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "../../../LICENSE"
 authors.workspace = true
 repository.workspace = true
 description = "Language Server Protocol implementation for Specl"

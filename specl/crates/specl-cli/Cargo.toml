@@ -2,7 +2,7 @@
 name = "specl-cli"
 version.workspace = true
 edition.workspace = true
-license.workspace = true
+license-file = "../../../LICENSE"
 authors.workspace = true
 repository.workspace = true
 description = "Command-line interface for Specl model checker"

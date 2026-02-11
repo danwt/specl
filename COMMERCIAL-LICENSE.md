@@ -1,20 +1,21 @@
 # Commercial License
 
-Specl is dual-licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0) and a commercial license.
+Specl is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE). This means it is free for non-commercial use only.
 
-## Open Source License (AGPL-3.0)
+## What's allowed without a commercial license
 
-You may use, modify, and distribute Specl under the terms of the AGPL-3.0. This requires that any derivative work or service built on Specl also be released under the AGPL-3.0 with full source code.
+- Personal projects, hobby use, learning
+- Academic research and teaching
+- Use by non-profit organizations, government institutions, and public research bodies
 
-## Commercial License
+## What requires a commercial license
 
-If the AGPL-3.0 does not meet your needs — for example, if you want to:
+Any commercial use, including but not limited to:
 
-- Use Specl in proprietary software without releasing your source code
-- Integrate Specl into a commercial product or SaaS offering
-- Avoid the copyleft obligations of the AGPL
-
-Then you need a commercial license.
+- Using Specl in a commercial product or service
+- Using Specl as part of paid consulting or contract work
+- Integrating Specl into proprietary software
+- Offering Specl as part of a SaaS platform
 
 ## Contact
 

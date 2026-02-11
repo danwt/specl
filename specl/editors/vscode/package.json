@@ -2,8 +2,9 @@
   "name": "specl",
   "displayName": "Specl",
   "description": "Language support for Specl — a modern specification language and model checker for concurrent and distributed systems.",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "publisher": "specl",
+  "license": "SEE LICENSE IN LICENSE",
   "repository": {
     "type": "git",
     "url": "https://github.com/danwt/specl"
