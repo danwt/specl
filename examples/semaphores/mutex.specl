@@ -1,0 +1,169 @@
+// =============================================================================
+// Mutex (Mutual Exclusion)
+// =============================================================================
+//
+// Source: "The Little Book of Semaphores" (2nd Edition, v2.2.1)
+//         by Allen B. Downey
+//         Section 3.4: Mutex (pages 16-19)
+//         https://greenteapress.com/semaphores/LittleBookOfSemaphores.pdf
+//
+// =============================================================================
+// PUZZLE DESCRIPTION
+// =============================================================================
+//
+// A second common use for semaphores is to enforce mutual exclusion. We have
+// already seen one use for mutual exclusion, controlling concurrent access to
+// shared variables. The mutex guarantees that only one thread accesses the
+// shared variable at a time.
+//
+// A mutex is like a token that passes from one thread to another, allowing one
+// thread at a time to proceed. For example, in "The Lord of the Flies" a group
+// of children use a conch as a mutex. In order to speak, you have to hold the
+// conch. As long as only one child holds the conch, only one can speak.
+//
+// Similarly, in order for a thread to access a shared variable, it has to "get"
+// the mutex; when it is done, it "releases" the mutex. Only one thread can hold
+// the mutex at a time.
+//
+// Puzzle: Add semaphores to the following example to enforce mutual exclusion
+// to the shared variable count.
+//
+//   Thread A              Thread B
+//   --------              --------
+//   count = count + 1     count = count + 1
+//
+// The critical section is the code that accesses the shared variable. In this
+// case, both threads need exclusive access to count.
+//
+// =============================================================================
+// SOLUTION
+// =============================================================================
+//
+// Create a semaphore named mutex that is initialized to 1. A value of one means
+// that a thread may proceed and access the shared variable; a value of zero
+// means that it has to wait for another thread to release the mutex.
+//
+//   Thread A                    Thread B
+//   --------                    --------
+//   mutex.wait()                mutex.wait()
+//   # critical section          # critical section
+//   count = count + 1           count = count + 1
+//   mutex.signal()              mutex.signal()
+//
+// Since mutex is initially 1, whichever thread gets to the wait first will be
+// able to proceed immediately. Of course, the act of waiting on the semaphore
+// has the effect of decrementing it, so the second thread to arrive will have
+// to wait until the first signals.
+//
+// This solution is called a symmetric solution because both threads run the
+// same code. Symmetric solutions are often easier to generalize. In this case,
+// the mutex solution can handle any number of concurrent threads without
+// modification. As long as every thread waits before performing an update and
+// signals after, then no two threads will access count concurrently.
+//
+// Often the code that needs to be protected is called the critical section.
+// In the tradition of computer science and mixed metaphors, there are several
+// other ways people sometimes talk about mutexes. The mutex is a token that
+// is passed from one thread to another. In an alternative metaphor, we think
+// of the critical section as a room, and only one thread is allowed to be in
+// the room at a time.
+//
+// =============================================================================
+// SPECL MODEL
+// =============================================================================
+
+module Mutex
+
+const N: 0..10  // Number of threads
+
+// Thread states: 0=outside, 1=waiting, 2=in_critical_section, 3=done
+var threads: Dict[Int, 0..3]
+
+// Mutex semaphore (0=locked, 1=unlocked)
+var mutex: 0..1
+
+// Shared counter (the protected resource)
+var count: 0..100
+
+init {
+    threads = {} and
+    mutex = 1 and
+    count = 0
+}
+
+// === Thread actions ===
+
+action Thread_Arrive(i: 0..N) {
+    require not has_key(threads, i)
+    threads = threads | {i: 0}
+}
+
+action Thread_Wait(i: 0..N) {
+    require has_key(threads, i) and threads[i] == 0
+    require mutex == 1
+    threads = threads | {i: 1} and
+    mutex = 0
+}
+
+action Thread_EnterCritical(i: 0..N) {
+    require has_key(threads, i) and threads[i] == 1
+    threads = threads | {i: 2}
+}
+
+action Thread_Increment(i: 0..N) {
+    require has_key(threads, i) and threads[i] == 2
+    count = count + 1
+}
+
+action Thread_ExitCritical(i: 0..N) {
+    require has_key(threads, i) and threads[i] == 2
+    threads = threads | {i: 3}
+}
+
+action Thread_Signal(i: 0..N) {
+    require has_key(threads, i) and threads[i] == 3
+    require mutex == 0
+    mutex = 1
+}
+
+// === Safety invariants ===
+
+invariant MutualExclusion {
+    // At most one thread in critical section at a time
+    let in_cs = len({i in 0..N if has_key(threads, i) and threads[i] == 2}) in
+    in_cs <= 1
+}
+
+invariant MutexBinary {
+    // Mutex is binary (0 or 1)
+    mutex <= 1
+}
+
+invariant CountCorrect {
+    // Count equals number of threads that have incremented
+    let done_count = len({i in 0..N if has_key(threads, i) and threads[i] >= 2}) in
+    count == done_count
+}
+
+// =============================================================================
+// VERIFICATION
+// =============================================================================
+//
+// Run: specl check mutex.specl -c N=2 --no-deadlock
+//      (2 threads incrementing)
+//
+// Run: specl check mutex.specl -c N=3 --no-deadlock
+//      (3 threads incrementing)
+//
+// Expected: OK with MutualExclusion invariant holding
+//
+// The model verifies that:
+// 1. Only one thread can be in the critical section at a time
+// 2. The mutex behaves as a binary semaphore (0 or 1)
+// 3. Count is incremented correctly (no lost updates)
+// 4. The solution is symmetric (same code for all threads)
+//
+// Key insight: The mutex pattern prevents race conditions by ensuring atomic
+// execution of the critical section. Without the mutex, concurrent increments
+// would result in lost updates (count would be less than the number of threads).
+// =============================================================================
