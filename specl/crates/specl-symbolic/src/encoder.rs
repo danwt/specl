@@ -27,6 +27,9 @@ pub struct EncoderCtx<'a> {
     /// Set locals: maps absolute locals stack position → concrete set members.
     /// Used for powerset quantifier bindings where the local represents a concrete subset.
     pub set_locals: Vec<(usize, Vec<i64>)>,
+    /// Whole-var locals: locals that alias an entire compound variable.
+    /// Each entry: (abs_depth, var_idx, step).
+    pub whole_var_locals: Vec<(usize, usize, usize)>,
 }
 
 impl<'a> EncoderCtx<'a> {
@@ -136,6 +139,27 @@ impl<'a> EncoderCtx<'a> {
                             self.compound_locals.pop();
                             self.locals.pop();
                             result
+                        } else if let CompiledExpr::Var(var_idx)
+                        | CompiledExpr::PrimedVar(var_idx) = value.as_ref()
+                        {
+                            // Bare compound variable alias (e.g., inlined function arg)
+                            let step = if matches!(value.as_ref(), CompiledExpr::Var(_)) {
+                                self.current_step
+                            } else {
+                                self.next_step
+                            };
+                            let entry = &self.layout.entries[*var_idx];
+                            if entry.kind.z3_var_count() > 1 {
+                                let abs_depth = self.locals.len();
+                                self.locals.push(Dynamic::from_ast(&Int::from_i64(0)));
+                                self.whole_var_locals.push((abs_depth, *var_idx, step));
+                                let result = self.encode(body);
+                                self.whole_var_locals.pop();
+                                self.locals.pop();
+                                return result;
+                            }
+                            // Re-raise the original error
+                            self.encode(value).and_then(|_| unreachable!())
                         } else {
                             // Re-raise the original error
                             self.encode(value).and_then(|_| unreachable!())
@@ -591,6 +615,12 @@ impl<'a> EncoderCtx<'a> {
                 .map(|(v, s, k)| (*v, *s, k.clone()))
             {
                 return self.encode_compound_local_chain(var_idx, step, &key_z3, &keys);
+            }
+            // Whole-var alias: redirect to the original compound variable
+            if let Some((var_idx, step)) = self.resolve_whole_var_local(*local_idx) {
+                let entry = &self.layout.entries[var_idx];
+                let z3_vars = &self.step_vars[step][var_idx];
+                return self.resolve_index_chain(&entry.kind, z3_vars, &keys);
             }
         }
 
@@ -1363,6 +1393,18 @@ impl<'a> EncoderCtx<'a> {
         for (abs_depth, var_idx, step, key_z3) in self.compound_locals.iter().rev() {
             if *abs_depth == abs_idx {
                 return Some((var_idx, step, key_z3));
+            }
+        }
+        None
+    }
+
+    /// Check if a Local(idx) resolves to a whole-variable alias.
+    /// Returns (var_idx, step) if so.
+    fn resolve_whole_var_local(&self, local_idx: usize) -> Option<(usize, usize)> {
+        let abs_idx = self.locals.len() - 1 - local_idx;
+        for &(abs_depth, var_idx, step) in self.whole_var_locals.iter().rev() {
+            if abs_depth == abs_idx {
+                return Some((var_idx, step));
             }
         }
         None

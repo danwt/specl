@@ -68,6 +68,7 @@ fn encode_init_expr(
                     locals: Vec::new(),
                     compound_locals: Vec::new(),
                     set_locals: Vec::new(),
+                    whole_var_locals: Vec::new(),
                 };
                 let constraint = enc.encode_bool(expr)?;
                 solver.assert(&constraint);
@@ -90,6 +91,7 @@ fn encode_init_expr(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
             let constraint = enc.encode_bool(expr)?;
             solver.assert(&constraint);
@@ -121,6 +123,7 @@ fn encode_init_assignment(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
             let rhs_z3 = enc.encode(rhs)?;
             if let (Some(vi), Some(ri)) = (z3_vars[0].as_int(), rhs_z3.as_int()) {
@@ -151,6 +154,7 @@ fn encode_init_assignment(
                             locals: Vec::new(),
                             compound_locals: Vec::new(),
                             set_locals: Vec::new(),
+                            whole_var_locals: Vec::new(),
                         };
                         let k_val = Dynamic::from_ast(&Int::from_i64(k));
                         enc.locals.push(k_val);
@@ -188,6 +192,7 @@ fn encode_init_assignment(
                             locals: Vec::new(),
                             compound_locals: Vec::new(),
                             set_locals: Vec::new(),
+                            whole_var_locals: Vec::new(),
                         };
                         let key_val = enc.extract_concrete_int_helper(key_expr)?;
                         let offset = (key_val - key_lo) as usize;
@@ -219,6 +224,7 @@ fn encode_init_assignment(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
             let flags = enc.encode_as_set(rhs, *lo, *hi)?;
             for (i, flag) in flags.iter().enumerate() {
@@ -238,6 +244,7 @@ fn encode_init_assignment(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
             match rhs {
                 CompiledExpr::SeqLit(elems) => {
@@ -437,6 +444,7 @@ fn encode_action(
             locals: Vec::new(),
             compound_locals: Vec::new(),
             set_locals: Vec::new(),
+            whole_var_locals: Vec::new(),
         };
 
         let guard = enc.encode_bool(&action.guard)?;
@@ -465,6 +473,7 @@ fn encode_action(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
 
             let guard = enc.encode_bool(&action.guard)?;
@@ -514,6 +523,7 @@ fn encode_effect(
         locals: Vec::new(),
         compound_locals: Vec::new(),
         set_locals: Vec::new(),
+        whole_var_locals: Vec::new(),
     };
 
     encode_effect_expr(&action.effect, &mut enc, layout, step_vars, step)

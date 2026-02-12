@@ -122,6 +122,7 @@ fn guard_satisfied(
         locals: Vec::new(),
         compound_locals: Vec::new(),
         set_locals: Vec::new(),
+        whole_var_locals: Vec::new(),
     };
 
     let Ok(guard) = enc.encode_bool(&action.guard) else {
