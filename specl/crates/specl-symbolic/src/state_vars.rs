@@ -1,6 +1,8 @@
 //! Variable layout analysis: maps specl state variables to Z3 variables.
 
-use specl_ir::CompiledSpec;
+use specl_eval::Value;
+use specl_ir::{CompiledExpr, CompiledSpec};
+use specl_syntax::{ExprKind, TypeExpr};
 use specl_types::Type;
 
 use crate::SymbolicResult;
@@ -10,6 +12,8 @@ use crate::SymbolicResult;
 pub struct VarLayout {
     /// One entry per specl state variable.
     pub entries: Vec<VarEntry>,
+    /// String interning table: maps string literals to integer IDs.
+    pub string_table: Vec<String>,
 }
 
 /// How a single specl variable maps to Z3 variables.
@@ -42,61 +46,371 @@ pub enum VarKind {
 
 impl VarLayout {
     /// Analyze a compiled spec and compute the Z3 variable layout.
-    pub fn from_spec(spec: &CompiledSpec) -> SymbolicResult<Self> {
+    pub fn from_spec(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<Self> {
+        let string_table = build_string_table(spec);
         let mut entries = Vec::new();
         for var in &spec.vars {
-            let kind = Self::type_to_kind(&var.ty)?;
+            let kind = type_to_kind(&var.ty, var.index, spec, consts, &string_table)?;
             entries.push(VarEntry {
                 specl_var_idx: var.index,
                 name: var.name.clone(),
                 kind,
             });
         }
-        Ok(VarLayout { entries })
+        Ok(VarLayout {
+            entries,
+            string_table,
+        })
     }
 
-    fn type_to_kind(ty: &Type) -> SymbolicResult<VarKind> {
-        match ty {
-            Type::Bool => Ok(VarKind::Bool),
-            Type::Int => Ok(VarKind::Int { lo: None, hi: None }),
-            Type::Nat => Ok(VarKind::Int {
-                lo: Some(0),
-                hi: None,
-            }),
-            Type::Range(lo, hi) => Ok(VarKind::Int {
-                lo: Some(*lo),
-                hi: Some(*hi),
-            }),
-            Type::Fn(key_ty, val_ty) => {
-                if let Type::Range(lo, hi) = key_ty.as_ref() {
-                    let value_kind = Self::type_to_kind(val_ty)?;
+    /// Look up a string literal's integer ID.
+    pub fn string_id(&self, s: &str) -> Option<i64> {
+        self.string_table
+            .iter()
+            .position(|t| t == s)
+            .map(|i| i as i64)
+    }
+}
+
+fn type_to_kind(
+    ty: &Type,
+    var_idx: usize,
+    spec: &CompiledSpec,
+    consts: &[Value],
+    string_table: &[String],
+) -> SymbolicResult<VarKind> {
+    match ty {
+        Type::Bool => Ok(VarKind::Bool),
+        Type::Int => Ok(VarKind::Int { lo: None, hi: None }),
+        Type::Nat => Ok(VarKind::Int {
+            lo: Some(0),
+            hi: None,
+        }),
+        Type::String => {
+            if string_table.is_empty() {
+                Ok(VarKind::Int { lo: None, hi: None })
+            } else {
+                Ok(VarKind::Int {
+                    lo: Some(0),
+                    hi: Some(string_table.len() as i64 - 1),
+                })
+            }
+        }
+        Type::Range(lo, hi) => Ok(VarKind::Int {
+            lo: Some(*lo),
+            hi: Some(*hi),
+        }),
+        Type::Fn(key_ty, val_ty) => {
+            if let Type::Range(lo, hi) = key_ty.as_ref() {
+                let value_kind = type_to_kind_simple(val_ty)?;
+                Ok(VarKind::ExplodedDict {
+                    key_lo: *lo,
+                    key_hi: *hi,
+                    value_kind: Box::new(value_kind),
+                })
+            } else if matches!(key_ty.as_ref(), Type::Int | Type::Nat) {
+                // Key type is Int/Nat — try to infer range from init expression
+                if let Some((lo, hi)) = infer_dict_range(var_idx, spec, consts) {
+                    let value_kind = type_to_kind_simple(val_ty)?;
                     Ok(VarKind::ExplodedDict {
-                        key_lo: *lo,
-                        key_hi: *hi,
+                        key_lo: lo,
+                        key_hi: hi,
                         value_kind: Box::new(value_kind),
                     })
                 } else {
                     Err(crate::SymbolicError::Unsupported(format!(
-                        "Dict with non-range key type: {:?}",
+                        "Dict with unbounded key type {:?} (cannot infer range from init)",
                         key_ty
                     )))
                 }
+            } else {
+                Err(crate::SymbolicError::Unsupported(format!(
+                    "Dict with non-range key type: {:?}",
+                    key_ty
+                )))
             }
-            Type::Set(elem_ty) => {
-                if let Type::Range(lo, hi) = elem_ty.as_ref() {
-                    Ok(VarKind::ExplodedSet { lo: *lo, hi: *hi })
+        }
+        Type::Set(elem_ty) => {
+            if let Type::Range(lo, hi) = elem_ty.as_ref() {
+                Ok(VarKind::ExplodedSet { lo: *lo, hi: *hi })
+            } else if matches!(elem_ty.as_ref(), Type::Int | Type::Nat) {
+                // Try to infer range from action parameters or init
+                if let Some((lo, hi)) = infer_set_range_from_actions(var_idx, spec, consts) {
+                    Ok(VarKind::ExplodedSet { lo, hi })
                 } else {
                     Err(crate::SymbolicError::Unsupported(format!(
-                        "Set with non-range element type: {:?}",
+                        "Set with unbounded element type {:?} (cannot infer range)",
                         elem_ty
                     )))
                 }
+            } else {
+                Err(crate::SymbolicError::Unsupported(format!(
+                    "Set with non-range element type: {:?}",
+                    elem_ty
+                )))
             }
-            _ => Err(crate::SymbolicError::Unsupported(format!(
-                "variable type: {:?}",
-                ty
-            ))),
         }
+        _ => Err(crate::SymbolicError::Unsupported(format!(
+            "variable type: {:?}",
+            ty
+        ))),
+    }
+}
+
+/// Simple type_to_kind without spec/const context (for value types within containers).
+fn type_to_kind_simple(ty: &Type) -> SymbolicResult<VarKind> {
+    match ty {
+        Type::Bool => Ok(VarKind::Bool),
+        Type::Int | Type::String => Ok(VarKind::Int { lo: None, hi: None }),
+        Type::Nat => Ok(VarKind::Int {
+            lo: Some(0),
+            hi: None,
+        }),
+        Type::Range(lo, hi) => Ok(VarKind::Int {
+            lo: Some(*lo),
+            hi: Some(*hi),
+        }),
+        _ => Err(crate::SymbolicError::Unsupported(format!(
+            "value type in container: {:?}",
+            ty
+        ))),
+    }
+}
+
+/// Infer dict key range from init expression or action parameters.
+fn infer_dict_range(var_idx: usize, spec: &CompiledSpec, consts: &[Value]) -> Option<(i64, i64)> {
+    if let Some(range) = find_var_init_range(var_idx, &spec.init, consts) {
+        return Some(range);
+    }
+    // Fall through to AST type expressions on actions that modify this variable
+    for action in &spec.actions {
+        if !action.changes.contains(&var_idx) {
+            continue;
+        }
+        for type_expr in &action.param_type_exprs {
+            if let Some(range) = eval_type_expr_range(type_expr, spec, consts) {
+                return Some(range);
+            }
+        }
+    }
+    None
+}
+
+/// Infer set element range from action parameters that add to this set.
+fn infer_set_range_from_actions(
+    var_idx: usize,
+    spec: &CompiledSpec,
+    consts: &[Value],
+) -> Option<(i64, i64)> {
+    // First try init expression
+    if let Some(range) = find_var_init_range(var_idx, &spec.init, consts) {
+        return Some(range);
+    }
+    // Try to find from action parameter types that reference this set
+    for action in &spec.actions {
+        if !action.changes.contains(&var_idx) {
+            continue;
+        }
+        // Try compiled param types first (works when type checker resolved the range)
+        for (_, param_ty) in &action.params {
+            if let Type::Range(lo, hi) = param_ty {
+                return Some((*lo, *hi));
+            }
+        }
+        // Fall through to AST type expressions (works when consts aren't resolved by type checker)
+        for type_expr in &action.param_type_exprs {
+            if let Some(range) = eval_type_expr_range(type_expr, spec, consts) {
+                return Some(range);
+            }
+        }
+    }
+    None
+}
+
+/// Walk the init expression to find a FnLit/SetComprehension domain for a variable.
+fn find_var_init_range(
+    var_idx: usize,
+    expr: &CompiledExpr,
+    consts: &[Value],
+) -> Option<(i64, i64)> {
+    match expr {
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::And,
+            left,
+            right,
+        } => find_var_init_range(var_idx, left, consts)
+            .or_else(|| find_var_init_range(var_idx, right, consts)),
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::Eq,
+            left,
+            right,
+        } => {
+            let target_idx = match left.as_ref() {
+                CompiledExpr::PrimedVar(idx) | CompiledExpr::Var(idx) => Some(*idx),
+                _ => None,
+            };
+            if target_idx == Some(var_idx) {
+                extract_domain_range(right, consts)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Extract domain range from a FnLit or SetComprehension RHS.
+fn extract_domain_range(expr: &CompiledExpr, consts: &[Value]) -> Option<(i64, i64)> {
+    match expr {
+        CompiledExpr::FnLit { domain, .. } | CompiledExpr::SetComprehension { domain, .. } => {
+            extract_range_bounds(domain, consts)
+        }
+        _ => None,
+    }
+}
+
+fn extract_range_bounds(expr: &CompiledExpr, consts: &[Value]) -> Option<(i64, i64)> {
+    if let CompiledExpr::Range { lo, hi } = expr {
+        let lo_val = eval_const_int(lo, consts)?;
+        let hi_val = eval_const_int(hi, consts)?;
+        Some((lo_val, hi_val))
+    } else {
+        None
+    }
+}
+
+fn eval_const_int(expr: &CompiledExpr, consts: &[Value]) -> Option<i64> {
+    match expr {
+        CompiledExpr::Int(n) => Some(*n),
+        CompiledExpr::Const(idx) => {
+            if let Value::Int(n) = &consts[*idx] {
+                Some(*n)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Evaluate an AST TypeExpr::Range to a concrete (lo, hi) using const values.
+pub fn eval_type_expr_range(
+    type_expr: &TypeExpr,
+    spec: &CompiledSpec,
+    consts: &[Value],
+) -> Option<(i64, i64)> {
+    if let TypeExpr::Range(lo_expr, hi_expr, _) = type_expr {
+        let lo = eval_ast_expr_int(lo_expr, spec, consts)?;
+        let hi = eval_ast_expr_int(hi_expr, spec, consts)?;
+        Some((lo, hi))
+    } else {
+        None
+    }
+}
+
+/// Evaluate a simple AST Expr to an i64 (handles int literals and const identifiers).
+fn eval_ast_expr_int(
+    expr: &specl_syntax::Expr,
+    spec: &CompiledSpec,
+    consts: &[Value],
+) -> Option<i64> {
+    match &expr.kind {
+        ExprKind::Int(n) => Some(*n),
+        ExprKind::Ident(name) => {
+            let const_decl = spec.consts.iter().find(|c| c.name == *name)?;
+            if let Value::Int(n) = &consts[const_decl.index] {
+                Some(*n)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+/// Scan all expressions in the spec for string literals and build a deduped table.
+fn build_string_table(spec: &CompiledSpec) -> Vec<String> {
+    let mut strings = Vec::new();
+    collect_strings_from_expr(&spec.init, &mut strings);
+    for action in &spec.actions {
+        collect_strings_from_expr(&action.guard, &mut strings);
+        collect_strings_from_expr(&action.effect, &mut strings);
+    }
+    for inv in &spec.invariants {
+        collect_strings_from_expr(&inv.body, &mut strings);
+    }
+    strings.sort();
+    strings.dedup();
+    strings
+}
+
+fn collect_strings_from_expr(expr: &CompiledExpr, out: &mut Vec<String>) {
+    match expr {
+        CompiledExpr::String(s) => out.push(s.clone()),
+        CompiledExpr::Binary { left, right, .. } => {
+            collect_strings_from_expr(left, out);
+            collect_strings_from_expr(right, out);
+        }
+        CompiledExpr::Unary { operand, .. } => collect_strings_from_expr(operand, out),
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_strings_from_expr(cond, out);
+            collect_strings_from_expr(then_branch, out);
+            collect_strings_from_expr(else_branch, out);
+        }
+        CompiledExpr::Let { value, body, .. } => {
+            collect_strings_from_expr(value, out);
+            collect_strings_from_expr(body, out);
+        }
+        CompiledExpr::Forall { body, domain, .. } | CompiledExpr::Exists { body, domain, .. } => {
+            collect_strings_from_expr(domain, out);
+            collect_strings_from_expr(body, out);
+        }
+        CompiledExpr::FnLit { domain, body, .. } => {
+            collect_strings_from_expr(domain, out);
+            collect_strings_from_expr(body, out);
+        }
+        CompiledExpr::Index { base, index } => {
+            collect_strings_from_expr(base, out);
+            collect_strings_from_expr(index, out);
+        }
+        CompiledExpr::SetComprehension {
+            element,
+            domain,
+            filter,
+            ..
+        } => {
+            collect_strings_from_expr(element, out);
+            collect_strings_from_expr(domain, out);
+            if let Some(f) = filter {
+                collect_strings_from_expr(f, out);
+            }
+        }
+        CompiledExpr::SetLit(elems) | CompiledExpr::SeqLit(elems) => {
+            for e in elems {
+                collect_strings_from_expr(e, out);
+            }
+        }
+        CompiledExpr::Range { lo, hi } => {
+            collect_strings_from_expr(lo, out);
+            collect_strings_from_expr(hi, out);
+        }
+        CompiledExpr::DictLit(pairs) => {
+            for (k, v) in pairs {
+                collect_strings_from_expr(k, out);
+                collect_strings_from_expr(v, out);
+            }
+        }
+        CompiledExpr::Choose {
+            domain, predicate, ..
+        } => {
+            collect_strings_from_expr(domain, out);
+            collect_strings_from_expr(predicate, out);
+        }
+        _ => {}
     }
 }
 

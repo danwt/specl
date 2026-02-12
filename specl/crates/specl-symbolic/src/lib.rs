@@ -5,7 +5,11 @@
 
 pub mod bmc;
 pub mod encoder;
+pub mod fixedpoint;
+pub mod ic3;
 pub mod inductive;
+pub mod k_induction;
+pub mod smart;
 pub mod state_vars;
 pub mod trace;
 pub mod transition;
@@ -69,6 +73,12 @@ pub enum SymbolicMode {
     Bmc,
     /// Inductive invariant checking: single-step proof.
     Inductive,
+    /// k-induction with given strengthening depth.
+    KInduction(usize),
+    /// IC3/CHC via Z3's Spacer engine (unbounded verification).
+    Ic3,
+    /// Smart mode: automatic strategy cascade.
+    Smart,
 }
 
 /// Run symbolic model checking on a compiled spec.
@@ -80,5 +90,8 @@ pub fn check(
     match config.mode {
         SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth),
         SymbolicMode::Inductive => inductive::check_inductive(spec, consts),
+        SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k),
+        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts),
+        SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth),
     }
 }

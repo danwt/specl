@@ -182,10 +182,20 @@ fn encode_init_assignment(
                 ))),
             }
         }
-        VarKind::ExplodedSet { .. } => {
-            // Default: empty set
-            for var in z3_vars {
-                solver.assert(&var.as_bool().unwrap().not());
+        VarKind::ExplodedSet { lo, hi } => {
+            let mut enc = EncoderCtx {
+                layout,
+                consts,
+                step_vars,
+                current_step: 0,
+                next_step: 0,
+                params: &[],
+                locals: Vec::new(),
+            };
+            let flags = enc.encode_as_set(rhs, *lo, *hi)?;
+            for (i, flag) in flags.iter().enumerate() {
+                let vb = z3_vars[i].as_bool().unwrap();
+                solver.assert(&vb.eq(flag));
             }
             Ok(())
         }
@@ -204,7 +214,7 @@ pub fn encode_transition(
     let mut action_encodings = Vec::new();
 
     for action in &spec.actions {
-        let action_enc = encode_action(action, consts, layout, step_vars, step)?;
+        let action_enc = encode_action(action, spec, consts, layout, step_vars, step)?;
         action_encodings.push(action_enc);
     }
 
@@ -213,6 +223,7 @@ pub fn encode_transition(
 
 fn encode_action(
     action: &CompiledAction,
+    spec: &CompiledSpec,
     consts: &[Value],
     layout: &VarLayout,
     step_vars: &[Vec<Vec<Dynamic>>],
@@ -221,10 +232,19 @@ fn encode_action(
     let param_ranges: Vec<(i64, i64)> = action
         .params
         .iter()
-        .map(|(_, ty)| match ty {
+        .enumerate()
+        .map(|(i, (_, ty))| match ty {
             Type::Range(lo, hi) => Ok((*lo, *hi)),
             Type::Nat => Ok((0, 100)),
-            Type::Int => Err(SymbolicError::Unsupported("unbounded Int parameter".into())),
+            Type::Int => {
+                // Try resolving from AST type expressions (handles const-dependent ranges)
+                if let Some(type_expr) = action.param_type_exprs.get(i) {
+                    crate::state_vars::eval_type_expr_range(type_expr, spec, consts)
+                        .ok_or_else(|| SymbolicError::Unsupported("unbounded Int parameter".into()))
+                } else {
+                    Err(SymbolicError::Unsupported("unbounded Int parameter".into()))
+                }
+            }
             _ => Err(SymbolicError::Unsupported(format!(
                 "parameter type: {:?}",
                 ty
@@ -453,9 +473,17 @@ fn encode_primed_assignment(
                 ))),
             }
         }
-        VarKind::ExplodedSet { .. } => Err(SymbolicError::Unsupported(
-            "set variable assignment in effect".into(),
-        )),
+        VarKind::ExplodedSet { lo, hi } => {
+            let lo = *lo;
+            let hi = *hi;
+            let flags = enc.encode_as_set(rhs, lo, hi)?;
+            let mut conjuncts = Vec::new();
+            for (i, flag) in flags.iter().enumerate() {
+                let nb = next_vars[i].as_bool().unwrap();
+                conjuncts.push(nb.eq(flag));
+            }
+            Ok(Bool::and(&conjuncts))
+        }
     }
 }
 
