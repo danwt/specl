@@ -18,7 +18,7 @@ A specification language and model checker for concurrent and distributed system
 
 ```bash
 cargo install --path crates/specl-cli
-specl check examples/easy/Counter.specl -c MAX=5
+specl check examples/other/Counter.specl -c MAX=5
 ```
 
 ```specl
@@ -45,15 +45,14 @@ With parallelism: 1M+ states/second on typical workloads.
 
 | | |
 |---|---|
-| [Raft consensus](specl/examples/benchmark/17-raft-vanlightly/raft.specl) | Leader election + log replication (Vanlightly's async model) |
-| [Percolator](specl/examples/benchmark/14-percolator/percolator.specl) | Google's distributed transactions with snapshot isolation (4.2M states) |
-| [Parallel Commits](specl/examples/benchmark/15-parallel-commits/parallel-commits.specl) | CockroachDB's parallel commit protocol (13.3M states) |
-| [EPaxos](specl/examples/benchmark/12-epaxos/epaxos.specl) | Egalitarian Paxos (757K states) |
-| [Two-Phase Commit](specl/examples/benchmark/03-tpc/tpc.specl) | Classic distributed commit protocol |
-| [Dining Philosophers](specl/examples/easy/DiningPhilosophers.specl) | Mutual exclusion with shared resources |
-| [Traffic Light](specl/examples/easy/TrafficLight.specl) | Safety invariants for a traffic controller |
+| [Raft consensus](specl/examples/showcase/raft.specl) | Leader election + log replication (Vanlightly's async model) |
+| [Percolator](specl/examples/showcase/percolator.specl) | Google's distributed transactions with snapshot isolation |
+| [CometBFT](specl/examples/showcase/comet.specl) | Tendermint BFT with Byzantine faults |
+| [Paxos](specl/examples/showcase/paxos.specl) | Single-decree Paxos (Synod) consensus |
+| [MESI](specl/examples/showcase/mesi.specl) | Cache coherence protocol |
+| [Redlock](specl/examples/showcase/redlock.specl) | Distributed lock bug-finding (Kleppmann attack) |
 
-See also: [`examples/easy/`](specl/examples/easy/) (beginner), [`examples/realistic/`](specl/examples/realistic/) (mid-complexity), [`examples/benchmark/`](specl/examples/benchmark/) (production protocols).
+See [`examples/showcase/`](specl/examples/showcase/) for curated protocol specs, [`examples/other/`](specl/examples/other/) for additional specs.
 
 ## Toolchain
 

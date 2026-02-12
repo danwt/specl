@@ -245,4 +245,4 @@ specl/crates/
 
 ## Examples
 
-See `specl/examples/easy/` (beginner), `specl/examples/realistic/` (mid-complexity), `specl/examples/benchmark/` (production protocols including Raft, Paxos, EPaxos, Percolator, Parallel Commits, PBFT, etc).
+See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, CometBFT, Percolator, MESI, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
