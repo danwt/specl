@@ -78,7 +78,9 @@
 // =============================================================================
 
 module NarwhalTusk
-// Use: -c N=2 -c F=0 -c MAX_ROUND=1
+// Use: specl check narwhal_tusk.specl -c N=3 -c F=1 -c MAX_ROUND=2 --no-deadlock --fast
+// N=3 F=1 (4 validators, quorum=3). MAX_ROUND=2 for commit rule testing.
+// Large state space at these params (>5 min check).
 
 // === Constants ===
 

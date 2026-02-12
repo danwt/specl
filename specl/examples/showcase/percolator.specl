@@ -4,8 +4,9 @@ module Percolator
 // Based on: PingCAP TLA+ specification (github.com/pingcap/tla-plus)
 // C+1 clients (0..C), K+1 keys (0..K). Client c's primary key = c (requires C <= K).
 // MaxTs = 2*(C+1) bounds timestamps. Each client uses 2 ts: start + commit.
-// Use: specl check percolator.specl -c C=1 -c K=1 -c MaxTs=4 --no-deadlock
-// Verified: C=1 K=1 MaxTs=4 -> 3308 states
+// Use: specl check percolator.specl -c C=2 -c K=2 -c MaxTs=8 --no-deadlock --fast
+// Baseline: C=1 K=1 MaxTs=4 -> 3K states, <1s
+// Full: C=2 K=2 MaxTs=8 (3 clients, 3 keys) -> >5 min check (large state space)
 
 const C: Int
 const K: Int

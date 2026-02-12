@@ -4,9 +4,10 @@ module CometBFT
 // From: Buchman, Kwon, Milosevic, "The latest gossip on BFT consensus" (2018)
 // N+1 validators (0..N), tolerating F Byzantine faults where N+1 >= 3F+1
 // Quorum = 2F+1 (strict majority of honest + Byzantine)
-// Use: specl check comet.specl -c N=3 -c MaxRound=0 -c V=1 -c F=1 --no-deadlock
-// Verified: N=3 MaxRound=0 V=1 F=1 -> 59477 states, Agreement OK
-// Note: N=3 MaxRound=1 V=1 F=1 exceeds memory (~16M+ states with growing queue)
+// Use: specl check comet.specl -c N=3 -c MaxRound=1 -c V=1 -c F=1 --no-deadlock --fast
+// Baseline: N=3 MaxRound=0 V=1 F=1 -> 56K states, 2s (no view changes)
+// Full: N=3 MaxRound=1 V=1 F=1 -> >5 min check (exercises view changes, large state space)
+// WARNING: F=0 is degenerate (Quorum=1, Agreement trivially violated). Always use F>=1.
 
 const N: Int
 const MaxRound: Int

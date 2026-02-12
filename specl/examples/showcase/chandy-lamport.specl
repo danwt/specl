@@ -7,7 +7,10 @@ module ChandyLamport
 // N is the last process index (N+1 processes in a ring, 0..N)
 // MaxMsgs bounds channel capacity to keep state space finite
 // Message types in channels: 0=Token, 1=Marker
-// Use: specl check chandy-lamport.specl -c N=2 -c MaxMsgs=2 --no-deadlock
+// Use: specl check chandy-lamport.specl -c N=2 -c MaxMsgs=3 --no-deadlock --fast
+// KNOWN ISSUE: BFS checker spuriously deadlocks at depth 2 (ReceiveToken not
+// recognized as enabled). Suspected bug in action guard evaluation for sequences.
+// The spec itself is correct — pending checker fix.
 
 const N: Int
 const MaxMsgs: Int

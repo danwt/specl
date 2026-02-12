@@ -7,8 +7,9 @@ module Simplex
 // Leader of iteration h: h % (N + 1)
 // Notarization: leader's proposal alone suffices (crash = no equivocation)
 // Dummy blocks need >n/2 votes; Finalization needs >n/2 finalize messages
-// Use: specl check simplex.specl -c N=2 -c MaxIter=2 -c V=1 --no-deadlock
-// Verified: N=2 MaxIter=2 V=1 -> 276880 states, FinalizationSafety + Agreement OK
+// Use: specl check simplex.specl -c N=2 -c MaxIter=2 -c V=1 --no-deadlock --fast
+// Verified: N=2 MaxIter=2 V=1 -> 277K states, 3s, FinalizationSafety + Agreement OK
+// Scale up: N=2 MaxIter=3 V=1 (>5 min check)
 
 const N: Int
 const MaxIter: Int

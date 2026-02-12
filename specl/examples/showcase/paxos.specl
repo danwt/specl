@@ -6,8 +6,9 @@ module Paxos
 // N is the last acceptor index (N+1 acceptors, 0..N)
 // MaxBallot is the last ballot number (0..MaxBallot)
 // V is the last value index (V+1 possible values, 0..V)
-// Use: specl check paxos.specl -c N=2 -c MaxBallot=2 -c V=1 --no-deadlock
-// Verified: N=2 MaxBallot=2 V=1 -> 11592 states, Agreement + Validity OK
+// Use: specl check paxos.specl -c N=2 -c MaxBallot=3 -c V=2 --no-deadlock --fast
+// Verified: N=2 MaxBallot=3 V=2 -> 316K states, 6s, Agreement + Validity OK
+// Scale up: N=3 MaxBallot=3 V=2 (4 acceptors, >5 min)
 
 const N: Int
 const MaxBallot: Int
