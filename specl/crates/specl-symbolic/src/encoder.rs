@@ -547,10 +547,13 @@ impl<'a> EncoderCtx<'a> {
         domain: &CompiledExpr,
         predicate: &CompiledExpr,
     ) -> SymbolicResult<Dynamic> {
-        let (lo, hi) = self.extract_range(domain)?;
-        // Build ITE chain: if P(lo) then lo else if P(lo+1) then lo+1 else ... else lo
-        let mut result = Dynamic::from_ast(&Int::from_i64(lo)); // default fallback
-        for val in (lo..=hi).rev() {
+        let values = self.resolve_domain_values(domain)?;
+        // Build ITE chain: if P(first) then first else if P(second) then second else ... else first
+        let fallback = *values
+            .first()
+            .ok_or_else(|| SymbolicError::Encoding("empty domain in choose".into()))?;
+        let mut result = Dynamic::from_ast(&Int::from_i64(fallback));
+        for val in values.into_iter().rev() {
             let z3_val = Dynamic::from_ast(&Int::from_i64(val));
             self.locals.push(z3_val);
             let pred = self.encode_bool(predicate)?;
@@ -855,12 +858,12 @@ impl<'a> EncoderCtx<'a> {
             filter,
         } = inner
         {
-            let (lo, hi) = self.extract_range(domain)?;
+            let values = self.resolve_domain_values(domain)?;
             let one = Int::from_i64(1);
             let zero = Int::from_i64(0);
             let mut sum_terms = Vec::new();
 
-            for val in lo..=hi {
+            for val in values {
                 let z3_val = Dynamic::from_ast(&Int::from_i64(val));
                 self.locals.push(z3_val);
                 let included = if let Some(f) = filter {
@@ -872,7 +875,11 @@ impl<'a> EncoderCtx<'a> {
                 sum_terms.push(included.ite(&one, &zero));
             }
 
-            Ok(Dynamic::from_ast(&Int::add(&sum_terms)))
+            if sum_terms.is_empty() {
+                Ok(Dynamic::from_ast(&Int::from_i64(0)))
+            } else {
+                Ok(Dynamic::from_ast(&Int::add(&sum_terms)))
+            }
         } else {
             match inner {
                 CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
@@ -1043,11 +1050,18 @@ impl<'a> EncoderCtx<'a> {
                 domain,
                 filter,
             } => {
-                let (lo, hi) = self.extract_range(domain)?;
+                let values = self.resolve_domain_values(domain)?;
                 let elem_z3 = self.encode_int(elem)?;
-                let lo_z3 = Int::from_i64(lo);
-                let hi_z3 = Int::from_i64(hi);
-                let in_domain = Bool::and(&[elem_z3.ge(&lo_z3), elem_z3.le(&hi_z3)]);
+                let eqs: Vec<Bool> = values
+                    .iter()
+                    .map(|v| elem_z3.eq(&Int::from_i64(*v)))
+                    .collect();
+                let eq_refs: Vec<&Bool> = eqs.iter().collect();
+                let in_domain = if eq_refs.is_empty() {
+                    Bool::from_bool(false)
+                } else {
+                    Bool::or(&eq_refs)
+                };
 
                 let result = if let Some(f) = filter {
                     let elem_encoded = self.encode(elem)?;
@@ -1677,9 +1691,9 @@ impl<'a> EncoderCtx<'a> {
                 domain,
                 filter,
             } => {
-                let (dom_lo, dom_hi) = self.extract_range(domain)?;
+                let values = self.resolve_domain_values(domain)?;
                 let mut flags = vec![Bool::from_bool(false); count];
-                for val in dom_lo..=dom_hi {
+                for val in values {
                     let offset = (val - lo) as usize;
                     if offset >= count {
                         continue;
@@ -1762,6 +1776,17 @@ impl<'a> EncoderCtx<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve a domain to concrete values, handling both Range and set-local domains.
+    fn resolve_domain_values(&mut self, domain: &CompiledExpr) -> SymbolicResult<Vec<i64>> {
+        if let CompiledExpr::Local(idx) = domain {
+            if let Some(members) = self.resolve_set_local(*idx) {
+                return Ok(members.clone());
+            }
+        }
+        let (lo, hi) = self.extract_range(domain)?;
+        Ok((lo..=hi).collect())
     }
 
     pub fn extract_range(&mut self, domain: &CompiledExpr) -> SymbolicResult<(i64, i64)> {
