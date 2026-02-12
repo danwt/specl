@@ -91,10 +91,10 @@ enum ParallelResult {
     },
 }
 
-/// Result of ample set computation: either template-level or instance-level.
+/// Result of instance-level ample set computation.
 enum AmpleResult {
-    /// Template-level reduction: list of action template indices.
-    Templates(Vec<usize>),
+    /// Fall back to template-level POR (standard path).
+    Templates,
     /// Instance-level reduction: list of (action_idx, params) pairs.
     Instances(Vec<(usize, Vec<Value>)>),
 }
@@ -2350,127 +2350,40 @@ impl Explorer {
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
     ) -> CheckResult<()> {
-        use std::cell::RefCell;
-
-        thread_local! {
-            static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
-        }
-
         buf.clear();
 
-        // Instance-level POR path: when refinable pairs exist and POR is enabled,
-        // compute the ample set at the instance level and apply selected instances directly.
+        // Instance-level POR: apply specific (action, params) instances directly
         if self.config.use_por && self.has_refinable_pairs {
-            match self.compute_ample_set_instance_level(state)? {
-                AmpleResult::Instances(instances) => {
-                    // Check if all instances have params (pure instance-level path)
-                    let all_have_params = instances.iter().all(|(_, p)| !p.is_empty());
-                    if all_have_params {
-                        for (action_idx, params) in &instances {
-                            self.apply_single_instance(
-                                state,
-                                *action_idx,
-                                params,
-                                buf,
-                                next_vars_buf,
-                            )?;
-                        }
-                        return Ok(());
-                    }
-                    // Mixed: some instances have params, some are template-level groups.
-                    // Collect template-level actions to apply normally, apply instance-level directly.
-                    let mut template_actions: Vec<usize> = Vec::new();
-                    for (action_idx, params) in &instances {
-                        if params.is_empty() {
-                            template_actions.push(*action_idx);
-                        } else {
-                            self.apply_single_instance(
-                                state,
-                                *action_idx,
-                                params,
-                                buf,
-                                next_vars_buf,
-                            )?;
-                        }
-                    }
-                    // Apply remaining template-level actions via normal path
-                    if !template_actions.is_empty() {
-                        let orbit_reps: SmallVec<[Vec<usize>; 4]> =
-                            if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
-                                self.spec
-                                    .symmetry_groups
-                                    .iter()
-                                    .map(|group| {
-                                        crate::state::orbit_representatives(&state.vars, group)
-                                    })
-                                    .collect()
-                            } else {
-                                SmallVec::new()
-                            };
-                        let num_actions = self.spec.actions.len();
-                        OP_CACHES.with(|cell| {
-                            let mut caches = cell.borrow_mut();
-                            if caches.len() != num_actions {
-                                *caches = (0..num_actions).map(|_| OpCache::new()).collect();
-                            }
-                            for action_idx in template_actions {
-                                self.apply_action(
-                                    state,
-                                    action_idx,
-                                    buf,
-                                    next_vars_buf,
-                                    &mut caches[action_idx],
-                                    &orbit_reps,
-                                )?;
-                            }
-                            Ok::<(), CheckError>(())
-                        })?;
-                    }
-                    return Ok(());
-                }
-                AmpleResult::Templates(actions) => {
-                    // Template-level path — fall through to normal exploration
-                    let orbit_reps: SmallVec<[Vec<usize>; 4]> = if self.config.use_symmetry
-                        && !self.spec.symmetry_groups.is_empty()
-                    {
-                        self.spec
-                            .symmetry_groups
-                            .iter()
-                            .map(|group| crate::state::orbit_representatives(&state.vars, group))
-                            .collect()
+            if let AmpleResult::Instances(instances) =
+                self.compute_ample_set_instance_level(state)?
+            {
+                // Apply concrete instances directly
+                let mut template_actions: Vec<usize> = Vec::new();
+                for (action_idx, params) in &instances {
+                    if params.is_empty() {
+                        // Non-refinable action group: apply via template path below
+                        template_actions.push(*action_idx);
                     } else {
-                        SmallVec::new()
-                    };
-                    let num_actions = self.spec.actions.len();
-                    OP_CACHES.with(|cell| {
-                        let mut caches = cell.borrow_mut();
-                        if caches.len() != num_actions {
-                            *caches = (0..num_actions).map(|_| OpCache::new()).collect();
-                        }
-                        for action_idx in actions {
-                            if sleep_set != 0
-                                && action_idx < 64
-                                && sleep_set & (1u64 << action_idx) != 0
-                            {
-                                continue;
-                            }
-                            self.apply_action(
-                                state,
-                                action_idx,
-                                buf,
-                                next_vars_buf,
-                                &mut caches[action_idx],
-                                &orbit_reps,
-                            )?;
-                        }
-                        Ok::<(), CheckError>(())
-                    })?;
+                        self.apply_single_instance(state, *action_idx, params, buf, next_vars_buf)?;
+                    }
+                }
+                if template_actions.is_empty() {
                     return Ok(());
                 }
+                // Apply remaining template-level actions (sleep set disabled for
+                // instance-level POR per plan — sleep sets are a secondary optimization)
+                return self.apply_template_actions(
+                    state,
+                    &template_actions,
+                    buf,
+                    next_vars_buf,
+                    0,
+                );
             }
+            // AmpleResult::Templates falls through to standard path below
         }
 
-        // Standard path: template-level POR or no POR
+        // Standard path: determine which action templates to explore
         let actions_to_explore = if self.config.use_por {
             self.compute_ample_set(state)?
         } else if let Some(ref relevant) = self.relevant_actions {
@@ -2479,8 +2392,25 @@ impl Explorer {
             (0..self.spec.actions.len()).collect()
         };
 
-        // Compute orbit representatives per symmetry group (if symmetry enabled)
-        // orbit_reps[group_idx] = set of representative domain elements
+        self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set)
+    }
+
+    /// Apply a set of action templates to a state, using the operation cache and
+    /// orbit representative filtering. Shared by all exploration paths.
+    fn apply_template_actions(
+        &self,
+        state: &State,
+        actions: &[usize],
+        buf: &mut Vec<(State, usize)>,
+        next_vars_buf: &mut Vec<Value>,
+        sleep_set: u64,
+    ) -> CheckResult<()> {
+        use std::cell::RefCell;
+
+        thread_local! {
+            static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
+        }
+
         let orbit_reps: SmallVec<[Vec<usize>; 4]> =
             if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
                 self.spec
@@ -2498,8 +2428,7 @@ impl Explorer {
             if caches.len() != num_actions {
                 *caches = (0..num_actions).map(|_| OpCache::new()).collect();
             }
-            for action_idx in actions_to_explore {
-                // Skip actions in sleep set
+            for &action_idx in actions {
                 if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
                     continue;
                 }
@@ -2715,10 +2644,10 @@ impl Explorer {
 
         let enabled_templates = self.get_enabled_actions(state)?;
         if enabled_templates.is_empty() {
-            return Ok(AmpleResult::Templates(vec![]));
+            return Ok(AmpleResult::Templates);
         }
         if enabled_templates.len() == 1 {
-            return Ok(AmpleResult::Templates(enabled_templates));
+            return Ok(AmpleResult::Templates);
         }
 
         // Fast path: check if any enabled pair is refinable
@@ -2729,9 +2658,7 @@ impl Explorer {
                     .any(|&b| self.spec.refinable_pairs[a][b])
         });
         if !any_refinable {
-            // No refinable pairs among enabled actions — delegate to template-level
-            let result = self.compute_ample_set(state)?;
-            return Ok(AmpleResult::Templates(result));
+            return Ok(AmpleResult::Templates);
         }
 
         // Enumerate all enabled instances for refinable actions
@@ -2748,7 +2675,7 @@ impl Explorer {
         }
 
         if all_instances.len() <= 1 {
-            return Ok(AmpleResult::Templates(enabled_templates));
+            return Ok(AmpleResult::Templates);
         }
 
         // Build instance-level dependency and find smallest non-singleton ample set.
@@ -2804,9 +2731,7 @@ impl Explorer {
             return Ok(AmpleResult::Instances(instances));
         }
 
-        // No reduction found at instance level — try template level as fallback
-        let result = self.compute_ample_set(state)?;
-        Ok(AmpleResult::Templates(result))
+        Ok(AmpleResult::Templates)
     }
 
     /// Resolve KeySource entries to concrete key values given action parameters.
