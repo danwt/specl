@@ -201,6 +201,10 @@ enum Commands {
         /// Suppress spec analysis and recommendations
         #[arg(short, long)]
         quiet: bool,
+
+        /// Disable auto-enabling of optimizations (POR, symmetry)
+        #[arg(long)]
+        no_auto: bool,
     },
 
     /// Format a Specl file
@@ -305,6 +309,7 @@ fn main() {
             seq_bound,
             verbose,
             quiet,
+            no_auto,
         } => {
             if symbolic || inductive || k_induction.is_some() || ic3 || smart {
                 cmd_check_symbolic(
@@ -332,6 +337,7 @@ fn main() {
                     fast,
                     verbose,
                     quiet,
+                    no_auto,
                 )
             }
         }
@@ -513,6 +519,7 @@ fn cmd_check(
     fast_check: bool,
     _verbose: bool,
     quiet: bool,
+    no_auto: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -535,10 +542,40 @@ fn cmd_check(
     // Parse constants
     let consts = parse_constants(constants, &spec)?;
 
-    // Spec analysis and recommendations
+    // Spec analysis, recommendations, and auto-enable
+    let profile = analyze(&spec);
     if !quiet {
-        let profile = analyze(&spec);
         print_profile(&profile, use_por, use_symmetry);
+    }
+
+    let mut actual_por = use_por;
+    let mut actual_symmetry = use_symmetry;
+
+    if !no_auto {
+        if !use_por && profile.independence_ratio > 0.3 {
+            actual_por = true;
+            if !quiet {
+                let pct = (profile.independence_ratio * 100.0) as u32;
+                println!("Auto-enabled: --por ({}% independent actions)", pct);
+            }
+        }
+        if !use_symmetry && profile.has_symmetry {
+            actual_symmetry = true;
+            if !quiet {
+                let sizes: Vec<String> = profile
+                    .symmetry_domain_sizes
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                println!(
+                    "Auto-enabled: --symmetry (symmetric domains: {})",
+                    sizes.join(", ")
+                );
+            }
+        }
+        if !quiet && (actual_por != use_por || actual_symmetry != use_symmetry) {
+            println!();
+        }
     }
 
     let config = CheckConfig {
@@ -548,8 +585,8 @@ fn cmd_check(
         memory_limit_mb,
         parallel,
         num_threads,
-        use_por,
-        use_symmetry,
+        use_por: actual_por,
+        use_symmetry: actual_symmetry,
         fast_check,
     };
 
