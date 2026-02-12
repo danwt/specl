@@ -1,22 +1,21 @@
 module Raft
 
 // ============================================================================
-// Production-Grade Raft Consensus Specification
+// Simplified Raft Consensus Sketch
 // ============================================================================
 // Based on: Ongaro & Ousterhout, "In Search of an Understandable Consensus Algorithm"
-// Extended Technical Report: https://raft.github.io/raft.pdf
+// https://raft.github.io/raft.pdf
 //
-// This specification models the complete Raft protocol with:
-// - Explicit network modeling with separate message sets per RPC type
-// - Full RPC request/response protocol (RequestVote, AppendEntries)
-// - Leader state tracking (nextIndex, matchIndex)
-// - Proper prevLogIndex/prevLogTerm consistency checking
-// - All five safety properties from Figure 3 of the paper
-// - 1-based indexing (consistent with paper and canonical TLA+ spec)
+// WARNING: This is a SIMPLIFIED spec. HandleAppendEntriesRequest reads leader
+// state directly (log[i], commitIndex[i]) instead of carrying data in messages.
+// UpdateTerm also reads peer state directly. This means the spec models
+// synchronous/shared-memory Raft, NOT true async message passing.
 //
-// Usage: specl check raft.specl -c N=2 -c MaxTerm=2 -c MaxLogLen=2
+// For a faithful async Raft model, see: ../17-raft-vanlightly/raft.specl
 //
-// Messages are encoded as 6-element sequences to work within Specl's type system:
+// Usage: specl check raft.specl -c N=2 -c MaxTerm=2 -c MaxLogLen=2 --no-deadlock
+//
+// Messages are encoded as 6-element sequences:
 // RequestVoteRequest: [1, src, dest, term, lastLogIdx, lastLogTerm]
 // RequestVoteResponse: [2, src, dest, term, voteGranted (0/1), 0]
 // AppendEntriesRequest: [3, src, dest, term, prevLogIdx, prevLogTerm]
@@ -34,7 +33,7 @@ const MaxLogLen: Int
 // Persistent state
 var currentTerm: Dict[Int, Int]  // latest term server has seen
 var votedFor: Dict[Int, Int]     // candidateId that received vote (-1 if none)
-var log: Dict[Int, Seq[Int]]     // log entries (1-based indexing)
+var log: Dict[Int, Seq[Int]]     // log entries (0-based seq, 1-based logical via helpers)
 
 // Volatile state
 var commitIndex: Dict[Int, Int]  // highest log entry known committed
@@ -347,7 +346,7 @@ invariant ElectionSafety {
         implies i == j
 }
 
-invariant LeaderAppendOnly {
+invariant MatchIndexBounded {
     all i in 0..N:
         role[i] == 2 implies (all j in 0..N: i != j implies len(log[i]) >= matchIndex[i][j])
 }
