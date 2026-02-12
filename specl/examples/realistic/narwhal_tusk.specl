@@ -110,9 +110,9 @@ init {
 
 // === Helper Functions ===
 
-// Check if a quorum (2f+1) exists
+// Check if count reaches a BFT quorum (2f+1)
 func IsQuorum(count) {
-    count * 2 > N + 1
+    count >= 2 * F + 1
 }
 
 // Get the deterministic leader for a given round
