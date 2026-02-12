@@ -2083,8 +2083,10 @@ impl Explorer {
         match ty {
             specl_types::Type::Bool => vec![Value::Bool(false), Value::Bool(true)],
             specl_types::Type::Nat | specl_types::Type::Int => {
-                // Default to small range for now
-                (0..=10).map(Value::Int).collect()
+                unreachable!(
+                    "unbounded type {:?} in explicit-state checking — should be caught by CLI before exploration",
+                    ty
+                )
             }
             specl_types::Type::Range(lo, hi) => (*lo..=*hi).map(Value::Int).collect(),
             specl_types::Type::Set(elem_ty) => {
