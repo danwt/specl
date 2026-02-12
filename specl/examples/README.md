@@ -9,7 +9,7 @@
 | `benchmark/` | Production protocols — complex models translated from TLA+ literature |
 | `semaphores/` | Classic concurrency — mutual exclusion, producer-consumer, barriers |
 
-The `benchmarks/` directory at the repo root contains TLC comparison scripts (`.tla`, `.cfg`, `.sh`) for performance benchmarking against TLC — it has no `.specl` files.
+The sibling `benchmarks/` directory contains TLC comparison scripts (`.tla`, `.cfg`, `.sh`) for performance benchmarking against TLC — it has no `.specl` files.
 
 ## Showcase
 
@@ -88,7 +88,7 @@ Models the SWIM protocol with direct and indirect pinging. The `DirectTimeout` a
 
 ### Narwhal-Tusk — DAG-Based BFT Consensus
 
-Models the Narwhal/Tusk protocol (Danezis et al., 2022) that separates data availability from consensus ordering. Narwhal constructs a DAG of certificates with quorum signatures; Tusk orders the DAG using a deterministic leader commit rule. 6 invariants: SignaturesValid, DAGValidity, NoEquivocation, CommitAgreement, CommittedHaveQuorum, CausalConsistency. Currently not checkable (uses `Set[Seq[Int]]` types) — serves as a design reference.
+Models the Narwhal/Tusk protocol (Danezis et al., 2022) that separates data availability from consensus ordering. Narwhal constructs a DAG of certificates with quorum signatures; Tusk orders the DAG using a deterministic leader commit rule. 6 invariants: SignaturesValid, DAGValidity, NoEquivocation, CommitAgreement, CommittedHaveQuorum, CausalConsistency. Not yet checkable (uses `Set[Seq[Int]]` types) — serves as a design reference pending future type support.
 
 ### Chandy-Lamport — Consistent Snapshots
 
