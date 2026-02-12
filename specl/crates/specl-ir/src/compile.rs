@@ -976,7 +976,9 @@ impl Compiler {
             result.entry(var_idx).or_insert(None);
         }
 
-        result.into_iter().collect()
+        let mut pairs: Vec<_> = result.into_iter().collect();
+        pairs.sort_by_key(|(v, _)| *v);
+        pairs
     }
 
     /// Walk effect And-tree to find PrimedVar(v) == rhs assignments.
@@ -1069,7 +1071,8 @@ impl Compiler {
         Self::collect_read_keys_impl(guard, &mut info);
         Self::collect_read_keys_impl(effect, &mut info);
 
-        info.into_iter()
+        let mut pairs: Vec<_> = info
+            .into_iter()
             .map(|(var_idx, (keys, has_unkeyed))| {
                 if has_unkeyed || keys.is_empty() {
                     (var_idx, None)
@@ -1077,7 +1080,9 @@ impl Compiler {
                     (var_idx, Some(keys))
                 }
             })
-            .collect()
+            .collect();
+        pairs.sort_by_key(|(v, _)| *v);
+        pairs
     }
 
     /// Recursively collect read key info from an expression.
@@ -1199,8 +1204,15 @@ impl Compiler {
                     Self::collect_read_keys_impl(v, info);
                 }
             }
+            // FnUpdate chain: var[k1 -> v1][k2 -> v2]...
+            // The innermost base Var is the update target, not a whole-variable read.
             CompiledExpr::FnUpdate { base, key, value } => {
-                Self::collect_read_keys_impl(base, info);
+                // Only skip the base Var for the innermost base of the chain.
+                // If base is another FnUpdate, recurse normally (it handles its own base).
+                // If base is Var, skip it (same logic as Union+DictLit).
+                if !matches!(base.as_ref(), CompiledExpr::Var(_)) {
+                    Self::collect_read_keys_impl(base, info);
+                }
                 Self::collect_read_keys_impl(key, info);
                 Self::collect_read_keys_impl(value, info);
             }
