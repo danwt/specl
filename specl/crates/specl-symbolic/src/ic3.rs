@@ -115,10 +115,29 @@ pub fn check_ic3(
                 info!(invariant = inv.name, "invariant verified by IC3");
             }
             z3_sys::Z3_L_TRUE => {
-                info!(invariant = inv.name, "IC3 found invariant violation");
+                info!(invariant = inv.name, "IC3 found violation, reconstructing trace via BMC");
+                // IC3 confirms a violation exists but can't produce a trace directly.
+                // Use BMC with increasing depth to find the shortest counterexample.
+                let mut trace = Vec::new();
+                for depth in [1, 2, 4, 8, 16, 32] {
+                    match crate::bmc::check_bmc(spec, consts, depth, seq_bound) {
+                        Ok(SymbolicOutcome::InvariantViolation {
+                            trace: bmc_trace, ..
+                        }) => {
+                            info!(depth, "trace reconstructed via BMC");
+                            trace = bmc_trace;
+                            break;
+                        }
+                        Ok(_) => continue,
+                        Err(_) => break,
+                    }
+                }
+                if trace.is_empty() {
+                    info!("could not reconstruct trace (violation may require depth > 32)");
+                }
                 return Ok(SymbolicOutcome::InvariantViolation {
                     invariant: inv.name.clone(),
-                    trace: Vec::new(),
+                    trace,
                 });
             }
             _ => {
