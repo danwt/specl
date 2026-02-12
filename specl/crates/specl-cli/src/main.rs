@@ -253,7 +253,11 @@ enum Commands {
     },
 
     /// Show reference of all available checking techniques and when to use them
-    Techniques,
+    Techniques {
+        /// Show extended plain-English explanations for each technique
+        #[arg(short, long)]
+        verbose: bool,
+    },
 }
 
 fn main() {
@@ -353,7 +357,7 @@ fn main() {
             no_deadlock,
         } => cmd_watch(&file, &constant, max_states, max_depth, !no_deadlock),
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
-        Commands::Techniques => cmd_techniques(),
+        Commands::Techniques { verbose } => cmd_techniques(verbose),
     };
 
     if let Err(e) = result {
@@ -449,12 +453,38 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
         println!("  Constants: {}", const_strs.join(", "));
     }
 
-    // State space
+    // Per-variable state space breakdown
     println!();
-    println!("State Space:");
-    match profile.state_space_bound {
-        Some(b) => println!("  Estimated bound: ~{}", format_large_number(b)),
-        None => println!("  Estimated bound: unbounded"),
+    println!("State Space Breakdown:");
+    let total_bound = profile.state_space_bound;
+    // log(total) for computing contribution percentages (multiplicative -> log-additive)
+    let log_total = total_bound.map(|t| (t as f64).ln());
+    for (name, ty, domain) in &profile.var_domain_sizes {
+        match domain {
+            Some(size) => {
+                let pct_str = match log_total {
+                    Some(lt) if lt > 0.0 && *size > 1 => {
+                        let pct = ((*size as f64).ln() / lt) * 100.0;
+                        format!("  ({:.0}% of state space)", pct)
+                    }
+                    _ => String::new(),
+                };
+                println!(
+                    "  {}: {}  {} values{}",
+                    name,
+                    ty,
+                    format_large_number(*size),
+                    pct_str
+                );
+            }
+            None => {
+                println!("  {}: {}  unbounded", name, ty);
+            }
+        }
+    }
+    match total_bound {
+        Some(b) => println!("  Total: ~{} states", format_large_number(b)),
+        None => println!("  Total: unbounded"),
     }
 
     // Action details
@@ -487,12 +517,13 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
         println!("  Instance POR: refinable pairs detected (keyed Dict access)");
     }
 
-    // Warnings
+    // Warnings with fix hints
     if !profile.warnings.is_empty() {
         println!();
         println!("Warnings:");
         for w in &profile.warnings {
             println!("  {}", w);
+            println!("    Fix: {}", w.fix_hint());
         }
     }
 
@@ -504,6 +535,53 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
             println!("  {}", r);
         }
     }
+
+    // Estimated check time
+    if let Some(bound) = total_bound {
+        if bound > 0 {
+            let throughput = 100_000.0_f64; // ~100K states/s typical
+            let secs = bound as f64 / throughput;
+            let time_str = if secs < 1.0 {
+                "<1 second".to_string()
+            } else if secs < 60.0 {
+                format!("~{:.0} seconds", secs)
+            } else if secs < 3600.0 {
+                format!("~{:.0} minutes", secs / 60.0)
+            } else if secs < 86400.0 {
+                format!("~{:.1} hours", secs / 3600.0)
+            } else {
+                format!("~{:.1} days", secs / 86400.0)
+            };
+            println!();
+            println!("Estimated check time: {} (at ~100K states/s)", time_str);
+        }
+    }
+
+    // Suggested command — derive flags from recommendations
+    println!();
+    let const_flags: Vec<String> = spec
+        .consts
+        .iter()
+        .map(|c| format!("-c {}={}", c.name, consts[c.index]))
+        .collect();
+    let mut flags = const_flags;
+    for r in &profile.recommendations {
+        match r {
+            specl_ir::analyze::Recommendation::EnablePor { .. } => {
+                flags.push("--por".to_string());
+            }
+            specl_ir::analyze::Recommendation::EnableSymmetry { .. } => {
+                flags.push("--symmetry".to_string());
+            }
+            specl_ir::analyze::Recommendation::EnableFast { .. } => {
+                flags.push("--fast".to_string());
+            }
+            specl_ir::analyze::Recommendation::UseSymbolic { .. } => {
+                flags.push("--smart".to_string());
+            }
+        }
+    }
+    println!("Suggested: specl check {} {}", filename, flags.join(" "));
 
     println!();
     Ok(())
@@ -550,6 +628,28 @@ fn cmd_check(
     let profile = analyze(&spec);
     if !quiet {
         print_profile(&profile, use_por, use_symmetry);
+    }
+
+    // Reject unbounded types for explicit-state checking
+    let unbounded_warnings: Vec<_> = profile
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
+        .collect();
+    if !unbounded_warnings.is_empty() {
+        let lines: Vec<String> = unbounded_warnings
+            .iter()
+            .map(|w| format!("  {}", w))
+            .collect();
+        return Err(CliError::Other {
+            message: format!(
+                "explicit-state checking requires finite domains\n\n{}\n\n\
+                 Fix: {}\n\
+                 For unbounded types, use symbolic checking: --smart",
+                lines.join("\n"),
+                unbounded_warnings[0].fix_hint()
+            ),
+        });
     }
 
     let mut actual_por = use_por;
@@ -837,21 +937,27 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
     }
 
     // Check all constants are set - use default values for scalar constants
+    let mut missing = Vec::new();
     for const_decl in &spec.consts {
         if matches!(values[const_decl.index], Value::None) {
             if let Some(default_value) = const_decl.default_value {
-                // Scalar constant - use the default value
                 values[const_decl.index] = Value::Int(default_value);
             } else {
-                // Type-constrained constant - must be provided
-                return Err(CliError::Other {
-                    message: format!(
-                        "constant '{}' not provided (use -c {}=VALUE)",
-                        const_decl.name, const_decl.name
-                    ),
-                });
+                missing.push(const_decl.name.clone());
             }
         }
+    }
+    if !missing.is_empty() {
+        let flags: Vec<String> = missing
+            .iter()
+            .map(|n| format!("  -c {}=VALUE", n))
+            .collect();
+        return Err(CliError::Other {
+            message: format!(
+                "missing constants (provide with -c NAME=VALUE):\n{}",
+                flags.join("\n")
+            ),
+        });
     }
 
     Ok(values)
@@ -1091,6 +1197,22 @@ fn run_check_iteration(
         }
     };
 
+    // Reject unbounded types for explicit-state checking
+    let profile = analyze(&spec);
+    let unbounded_warnings: Vec<_> = profile
+        .warnings
+        .iter()
+        .filter(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
+        .collect();
+    if !unbounded_warnings.is_empty() {
+        eprintln!("Error: explicit-state checking requires finite domains");
+        for w in &unbounded_warnings {
+            eprintln!("  {}", w);
+        }
+        eprintln!("Fix: {}", unbounded_warnings[0].fix_hint());
+        return;
+    }
+
     let config = CheckConfig {
         check_deadlock,
         max_states,
@@ -1167,9 +1289,111 @@ fn run_check_iteration(
     println!("Watching for changes...");
 }
 
-fn cmd_techniques() -> CliResult<()> {
-    print!(
-        "\
+fn cmd_techniques(verbose: bool) -> CliResult<()> {
+    if verbose {
+        print!(
+            "\
+EXPLICIT-STATE CHECKING (default)
+  The checker explores every reachable state of your spec, one by one, using
+  breadth-first search (BFS). This guarantees that if a bug exists, it finds the
+  shortest sequence of actions that triggers it.
+
+  State spaces grow exponentially with the number of variables and their ranges.
+  For example, 3 variables each with 100 possible values = 1,000,000 states.
+  The optimizations below reduce the number of states the checker must visit.
+
+  --por          Partial Order Reduction
+                 When two actions don't affect each other (e.g., process A updates its
+                 own state and process B updates its own state), the checker normally
+                 tries both orderings: A-then-B and B-then-A. Both lead to the same
+                 result, so one is redundant. POR detects these independent actions and
+                 skips the redundant orderings.
+                 Typical reduction: 2-10x fewer states.
+                 Auto-enabled when >30% of action pairs are independent.
+                 Safe to always enable — no overhead when actions are dependent.
+
+  --symmetry     Symmetry Reduction
+                 When your spec models N identical processes (e.g., Dict[0..N, State]),
+                 many states are just rearrangements of each other. For example, with
+                 3 processes, \"process 0 is leader, others are followers\" is equivalent
+                 to \"process 2 is leader, others are followers\" — the identity of the
+                 leader doesn't matter, only that exactly one exists.
+                 Symmetry reduction groups these equivalent states and only explores one
+                 representative from each group.
+                 Typical reduction: up to N! (factorial) — for N=4 that's 24x fewer states.
+                 Auto-enabled when symmetric Dict patterns are detected.
+
+  --fast         Fingerprint-Only Mode
+                 Normally the checker stores the full data for every visited state so it
+                 can reconstruct the exact steps leading to a bug. This uses a lot of
+                 memory for large state spaces.
+                 Fast mode stores only a compact 8-byte hash (fingerprint) per state,
+                 using roughly 10x less memory. The tradeoff: if a bug is found, the
+                 checker must re-run with full storage to reconstruct the trace.
+                 Best for: specs where you're running out of memory before exploring all
+                 states, or initial exploration of very large state spaces.
+
+  --no-deadlock  Skip Deadlock Check
+                 A deadlock is a state where no action can fire. The checker reports
+                 these by default because they sometimes indicate bugs. However, most
+                 protocols naturally reach quiescent states where nothing happens (e.g.,
+                 all messages delivered, consensus reached). Use this flag to suppress
+                 false deadlock reports.
+
+SYMBOLIC CHECKING (Z3-backed)
+  Instead of exploring states one by one, symbolic checking encodes your entire spec
+  as mathematical formulas and uses an SMT solver (Z3) to reason about them. This can
+  handle specs with very large or unbounded state spaces that would be impossible to
+  explore exhaustively.
+
+  --symbolic     Bounded Model Checking (BMC)
+                 Asks: \"can a bug happen within K steps?\" by encoding K transitions as
+                 a formula and asking Z3 to find a satisfying assignment. Fast for bugs
+                 that occur within a few steps. Set the bound with --depth (default 10).
+                 If no bug is found within K steps, that does NOT prove the spec is safe
+                 — the bug might require more steps.
+
+  --inductive    Inductive Invariant Checking
+                 Tries to prove your invariant holds forever using mathematical induction:
+                 \"if the invariant holds in the current state, does it still hold after
+                 any single action?\" This is very fast when it works, but many real-world
+                 invariants aren't directly inductive — they need additional strengthening
+                 invariants to make the induction step go through.
+
+  --k-induction K  k-Induction
+                 A more powerful version of induction. Instead of assuming the invariant
+                 held for just one step, it assumes it held for K consecutive steps. This
+                 can prove invariants that simple induction cannot. Try K=2 first, then
+                 increase to 3, 4, 5 if needed.
+                 If k-induction succeeds, the invariant is guaranteed to hold in ALL
+                 reachable states, regardless of depth.
+
+  --ic3          IC3/CHC (Property Directed Reachability)
+                 The most powerful automated verification technique available. IC3 builds
+                 up a proof layer by layer, discovering exactly which states are reachable
+                 and which are not. It can prove invariants hold forever without needing
+                 any depth bound. However, it may take a long time or return \"unknown\"
+                 for very complex specs.
+
+  --smart        Automatic Cascade
+                 Tries verification techniques in order from fastest to most powerful:
+                 induction, then k-induction (K=2..5), then IC3, falling back to BMC if
+                 nothing else works. This is the recommended default for symbolic checking
+                 — it will use the simplest technique that succeeds.
+
+CHOOSING A STRATEGY
+  1. Start small:          specl check spec.specl -c N=2
+  2. Analyze first:        specl info spec.specl -c N=2
+     This shows state space estimates and recommended flags.
+  3. Specl auto-enables POR and symmetry when beneficial.
+  4. For large state spaces (>10M states): add --fast
+  5. For unbounded types (Int, Nat): use --smart for symbolic checking
+  6. Scale up gradually: N=2 first, then N=3. State spaces grow exponentially.
+"
+        );
+    } else {
+        print!(
+            "\
 EXPLICIT-STATE CHECKING (default)
   BFS exhaustive exploration. Finds shortest counterexample traces.
 
@@ -1221,7 +1445,8 @@ CHOOSING A STRATEGY
   For unbounded specs:    use --smart
   Use `specl info` to analyze your spec before a long run.
 "
-    );
+        );
+    }
     Ok(())
 }
 
