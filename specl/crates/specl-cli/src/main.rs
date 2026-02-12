@@ -251,6 +251,9 @@ enum Commands {
         #[arg(short, long, value_name = "OUTPUT")]
         output: Option<PathBuf>,
     },
+
+    /// Show reference of all available checking techniques and when to use them
+    Techniques,
 }
 
 fn main() {
@@ -350,6 +353,7 @@ fn main() {
             no_deadlock,
         } => cmd_watch(&file, &constant, max_states, max_depth, !no_deadlock),
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
+        Commands::Techniques => cmd_techniques(),
     };
 
     if let Err(e) = result {
@@ -1141,6 +1145,64 @@ fn run_check_iteration(
 
     println!();
     println!("Watching for changes...");
+}
+
+fn cmd_techniques() -> CliResult<()> {
+    print!(
+        "\
+EXPLICIT-STATE CHECKING (default)
+  BFS exhaustive exploration. Finds shortest counterexample traces.
+
+  --por          Partial Order Reduction
+                 Exploits action independence to skip redundant interleavings.
+                 Best for: specs with many independent actions (e.g., per-process updates).
+                 Typical reduction: 2-10x. No overhead when unhelpful.
+                 Auto-enabled when >30% of action pairs are independent.
+
+  --symmetry     Symmetry Reduction
+                 Identifies symmetric processes and explores one representative per orbit.
+                 Best for: specs with Dict[0..N, T] where processes are interchangeable.
+                 Typical reduction: N! (factorial). Auto-enabled when detected.
+
+  --fast         Fingerprint-Only Mode
+                 Uses 8 bytes/state instead of full state storage. 10x less memory.
+                 Tradeoff: Cannot produce counterexample traces directly.
+                 Re-runs with traces if a violation is found.
+                 Best for: large state spaces where memory is the bottleneck.
+
+  --no-deadlock  Skip Deadlock Check
+                 Most protocols have quiescent states. Use unless testing liveness.
+
+SYMBOLIC CHECKING (Z3-backed)
+  Encodes spec as SMT formulas. Can handle unbounded/huge state spaces.
+
+  --symbolic     Bounded Model Checking (BMC)
+                 Unrolls transitions to --depth steps. Fast for shallow bugs.
+
+  --inductive    Inductive Invariant Checking
+                 Single-step induction proof. Fast but may fail for non-inductive invariants.
+
+  --k-induction K  k-Induction
+                 Proves invariants hold for all reachable states (if k is sufficient).
+                 Stronger than simple induction. Try K=2..5.
+
+  --ic3          IC3/CHC (Property Directed Reachability)
+                 Unbounded verification via Z3 Spacer. Most powerful symbolic mode.
+                 Can prove invariants hold for ALL depths. May return \"unknown\" for hard specs.
+
+  --smart        Automatic Cascade
+                 Tries: induction -> k-induction(2..5) -> IC3 -> BMC fallback.
+                 Best default for symbolic checking.
+
+CHOOSING A STRATEGY
+  Start with:           specl check spec.specl -c N=2
+  Specl auto-enables POR and symmetry when beneficial.
+  For large state spaces: add --fast
+  For unbounded specs:    use --smart
+  Use `specl info` to analyze your spec before a long run.
+"
+    );
+    Ok(())
 }
 
 fn cmd_translate(file: &PathBuf, output: Option<&PathBuf>) -> CliResult<()> {
