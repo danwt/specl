@@ -18,8 +18,21 @@ pub struct CompiledSpec {
     pub invariants: Vec<CompiledInvariant>,
     /// Independence matrix for POR: independent[i][j] = true if actions i and j are independent.
     pub independent: Vec<Vec<bool>>,
+    /// Refinable pairs for instance-level POR: refinable_pairs[i][j] = true iff templates i,j
+    /// are template-dependent but all shared variables are accessed via keyed Dict ops on both
+    /// sides, so instance-level key disjointness could make them independent.
+    pub refinable_pairs: Vec<Vec<bool>>,
     /// Symmetry groups for symmetry reduction.
     pub symmetry_groups: Vec<SymmetryGroup>,
+}
+
+/// Source of a Dict key access in an action, for instance-level POR.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KeySource {
+    /// Key comes from action parameter at this index.
+    Param(usize),
+    /// Key is a literal integer value.
+    Literal(i64),
 }
 
 /// A symmetry group for symmetry reduction.
@@ -74,6 +87,14 @@ pub struct CompiledAction {
     pub changes: Vec<usize>,
     /// Variables that are read (for POR).
     pub reads: Vec<usize>,
+    /// Per-variable write key info for instance-level POR.
+    /// (var_idx, None) = unkeyed write (full variable), always conflicts.
+    /// (var_idx, Some(keys)) = writes only at these Dict keys.
+    pub write_key_params: Vec<(usize, Option<Vec<KeySource>>)>,
+    /// Per-variable read key info for instance-level POR.
+    /// (var_idx, None) = unkeyed read, always conflicts.
+    /// (var_idx, Some(keys)) = reads only at these Dict keys.
+    pub read_key_params: Vec<(usize, Option<Vec<KeySource>>)>,
 }
 
 /// A compiled invariant.

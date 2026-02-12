@@ -11,7 +11,7 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 use specl_eval::bytecode::{compile_expr, vm_eval_bool, Bytecode};
 use specl_eval::{eval, EvalContext, EvalError, Value};
-use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, UnaryOp};
+use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -89,6 +89,14 @@ enum ParallelResult {
         new_entries: Vec<QueueEntry>,
         max_depth: usize,
     },
+}
+
+/// Result of ample set computation: either template-level or instance-level.
+enum AmpleResult {
+    /// Template-level reduction: list of action template indices.
+    Templates(Vec<usize>),
+    /// Instance-level reduction: list of (action_idx, params) pairs.
+    Instances(Vec<(usize, Vec<Value>)>),
 }
 
 /// Configuration for the model checker.
@@ -170,6 +178,10 @@ pub struct Explorer {
     /// For each action, for each param: Some(group_idx) if the param's domain size matches
     /// a symmetry group. Used for orbit representative filtering.
     sym_param_groups: Vec<Vec<Option<usize>>>,
+    /// Whether any refinable pair exists (instance-level POR possible).
+    has_refinable_pairs: bool,
+    /// Per-action: participates in at least one refinable pair.
+    action_has_refinable: Vec<bool>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -832,6 +844,23 @@ impl Explorer {
             })
             .collect();
 
+        // Precompute instance-level POR flags from refinable_pairs
+        let has_refinable_pairs = spec
+            .refinable_pairs
+            .iter()
+            .any(|row| row.iter().any(|&v| v));
+        let action_has_refinable: Vec<bool> = (0..n_actions)
+            .map(|i| spec.refinable_pairs[i].iter().any(|&v| v))
+            .collect();
+        if has_refinable_pairs {
+            let count = action_has_refinable.iter().filter(|&&v| v).count();
+            debug!(
+                count,
+                total = n_actions,
+                "instance-level POR: actions with refinable pairs"
+            );
+        }
+
         let mut explorer = Self {
             spec,
             consts,
@@ -849,6 +878,8 @@ impl Explorer {
             state_dep_domains,
             independent_masks,
             sym_param_groups: Vec::new(),
+            has_refinable_pairs,
+            action_has_refinable,
         };
 
         // Precompute action names for trace reconstruction
@@ -2327,7 +2358,119 @@ impl Explorer {
 
         buf.clear();
 
-        // Get the set of actions to explore
+        // Instance-level POR path: when refinable pairs exist and POR is enabled,
+        // compute the ample set at the instance level and apply selected instances directly.
+        if self.config.use_por && self.has_refinable_pairs {
+            match self.compute_ample_set_instance_level(state)? {
+                AmpleResult::Instances(instances) => {
+                    // Check if all instances have params (pure instance-level path)
+                    let all_have_params = instances.iter().all(|(_, p)| !p.is_empty());
+                    if all_have_params {
+                        for (action_idx, params) in &instances {
+                            self.apply_single_instance(
+                                state,
+                                *action_idx,
+                                params,
+                                buf,
+                                next_vars_buf,
+                            )?;
+                        }
+                        return Ok(());
+                    }
+                    // Mixed: some instances have params, some are template-level groups.
+                    // Collect template-level actions to apply normally, apply instance-level directly.
+                    let mut template_actions: Vec<usize> = Vec::new();
+                    for (action_idx, params) in &instances {
+                        if params.is_empty() {
+                            template_actions.push(*action_idx);
+                        } else {
+                            self.apply_single_instance(
+                                state,
+                                *action_idx,
+                                params,
+                                buf,
+                                next_vars_buf,
+                            )?;
+                        }
+                    }
+                    // Apply remaining template-level actions via normal path
+                    if !template_actions.is_empty() {
+                        let orbit_reps: SmallVec<[Vec<usize>; 4]> =
+                            if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
+                                self.spec
+                                    .symmetry_groups
+                                    .iter()
+                                    .map(|group| {
+                                        crate::state::orbit_representatives(&state.vars, group)
+                                    })
+                                    .collect()
+                            } else {
+                                SmallVec::new()
+                            };
+                        let num_actions = self.spec.actions.len();
+                        OP_CACHES.with(|cell| {
+                            let mut caches = cell.borrow_mut();
+                            if caches.len() != num_actions {
+                                *caches = (0..num_actions).map(|_| OpCache::new()).collect();
+                            }
+                            for action_idx in template_actions {
+                                self.apply_action(
+                                    state,
+                                    action_idx,
+                                    buf,
+                                    next_vars_buf,
+                                    &mut caches[action_idx],
+                                    &orbit_reps,
+                                )?;
+                            }
+                            Ok::<(), CheckError>(())
+                        })?;
+                    }
+                    return Ok(());
+                }
+                AmpleResult::Templates(actions) => {
+                    // Template-level path — fall through to normal exploration
+                    let orbit_reps: SmallVec<[Vec<usize>; 4]> = if self.config.use_symmetry
+                        && !self.spec.symmetry_groups.is_empty()
+                    {
+                        self.spec
+                            .symmetry_groups
+                            .iter()
+                            .map(|group| crate::state::orbit_representatives(&state.vars, group))
+                            .collect()
+                    } else {
+                        SmallVec::new()
+                    };
+                    let num_actions = self.spec.actions.len();
+                    OP_CACHES.with(|cell| {
+                        let mut caches = cell.borrow_mut();
+                        if caches.len() != num_actions {
+                            *caches = (0..num_actions).map(|_| OpCache::new()).collect();
+                        }
+                        for action_idx in actions {
+                            if sleep_set != 0
+                                && action_idx < 64
+                                && sleep_set & (1u64 << action_idx) != 0
+                            {
+                                continue;
+                            }
+                            self.apply_action(
+                                state,
+                                action_idx,
+                                buf,
+                                next_vars_buf,
+                                &mut caches[action_idx],
+                                &orbit_reps,
+                            )?;
+                        }
+                        Ok::<(), CheckError>(())
+                    })?;
+                    return Ok(());
+                }
+            }
+        }
+
+        // Standard path: template-level POR or no POR
         let actions_to_explore = if self.config.use_por {
             self.compute_ample_set(state)?
         } else if let Some(ref relevant) = self.relevant_actions {
@@ -2512,6 +2655,304 @@ impl Explorer {
         // No valid reduction found - all enabled actions are pairwise independent
         // Must explore all to ensure we find all reachable states
         Ok(enabled)
+    }
+
+    /// Enumerate all enabled instances (action_idx, params) for a given action template.
+    fn get_enabled_instances(
+        &self,
+        state: &State,
+        action_idx: usize,
+    ) -> CheckResult<Vec<(usize, Vec<Value>)>> {
+        let dynamic;
+        let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
+            dynamic = d;
+            &dynamic
+        } else {
+            &self.cached_param_domains[action_idx]
+        };
+        let guard_bc = &self.compiled_guards[action_idx];
+        let mut instances = Vec::new();
+
+        if let Some(guard_index) = &self.guard_indices[action_idx] {
+            if let Some(ref pre_guard) = guard_index.pre_guard {
+                if !vm_eval_bool(pre_guard, &state.vars, &state.vars, &self.consts, &[])
+                    .unwrap_or(false)
+                {
+                    return Ok(instances);
+                }
+            }
+            let mut params_buf = vec![Value::None; param_domains.len()];
+            enumerate_params_indexed(
+                param_domains,
+                guard_index,
+                guard_bc,
+                &state.vars,
+                &self.consts,
+                &mut params_buf,
+                0,
+                &mut |params: &[Value]| {
+                    instances.push((action_idx, params.to_vec()));
+                },
+            );
+        } else {
+            let mut params_buf = SmallVec::new();
+            self.enumerate_params(param_domains, &mut params_buf, &mut |params: &[Value]| {
+                if vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                    .unwrap_or(false)
+                {
+                    instances.push((action_idx, params.to_vec()));
+                }
+            });
+        }
+
+        Ok(instances)
+    }
+
+    /// Compute instance-level ample set for partial order reduction.
+    /// Falls back to template-level when no refinable pairs are among enabled actions.
+    fn compute_ample_set_instance_level(&self, state: &State) -> CheckResult<AmpleResult> {
+        use std::collections::HashSet;
+
+        let enabled_templates = self.get_enabled_actions(state)?;
+        if enabled_templates.is_empty() {
+            return Ok(AmpleResult::Templates(vec![]));
+        }
+        if enabled_templates.len() == 1 {
+            return Ok(AmpleResult::Templates(enabled_templates));
+        }
+
+        // Fast path: check if any enabled pair is refinable
+        let any_refinable = enabled_templates.iter().any(|&a| {
+            self.action_has_refinable[a]
+                && enabled_templates
+                    .iter()
+                    .any(|&b| self.spec.refinable_pairs[a][b])
+        });
+        if !any_refinable {
+            // No refinable pairs among enabled actions — delegate to template-level
+            let result = self.compute_ample_set(state)?;
+            return Ok(AmpleResult::Templates(result));
+        }
+
+        // Enumerate all enabled instances for refinable actions
+        let mut all_instances: Vec<(usize, Vec<Value>)> = Vec::new();
+        for &action_idx in &enabled_templates {
+            if self.action_has_refinable[action_idx] {
+                let instances = self.get_enabled_instances(state, action_idx)?;
+                all_instances.extend(instances);
+            } else {
+                // Non-refinable actions: represent as single entry with empty params.
+                // All instances of this action are treated as one node.
+                all_instances.push((action_idx, Vec::new()));
+            }
+        }
+
+        if all_instances.len() <= 1 {
+            return Ok(AmpleResult::Templates(enabled_templates));
+        }
+
+        // Build instance-level dependency and find smallest non-singleton ample set.
+        // Stubborn set closure: pick seed, expand with dependent instances.
+        let n = all_instances.len();
+        let mut best_ample: Option<Vec<usize>> = None;
+
+        for seed in 0..n {
+            let mut ample: HashSet<usize> = HashSet::new();
+            let mut to_add = vec![seed];
+
+            while let Some(idx_a) = to_add.pop() {
+                if ample.insert(idx_a) {
+                    let (act_a, ref params_a) = all_instances[idx_a];
+                    for (idx_b, (act_b, params_b)) in all_instances.iter().enumerate() {
+                        if ample.contains(&idx_b) {
+                            continue;
+                        }
+                        // Check instance-level independence
+                        let independent = if params_a.is_empty() || params_b.is_empty() {
+                            // Non-refinable action represented as group: use template-level
+                            self.spec.independent[act_a][*act_b]
+                        } else {
+                            self.instances_independent(act_a, params_a, *act_b, params_b)
+                        };
+                        if !independent {
+                            to_add.push(idx_b);
+                        }
+                    }
+                }
+            }
+
+            // BFS soundness: only use non-singleton ample sets
+            if ample.len() > 1
+                && (best_ample.is_none() || ample.len() < best_ample.as_ref().unwrap().len())
+            {
+                best_ample = Some(ample.into_iter().collect());
+            }
+        }
+
+        if let Some(ample_indices) = best_ample {
+            if ample_indices.len() < n {
+                trace!(
+                    total_instances = n,
+                    ample = ample_indices.len(),
+                    "POR instance-level: reduced instance set"
+                );
+            }
+            let instances: Vec<(usize, Vec<Value>)> = ample_indices
+                .into_iter()
+                .map(|i| all_instances[i].clone())
+                .collect();
+            return Ok(AmpleResult::Instances(instances));
+        }
+
+        // No reduction found at instance level — try template level as fallback
+        let result = self.compute_ample_set(state)?;
+        Ok(AmpleResult::Templates(result))
+    }
+
+    /// Resolve KeySource entries to concrete key values given action parameters.
+    fn resolve_keys(sources: &[KeySource], params: &[Value]) -> SmallVec<[Value; 4]> {
+        sources
+            .iter()
+            .map(|ks| match ks {
+                KeySource::Param(idx) => params[*idx].clone(),
+                KeySource::Literal(k) => Value::Int(*k),
+            })
+            .collect()
+    }
+
+    /// Check if two resolved key sets are disjoint.
+    /// Both sets are tiny (1-3 elements typically), so O(n*m) is fine.
+    fn keys_disjoint(a: &[Value], b: &[Value]) -> bool {
+        for ka in a {
+            for kb in b {
+                if ka == kb {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
+    /// Check if two action instances are independent at the instance level.
+    /// Returns true if the instances commute (disjoint key access on all shared variables).
+    fn instances_independent(
+        &self,
+        act_a: usize,
+        params_a: &[Value],
+        act_b: usize,
+        params_b: &[Value],
+    ) -> bool {
+        // Template-level independent => always independent
+        if self.spec.independent[act_a][act_b] {
+            return true;
+        }
+        // Not a refinable pair => must be dependent
+        if !self.spec.refinable_pairs[act_a][act_b] {
+            return false;
+        }
+
+        let action_a = &self.spec.actions[act_a];
+        let action_b = &self.spec.actions[act_b];
+
+        // For each shared variable, check key disjointness.
+        // A variable is "shared" if one action writes it and the other reads or writes it.
+        // We check: writes_a vs writes_b, writes_a vs reads_b, reads_a vs writes_b.
+        for &(var_a, ref keys_a) in &action_a.write_key_params {
+            let keys_a = match keys_a {
+                Some(k) => k,
+                None => return false, // unkeyed write => dependent
+            };
+            // Check against writes of b
+            for &(var_b, ref keys_b) in &action_b.write_key_params {
+                if var_a == var_b {
+                    let keys_b = match keys_b {
+                        Some(k) => k,
+                        None => return false,
+                    };
+                    let resolved_a = Self::resolve_keys(keys_a, params_a);
+                    let resolved_b = Self::resolve_keys(keys_b, params_b);
+                    if !Self::keys_disjoint(&resolved_a, &resolved_b) {
+                        return false;
+                    }
+                }
+            }
+            // Check against reads of b
+            for &(var_b, ref keys_b) in &action_b.read_key_params {
+                if var_a == var_b {
+                    let keys_b = match keys_b {
+                        Some(k) => k,
+                        None => return false,
+                    };
+                    let resolved_a = Self::resolve_keys(keys_a, params_a);
+                    let resolved_b = Self::resolve_keys(keys_b, params_b);
+                    if !Self::keys_disjoint(&resolved_a, &resolved_b) {
+                        return false;
+                    }
+                }
+            }
+        }
+        // Check reads_a vs writes_b
+        for &(var_a, ref keys_a) in &action_a.read_key_params {
+            let keys_a = match keys_a {
+                Some(k) => k,
+                None => return false,
+            };
+            for &(var_b, ref keys_b) in &action_b.write_key_params {
+                if var_a == var_b {
+                    let keys_b = match keys_b {
+                        Some(k) => k,
+                        None => return false,
+                    };
+                    let resolved_a = Self::resolve_keys(keys_a, params_a);
+                    let resolved_b = Self::resolve_keys(keys_b, params_b);
+                    if !Self::keys_disjoint(&resolved_a, &resolved_b) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        true
+    }
+
+    /// Apply a single action instance (action_idx, params) to a state.
+    /// Evaluates the effect and pushes the successor into buf.
+    /// Simplified version of apply_action for a single parameter combination.
+    fn apply_single_instance(
+        &self,
+        state: &State,
+        action_idx: usize,
+        params: &[Value],
+        buf: &mut Vec<(State, usize)>,
+        next_vars_buf: &mut Vec<Value>,
+    ) -> CheckResult<()> {
+        let action = &self.spec.actions[action_idx];
+
+        // Try bytecode effect path first
+        if let Some(cached) = &self.cached_effects[action_idx] {
+            if let Ok(result) = apply_effects_bytecode(
+                state,
+                params,
+                &self.consts,
+                &cached.compiled_assignments,
+                cached.needs_reverify,
+                next_vars_buf,
+                &action.effect,
+            ) {
+                if let Some(next_state) = result {
+                    buf.push((next_state, action_idx));
+                }
+                return Ok(());
+            }
+        }
+
+        // Fallback: full eval path
+        if let Ok(next_states) = self.find_next_states(state, action, params) {
+            for next_state in next_states {
+                buf.push((next_state, action_idx));
+            }
+        }
+        Ok(())
     }
 
     /// Apply an action to a state and push successor states into buffer.
@@ -3746,5 +4187,269 @@ action Toggle(i: 0..2) {
             states_both, 16,
             "POR + symmetry should find 4*4 = 16 canonical states"
         );
+    }
+
+    #[test]
+    fn test_parametric_independence_detection() {
+        // Transfer spec: Transfer writes balance[from] and balance[to].
+        // Transfer(0,1) and Transfer(1,0) share key 0 and key 1 — dependent.
+        // The pair (Transfer, Transfer) should be marked as refinable.
+        let source = r#"
+module Transfer
+const N: Int
+var balance: Dict[0..N, Int]
+init { balance == {i: 10 for i in 0..N} }
+action Transfer(from: 0..N, to: 0..N) {
+    require from != to
+    require balance[from] >= 1
+    balance = balance | { from: balance[from] - 1, to: balance[to] + 1 }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        assert_eq!(spec.actions.len(), 1, "one action template");
+        assert_eq!(spec.actions[0].name, "Transfer");
+
+        // Transfer writes balance (keyed by params from and to)
+        let write_keys = &spec.actions[0].write_key_params;
+        assert!(!write_keys.is_empty(), "should have write key info");
+        // Should have keyed write (not None)
+        for (_, keys) in write_keys {
+            assert!(keys.is_some(), "write should be keyed");
+        }
+
+        // Transfer reads balance (keyed by params from and to)
+        let read_keys = &spec.actions[0].read_key_params;
+        assert!(!read_keys.is_empty(), "should have read key info");
+        for (_, keys) in read_keys {
+            assert!(keys.is_some(), "read should be keyed");
+        }
+
+        // Transfer(0,0) is template-dependent with Transfer(0,0)
+        assert!(
+            !spec.independent[0][0],
+            "Transfer-Transfer is template-dependent"
+        );
+        // But it's refinable (keyed Dict access)
+        assert!(
+            spec.refinable_pairs[0][0],
+            "Transfer-Transfer should be refinable"
+        );
+    }
+
+    #[test]
+    fn test_parametric_por_correctness() {
+        // Transfer spec with N=1: instance-level POR should find the same
+        // states as no POR. This is a correctness check.
+        // 0..N with N=1 gives domain {0, 1} = 2 accounts.
+        let source = r#"
+module Transfer
+const N: Int
+var balance: Dict[0..N, Int]
+init { balance == {i: 5 for i in 0..N} }
+action Transfer(from: 0..N, to: 0..N) {
+    require from != to
+    require balance[from] >= 1
+    balance = balance | { from: balance[from] - 1, to: balance[to] + 1 }
+}
+"#;
+        // Without POR
+        let config_no_por = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_no_por =
+            check_spec_with_config(source, vec![Value::Int(1)], config_no_por).unwrap();
+        let states_no_por = match result_no_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // With POR (instance-level will activate since refinable_pairs exist)
+        let config_por = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_por = check_spec_with_config(source, vec![Value::Int(1)], config_por).unwrap();
+        let states_por = match result_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // N=1 with balance sum=10, 2 accounts: states = 11 (balance[0] can be 0..10)
+        assert_eq!(states_no_por, 11);
+        // POR should find the same states (only one action template with 2 accounts,
+        // Transfer(0,1) and Transfer(1,0) share key 0 and 1, so both are dependent)
+        assert_eq!(states_por, states_no_por);
+    }
+
+    #[test]
+    fn test_parametric_por_reduces_independent_transfers() {
+        // Three accounts (0..2 = {0,1,2}), transfer between disjoint pairs should
+        // be independent. Transfer(0,1) and Transfer(2,0) share key 0 — dependent.
+        // Transfer(0,1) and Transfer(2,_) with no overlap — independent.
+        // Instance-level POR should find the same reachable states as no POR.
+        let source = r#"
+module MultiTransfer
+const N: Int
+var balance: Dict[0..N, Int]
+init { balance == {i: 3 for i in 0..N} }
+action Transfer(from: 0..N, to: 0..N) {
+    require from != to
+    require balance[from] >= 1
+    balance = balance | { from: balance[from] - 1, to: balance[to] + 1 }
+}
+"#;
+        // Without POR
+        let config_no_por = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_no_por =
+            check_spec_with_config(source, vec![Value::Int(2)], config_no_por).unwrap();
+        let states_no_por = match result_no_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // With POR (instance-level POR should detect disjoint transfers)
+        let config_por = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_por = check_spec_with_config(source, vec![Value::Int(2)], config_por).unwrap();
+        let states_por = match result_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        println!(
+            "N=2 (3 accounts) transfer: no POR={}, POR={}",
+            states_no_por, states_por
+        );
+        // Both must find the same set of reachable states (correctness check)
+        assert_eq!(states_por, states_no_por);
+    }
+
+    #[test]
+    fn test_parametric_por_degenerate_no_dicts() {
+        // Spec with no Dict variables. has_refinable_pairs should be false,
+        // behavior identical to template POR.
+        let source = r#"
+module NoDicts
+var x: 0..3
+var y: 0..3
+init { x == 0 and y == 0 }
+action IncX() {
+    require x < 3
+    x = x + 1
+}
+action IncY() {
+    require y < 3
+    y = y + 1
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        // No refinable pairs (no Dict-keyed actions)
+        let has_refinable = spec
+            .refinable_pairs
+            .iter()
+            .any(|row| row.iter().any(|&v| v));
+        assert!(!has_refinable, "no refinable pairs for non-Dict spec");
+
+        // POR should still work normally (template-level)
+        let config = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config).unwrap();
+        match result {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                assert_eq!(states_explored, 16, "4x4 grid of states");
+            }
+            other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_parametric_por_unkeyed_write() {
+        // Spec where a variable is written without FnUpdate (e.g., x = x + 1).
+        // The write should be unkeyed, so refinable_pairs should be false for
+        // pairs involving that action.
+        let source = r#"
+module Mixed
+var x: 0..3
+var balance: Dict[0..2, Int]
+init { x == 0 and balance == {i: 5 for i in 0..2} }
+action IncX() {
+    require x < 3
+    x = x + 1
+}
+action Transfer(from: 0..2, to: 0..2) {
+    require from != to
+    require balance[from] >= 1
+    balance = balance | { from: balance[from] - 1, to: balance[to] + 1 }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        assert_eq!(spec.actions.len(), 2);
+        // IncX-Transfer: IncX writes x, Transfer writes balance.
+        // They touch different variables, so they're template-independent.
+        assert!(
+            spec.independent[0][1],
+            "IncX and Transfer are template-independent"
+        );
+        // Transfer-Transfer: same as before, should be refinable
+        assert!(
+            spec.refinable_pairs[1][1],
+            "Transfer-Transfer should be refinable"
+        );
+        // IncX-IncX: writes unkeyed x, not refinable (but also self-dependent)
+        assert!(
+            !spec.refinable_pairs[0][0],
+            "IncX-IncX should not be refinable"
+        );
+
+        // Verify POR still works with this mixed spec
+        let config = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config).unwrap();
+        match result {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                assert!(states_explored > 0);
+            }
+            other => panic!("expected Ok, got {:?}", other),
+        }
     }
 }

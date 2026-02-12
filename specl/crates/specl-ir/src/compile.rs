@@ -2,7 +2,7 @@
 
 use crate::ir::{
     BinOp as IrBinOp, CompiledAction, CompiledExpr, CompiledInvariant, CompiledSpec,
-    ConstDecl as IrConstDecl, SymmetryGroup, VarDecl as IrVarDecl,
+    ConstDecl as IrConstDecl, KeySource, SymmetryGroup, VarDecl as IrVarDecl,
 };
 use specl_syntax::{
     ActionDecl, ConstValue, Decl, Expr, ExprKind, Module, QuantifierKind, RecordFieldUpdate,
@@ -134,6 +134,8 @@ impl Compiler {
                         effect: CompiledExpr::Bool(true),
                         changes: Vec::new(),
                         reads: Vec::new(),
+                        write_key_params: Vec::new(),
+                        read_key_params: Vec::new(),
                     });
                 }
                 _ => {}
@@ -196,6 +198,25 @@ impl Compiler {
         // Detect symmetry groups from variable types
         let symmetry_groups = self.detect_symmetry_groups(&vars);
 
+        // Compute refinable pairs for instance-level POR.
+        // A pair (i,j) is refinable if they are template-dependent but all shared
+        // variables are accessed via keyed Dict ops on both sides.
+        let refinable_pairs = {
+            let mut rp = vec![vec![false; n]; n];
+            for i in 0..n {
+                // Include diagonal (i == j): different instances of the same
+                // action template can be independent if they access disjoint keys.
+                for j in i..n {
+                    if !independent[i][j] {
+                        let refinable = Self::check_refinable(&actions[i], &actions[j]);
+                        rp[i][j] = refinable;
+                        rp[j][i] = refinable;
+                    }
+                }
+            }
+            rp
+        };
+
         Ok(CompiledSpec {
             vars,
             consts,
@@ -203,6 +224,7 @@ impl Compiler {
             actions,
             invariants,
             independent,
+            refinable_pairs,
             symmetry_groups,
         })
     }
@@ -285,6 +307,10 @@ impl Compiler {
         reads.sort();
         reads.dedup();
 
+        // Collect key access info for instance-level POR (before adding implicit frame)
+        let write_key_params = Self::collect_write_key_params(&effect, &changes);
+        let read_key_params = Self::collect_read_key_params(&guard, &effect, &reads);
+
         // Add implicit frame (unchanged constraints) for vars not in changes
         let effect = self.add_implicit_frame(effect, &changes);
 
@@ -301,6 +327,8 @@ impl Compiler {
             effect,
             changes,
             reads,
+            write_key_params,
+            read_key_params,
         })
     }
 
@@ -914,6 +942,305 @@ impl Compiler {
         }
     }
 
+    /// Analyze effect to extract write key params for instance-level POR.
+    /// For each variable in `changes`, determine if writes are keyed (via FnUpdate chain).
+    /// Returns (var_idx, Some(keys)) for keyed writes, (var_idx, None) for unkeyed.
+    fn collect_write_key_params(
+        effect: &CompiledExpr,
+        changes: &[usize],
+    ) -> Vec<(usize, Option<Vec<KeySource>>)> {
+        use std::collections::HashMap;
+        let mut result: HashMap<usize, Option<Vec<KeySource>>> = HashMap::new();
+
+        // Decompose effect into conjuncts and find PrimedVar(v) == rhs assignments
+        Self::extract_assignments(effect, &mut |var_idx, rhs| {
+            if !changes.contains(&var_idx) {
+                return;
+            }
+            // Check if rhs is a FnUpdate chain rooted at Var(var_idx)
+            let keys = Self::extract_fn_update_keys(rhs, var_idx);
+            match result.get(&var_idx) {
+                None => {
+                    result.insert(var_idx, keys);
+                }
+                Some(None) => {} // Already unkeyed, can't improve
+                Some(Some(_)) if keys.is_none() => {
+                    result.insert(var_idx, None); // Downgrade to unkeyed
+                }
+                _ => {} // Both keyed, keep first
+            }
+        });
+
+        // Any variable in changes not found in effect is unkeyed
+        for &var_idx in changes {
+            result.entry(var_idx).or_insert(None);
+        }
+
+        result.into_iter().collect()
+    }
+
+    /// Walk effect And-tree to find PrimedVar(v) == rhs assignments.
+    fn extract_assignments(expr: &CompiledExpr, callback: &mut impl FnMut(usize, &CompiledExpr)) {
+        match expr {
+            CompiledExpr::Binary {
+                op: IrBinOp::And,
+                left,
+                right,
+            } => {
+                Self::extract_assignments(left, callback);
+                Self::extract_assignments(right, callback);
+            }
+            CompiledExpr::Binary {
+                op: IrBinOp::Eq,
+                left,
+                right,
+            } => {
+                if let CompiledExpr::PrimedVar(idx) = left.as_ref() {
+                    callback(*idx, right);
+                } else if let CompiledExpr::PrimedVar(idx) = right.as_ref() {
+                    callback(*idx, left);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Extract key sources from a dict update expression.
+    /// Handles both FnUpdate chains and Union with DictLit (dict merge `|` syntax).
+    /// Returns Some(keys) if the expression updates target_var at known keys, None otherwise.
+    fn extract_fn_update_keys(expr: &CompiledExpr, target_var: usize) -> Option<Vec<KeySource>> {
+        match expr {
+            // FnUpdate chain: dict[k1 -> v1][k2 -> v2]...
+            CompiledExpr::FnUpdate { base, key, .. } => {
+                let mut keys = Self::extract_fn_update_keys(base, target_var)?;
+                match key.as_ref() {
+                    CompiledExpr::Param(p) => keys.push(KeySource::Param(*p)),
+                    CompiledExpr::Int(k) => keys.push(KeySource::Literal(*k)),
+                    _ => return None,
+                }
+                Some(keys)
+            }
+            // Dict merge: var | { k1: v1, k2: v2 }
+            // Compiles to Binary { op: Union, left: Var(target), right: DictLit(pairs) }
+            CompiledExpr::Binary {
+                op: IrBinOp::Union,
+                left,
+                right,
+            } => {
+                // Left must be Var(target_var)
+                if !matches!(left.as_ref(), CompiledExpr::Var(idx) if *idx == target_var) {
+                    return None;
+                }
+                // Right must be DictLit with statically resolvable keys
+                if let CompiledExpr::DictLit(pairs) = right.as_ref() {
+                    let mut keys = Vec::new();
+                    for (key_expr, _) in pairs {
+                        match key_expr {
+                            CompiledExpr::Param(p) => keys.push(KeySource::Param(*p)),
+                            CompiledExpr::Int(k) => keys.push(KeySource::Literal(*k)),
+                            _ => return None,
+                        }
+                    }
+                    Some(keys)
+                } else {
+                    None
+                }
+            }
+            CompiledExpr::Var(idx) if *idx == target_var => Some(Vec::new()),
+            _ => None,
+        }
+    }
+
+    /// Analyze guard and effect to extract read key params for instance-level POR.
+    /// For each variable in `reads`, determine if all reads are keyed (via Index).
+    fn collect_read_key_params(
+        guard: &CompiledExpr,
+        effect: &CompiledExpr,
+        reads: &[usize],
+    ) -> Vec<(usize, Option<Vec<KeySource>>)> {
+        use std::collections::HashMap;
+        // Track: var_idx -> (keys_seen, has_unkeyed_access)
+        let mut info: HashMap<usize, (Vec<KeySource>, bool)> = HashMap::new();
+
+        for &var_idx in reads {
+            info.insert(var_idx, (Vec::new(), false));
+        }
+
+        Self::collect_read_keys_impl(guard, &mut info);
+        Self::collect_read_keys_impl(effect, &mut info);
+
+        info.into_iter()
+            .map(|(var_idx, (keys, has_unkeyed))| {
+                if has_unkeyed || keys.is_empty() {
+                    (var_idx, None)
+                } else {
+                    (var_idx, Some(keys))
+                }
+            })
+            .collect()
+    }
+
+    /// Recursively collect read key info from an expression.
+    /// `parent_is_index` tracks whether the current Var is inside an Index base.
+    fn collect_read_keys_impl(
+        expr: &CompiledExpr,
+        info: &mut std::collections::HashMap<usize, (Vec<KeySource>, bool)>,
+    ) {
+        match expr {
+            // Key pattern: var[key] — keyed read
+            CompiledExpr::Index { base, index } => {
+                if let CompiledExpr::Var(var_idx) = base.as_ref() {
+                    if let Some((keys, _)) = info.get_mut(var_idx) {
+                        match index.as_ref() {
+                            CompiledExpr::Param(p) => keys.push(KeySource::Param(*p)),
+                            CompiledExpr::Int(k) => keys.push(KeySource::Literal(*k)),
+                            _ => {
+                                // Computed index — mark as unkeyed
+                                info.get_mut(var_idx).unwrap().1 = true;
+                            }
+                        }
+                    }
+                } else {
+                    // base is not a simple Var — recurse into base
+                    Self::collect_read_keys_impl(base, info);
+                }
+                // Always recurse into index expr (it may contain Var refs)
+                Self::collect_read_keys_impl(index, info);
+            }
+            // Bare Var without Index — unkeyed read
+            CompiledExpr::Var(var_idx) => {
+                if let Some((_, has_unkeyed)) = info.get_mut(var_idx) {
+                    *has_unkeyed = true;
+                }
+            }
+            // Dict merge pattern: var | { k: v, ... }
+            // The Var on the left is the base being updated, not a whole-variable read.
+            // Only recurse into the DictLit values (reads) and keys.
+            CompiledExpr::Binary {
+                op: IrBinOp::Union,
+                left,
+                right,
+            } if matches!(left.as_ref(), CompiledExpr::Var(_))
+                && matches!(right.as_ref(), CompiledExpr::DictLit(_)) =>
+            {
+                // Skip left (Var) — it's the update base, not a whole-variable read.
+                // Recurse into the DictLit entries (values may contain keyed reads).
+                if let CompiledExpr::DictLit(entries) = right.as_ref() {
+                    for (k, v) in entries {
+                        Self::collect_read_keys_impl(k, info);
+                        Self::collect_read_keys_impl(v, info);
+                    }
+                }
+            }
+            // Recurse into all subexpressions
+            CompiledExpr::Binary { left, right, .. } => {
+                Self::collect_read_keys_impl(left, info);
+                Self::collect_read_keys_impl(right, info);
+            }
+            CompiledExpr::Unary { operand, .. } => {
+                Self::collect_read_keys_impl(operand, info);
+            }
+            CompiledExpr::SetLit(elems)
+            | CompiledExpr::SeqLit(elems)
+            | CompiledExpr::TupleLit(elems) => {
+                for e in elems {
+                    Self::collect_read_keys_impl(e, info);
+                }
+            }
+            CompiledExpr::DictLit(entries) => {
+                for (k, v) in entries {
+                    Self::collect_read_keys_impl(k, info);
+                    Self::collect_read_keys_impl(v, info);
+                }
+            }
+            CompiledExpr::Slice { base, lo, hi } => {
+                Self::collect_read_keys_impl(base, info);
+                Self::collect_read_keys_impl(lo, info);
+                Self::collect_read_keys_impl(hi, info);
+            }
+            CompiledExpr::Field { base, .. } => {
+                Self::collect_read_keys_impl(base, info);
+            }
+            CompiledExpr::Call { func, args } => {
+                Self::collect_read_keys_impl(func, info);
+                for a in args {
+                    Self::collect_read_keys_impl(a, info);
+                }
+            }
+            CompiledExpr::ActionCall { args, .. } => {
+                for a in args {
+                    Self::collect_read_keys_impl(a, info);
+                }
+            }
+            CompiledExpr::Forall { domain, body }
+            | CompiledExpr::Exists { domain, body }
+            | CompiledExpr::FnLit { domain, body } => {
+                Self::collect_read_keys_impl(domain, info);
+                Self::collect_read_keys_impl(body, info);
+            }
+            CompiledExpr::Choose { domain, predicate } => {
+                Self::collect_read_keys_impl(domain, info);
+                Self::collect_read_keys_impl(predicate, info);
+            }
+            CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } => {
+                Self::collect_read_keys_impl(element, info);
+                Self::collect_read_keys_impl(domain, info);
+                if let Some(f) = filter {
+                    Self::collect_read_keys_impl(f, info);
+                }
+            }
+            CompiledExpr::RecordUpdate { base, updates } => {
+                Self::collect_read_keys_impl(base, info);
+                for (_, v) in updates {
+                    Self::collect_read_keys_impl(v, info);
+                }
+            }
+            CompiledExpr::FnUpdate { base, key, value } => {
+                Self::collect_read_keys_impl(base, info);
+                Self::collect_read_keys_impl(key, info);
+                Self::collect_read_keys_impl(value, info);
+            }
+            CompiledExpr::Let { value, body } => {
+                Self::collect_read_keys_impl(value, info);
+                Self::collect_read_keys_impl(body, info);
+            }
+            CompiledExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                Self::collect_read_keys_impl(cond, info);
+                Self::collect_read_keys_impl(then_branch, info);
+                Self::collect_read_keys_impl(else_branch, info);
+            }
+            CompiledExpr::Range { lo, hi } => {
+                Self::collect_read_keys_impl(lo, info);
+                Self::collect_read_keys_impl(hi, info);
+            }
+            CompiledExpr::Len(inner)
+            | CompiledExpr::Keys(inner)
+            | CompiledExpr::Values(inner)
+            | CompiledExpr::SeqHead(inner)
+            | CompiledExpr::SeqTail(inner)
+            | CompiledExpr::BigUnion(inner)
+            | CompiledExpr::Powerset(inner) => {
+                // These access the variable as a whole — mark unkeyed if it's a Var
+                if let CompiledExpr::Var(var_idx) = inner.as_ref() {
+                    if let Some((_, has_unkeyed)) = info.get_mut(var_idx) {
+                        *has_unkeyed = true;
+                    }
+                } else {
+                    Self::collect_read_keys_impl(inner, info);
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Add implicit frame constraints for variables not mentioned in changes.
     fn add_implicit_frame(&self, effect: CompiledExpr, changes: &[usize]) -> CompiledExpr {
         let mut result = effect;
@@ -961,6 +1288,59 @@ impl Compiler {
                 variables,
             })
             .collect()
+    }
+    /// Check if two template-dependent actions could be instance-independent.
+    /// True iff every shared variable (in the write/read intersection) has keyed
+    /// access on both sides.
+    fn check_refinable(a: &CompiledAction, b: &CompiledAction) -> bool {
+        fn find_key_info(
+            key_params: &[(usize, Option<Vec<KeySource>>)],
+            var_idx: usize,
+        ) -> Option<&Option<Vec<KeySource>>> {
+            key_params
+                .iter()
+                .find(|(v, _)| *v == var_idx)
+                .map(|(_, k)| k)
+        }
+
+        // For each variable that A writes and B reads or writes
+        for &var_idx in &a.changes {
+            if b.reads.contains(&var_idx) || b.changes.contains(&var_idx) {
+                // A must have keyed write access
+                match find_key_info(&a.write_key_params, var_idx) {
+                    Some(Some(_)) => {} // Keyed — ok
+                    _ => return false,  // Unkeyed or missing — not refinable
+                }
+                // B must have keyed access for both reads and writes
+                if b.changes.contains(&var_idx) {
+                    match find_key_info(&b.write_key_params, var_idx) {
+                        Some(Some(_)) => {}
+                        _ => return false,
+                    }
+                }
+                if b.reads.contains(&var_idx) {
+                    match find_key_info(&b.read_key_params, var_idx) {
+                        Some(Some(_)) => {}
+                        _ => return false,
+                    }
+                }
+            }
+        }
+        // Symmetric: B writes, A reads
+        for &var_idx in &b.changes {
+            if a.reads.contains(&var_idx) && !a.changes.contains(&var_idx) {
+                // Already checked A.changes above; only check A.reads here
+                match find_key_info(&b.write_key_params, var_idx) {
+                    Some(Some(_)) => {}
+                    _ => return false,
+                }
+                match find_key_info(&a.read_key_params, var_idx) {
+                    Some(Some(_)) => {}
+                    _ => return false,
+                }
+            }
+        }
+        true
     }
 }
 
@@ -1044,5 +1424,41 @@ action BrokenDeposit() {
 
         assert_eq!(spec.actions.len(), 1);
         assert_eq!(spec.actions[0].changes, vec![1]); // bob is at index 1
+    }
+
+    #[test]
+    fn test_write_key_params_transfer() {
+        let source = r#"
+module Transfer
+const N: Int
+var balance: Dict[0..N, Int]
+init { balance == {i: 10 for i in 0..N} }
+action Transfer(from: 0..N, to: 0..N) {
+    require from != to
+    require balance[from] >= 1
+    balance = balance | { from: balance[from] - 1, to: balance[to] + 1 }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+
+        let action = &spec.actions[0];
+        assert_eq!(action.name, "Transfer");
+        // Write key params: balance written at keys Param(0) and Param(1)
+        assert_eq!(action.write_key_params.len(), 1);
+        assert_eq!(action.write_key_params[0].0, 0);
+        let write_keys = action.write_key_params[0].1.as_ref().unwrap();
+        assert!(write_keys.contains(&KeySource::Param(0)));
+        assert!(write_keys.contains(&KeySource::Param(1)));
+
+        // Read key params: balance read at Param(0) and Param(1)
+        assert_eq!(action.read_key_params.len(), 1);
+        assert_eq!(action.read_key_params[0].0, 0);
+        let read_keys = action.read_key_params[0].1.as_ref().unwrap();
+        assert!(read_keys.contains(&KeySource::Param(0)));
+        assert!(read_keys.contains(&KeySource::Param(1)));
+
+        // Self-pair should be refinable (keyed access on both sides)
+        assert!(spec.refinable_pairs[0][0]);
     }
 }
