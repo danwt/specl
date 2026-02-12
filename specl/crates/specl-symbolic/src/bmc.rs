@@ -57,6 +57,7 @@ pub fn check_bmc(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
 
             let inv_encoded = enc.encode_bool(&inv.body)?;

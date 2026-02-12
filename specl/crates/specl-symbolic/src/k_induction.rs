@@ -78,6 +78,7 @@ fn check_base_case(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
             let inv_encoded = enc.encode_bool(&inv.body)?;
             solver.assert(&inv_encoded.not());
@@ -151,6 +152,7 @@ fn check_inductive_step(
                 locals: Vec::new(),
                 compound_locals: Vec::new(),
                 set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
             };
             let inv_at_step = enc.encode_bool(&inv.body)?;
             solver.assert(&inv_at_step);
@@ -167,6 +169,7 @@ fn check_inductive_step(
             locals: Vec::new(),
             compound_locals: Vec::new(),
             set_locals: Vec::new(),
+            whole_var_locals: Vec::new(),
         };
         let inv_at_k = enc_k.encode_bool(&inv.body)?;
         solver.assert(&inv_at_k.not());

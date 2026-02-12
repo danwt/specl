@@ -27,6 +27,9 @@ pub struct EncoderCtx<'a> {
     /// Set locals: maps absolute locals stack position → concrete set members.
     /// Used for powerset quantifier bindings where the local represents a concrete subset.
     pub set_locals: Vec<(usize, Vec<i64>)>,
+    /// Whole-var locals: locals that alias an entire compound variable.
+    /// Each entry: (abs_depth, var_idx, step).
+    pub whole_var_locals: Vec<(usize, usize, usize)>,
 }
 
 impl<'a> EncoderCtx<'a> {
@@ -136,6 +139,27 @@ impl<'a> EncoderCtx<'a> {
                             self.compound_locals.pop();
                             self.locals.pop();
                             result
+                        } else if let CompiledExpr::Var(var_idx)
+                        | CompiledExpr::PrimedVar(var_idx) = value.as_ref()
+                        {
+                            // Bare compound variable alias (e.g., inlined function arg)
+                            let step = if matches!(value.as_ref(), CompiledExpr::Var(_)) {
+                                self.current_step
+                            } else {
+                                self.next_step
+                            };
+                            let entry = &self.layout.entries[*var_idx];
+                            if entry.kind.z3_var_count() > 1 {
+                                let abs_depth = self.locals.len();
+                                self.locals.push(Dynamic::from_ast(&Int::from_i64(0)));
+                                self.whole_var_locals.push((abs_depth, *var_idx, step));
+                                let result = self.encode(body);
+                                self.whole_var_locals.pop();
+                                self.locals.pop();
+                                return result;
+                            }
+                            // Re-raise the original error
+                            self.encode(value).and_then(|_| unreachable!())
                         } else {
                             // Re-raise the original error
                             self.encode(value).and_then(|_| unreachable!())
@@ -547,10 +571,13 @@ impl<'a> EncoderCtx<'a> {
         domain: &CompiledExpr,
         predicate: &CompiledExpr,
     ) -> SymbolicResult<Dynamic> {
-        let (lo, hi) = self.extract_range(domain)?;
-        // Build ITE chain: if P(lo) then lo else if P(lo+1) then lo+1 else ... else lo
-        let mut result = Dynamic::from_ast(&Int::from_i64(lo)); // default fallback
-        for val in (lo..=hi).rev() {
+        let values = self.resolve_domain_values(domain)?;
+        // Build ITE chain: if P(first) then first else if P(second) then second else ... else first
+        let fallback = *values
+            .first()
+            .ok_or_else(|| SymbolicError::Encoding("empty domain in choose".into()))?;
+        let mut result = Dynamic::from_ast(&Int::from_i64(fallback));
+        for val in values.into_iter().rev() {
             let z3_val = Dynamic::from_ast(&Int::from_i64(val));
             self.locals.push(z3_val);
             let pred = self.encode_bool(predicate)?;
@@ -588,6 +615,12 @@ impl<'a> EncoderCtx<'a> {
                 .map(|(v, s, k)| (*v, *s, k.clone()))
             {
                 return self.encode_compound_local_chain(var_idx, step, &key_z3, &keys);
+            }
+            // Whole-var alias: redirect to the original compound variable
+            if let Some((var_idx, step)) = self.resolve_whole_var_local(*local_idx) {
+                let entry = &self.layout.entries[var_idx];
+                let z3_vars = &self.step_vars[step][var_idx];
+                return self.resolve_index_chain(&entry.kind, z3_vars, &keys);
             }
         }
 
@@ -855,12 +888,12 @@ impl<'a> EncoderCtx<'a> {
             filter,
         } = inner
         {
-            let (lo, hi) = self.extract_range(domain)?;
+            let values = self.resolve_domain_values(domain)?;
             let one = Int::from_i64(1);
             let zero = Int::from_i64(0);
             let mut sum_terms = Vec::new();
 
-            for val in lo..=hi {
+            for val in values {
                 let z3_val = Dynamic::from_ast(&Int::from_i64(val));
                 self.locals.push(z3_val);
                 let included = if let Some(f) = filter {
@@ -872,7 +905,11 @@ impl<'a> EncoderCtx<'a> {
                 sum_terms.push(included.ite(&one, &zero));
             }
 
-            Ok(Dynamic::from_ast(&Int::add(&sum_terms)))
+            if sum_terms.is_empty() {
+                Ok(Dynamic::from_ast(&Int::from_i64(0)))
+            } else {
+                Ok(Dynamic::from_ast(&Int::add(&sum_terms)))
+            }
         } else {
             match inner {
                 CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
@@ -1043,11 +1080,18 @@ impl<'a> EncoderCtx<'a> {
                 domain,
                 filter,
             } => {
-                let (lo, hi) = self.extract_range(domain)?;
+                let values = self.resolve_domain_values(domain)?;
                 let elem_z3 = self.encode_int(elem)?;
-                let lo_z3 = Int::from_i64(lo);
-                let hi_z3 = Int::from_i64(hi);
-                let in_domain = Bool::and(&[elem_z3.ge(&lo_z3), elem_z3.le(&hi_z3)]);
+                let eqs: Vec<Bool> = values
+                    .iter()
+                    .map(|v| elem_z3.eq(&Int::from_i64(*v)))
+                    .collect();
+                let eq_refs: Vec<&Bool> = eqs.iter().collect();
+                let in_domain = if eq_refs.is_empty() {
+                    Bool::from_bool(false)
+                } else {
+                    Bool::or(&eq_refs)
+                };
 
                 let result = if let Some(f) = filter {
                     let elem_encoded = self.encode(elem)?;
@@ -1349,6 +1393,18 @@ impl<'a> EncoderCtx<'a> {
         for (abs_depth, var_idx, step, key_z3) in self.compound_locals.iter().rev() {
             if *abs_depth == abs_idx {
                 return Some((var_idx, step, key_z3));
+            }
+        }
+        None
+    }
+
+    /// Check if a Local(idx) resolves to a whole-variable alias.
+    /// Returns (var_idx, step) if so.
+    fn resolve_whole_var_local(&self, local_idx: usize) -> Option<(usize, usize)> {
+        let abs_idx = self.locals.len() - 1 - local_idx;
+        for &(abs_depth, var_idx, step) in self.whole_var_locals.iter().rev() {
+            if abs_depth == abs_idx {
+                return Some((var_idx, step));
             }
         }
         None
@@ -1677,9 +1733,9 @@ impl<'a> EncoderCtx<'a> {
                 domain,
                 filter,
             } => {
-                let (dom_lo, dom_hi) = self.extract_range(domain)?;
+                let values = self.resolve_domain_values(domain)?;
                 let mut flags = vec![Bool::from_bool(false); count];
-                for val in dom_lo..=dom_hi {
+                for val in values {
                     let offset = (val - lo) as usize;
                     if offset >= count {
                         continue;
@@ -1762,6 +1818,17 @@ impl<'a> EncoderCtx<'a> {
             }
             _ => None,
         }
+    }
+
+    /// Resolve a domain to concrete values, handling both Range and set-local domains.
+    fn resolve_domain_values(&mut self, domain: &CompiledExpr) -> SymbolicResult<Vec<i64>> {
+        if let CompiledExpr::Local(idx) = domain {
+            if let Some(members) = self.resolve_set_local(*idx) {
+                return Ok(members.clone());
+            }
+        }
+        let (lo, hi) = self.extract_range(domain)?;
+        Ok((lo..=hi).collect())
     }
 
     pub fn extract_range(&mut self, domain: &CompiledExpr) -> SymbolicResult<(i64, i64)> {
