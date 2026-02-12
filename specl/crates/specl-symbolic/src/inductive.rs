@@ -50,6 +50,7 @@ pub fn check_inductive(
             locals: Vec::new(),
             compound_locals: Vec::new(),
             set_locals: Vec::new(),
+            whole_var_locals: Vec::new(),
         };
         let inv_at_0 = enc0.encode_bool(&inv.body)?;
         solver.assert(&inv_at_0);
@@ -64,6 +65,7 @@ pub fn check_inductive(
             locals: Vec::new(),
             compound_locals: Vec::new(),
             set_locals: Vec::new(),
+            whole_var_locals: Vec::new(),
         };
         let inv_at_1 = enc1.encode_bool(&inv.body)?;
         solver.assert(&inv_at_1.not());

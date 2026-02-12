@@ -618,8 +618,12 @@ impl Parser {
                     },
                     span,
                 );
-            } else if self.match_token(TokenKind::LParen) {
-                // Function call
+            } else if self.check(TokenKind::LParen)
+                && matches!(expr.kind, ExprKind::Ident(_) | ExprKind::Field { .. })
+            {
+                // Function call — only after identifiers and field accesses.
+                // Without this guard, `10\n(x = x+1)` would parse as `10(x = x+1)`.
+                self.advance();
                 let args = self.parse_call_args()?;
                 self.expect(TokenKind::RParen)?;
                 let span = expr.span.merge(self.prev_span());
