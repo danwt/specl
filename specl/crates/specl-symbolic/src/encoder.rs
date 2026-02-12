@@ -568,82 +568,131 @@ impl<'a> EncoderCtx<'a> {
         base: &CompiledExpr,
         index: &CompiledExpr,
     ) -> SymbolicResult<Dynamic> {
-        // Handle nested index: d[k][i] where d is Dict[Range, Seq[T]]
-        if let CompiledExpr::Index {
-            base: outer_base,
-            index: outer_key,
-        } = base
+        // Flatten index chain: d[k1][k2][k3] → (base_expr, [k1, k2, k3])
+        let mut keys: Vec<&CompiledExpr> = vec![index];
+        let mut current: &CompiledExpr = base;
+        while let CompiledExpr::Index {
+            base: inner,
+            index: inner_key,
+        } = current
         {
-            return self.encode_nested_index(outer_base, outer_key, index);
+            keys.push(inner_key.as_ref());
+            current = inner.as_ref();
         }
+        keys.reverse();
 
-        // Handle Local(n)[i] for compound locals (seq within dict)
-        if let CompiledExpr::Local(local_idx) = base {
+        // Handle compound Local(n)[keys...]: local is bound to a dict slot
+        if let CompiledExpr::Local(local_idx) = current {
             if let Some((var_idx, step, key_z3)) = self
                 .resolve_compound_local(*local_idx)
                 .map(|(v, s, k)| (*v, *s, k.clone()))
             {
-                return self.encode_compound_local_index(var_idx, step, &key_z3, index);
+                return self.encode_compound_local_chain(var_idx, step, &key_z3, &keys);
             }
         }
 
-        let (specl_var_idx, step) = self.extract_var_step(base)?;
+        let (specl_var_idx, step) = self.extract_var_step(current)?;
         let entry = &self.layout.entries[specl_var_idx];
-        match &entry.kind {
+        let z3_vars = &self.step_vars[step][specl_var_idx];
+        self.resolve_index_chain(&entry.kind, z3_vars, &keys)
+    }
+
+    /// Recursively resolve an index chain on a compound VarKind.
+    fn resolve_index_chain(
+        &mut self,
+        kind: &VarKind,
+        vars: &[Dynamic],
+        keys: &[&CompiledExpr],
+    ) -> SymbolicResult<Dynamic> {
+        if keys.is_empty() {
+            return if vars.len() == 1 {
+                Ok(vars[0].clone())
+            } else {
+                Err(SymbolicError::Encoding(
+                    "index chain incomplete: compound value requires more indices".into(),
+                ))
+            };
+        }
+
+        match kind {
             VarKind::ExplodedDict {
                 key_lo,
                 key_hi,
                 value_kind,
             } => {
+                let stride = value_kind.z3_var_count();
                 let key_lo = *key_lo;
                 let key_hi = *key_hi;
-                let z3_vars = &self.step_vars[step][specl_var_idx];
-                let stride = value_kind.z3_var_count();
+                let remaining = &keys[1..];
 
-                if stride == 1 {
-                    // Simple value kind (Bool/Int): one var per key
-                    if let Some(concrete_key) = self.try_concrete_int(index) {
+                // Last key and scalar value: simple access
+                if remaining.is_empty() && stride == 1 {
+                    if let Some(concrete_key) = self.try_concrete_int(keys[0]) {
                         let offset = (concrete_key - key_lo) as usize;
-                        if offset < z3_vars.len() {
-                            Ok(z3_vars[offset].clone())
+                        return if offset < vars.len() {
+                            Ok(vars[offset].clone())
                         } else {
                             Err(SymbolicError::Encoding(format!(
                                 "dict key {} out of range [{}, {}]",
                                 concrete_key, key_lo, key_hi
                             )))
-                        }
+                        };
                     } else {
-                        let key_z3 = self.encode_int(index)?;
-                        self.build_ite_chain(&key_z3, z3_vars, key_lo)
+                        let key_z3 = self.encode_int(keys[0])?;
+                        return self.build_ite_chain(&key_z3, vars, key_lo);
                     }
-                } else {
-                    // Compound value kind: d[k] is not a scalar
-                    Err(SymbolicError::Encoding(format!(
-                        "dict variable '{}' has compound values; use nested index (d[k][i]) or len(d[k])",
-                        entry.name
-                    )))
                 }
-            }
-            VarKind::ExplodedSet { lo, .. } => {
-                let lo = *lo;
-                let z3_vars = &self.step_vars[step][specl_var_idx];
-                if let Some(concrete_key) = self.try_concrete_int(index) {
-                    let offset = (concrete_key - lo) as usize;
-                    if offset < z3_vars.len() {
-                        Ok(z3_vars[offset].clone())
-                    } else {
-                        Ok(Dynamic::from_ast(&Bool::from_bool(false)))
-                    }
+
+                // Compound value needs more indices
+                if remaining.is_empty() {
+                    return Err(SymbolicError::Encoding(
+                        "dict has compound values; use nested index (d[k1][k2]) or len(d[k])"
+                            .into(),
+                    ));
+                }
+
+                // Descend into value_kind with remaining keys
+                if let Some(concrete_key) = self.try_concrete_int(keys[0]) {
+                    let offset = (concrete_key - key_lo) as usize * stride;
+                    let slot_vars = &vars[offset..offset + stride];
+                    self.resolve_index_chain(value_kind, slot_vars, remaining)
                 } else {
-                    let key_z3 = self.encode_int(index)?;
-                    self.build_ite_chain(&key_z3, z3_vars, lo)
+                    let key_z3 = self.encode_int(keys[0])?;
+                    let num_keys = (key_hi - key_lo + 1) as usize;
+                    let mut result: Option<Dynamic> = None;
+                    for k in (0..num_keys).rev() {
+                        let offset = k * stride;
+                        let slot_vars = &vars[offset..offset + stride];
+                        let val = self.resolve_index_chain(value_kind, slot_vars, remaining)?;
+                        let k_z3 = Int::from_i64(key_lo + k as i64);
+                        let cond = key_z3.eq(&k_z3);
+                        result = Some(match result {
+                            None => val,
+                            Some(prev) => {
+                                if let (Some(vi), Some(pi)) = (val.as_int(), prev.as_int()) {
+                                    Dynamic::from_ast(&cond.ite(&vi, &pi))
+                                } else if let (Some(vb), Some(pb)) = (val.as_bool(), prev.as_bool())
+                                {
+                                    Dynamic::from_ast(&cond.ite(&vb, &pb))
+                                } else {
+                                    prev
+                                }
+                            }
+                        });
+                    }
+                    result
+                        .ok_or_else(|| SymbolicError::Encoding("empty dict for index chain".into()))
                 }
             }
             VarKind::ExplodedSeq { max_len, .. } => {
+                if keys.len() != 1 {
+                    return Err(SymbolicError::Encoding(
+                        "cannot index deeper into sequence elements".into(),
+                    ));
+                }
                 let max_len = *max_len;
-                let z3_vars = &self.step_vars[step][specl_var_idx];
-                let elem_vars = &z3_vars[1..1 + max_len];
-                if let Some(concrete_idx) = self.try_concrete_int(index) {
+                let elem_vars = &vars[1..1 + max_len];
+                if let Some(concrete_idx) = self.try_concrete_int(keys[0]) {
                     let idx = concrete_idx as usize;
                     if idx < max_len {
                         Ok(elem_vars[idx].clone())
@@ -654,107 +703,43 @@ impl<'a> EncoderCtx<'a> {
                         )))
                     }
                 } else {
-                    let idx_z3 = self.encode_int(index)?;
+                    let idx_z3 = self.encode_int(keys[0])?;
                     self.build_ite_chain(&idx_z3, elem_vars, 0)
                 }
             }
-            _ => Err(SymbolicError::Encoding(format!(
-                "index on non-dict/set/seq variable '{}'",
-                entry.name
-            ))),
-        }
-    }
-
-    /// Nested index: d[k][i] where d is Dict[Range, Seq[T]].
-    fn encode_nested_index(
-        &mut self,
-        dict_base: &CompiledExpr,
-        dict_key: &CompiledExpr,
-        seq_index: &CompiledExpr,
-    ) -> SymbolicResult<Dynamic> {
-        let (var_idx, step) = self.extract_var_step(dict_base)?;
-        let entry = &self.layout.entries[var_idx];
-        let (key_lo, key_hi, value_kind) = match &entry.kind {
-            VarKind::ExplodedDict {
-                key_lo,
-                key_hi,
-                value_kind,
-            } => (*key_lo, *key_hi, value_kind.as_ref()),
-            _ => {
-                return Err(SymbolicError::Encoding(
-                    "nested index requires dict base".into(),
-                ))
-            }
-        };
-
-        let stride = value_kind.z3_var_count();
-        let max_len = match value_kind {
-            VarKind::ExplodedSeq { max_len, .. } => *max_len,
-            _ => {
-                return Err(SymbolicError::Encoding(
-                    "nested index: dict value must be Seq".into(),
-                ))
-            }
-        };
-
-        let z3_vars = &self.step_vars[step][var_idx];
-
-        if let Some(concrete_key) = self.try_concrete_int(dict_key) {
-            // Concrete dict key: directly access the seq elements for this key
-            let key_offset = (concrete_key - key_lo) as usize * stride;
-            let elem_vars = &z3_vars[key_offset + 1..key_offset + 1 + max_len];
-            if let Some(concrete_idx) = self.try_concrete_int(seq_index) {
-                let idx = concrete_idx as usize;
-                if idx < max_len {
-                    Ok(elem_vars[idx].clone())
-                } else {
-                    Err(SymbolicError::Encoding(format!(
-                        "seq index {} out of bounds (max_len {})",
-                        concrete_idx, max_len
-                    )))
+            VarKind::ExplodedSet { lo, .. } => {
+                if keys.len() != 1 {
+                    return Err(SymbolicError::Encoding(
+                        "cannot index deeper into set elements".into(),
+                    ));
                 }
-            } else {
-                let idx_z3 = self.encode_int(seq_index)?;
-                self.build_ite_chain(&idx_z3, elem_vars, 0)
-            }
-        } else {
-            // Symbolic dict key: ITE chain over all keys, each resolving the seq element
-            let key_z3 = self.encode_int(dict_key)?;
-            let idx_z3 = self.encode_int(seq_index)?;
-            let num_keys = (key_hi - key_lo + 1) as usize;
-            // Build the ITE: for each possible key, get the element at seq_index
-            let mut result: Option<Dynamic> = None;
-            for k in (0..num_keys).rev() {
-                let key_offset = k * stride;
-                let elem_vars = &z3_vars[key_offset + 1..key_offset + 1 + max_len];
-                // ITE chain for seq_index within this key's elements
-                let elem_val = self.build_ite_chain(&idx_z3, elem_vars, 0)?;
-                let k_z3 = Int::from_i64(key_lo + k as i64);
-                let cond = key_z3.eq(&k_z3);
-                result = Some(match result {
-                    None => elem_val,
-                    Some(prev) => {
-                        if let (Some(ei), Some(pi)) = (elem_val.as_int(), prev.as_int()) {
-                            Dynamic::from_ast(&cond.ite(&ei, &pi))
-                        } else if let (Some(eb), Some(pb)) = (elem_val.as_bool(), prev.as_bool()) {
-                            Dynamic::from_ast(&cond.ite(&eb, &pb))
-                        } else {
-                            prev
-                        }
+                let lo = *lo;
+                if let Some(concrete_key) = self.try_concrete_int(keys[0]) {
+                    let offset = (concrete_key - lo) as usize;
+                    if offset < vars.len() {
+                        Ok(vars[offset].clone())
+                    } else {
+                        Ok(Dynamic::from_ast(&Bool::from_bool(false)))
                     }
-                });
+                } else {
+                    let key_z3 = self.encode_int(keys[0])?;
+                    self.build_ite_chain(&key_z3, vars, lo)
+                }
             }
-            result.ok_or_else(|| SymbolicError::Encoding("empty dict for nested index".into()))
+            VarKind::Bool | VarKind::Int { .. } => {
+                Err(SymbolicError::Encoding("index on scalar variable".into()))
+            }
         }
     }
 
-    /// len(d[k]) for Dict[Range, Seq[T]]: return the len var for the seq at key k.
-    fn encode_nested_len(
+    /// Resolve index chain for a compound local (d[outer_key][keys...]).
+    fn encode_compound_local_chain(
         &mut self,
-        dict_base: &CompiledExpr,
-        dict_key: &CompiledExpr,
+        var_idx: usize,
+        step: usize,
+        outer_key_z3: &Int,
+        keys: &[&CompiledExpr],
     ) -> SymbolicResult<Dynamic> {
-        let (var_idx, step) = self.extract_var_step(dict_base)?;
         let entry = &self.layout.entries[var_idx];
         let (key_lo, key_hi, value_kind) = match &entry.kind {
             VarKind::ExplodedDict {
@@ -762,26 +747,104 @@ impl<'a> EncoderCtx<'a> {
                 key_hi,
                 value_kind,
             } => (*key_lo, *key_hi, value_kind.as_ref()),
-            _ => {
-                return Err(SymbolicError::Encoding(
-                    "nested len requires dict base".into(),
-                ))
-            }
+            _ => return Err(SymbolicError::Encoding("compound local on non-dict".into())),
         };
-
         let stride = value_kind.z3_var_count();
         let z3_vars = &self.step_vars[step][var_idx];
+        let num_keys = (key_hi - key_lo + 1) as usize;
+        let mut result: Option<Dynamic> = None;
+        for k in (0..num_keys).rev() {
+            let offset = k * stride;
+            let slot_vars = &z3_vars[offset..offset + stride];
+            let val = self.resolve_index_chain(value_kind, slot_vars, keys)?;
+            let k_z3 = Int::from_i64(key_lo + k as i64);
+            let cond = outer_key_z3.eq(&k_z3);
+            result = Some(match result {
+                None => val,
+                Some(prev) => {
+                    if let (Some(vi), Some(pi)) = (val.as_int(), prev.as_int()) {
+                        Dynamic::from_ast(&cond.ite(&vi, &pi))
+                    } else if let (Some(vb), Some(pb)) = (val.as_bool(), prev.as_bool()) {
+                        Dynamic::from_ast(&cond.ite(&vb, &pb))
+                    } else {
+                        prev
+                    }
+                }
+            });
+        }
+        result.ok_or_else(|| SymbolicError::Encoding("empty compound local".into()))
+    }
 
-        if let Some(concrete_key) = self.try_concrete_int(dict_key) {
-            let key_offset = (concrete_key - key_lo) as usize * stride;
-            Ok(z3_vars[key_offset].clone()) // len var is at offset 0 within each key's stride
-        } else {
-            // Symbolic key: ITE chain over all len vars
-            let key_z3 = self.encode_int(dict_key)?;
-            let num_keys = (key_hi - key_lo + 1) as usize;
-            let len_vars: Vec<Dynamic> =
-                (0..num_keys).map(|k| z3_vars[k * stride].clone()).collect();
-            self.build_ite_chain(&key_z3, &len_vars, key_lo)
+    /// Compute len of a VarKind from its Z3 vars.
+    fn len_of_kind(&self, kind: &VarKind, vars: &[Dynamic]) -> SymbolicResult<Dynamic> {
+        match kind {
+            VarKind::ExplodedSeq { .. } => Ok(vars[0].clone()),
+            VarKind::ExplodedSet { .. } => {
+                let one = Int::from_i64(1);
+                let zero = Int::from_i64(0);
+                let terms: Vec<Int> = vars
+                    .iter()
+                    .map(|v| v.as_bool().unwrap().ite(&one, &zero))
+                    .collect();
+                Ok(Dynamic::from_ast(&Int::add(&terms)))
+            }
+            VarKind::ExplodedDict { key_lo, key_hi, .. } => {
+                Ok(Dynamic::from_ast(&Int::from_i64(key_hi - key_lo + 1)))
+            }
+            _ => Err(SymbolicError::Encoding("len on scalar".into())),
+        }
+    }
+
+    /// Recursively resolve len(d[k1][k2]...) for nested compounds.
+    fn resolve_nested_len(
+        &mut self,
+        kind: &VarKind,
+        vars: &[Dynamic],
+        keys: &[&CompiledExpr],
+    ) -> SymbolicResult<Dynamic> {
+        if keys.is_empty() {
+            return self.len_of_kind(kind, vars);
+        }
+
+        match kind {
+            VarKind::ExplodedDict {
+                key_lo,
+                key_hi,
+                value_kind,
+            } => {
+                let stride = value_kind.z3_var_count();
+                let key_lo = *key_lo;
+                let key_hi = *key_hi;
+                let remaining = &keys[1..];
+
+                if let Some(concrete_key) = self.try_concrete_int(keys[0]) {
+                    let offset = (concrete_key - key_lo) as usize * stride;
+                    let slot_vars = &vars[offset..offset + stride];
+                    if remaining.is_empty() {
+                        self.len_of_kind(value_kind, slot_vars)
+                    } else {
+                        self.resolve_nested_len(value_kind, slot_vars, remaining)
+                    }
+                } else {
+                    let key_z3 = self.encode_int(keys[0])?;
+                    let num_keys = (key_hi - key_lo + 1) as usize;
+                    let mut len_vals = Vec::new();
+                    for k in 0..num_keys {
+                        let offset = k * stride;
+                        let slot_vars = &vars[offset..offset + stride];
+                        let len = if remaining.is_empty() {
+                            self.len_of_kind(value_kind, slot_vars)?
+                        } else {
+                            self.resolve_nested_len(value_kind, slot_vars, remaining)?
+                        };
+                        len_vals.push(len);
+                    }
+                    self.build_ite_chain(&key_z3, &len_vals, key_lo)
+                }
+            }
+            _ => Err(SymbolicError::Encoding(
+                "nested len on non-dict kind".into(),
+            )),
         }
     }
 
@@ -838,15 +901,43 @@ impl<'a> EncoderCtx<'a> {
                         )),
                     }
                 }
-                // len(d[k]) for Dict[Range, Seq[T]]
-                CompiledExpr::Index { base, index } => self.encode_nested_len(base, index),
+                // len(d[k]) or len(d[k1][k2]) for nested compounds
+                CompiledExpr::Index { .. } => {
+                    let mut keys: Vec<&CompiledExpr> = Vec::new();
+                    let mut cur = inner;
+                    while let CompiledExpr::Index {
+                        base: ib,
+                        index: ik,
+                    } = cur
+                    {
+                        keys.push(ik.as_ref());
+                        cur = ib.as_ref();
+                    }
+                    keys.reverse();
+
+                    // Handle compound local len
+                    if let CompiledExpr::Local(local_idx) = cur {
+                        if let Some((var_idx, step, key_z3)) = self
+                            .resolve_compound_local(*local_idx)
+                            .map(|(v, s, k)| (*v, *s, k.clone()))
+                        {
+                            return self
+                                .encode_compound_local_nested_len(var_idx, step, &key_z3, &keys);
+                        }
+                    }
+
+                    let (var_idx, step) = self.extract_var_step(cur)?;
+                    let entry = &self.layout.entries[var_idx];
+                    let z3_vars = &self.step_vars[step][var_idx];
+                    self.resolve_nested_len(&entry.kind, z3_vars, &keys)
+                }
                 // len(Local(n)) for compound locals or set locals
                 CompiledExpr::Local(idx) => {
                     if let Some((var_idx, step, key_z3)) = self
                         .resolve_compound_local(*idx)
                         .map(|(v, s, k)| (*v, *s, k.clone()))
                     {
-                        self.encode_compound_local_len(var_idx, step, &key_z3)
+                        self.encode_compound_local_nested_len(var_idx, step, &key_z3, &[])
                     } else if let Some(members) = self.resolve_set_local(*idx) {
                         Ok(Dynamic::from_ast(&Int::from_i64(members.len() as i64)))
                     } else {
@@ -1123,6 +1214,55 @@ impl<'a> EncoderCtx<'a> {
                     "values() requires a simple-valued dict variable".into(),
                 ))
             }
+            // x in d[k] where d is Dict[Range, Set[Range]]
+            CompiledExpr::Index { .. } => {
+                let mut keys: Vec<&CompiledExpr> = Vec::new();
+                let mut cur = set;
+                while let CompiledExpr::Index {
+                    base: ib,
+                    index: ik,
+                } = cur
+                {
+                    keys.push(ik.as_ref());
+                    cur = ib.as_ref();
+                }
+                keys.reverse();
+
+                let (var_idx, step) = self.extract_var_step(cur)?;
+                let entry = &self.layout.entries[var_idx];
+                let z3_vars = &self.step_vars[step][var_idx];
+
+                // Walk the VarKind to find the Set slot
+                let (set_vars, set_kind) = self.resolve_set_slot(&entry.kind, z3_vars, &keys)?;
+
+                if let VarKind::ExplodedSet { lo, .. } = set_kind {
+                    let lo = *lo;
+                    if let Some(concrete_elem) = self.try_concrete_int(elem) {
+                        let offset = (concrete_elem - lo) as usize;
+                        let result = if offset < set_vars.len() {
+                            set_vars[offset].as_bool().unwrap()
+                        } else {
+                            Bool::from_bool(false)
+                        };
+                        let final_val = if negate { result.not() } else { result };
+                        Ok(Dynamic::from_ast(&final_val))
+                    } else {
+                        let elem_z3 = self.encode_int(elem)?;
+                        let result = self.build_ite_chain(&elem_z3, set_vars, lo)?;
+                        let result_bool = result.as_bool().unwrap();
+                        let final_val = if negate {
+                            result_bool.not()
+                        } else {
+                            result_bool
+                        };
+                        Ok(Dynamic::from_ast(&final_val))
+                    }
+                } else {
+                    Err(SymbolicError::Encoding(
+                        "'in' on nested index: inner value is not a set".into(),
+                    ))
+                }
+            }
             _ => {
                 // Try as a set expression with known bounds (union, intersect, etc.)
                 if self.is_set_expr(set) {
@@ -1214,90 +1354,82 @@ impl<'a> EncoderCtx<'a> {
         None
     }
 
-    /// Access element `elem_idx` of a compound local (seq within dict).
-    fn encode_compound_local_index(
+    /// Resolve nested len for a compound local: len(Local(n)[k1][k2]...).
+    fn encode_compound_local_nested_len(
         &mut self,
         var_idx: usize,
         step: usize,
-        key_z3: &Int,
-        elem_index: &CompiledExpr,
+        outer_key_z3: &Int,
+        keys: &[&CompiledExpr],
     ) -> SymbolicResult<Dynamic> {
         let entry = &self.layout.entries[var_idx];
-        if let VarKind::ExplodedDict {
-            key_lo,
-            key_hi,
-            value_kind,
-        } = &entry.kind
-        {
-            let stride = value_kind.z3_var_count();
-            if let VarKind::ExplodedSeq { max_len, .. } = value_kind.as_ref() {
-                let max_len = *max_len;
-                let idx_z3 = self.encode_int(elem_index)?;
-                let z3_vars = &self.step_vars[step][var_idx];
-                // Build ITE chain: for each key k, for each element index i
-                // if key == k && idx == i then z3_vars[k*stride + 1 + i]
-                let key_lo = *key_lo;
-                let key_hi = *key_hi;
-                let mut result: Option<Dynamic> = None;
-                for k in (key_lo..=key_hi).rev() {
-                    let k_offset = (k - key_lo) as usize * stride;
-                    for i in (0..max_len).rev() {
-                        let elem_var = z3_vars[k_offset + 1 + i].clone();
-                        let cond = Bool::and(&[
-                            &key_z3.eq(&Int::from_i64(k)),
-                            &idx_z3.eq(&Int::from_i64(i as i64)),
-                        ]);
-                        result = Some(match result {
-                            None => elem_var,
-                            Some(prev) => {
-                                if let (Some(ev), Some(pv)) = (elem_var.as_int(), prev.as_int()) {
-                                    Dynamic::from_ast(&cond.ite(&ev, &pv))
-                                } else if let (Some(ev), Some(pv)) =
-                                    (elem_var.as_bool(), prev.as_bool())
-                                {
-                                    Dynamic::from_ast(&cond.ite(&ev, &pv))
-                                } else {
-                                    return Err(SymbolicError::Encoding(
-                                        "compound local index: type mismatch".into(),
-                                    ));
-                                }
-                            }
-                        });
-                    }
-                }
-                return result
-                    .ok_or_else(|| SymbolicError::Encoding("empty compound local".into()));
+        let (key_lo, key_hi, value_kind) = match &entry.kind {
+            VarKind::ExplodedDict {
+                key_lo,
+                key_hi,
+                value_kind,
+            } => (*key_lo, *key_hi, value_kind.as_ref()),
+            _ => {
+                return Err(SymbolicError::Encoding(
+                    "compound local len on non-dict".into(),
+                ))
             }
+        };
+        let stride = value_kind.z3_var_count();
+        let z3_vars = &self.step_vars[step][var_idx];
+        let num_keys = (key_hi - key_lo + 1) as usize;
+        let mut len_vals = Vec::new();
+        for k in 0..num_keys {
+            let offset = k * stride;
+            let slot_vars = &z3_vars[offset..offset + stride];
+            let len = if keys.is_empty() {
+                self.len_of_kind(value_kind, slot_vars)?
+            } else {
+                self.resolve_nested_len(value_kind, slot_vars, keys)?
+            };
+            len_vals.push(len);
         }
-        Err(SymbolicError::Encoding(
-            "compound local index on non-dict-of-seq".into(),
-        ))
+        self.build_ite_chain(outer_key_z3, &len_vals, key_lo)
     }
 
-    /// Get the len of a compound local (seq within dict).
-    fn encode_compound_local_len(
-        &self,
-        var_idx: usize,
-        step: usize,
-        key_z3: &Int,
-    ) -> SymbolicResult<Dynamic> {
-        let entry = &self.layout.entries[var_idx];
-        if let VarKind::ExplodedDict {
-            key_lo,
-            key_hi,
-            value_kind,
-        } = &entry.kind
-        {
-            let stride = value_kind.z3_var_count();
-            let z3_vars = &self.step_vars[step][var_idx];
-            let num_keys = (*key_hi - *key_lo + 1) as usize;
-            let len_vars: Vec<Dynamic> =
-                (0..num_keys).map(|k| z3_vars[k * stride].clone()).collect();
-            return self.build_ite_chain(key_z3, &len_vars, *key_lo);
+    /// Resolve an index chain to find the Set slot vars and kind.
+    fn resolve_set_slot<'b>(
+        &mut self,
+        kind: &'b VarKind,
+        vars: &'b [Dynamic],
+        keys: &[&CompiledExpr],
+    ) -> SymbolicResult<(&'b [Dynamic], &'b VarKind)> {
+        if keys.is_empty() {
+            return Ok((vars, kind));
         }
-        Err(SymbolicError::Encoding(
-            "compound local len on non-dict".into(),
-        ))
+        match kind {
+            VarKind::ExplodedDict {
+                key_lo,
+                key_hi: _,
+                value_kind,
+            } => {
+                let stride = value_kind.z3_var_count();
+                let key_lo = *key_lo;
+                let remaining = &keys[1..];
+
+                if let Some(concrete_key) = self.try_concrete_int(keys[0]) {
+                    let offset = (concrete_key - key_lo) as usize * stride;
+                    let slot_vars = &vars[offset..offset + stride];
+                    if remaining.is_empty() {
+                        Ok((slot_vars, value_kind.as_ref()))
+                    } else {
+                        self.resolve_set_slot(value_kind, slot_vars, remaining)
+                    }
+                } else {
+                    Err(SymbolicError::Encoding(
+                        "set membership with symbolic dict key in nested index".into(),
+                    ))
+                }
+            }
+            _ => Err(SymbolicError::Encoding(
+                "resolve_set_slot: unexpected kind".into(),
+            )),
+        }
     }
 
     /// Get head (first element) of a compound local (seq within dict).
@@ -1331,9 +1463,25 @@ impl<'a> EncoderCtx<'a> {
     // === Seq helpers ===
 
     fn encode_seq_head(&mut self, inner: &CompiledExpr) -> SymbolicResult<Dynamic> {
-        // Handle head(d[k]) for Dict[Range, Seq[T]]
-        if let CompiledExpr::Index { base, index } = inner {
-            return self.encode_nested_index(base, index, &CompiledExpr::Int(0));
+        // Handle head(d[k]) or head(d[k1][k2]) for nested compounds
+        if let CompiledExpr::Index { .. } = inner {
+            let mut keys: Vec<&CompiledExpr> = Vec::new();
+            let mut cur = inner;
+            while let CompiledExpr::Index {
+                base: ib,
+                index: ik,
+            } = cur
+            {
+                keys.push(ik.as_ref());
+                cur = ib.as_ref();
+            }
+            keys.reverse();
+            let zero = CompiledExpr::Int(0);
+            keys.push(&zero);
+            let (var_idx, step) = self.extract_var_step(cur)?;
+            let entry = &self.layout.entries[var_idx];
+            let z3_vars = &self.step_vars[step][var_idx];
+            return self.resolve_index_chain(&entry.kind, z3_vars, &keys);
         }
         // Handle head(Local(n)) for compound local
         if let CompiledExpr::Local(idx) = inner {
@@ -1352,7 +1500,6 @@ impl<'a> EncoderCtx<'a> {
                 entry.name
             )));
         }
-        // Element 0 is at offset 1 (after len var)
         Ok(self.step_vars[step][var_idx][1].clone())
     }
 

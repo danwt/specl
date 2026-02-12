@@ -115,35 +115,55 @@ fn type_to_kind(
             hi: Some(*hi),
         }),
         Type::Fn(key_ty, val_ty) => {
-            if let Type::Range(lo, hi) = key_ty.as_ref() {
-                let value_kind = type_to_kind_simple(val_ty, seq_bound)?;
-                Ok(VarKind::ExplodedDict {
-                    key_lo: *lo,
-                    key_hi: *hi,
-                    value_kind: Box::new(value_kind),
-                })
+            // Reject Dict with Seq keys (e.g., Dict[Seq[Int], V])
+            if matches!(key_ty.as_ref(), Type::Seq(_)) {
+                return Err(crate::SymbolicError::Unsupported(
+                    "Dict with sequence keys requires enumerating all possible sequences; \
+                     use Dict[Int, V] with an integer key instead"
+                        .into(),
+                ));
+            }
+            let key_range = if let Type::Range(lo, hi) = key_ty.as_ref() {
+                (*lo, *hi)
             } else if matches!(key_ty.as_ref(), Type::Int | Type::Nat) {
-                if let Some((lo, hi)) = infer_dict_range(var_idx, spec, consts) {
-                    let value_kind = type_to_kind_simple(val_ty, seq_bound)?;
-                    Ok(VarKind::ExplodedDict {
-                        key_lo: lo,
-                        key_hi: hi,
-                        value_kind: Box::new(value_kind),
-                    })
-                } else {
-                    Err(crate::SymbolicError::Unsupported(format!(
+                infer_dict_range(var_idx, spec, consts).ok_or_else(|| {
+                    crate::SymbolicError::Unsupported(format!(
                         "Dict with unbounded key type {:?} (cannot infer range from init)",
                         key_ty
-                    )))
-                }
+                    ))
+                })?
             } else {
-                Err(crate::SymbolicError::Unsupported(format!(
+                return Err(crate::SymbolicError::Unsupported(format!(
                     "Dict with non-range key type: {:?}",
                     key_ty
-                )))
-            }
+                )));
+            };
+            let init_rhs = find_init_rhs(var_idx, spec);
+            let init_body = init_rhs.and_then(extract_fn_body);
+            let value_kind = type_to_kind_value(
+                val_ty,
+                var_idx,
+                spec,
+                consts,
+                string_table,
+                seq_bound,
+                init_body,
+            )?;
+            Ok(VarKind::ExplodedDict {
+                key_lo: key_range.0,
+                key_hi: key_range.1,
+                value_kind: Box::new(value_kind),
+            })
         }
         Type::Set(elem_ty) => {
+            if matches!(elem_ty.as_ref(), Type::Seq(_)) {
+                return Err(crate::SymbolicError::Unsupported(
+                    "Set[Seq[T]] requires exponential encoding (tracks membership of every \
+                     possible sequence). Workaround: model messages as Dict[Int, Seq[Int]] \
+                     with a message counter instead of Set[Seq[Int]]"
+                        .into(),
+                ));
+            }
             if let Type::Range(lo, hi) = elem_ty.as_ref() {
                 Ok(VarKind::ExplodedSet { lo: *lo, hi: *hi })
             } else if matches!(elem_ty.as_ref(), Type::Int | Type::Nat) {
@@ -187,6 +207,124 @@ fn type_to_kind(
     }
 }
 
+/// Resolve value types within containers, with full spec context for range inference.
+/// The `init_body` parameter is the FnLit body at this nesting level, used to infer
+/// inner dict key ranges and set element ranges from init expressions.
+fn type_to_kind_value(
+    ty: &Type,
+    var_idx: usize,
+    spec: &CompiledSpec,
+    consts: &[Value],
+    string_table: &[String],
+    seq_bound: usize,
+    init_body: Option<&CompiledExpr>,
+) -> SymbolicResult<VarKind> {
+    match ty {
+        Type::Bool => Ok(VarKind::Bool),
+        Type::Int => Ok(VarKind::Int { lo: None, hi: None }),
+        Type::String => {
+            if string_table.is_empty() {
+                Ok(VarKind::Int { lo: None, hi: None })
+            } else {
+                Ok(VarKind::Int {
+                    lo: Some(0),
+                    hi: Some(string_table.len() as i64 - 1),
+                })
+            }
+        }
+        Type::Nat => Ok(VarKind::Int {
+            lo: Some(0),
+            hi: None,
+        }),
+        Type::Range(lo, hi) => Ok(VarKind::Int {
+            lo: Some(*lo),
+            hi: Some(*hi),
+        }),
+        Type::Seq(elem_ty) => {
+            let elem_kind = type_to_kind_simple(elem_ty, seq_bound)?;
+            Ok(VarKind::ExplodedSeq {
+                max_len: seq_bound,
+                elem_kind: Box::new(elem_kind),
+            })
+        }
+        Type::Fn(key_ty, val_ty) => {
+            if matches!(key_ty.as_ref(), Type::Seq(_)) {
+                return Err(crate::SymbolicError::Unsupported(
+                    "Dict with sequence keys requires enumerating all possible sequences".into(),
+                ));
+            }
+            let key_range = if let Type::Range(lo, hi) = key_ty.as_ref() {
+                (*lo, *hi)
+            } else if matches!(key_ty.as_ref(), Type::Int | Type::Nat) {
+                // Infer from init body's FnLit domain
+                if let Some(body) = init_body {
+                    extract_domain_range(body, consts).ok_or_else(|| {
+                        crate::SymbolicError::Unsupported(format!(
+                            "nested Dict with unbounded key type {:?} \
+                             (cannot infer range from init body)",
+                            key_ty
+                        ))
+                    })?
+                } else {
+                    // Fall back to action parameter inference
+                    infer_dict_range(var_idx, spec, consts).ok_or_else(|| {
+                        crate::SymbolicError::Unsupported(format!(
+                            "nested Dict with unbounded key type {:?} (cannot infer range)",
+                            key_ty
+                        ))
+                    })?
+                }
+            } else {
+                return Err(crate::SymbolicError::Unsupported(format!(
+                    "Dict with non-range key type in value context: {:?}",
+                    key_ty
+                )));
+            };
+            let inner_init_body = init_body.and_then(extract_fn_body);
+            let value_kind = type_to_kind_value(
+                val_ty,
+                var_idx,
+                spec,
+                consts,
+                string_table,
+                seq_bound,
+                inner_init_body,
+            )?;
+            Ok(VarKind::ExplodedDict {
+                key_lo: key_range.0,
+                key_hi: key_range.1,
+                value_kind: Box::new(value_kind),
+            })
+        }
+        Type::Set(elem_ty) => {
+            if matches!(elem_ty.as_ref(), Type::Seq(_)) {
+                return Err(crate::SymbolicError::Unsupported(
+                    "Set[Seq[T]] in value context requires exponential encoding".into(),
+                ));
+            }
+            if let Type::Range(lo, hi) = elem_ty.as_ref() {
+                Ok(VarKind::ExplodedSet { lo: *lo, hi: *hi })
+            } else if matches!(elem_ty.as_ref(), Type::Int | Type::Nat) {
+                // Try action parameter inference (works for inner sets too)
+                if let Some((lo, hi)) = infer_set_range_from_actions(var_idx, spec, consts) {
+                    Ok(VarKind::ExplodedSet { lo, hi })
+                } else {
+                    Err(crate::SymbolicError::Unsupported(format!(
+                        "Set with unbounded element type {:?} (cannot infer range)",
+                        elem_ty
+                    )))
+                }
+            } else {
+                Err(crate::SymbolicError::Unsupported(format!(
+                    "Set with non-range element type: {:?}",
+                    elem_ty
+                )))
+            }
+        }
+        _ => type_to_kind_simple(ty, seq_bound),
+    }
+}
+
 /// Simple type_to_kind without spec/const context (for value types within containers).
 fn type_to_kind_simple(ty: &Type, seq_bound: usize) -> SymbolicResult<VarKind> {
     match ty {
@@ -221,6 +359,41 @@ fn type_to_kind_simple(ty: &Type, seq_bound: usize) -> SymbolicResult<VarKind> {
             "value type in container: {:?}",
             ty
         ))),
+    }
+}
+
+/// Extract the init RHS expression for a variable (e.g., for `x = FnLit{...}` returns the FnLit).
+fn find_init_rhs<'a>(var_idx: usize, spec: &'a CompiledSpec) -> Option<&'a CompiledExpr> {
+    find_init_rhs_in(var_idx, &spec.init)
+}
+
+fn find_init_rhs_in<'a>(var_idx: usize, expr: &'a CompiledExpr) -> Option<&'a CompiledExpr> {
+    match expr {
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::And,
+            left,
+            right,
+        } => find_init_rhs_in(var_idx, left).or_else(|| find_init_rhs_in(var_idx, right)),
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::Eq,
+            left,
+            right,
+        } => match left.as_ref() {
+            CompiledExpr::PrimedVar(idx) | CompiledExpr::Var(idx) if *idx == var_idx => {
+                Some(right.as_ref())
+            }
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// Extract the body from a FnLit expression.
+fn extract_fn_body(expr: &CompiledExpr) -> Option<&CompiledExpr> {
+    if let CompiledExpr::FnLit { body, .. } = expr {
+        Some(body.as_ref())
+    } else {
+        None
     }
 }
 
