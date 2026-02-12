@@ -1903,6 +1903,18 @@ impl Explorer {
             return vec![Value::Fn(std::sync::Arc::new(Vec::new()))];
         }
 
+        // Guard against combinatorial explosion: val_domain^key_domain combinations
+        let total = (val_domain.len() as f64).powi(key_domain.len() as i32);
+        if total > 100_000.0 {
+            info!(
+                "fn_domain too large, returning empty domain: keys={} vals={} combinations={}",
+                key_domain.len(),
+                val_domain.len(),
+                total
+            );
+            return vec![];
+        }
+
         let mut result = vec![];
         self.enumerate_fn_values(&key_domain, &val_domain, 0, Vec::new(), &mut |map| {
             result.push(Value::Fn(std::sync::Arc::new(map)));
@@ -1937,6 +1949,20 @@ impl Explorer {
     fn seq_domain(&self, elem_ty: &specl_types::Type) -> Vec<Value> {
         let elem_domain = self.type_domain(elem_ty);
         let max_len = 4; // Limit sequence length to avoid explosion
+
+        // Guard: total sequences = sum(elem^k for k=0..max_len)
+        let total: f64 = (0..=max_len)
+            .map(|k| (elem_domain.len() as f64).powi(k as i32))
+            .sum();
+        if total > 100_000.0 {
+            info!(
+                "seq_domain too large, returning only empty seq: elems={} max_len={} combinations={}",
+                elem_domain.len(),
+                max_len,
+                total
+            );
+            return vec![Value::Seq(vec![])];
+        }
 
         let mut result = vec![Value::Seq(vec![])]; // Empty sequence
 
@@ -2404,6 +2430,7 @@ impl Explorer {
         if !deps.iter().any(|d| d.is_some()) {
             return None;
         }
+        let action = &self.spec.actions[action_idx];
         let static_domains = &self.cached_param_domains[action_idx];
         Some(
             static_domains
@@ -2413,7 +2440,12 @@ impl Explorer {
                     if let Some(var_idx) = deps[i] {
                         match &state.vars[var_idx] {
                             Value::Set(elems) => (**elems).clone(),
-                            _ => static_domain.clone(),
+                            _ => {
+                                // Non-Set runtime value: fall back to full type domain
+                                // (static_domain is empty placeholder for state-dep params)
+                                let (_, ty) = &action.params[i];
+                                self.type_domain(ty)
+                            }
                         }
                     } else {
                         static_domain.clone()
