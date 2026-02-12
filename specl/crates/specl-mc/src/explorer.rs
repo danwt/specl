@@ -1540,6 +1540,7 @@ impl Explorer {
             if let Some(ref p) = self.config.progress {
                 p.checked.fetch_add(1, Ordering::Relaxed);
             }
+
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
@@ -1615,6 +1616,9 @@ impl Explorer {
                     ));
                 }
             }
+
+            // Grow FPSet if load factor too high (between states, no concurrent access)
+            self.store.maybe_grow_fpset();
 
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
@@ -1849,6 +1853,9 @@ impl Explorer {
                 }
             }
 
+            // Grow FPSet between batches if needed (no concurrent inserts at this point)
+            self.store.maybe_grow_fpset();
+
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
                 p.states.store(self.store.len(), Ordering::Relaxed);
@@ -2040,6 +2047,9 @@ impl Explorer {
                     }
                 }
             }
+
+            // Grow FPSet between batches if needed (no concurrent inserts at this point)
+            self.store.maybe_grow_fpset();
 
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
@@ -2748,9 +2758,16 @@ impl Explorer {
             return Ok(AmpleResult::Templates);
         }
 
+        // Fall back to template-level POR when instance count is large.
+        // The stubborn set computation is O(n^3) in instances — at 64+ instances
+        // the overhead exceeds any state space reduction.
+        let n = all_instances.len();
+        if n > 64 {
+            return Ok(AmpleResult::Templates);
+        }
+
         // Build instance-level dependency and find smallest non-singleton ample set.
         // Stubborn set closure: pick seed, expand with dependent instances.
-        let n = all_instances.len();
         let mut best_ample: Option<Vec<usize>> = None;
 
         for seed in 0..n {

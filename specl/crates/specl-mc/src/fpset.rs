@@ -10,10 +10,12 @@ use crate::state::Fingerprint;
 /// Sentinel value for empty slots.
 const EMPTY: u64 = u64::MAX;
 
-/// A lockless, fixed-capacity set of 64-bit fingerprints.
+/// A set of 64-bit fingerprints using open addressing with linear probing.
 ///
-/// Uses open addressing with linear probing and atomic CAS for insertion.
-/// Fingerprint value 0 is remapped to 1 to avoid collision with the empty sentinel.
+/// Starts with an initial capacity and grows automatically when load exceeds 50%.
+/// Uses atomic CAS for concurrent insertion within a generation; resizing
+/// is single-threaded (requires &mut self or external synchronization).
+/// Fingerprint value `u64::MAX` is remapped to avoid collision with the empty sentinel.
 pub struct AtomicFPSet {
     slots: Vec<AtomicU64>,
     mask: u64,
@@ -44,6 +46,42 @@ impl AtomicFPSet {
         } else {
             fp
         }
+    }
+
+    /// Returns true if the load factor exceeds 50% and the set should be grown.
+    #[inline]
+    pub fn should_grow(&self) -> bool {
+        self.count.load(Ordering::Relaxed) * 2 >= self.slots.len()
+    }
+
+    /// Double the capacity and rehash all entries.
+    /// NOT thread-safe — must be called from a single thread with no concurrent inserts.
+    pub fn grow(&mut self) {
+        let new_len = self.slots.len() * 2;
+        let mut new_slots = Vec::with_capacity(new_len);
+        for _ in 0..new_len {
+            new_slots.push(AtomicU64::new(EMPTY));
+        }
+        let new_mask = (new_len - 1) as u64;
+
+        // Rehash all existing entries
+        for slot in &self.slots {
+            let val = slot.load(Ordering::Relaxed);
+            if val != EMPTY {
+                let mut idx = (val & new_mask) as usize;
+                loop {
+                    let current = new_slots[idx].load(Ordering::Relaxed);
+                    if current == EMPTY {
+                        new_slots[idx].store(val, Ordering::Relaxed);
+                        break;
+                    }
+                    idx = ((idx + 1) as u64 & new_mask) as usize;
+                }
+            }
+        }
+
+        self.slots = new_slots;
+        self.mask = new_mask;
     }
 
     /// Insert a fingerprint. Returns true if newly inserted, false if already present.

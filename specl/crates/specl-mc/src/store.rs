@@ -3,6 +3,7 @@
 use crate::fpset::AtomicFPSet;
 use crate::state::{Fingerprint, State};
 use dashmap::DashMap;
+use std::cell::UnsafeCell;
 use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use tracing::error;
@@ -29,12 +30,19 @@ pub struct StateStore {
     /// Full tracking mode: map from fingerprint to state info.
     states: DashMap<Fingerprint, StateInfo>,
     /// Fingerprint-only mode: lockless atomic fingerprint set.
-    seen: Option<AtomicFPSet>,
+    /// Wrapped in UnsafeCell to allow grow() from &self between batches.
+    seen: Option<UnsafeCell<AtomicFPSet>>,
     /// Number of hash collisions detected (different states, same fingerprint).
     collisions: AtomicUsize,
     /// Whether to store full state info (true) or just fingerprints (false).
     full_tracking: bool,
 }
+
+// SAFETY: AtomicFPSet uses AtomicU64 internally, which is Sync.
+// The UnsafeCell is only mutated via maybe_grow_fpset() which is called
+// between parallel batches when no concurrent access is happening.
+unsafe impl Sync for StateStore {}
+unsafe impl Send for StateStore {}
 
 impl StateStore {
     /// Create a new state store with full tracking enabled.
@@ -49,7 +57,7 @@ impl StateStore {
             seen: if full_tracking {
                 None
             } else {
-                Some(AtomicFPSet::new(1 << 20)) // 1M slots default
+                Some(UnsafeCell::new(AtomicFPSet::new(1 << 23)))
             },
             collisions: AtomicUsize::new(0),
             full_tracking,
@@ -72,7 +80,8 @@ impl StateStore {
         if self.full_tracking {
             self.states.contains_key(fp)
         } else {
-            self.seen.as_ref().unwrap().contains(*fp)
+            // SAFETY: contains() only reads AtomicU64 slots, safe with concurrent inserts
+            unsafe { &*self.seen.as_ref().unwrap().get() }.contains(*fp)
         }
     }
 
@@ -124,7 +133,8 @@ impl StateStore {
                 }
             }
         } else {
-            self.seen.as_ref().unwrap().insert(fp)
+            // SAFETY: insert() uses atomic CAS, safe with concurrent inserts
+            unsafe { &*self.seen.as_ref().unwrap().get() }.insert(fp)
         }
     }
 
@@ -134,7 +144,7 @@ impl StateStore {
         if self.full_tracking {
             self.states.len()
         } else {
-            self.seen.as_ref().unwrap().len()
+            unsafe { &*self.seen.as_ref().unwrap().get() }.len()
         }
     }
 
@@ -142,6 +152,24 @@ impl StateStore {
     #[inline]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Grow the fingerprint set if load factor exceeds 50%.
+    /// Only applicable in fingerprint-only mode.
+    ///
+    /// # Safety contract
+    /// Must be called when no concurrent inserts are happening (e.g., between
+    /// parallel batches, or in single-threaded mode). The caller guarantees this.
+    pub fn maybe_grow_fpset(&self) {
+        if let Some(ref cell) = self.seen {
+            // SAFETY: should_grow() only reads an atomic counter
+            let fpset = unsafe { &*cell.get() };
+            if fpset.should_grow() {
+                // SAFETY: Caller guarantees no concurrent inserts during grow.
+                // Called between par_iter batches or in single-threaded mode.
+                unsafe { &mut *cell.get() }.grow();
+            }
+        }
     }
 
     /// Check if full tracking is enabled.
@@ -214,7 +242,7 @@ impl StateStore {
         if full_tracking {
             self.seen = None;
         } else {
-            self.seen = Some(AtomicFPSet::new(1 << 20));
+            self.seen = Some(UnsafeCell::new(AtomicFPSet::new(1 << 23)));
         }
     }
 }
