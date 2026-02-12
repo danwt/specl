@@ -614,13 +614,33 @@ fn cmd_check(
         } => {
             println!();
             println!("Result: OK");
-            println!("  States explored: {}", states_explored);
-            println!("  Max depth: {}", max_depth);
-            println!("  Time: {:.2}s", elapsed.as_secs_f64());
             println!(
-                "  States/sec: {:.0}",
-                states_explored as f64 / elapsed.as_secs_f64()
+                "  States explored: {}",
+                format_large_number(states_explored as u128)
             );
+            println!("  Max depth: {}", max_depth);
+            let secs = elapsed.as_secs_f64();
+            println!("  Time: {:.1}s", secs);
+            if secs > 0.001 {
+                println!(
+                    "  Throughput: {} states/s",
+                    format_large_number((states_explored as f64 / secs) as u128)
+                );
+            }
+            // Show active optimizations
+            let mut opts = Vec::new();
+            if actual_por {
+                opts.push("POR");
+            }
+            if actual_symmetry {
+                opts.push("symmetry");
+            }
+            if fast_check {
+                opts.push("fast");
+            }
+            if !opts.is_empty() {
+                println!("  Optimizations: {}", opts.join(", "));
+            }
         }
         CheckOutcome::InvariantViolation { invariant, trace } => {
             println!();
