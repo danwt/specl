@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use notify::{RecursiveMode, Watcher};
 use specl_eval::Value;
+use specl_ir::analyze::analyze;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer, State};
 use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
@@ -185,6 +186,10 @@ enum Commands {
         /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
+
+        /// Suppress spec analysis and recommendations
+        #[arg(short, long)]
+        quiet: bool,
     },
 
     /// Format a Specl file
@@ -287,6 +292,7 @@ fn main() {
             smart,
             seq_bound,
             verbose,
+            quiet,
         } => {
             if symbolic || inductive || k_induction.is_some() || ic3 || smart {
                 cmd_check_symbolic(
@@ -313,6 +319,7 @@ fn main() {
                     symmetry,
                     fast,
                     verbose,
+                    quiet,
                 )
             }
         }
@@ -399,6 +406,7 @@ fn cmd_check(
     use_symmetry: bool,
     fast_check: bool,
     _verbose: bool,
+    quiet: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -420,6 +428,12 @@ fn cmd_check(
 
     // Parse constants
     let consts = parse_constants(constants, &spec)?;
+
+    // Spec analysis and recommendations
+    if !quiet {
+        let profile = analyze(&spec);
+        print_profile(&profile, use_por, use_symmetry);
+    }
 
     let config = CheckConfig {
         check_deadlock,
@@ -712,6 +726,70 @@ fn format_state_with_names(state: &State, var_names: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Print spec profile, warnings, and recommendations.
+/// Skips recommendations for optimizations already enabled.
+fn print_profile(
+    profile: &specl_ir::analyze::SpecProfile,
+    por_enabled: bool,
+    symmetry_enabled: bool,
+) {
+    use specl_ir::analyze::Recommendation;
+
+    println!();
+    let bound_str = match profile.state_space_bound {
+        Some(b) => format!("~{}", format_large_number(b)),
+        None => "unbounded".to_string(),
+    };
+    println!(
+        "Spec: {} variables, {} actions, {} invariants, {} states (estimated)",
+        profile.num_vars, profile.num_actions, profile.num_invariants, bound_str
+    );
+
+    // Warnings
+    if !profile.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for w in &profile.warnings {
+            println!("  {}", w);
+        }
+    }
+
+    // Recommendations (skip already-enabled)
+    let filtered: Vec<_> = profile
+        .recommendations
+        .iter()
+        .filter(|r| match r {
+            Recommendation::EnablePor { .. } => !por_enabled,
+            Recommendation::EnableSymmetry { .. } => !symmetry_enabled,
+            _ => true,
+        })
+        .collect();
+
+    if !filtered.is_empty() {
+        println!();
+        println!("Recommendations:");
+        for r in &filtered {
+            println!("  {}", r);
+        }
+    }
+
+    println!();
+}
+
+fn format_large_number(n: u128) -> String {
+    if n >= 1_000_000_000_000 {
+        format!("{:.1}T", n as f64 / 1e12)
+    } else if n >= 1_000_000_000 {
+        format!("{:.1}B", n as f64 / 1e9)
+    } else if n >= 1_000_000 {
+        format!("{:.1}M", n as f64 / 1e6)
+    } else if n >= 1_000 {
+        format!("{:.1}K", n as f64 / 1e3)
+    } else {
+        n.to_string()
+    }
 }
 
 fn cmd_format(file: &PathBuf, write: bool) -> CliResult<()> {

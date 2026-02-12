@@ -115,7 +115,10 @@ pub fn check_ic3(
                 info!(invariant = inv.name, "invariant verified by IC3");
             }
             z3_sys::Z3_L_TRUE => {
-                info!(invariant = inv.name, "IC3 found violation, reconstructing trace via BMC");
+                info!(
+                    invariant = inv.name,
+                    "IC3 found violation, reconstructing trace via BMC"
+                );
                 // IC3 confirms a violation exists but can't produce a trace directly.
                 // Use BMC with increasing depth to find the shortest counterexample.
                 let mut trace = Vec::new();
