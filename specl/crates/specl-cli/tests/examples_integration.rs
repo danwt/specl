@@ -105,7 +105,6 @@ fn all_examples_typecheck() {
 const SKIP_MODEL_CHECK: &[&str] = &[
     "RaftMongo.specl",        // Large state space with sequences
     "ChainReplication.specl", // Large state space with sequences
-    "narwhal_tusk.specl",     // Blocked by issue #6 (Dict[Seq[Int], T])
 ];
 
 #[test]

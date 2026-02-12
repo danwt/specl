@@ -2,15 +2,6 @@
 // Narwhal/Tusk — DAG-Based Mempool and Consensus
 // =============================================================================
 //
-// ⚠️  BLOCKED: This spec is currently blocked by GitHub issue #6
-//     (Model checker hangs with Dict[Seq[Int], T] types)
-//
-//     TODO after #6 is fixed:
-//     1. Restore: var signatures: Dict[Seq[Int], Set[Int]]
-//     2. Test with: specl check narwhal_tusk.specl -c N=3 -c F=1 -c MAX_ROUND=1 --no-deadlock
-//     3. Expected: <10s runtime, ~1000-10000 states
-//     4. Remove this warning block
-//
 // Source: "Narwhal and Tusk: A DAG-based Mempool and Efficient BFT Consensus"
 //         by Danezis et al. (2022)
 //         https://arxiv.org/abs/2105.11827
@@ -87,7 +78,7 @@
 // =============================================================================
 
 module NarwhalTusk
-// Use: -c N=4 -c F=1 -c MAX_ROUND=2
+// Use: -c N=2 -c F=0 -c MAX_ROUND=1
 
 // === Constants ===
 
@@ -240,11 +231,13 @@ invariant CausalConsistency {
 // VERIFICATION
 // =============================================================================
 //
-// Run with N=4 validators (f=1), 2 rounds:
-//   specl check narwhal_tusk.specl -c N=4 -c F=1 -c MAX_ROUND=2 --no-deadlock
+// Note: 0..N gives N+1 validators. N=3 → validators {0,1,2,3} = 4 validators = 3f+1 for f=1.
 //
-// Run with N=7 validators (f=2), 2 rounds (larger state space):
-//   specl check narwhal_tusk.specl -c N=7 -c F=2 -c MAX_ROUND=2 --no-deadlock --fast
+// Run with 3 validators (f=0), 2 rounds (~5K states):
+//   specl check narwhal_tusk.specl -c N=2 -c F=0 -c MAX_ROUND=1 --no-deadlock
+//
+// Run with 4 validators (f=1), 1 round (large state space, use --max-states):
+//   specl check narwhal_tusk.specl -c N=3 -c F=1 -c MAX_ROUND=1 --no-deadlock --max-states 100000
 //
 // Use --no-deadlock because many quiescent states are valid (protocols naturally
 // reach states where all validators are waiting).
