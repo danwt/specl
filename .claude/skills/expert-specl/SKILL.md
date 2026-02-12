@@ -394,90 +394,24 @@ specl check spec.specl -c N=3 -c MaxTerm=2 --por --symmetry --fast
 
 **Location:** `/Users/danwt/Documents/repos/specl/specl/examples/`
 
-### Easy Examples (Beginner)
+### Showcase (`examples/showcase/`)
 
-12 examples in `examples/easy/`:
-- `Counter.specl` — Basic state machine (4 states)
-- `Transfer.specl` — Money transfer with conservation invariant
-- `DiningPhilosophers.specl` — Mutual exclusion with resources
-- `TrafficLight.specl` — Safety invariants for traffic controller
-- `DieHard.specl` — Die Hard water jug puzzle
-- `BankingRecords.specl` — Record-keeping example
-- `DistributedCounter.specl` — Multi-process counter
-- Plus: Bunny examples, ProcessStates, SeqTest, test_func_powerset
+Curated protocol specs reviewed for faithfulness and invariant coverage:
+- `raft.specl` — Raft consensus (async, Vanlightly model)
+- `paxos.specl` — Single-decree Paxos (Synod)
+- `comet.specl` — CometBFT/Tendermint BFT with Byzantine faults
+- `simplex.specl` — Simplex consensus (TCC 2023)
+- `percolator.specl` — Google Percolator (snapshot isolation)
+- `mesi.specl` — MESI cache coherence
+- `redlock.specl` — Redis Redlock bug-finding (Kleppmann attack)
+- `swim.specl` — SWIM failure detection
+- `chandy-lamport.specl` — Consistent snapshot algorithm
+- `TwoPhaseCommit.specl` — Classic 2PC
+- `narwhal_tusk.specl` — Narwhal/Tusk DAG consensus (design reference)
 
-### Realistic Examples (Mid-Complexity)
+### Other (`examples/other/`)
 
-16 examples in `examples/realistic/`:
-- **Distributed protocols:**
-  - `TwoPhaseCommit.specl` — Classic distributed commit
-  - `SimpleConsensus.specl` — Basic consensus protocol
-  - `ChainReplication.specl` — Chain replication protocol
-  - `RaftMongo.specl` — MongoDB's Raft variant
-  - `simplex/simplex.specl` — Simplex algorithm
-
-- **Concurrent algorithms:**
-  - `Mutex.specl` — Mutual exclusion
-  - `ReaderWriter.specl` — Readers-writers problem
-  - `SimpleQueue.specl` — Concurrent queue
-
-- **Distributed algorithms:**
-  - `ABProtocol.specl` — Alternating bit protocol
-  - `TokenRing.specl` — Token ring algorithm
-  - `EWD840.specl` — Dijkstra's termination detection
-  - `AsyncTerminationDetection.specl` — Async termination
-  - `chandy-lamport/chandy-lamport.specl` — Distributed snapshot
-  - `swim/swim.specl` — SWIM membership protocol
-
-### Benchmark Examples (Production Protocols)
-
-18 examples in `examples/benchmark/` — large state spaces, performance testing:
-
-**Consensus & Replication:**
-- `01-raft/raft.specl` — Raft consensus (1.58M states)
-- `02-paxos/paxos.specl` — Paxos consensus
-- `12-epaxos/epaxos.specl` — Egalitarian Paxos (757K states)
-- `13-multipaxos-reconfig/multipaxos-reconfig.specl` — Multi-Paxos with reconfiguration
-- `17-raft-vanlightly/raft.specl` — Alternative Raft spec
-
-**Distributed Transactions:**
-- `03-tpc/tpc.specl` — Two-phase commit
-- `14-percolator/percolator.specl` — Google Percolator (4.2M states)
-- `15-parallel-commits/parallel-commits.specl` — CockroachDB parallel commits (13.3M states)
-
-**Byzantine Fault Tolerance:**
-- `08-pbft/pbft.specl` — Practical Byzantine Fault Tolerance
-
-**Other:**
-- `04-ewd840/ewd840.specl` — Dijkstra's termination detection
-- `05-redlock/redlock.specl` — Redis distributed lock
-- `07-dining-philosophers/dining-philosophers.specl` — Classic concurrency puzzle
-- `09-comet/comet.specl` — Comet protocol
-- `10-counters/counters.specl` — Distributed counters
-- `11-mesi/mesi.specl` — MESI cache coherence protocol
-- `stress/` — Stress tests for evaluator, hash, simple cases
-
-### Semaphore Puzzles
-
-13 examples in `examples/semaphores/` (from "The Little Book of Semaphores"):
-- `rendezvous.specl`, `mutex.specl`, `barrier.specl`, `queue.specl`
-- `producer_consumer.specl`, `h2o.specl`, `dining_philosophers.specl`
-- `readers_writers.specl`, `cigarette_smokers.specl`, `barbershop.specl`
-- `unisex_bathroom.specl`, `santa_claus.specl`
-- See: `examples/semaphores/README.md`
-
-### Other Examples
-
-- `examples/realistic/narwhal_tusk.specl` — Narwhal/Tusk DAG-based consensus
-
-**Total: 59 examples covering:**
-- Beginner state machines
-- Distributed consensus (Raft, Paxos, EPaxos)
-- Distributed transactions (2PC, Percolator, Parallel Commits)
-- Byzantine fault tolerance (PBFT)
-- Concurrent algorithms (mutex, readers-writers, semaphores)
-- Distributed algorithms (termination detection, snapshots, membership)
-- Cache coherence (MESI)
+Additional specs: beginner examples, semaphore puzzles (prefixed `sem-`), stress tests, simplified protocol models, and more.
 
 ## Use Cases
 
@@ -555,7 +489,7 @@ specl check spec.specl -c N=3 -c MaxTerm=2 --por --symmetry --fast
 
 - **Specl repo:** `/Users/danwt/Documents/repos/specl`
 - **Main examples:** `/Users/danwt/Documents/repos/specl/specl/examples/`
-- **Semaphore puzzles:** `/Users/danwt/Documents/repos/specl/examples/semaphores/`
+- **Semaphore puzzles:** `examples/other/sem-*.specl`
 - **VSCode extension:** https://marketplace.visualstudio.com/items?itemName=specl.specl
 - **Manual:** https://danieltisdall.com/specl
 - **Announcement:** https://danieltisdall.com/blog/2026-02-11-0028
