@@ -3,7 +3,7 @@
 use specl_eval::Value;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer};
-use specl_syntax::parse;
+use specl_syntax::{parse, pretty_print};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -105,6 +105,7 @@ fn all_examples_typecheck() {
 const SKIP_MODEL_CHECK: &[&str] = &[
     "RaftMongo.specl",        // Large state space with sequences
     "ChainReplication.specl", // Large state space with sequences
+    "narwhal_tusk.specl",     // Blocked by issue #6 (Dict[Seq[Int], T])
 ];
 
 #[test]
@@ -204,5 +205,49 @@ fn examples_with_constants_check() {
 
     if !failures.is_empty() {
         panic!("model check failures:\n{}", failures.join("\n"));
+    }
+}
+
+#[test]
+fn all_examples_format_roundtrip() {
+    let examples = examples_dir();
+    let files = find_specl_files(&examples);
+    assert!(!files.is_empty(), "no .specl files found in {examples:?}");
+
+    let mut failures = Vec::new();
+    for file in &files {
+        let source = fs::read_to_string(file).unwrap();
+        let module = match parse(&source) {
+            Ok(m) => m,
+            Err(_) => continue, // Skip files that don't parse (tested elsewhere)
+        };
+
+        let formatted = pretty_print(&module);
+
+        let module2 = match parse(&formatted) {
+            Ok(m) => m,
+            Err(e) => {
+                failures.push(format!(
+                    "{}: formatted output fails to parse: {e}",
+                    file.display()
+                ));
+                continue;
+            }
+        };
+
+        let formatted2 = pretty_print(&module2);
+
+        if formatted != formatted2 {
+            failures.push(format!(
+                "{}: format not idempotent\n--- first format ---\n{}\n--- second format ---\n{}",
+                file.display(),
+                &formatted[..formatted.len().min(200)],
+                &formatted2[..formatted2.len().min(200)]
+            ));
+        }
+    }
+
+    if !failures.is_empty() {
+        panic!("format roundtrip failures:\n{}", failures.join("\n"));
     }
 }

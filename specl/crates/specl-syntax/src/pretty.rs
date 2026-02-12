@@ -184,7 +184,7 @@ impl PrettyPrinter {
     fn print_effect_statements(&mut self, effect: &Expr) {
         // Collect all the assignments from the conjunction
         let mut assignments = Vec::new();
-        self.collect_effect_assignments(effect, &mut assignments);
+        Self::collect_effect_assignments(effect, &mut assignments);
 
         // Print them with proper formatting
         for (i, assignment) in assignments.iter().enumerate() {
@@ -198,15 +198,15 @@ impl PrettyPrinter {
     }
 
     /// Collect leaf assignments from a conjunction tree.
-    fn collect_effect_assignments<'a>(&self, effect: &'a Expr, assignments: &mut Vec<&'a Expr>) {
+    fn collect_effect_assignments<'a>(effect: &'a Expr, assignments: &mut Vec<&'a Expr>) {
         if let ExprKind::Binary {
             op: BinOp::And,
             left,
             right,
         } = &effect.kind
         {
-            self.collect_effect_assignments(left, assignments);
-            self.collect_effect_assignments(right, assignments);
+            Self::collect_effect_assignments(left, assignments);
+            Self::collect_effect_assignments(right, assignments);
         } else {
             assignments.push(effect);
         }
@@ -415,12 +415,15 @@ impl PrettyPrinter {
                 }
             }
             ExprKind::FnLit { var, domain, body } => {
-                self.write("fn(");
+                self.write("{ ");
+                self.write(&var.name);
+                self.write(": ");
+                self.print_expr(body);
+                self.write(" for ");
                 self.write(&var.name);
                 self.write(" in ");
                 self.print_expr(domain);
-                self.write(") => ");
-                self.print_expr(body);
+                self.write(" }");
             }
             ExprKind::SetComprehension {
                 element,
