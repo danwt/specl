@@ -152,14 +152,12 @@ impl State {
 /// 3. The canonical permutation maps each element to its sorted position
 ///
 /// Complexity: O(n log n) instead of O(n!)
-fn compute_canonical_permutation(vars: &[Value], group: &SymmetryGroup) -> Vec<usize> {
-    let n = group.domain_size;
-
-    // Build signatures for each domain element
-    // signature[i] = (serialized values for element i across all symmetric vars, original index)
-    let mut signatures: Vec<(Vec<Vec<u8>>, usize)> = (0..n)
+/// Build serialized signatures for each domain element across all symmetric variables.
+/// signature[i] = serialized values for element i across all vars in the group.
+fn build_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<Vec<Vec<u8>>> {
+    (0..group.domain_size)
         .map(|i| {
-            let sig: Vec<Vec<u8>> = group
+            group
                 .variables
                 .iter()
                 .map(|&var_idx| match &vars[var_idx] {
@@ -175,23 +173,54 @@ fn compute_canonical_permutation(vars: &[Value], group: &SymmetryGroup) -> Vec<u
                         .unwrap_or_default(),
                     _ => vec![],
                 })
-                .collect();
-            (sig, i)
+                .collect()
         })
+        .collect()
+}
+
+fn compute_canonical_permutation(vars: &[Value], group: &SymmetryGroup) -> Vec<usize> {
+    let n = group.domain_size;
+
+    let mut signatures: Vec<(Vec<Vec<u8>>, usize)> = build_signatures(vars, group)
+        .into_iter()
+        .enumerate()
+        .map(|(i, sig)| (sig, i))
         .collect();
 
-    // Sort by signature to get canonical ordering
     signatures.sort_by(|a, b| a.0.cmp(&b.0));
 
-    // Build permutation: perm[old_index] = new_index
-    // After sorting, signatures[new_index].1 = old_index
-    // We want perm such that element at old position signatures[j].1 should move to position j
     let mut perm = vec![0; n];
     for (new_idx, (_, old_idx)) in signatures.iter().enumerate() {
         perm[*old_idx] = new_idx;
     }
 
     perm
+}
+
+/// Compute orbit representatives for a canonical state.
+///
+/// In a canonical state, elements are sorted by signature. Elements with identical
+/// signatures (tied) are interchangeable under symmetry. Returns the set of
+/// representative domain elements — the first element of each tied group.
+///
+/// Example: domain 0..4, signatures [A, A, B, B, C] -> representatives = {0, 2, 4}
+pub fn orbit_representatives(vars: &[Value], group: &SymmetryGroup) -> Vec<usize> {
+    let n = group.domain_size;
+    if n == 0 {
+        return vec![];
+    }
+
+    let signatures = build_signatures(vars, group);
+
+    // Since state is canonical, signatures are already sorted.
+    // Pick one representative per distinct signature.
+    let mut reps = vec![0];
+    for i in 1..n {
+        if signatures[i] != signatures[i - 1] {
+            reps.push(i);
+        }
+    }
+    reps
 }
 
 /// Apply a permutation to the variables in a symmetry group.

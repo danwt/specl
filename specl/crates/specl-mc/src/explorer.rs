@@ -72,6 +72,10 @@ pub enum CheckOutcome {
     },
 }
 
+/// BFS queue entry: (fingerprint, state, depth, change_mask, sleep_set).
+/// sleep_set is a bitmask of action indices to skip (sleep set POR enhancement).
+type QueueEntry = (Fingerprint, State, usize, u64, u64);
+
 /// Result from parallel state processing.
 enum ParallelResult {
     /// State was depth-limited, no further exploration.
@@ -82,7 +86,7 @@ enum ParallelResult {
     Deadlock { fp: Fingerprint },
     /// New states inserted into store by worker.
     NewStates {
-        new_entries: Vec<(Fingerprint, State, usize, u64)>,
+        new_entries: Vec<QueueEntry>,
         max_depth: usize,
     },
 }
@@ -160,6 +164,12 @@ pub struct Explorer {
     /// For each action, for each param: Some(var_idx) if domain comes from state variable.
     /// Detected from `require param in var` guard patterns.
     state_dep_domains: Vec<Vec<Option<usize>>>,
+    /// Precomputed bitmask: independent_masks[a] has bit b set iff action a is independent of b.
+    /// Used for sleep set propagation.
+    independent_masks: Vec<u64>,
+    /// For each action, for each param: Some(group_idx) if the param's domain size matches
+    /// a symmetry group. Used for orbit representative filtering.
+    sym_param_groups: Vec<Vec<Option<usize>>>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -808,6 +818,20 @@ impl Explorer {
             );
         }
 
+        // Precompute independence bitmasks for sleep set propagation
+        let n_actions = spec.actions.len();
+        let independent_masks: Vec<u64> = (0..n_actions)
+            .map(|a| {
+                let mut mask = 0u64;
+                for b in 0..n_actions.min(64) {
+                    if spec.independent[a][b] {
+                        mask |= 1u64 << b;
+                    }
+                }
+                mask
+            })
+            .collect();
+
         let mut explorer = Self {
             spec,
             consts,
@@ -823,6 +847,8 @@ impl Explorer {
             guard_indices,
             action_names: Vec::new(),
             state_dep_domains,
+            independent_masks,
+            sym_param_groups: Vec::new(),
         };
 
         // Precompute action names for trace reconstruction
@@ -863,7 +889,250 @@ impl Explorer {
             })
             .collect();
 
+        // Precompute symmetry param -> group mapping.
+        // A parameter matches a group if its domain size equals the group's domain_size.
+        // NOTE: if multiple groups have the same domain_size, the first match wins.
+        // This is safe because symmetry groups are detected from Dict[0..N, T] domains,
+        // and groups with the same N are merged into one group by detect_symmetry_groups.
+        explorer.sym_param_groups = explorer
+            .spec
+            .actions
+            .iter()
+            .enumerate()
+            .map(|(action_idx, _action)| {
+                let domains = &explorer.cached_param_domains[action_idx];
+                domains
+                    .iter()
+                    .map(|domain| {
+                        let domain_size = domain.len();
+                        explorer
+                            .spec
+                            .symmetry_groups
+                            .iter()
+                            .position(|g| g.domain_size == domain_size)
+                    })
+                    .collect()
+            })
+            .collect();
+
+        // Warn if symmetry is enabled but spec may be asymmetric
+        if explorer.config.use_symmetry && !explorer.spec.symmetry_groups.is_empty() {
+            explorer.check_symmetry_soundness();
+        }
+
         explorer
+    }
+
+    /// Best-effort check for asymmetric patterns in a spec with symmetry enabled.
+    /// Returns warnings if literal integers index into symmetric variables,
+    /// which suggests the spec treats some domain elements specially.
+    fn check_symmetry_soundness(&self) -> Vec<String> {
+        let warnings = Self::find_symmetry_warnings(&self.spec);
+        for w in &warnings {
+            eprintln!("Warning: {}", w);
+        }
+        warnings
+    }
+
+    /// Scan compiled spec for literal indices into symmetric variables
+    /// and literal comparisons with symmetric parameters.
+    /// Returns a list of human-readable warning strings.
+    fn find_symmetry_warnings(spec: &CompiledSpec) -> Vec<String> {
+        use specl_ir::CompiledExpr;
+        use specl_types::Type;
+
+        // Map var index -> domain size for symmetric variables
+        let mut sym_var_domain: std::collections::HashMap<usize, usize> =
+            std::collections::HashMap::new();
+        // Set of domain sizes that are symmetric
+        let mut sym_domain_sizes: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        for group in &spec.symmetry_groups {
+            sym_domain_sizes.insert(group.domain_size);
+            for &var_idx in &group.variables {
+                sym_var_domain.insert(var_idx, group.domain_size);
+            }
+        }
+
+        if sym_var_domain.is_empty() {
+            return vec![];
+        }
+
+        /// Check for asymmetric patterns in a compiled expression.
+        /// `sym_params` maps param index -> domain size for params whose range matches a symmetry group.
+        fn has_asymmetric_literal(
+            expr: &CompiledExpr,
+            sym_var_domain: &std::collections::HashMap<usize, usize>,
+            sym_params: &std::collections::HashMap<usize, usize>,
+        ) -> Option<String> {
+            match expr {
+                // Pattern 1: symmetric_var[literal_int]
+                CompiledExpr::Index { base, index } => {
+                    if let CompiledExpr::Var(var_idx) = base.as_ref() {
+                        if let Some(&domain_size) = sym_var_domain.get(var_idx) {
+                            if let CompiledExpr::Int(k) = index.as_ref() {
+                                if *k >= 0 && (*k as usize) < domain_size {
+                                    return Some(format!(
+                                        "literal index {} into symmetric var (var_idx={})",
+                                        k, var_idx
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                    has_asymmetric_literal(base, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(index, sym_var_domain, sym_params))
+                }
+                // Pattern 2: symmetric_param == literal or literal == symmetric_param
+                CompiledExpr::Binary {
+                    op: BinOp::Eq,
+                    left,
+                    right,
+                } => {
+                    let check_param_literal = |param_expr: &CompiledExpr,
+                                               lit_expr: &CompiledExpr|
+                     -> Option<String> {
+                        if let CompiledExpr::Param(p) = param_expr {
+                            if let Some(&domain_size) = sym_params.get(p) {
+                                if let CompiledExpr::Int(k) = lit_expr {
+                                    if *k >= 0 && (*k as usize) < domain_size {
+                                        return Some(format!("literal {} compared with symmetric param (param_idx={})", k, p));
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    };
+                    check_param_literal(left, right)
+                        .or_else(|| check_param_literal(right, left))
+                        .or_else(|| has_asymmetric_literal(left, sym_var_domain, sym_params))
+                        .or_else(|| has_asymmetric_literal(right, sym_var_domain, sym_params))
+                }
+                CompiledExpr::Binary { left, right, .. } => {
+                    has_asymmetric_literal(left, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(right, sym_var_domain, sym_params))
+                }
+                CompiledExpr::Unary { operand, .. } => {
+                    has_asymmetric_literal(operand, sym_var_domain, sym_params)
+                }
+                CompiledExpr::Forall { domain, body, .. }
+                | CompiledExpr::Exists { domain, body, .. }
+                | CompiledExpr::FnLit { domain, body } => {
+                    has_asymmetric_literal(domain, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(body, sym_var_domain, sym_params))
+                }
+                CompiledExpr::SetComprehension {
+                    domain,
+                    filter,
+                    element,
+                    ..
+                } => has_asymmetric_literal(domain, sym_var_domain, sym_params)
+                    .or_else(|| {
+                        filter
+                            .as_ref()
+                            .and_then(|f| has_asymmetric_literal(f, sym_var_domain, sym_params))
+                    })
+                    .or_else(|| has_asymmetric_literal(element, sym_var_domain, sym_params)),
+                CompiledExpr::If {
+                    cond,
+                    then_branch,
+                    else_branch,
+                } => has_asymmetric_literal(cond, sym_var_domain, sym_params)
+                    .or_else(|| has_asymmetric_literal(then_branch, sym_var_domain, sym_params))
+                    .or_else(|| has_asymmetric_literal(else_branch, sym_var_domain, sym_params)),
+                CompiledExpr::FnUpdate { base, key, value } => {
+                    has_asymmetric_literal(base, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(key, sym_var_domain, sym_params))
+                        .or_else(|| has_asymmetric_literal(value, sym_var_domain, sym_params))
+                }
+                CompiledExpr::SetLit(elems)
+                | CompiledExpr::SeqLit(elems)
+                | CompiledExpr::TupleLit(elems) => elems
+                    .iter()
+                    .find_map(|e| has_asymmetric_literal(e, sym_var_domain, sym_params)),
+                CompiledExpr::DictLit(pairs) => pairs.iter().find_map(|(k, v)| {
+                    has_asymmetric_literal(k, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(v, sym_var_domain, sym_params))
+                }),
+                CompiledExpr::Choose { domain, predicate }
+                | CompiledExpr::Let {
+                    value: domain,
+                    body: predicate,
+                } => has_asymmetric_literal(domain, sym_var_domain, sym_params)
+                    .or_else(|| has_asymmetric_literal(predicate, sym_var_domain, sym_params)),
+                CompiledExpr::Slice { base, lo, hi } => {
+                    has_asymmetric_literal(base, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(lo, sym_var_domain, sym_params))
+                        .or_else(|| has_asymmetric_literal(hi, sym_var_domain, sym_params))
+                }
+                CompiledExpr::Range { lo, hi } => {
+                    has_asymmetric_literal(lo, sym_var_domain, sym_params)
+                        .or_else(|| has_asymmetric_literal(hi, sym_var_domain, sym_params))
+                }
+                CompiledExpr::RecordUpdate { base, updates } => {
+                    has_asymmetric_literal(base, sym_var_domain, sym_params).or_else(|| {
+                        updates.iter().find_map(|(_, v)| {
+                            has_asymmetric_literal(v, sym_var_domain, sym_params)
+                        })
+                    })
+                }
+                CompiledExpr::Call { func, args } => {
+                    has_asymmetric_literal(func, sym_var_domain, sym_params).or_else(|| {
+                        args.iter()
+                            .find_map(|a| has_asymmetric_literal(a, sym_var_domain, sym_params))
+                    })
+                }
+                CompiledExpr::ActionCall { args, .. } => args
+                    .iter()
+                    .find_map(|a| has_asymmetric_literal(a, sym_var_domain, sym_params)),
+                CompiledExpr::Len(e)
+                | CompiledExpr::Keys(e)
+                | CompiledExpr::Values(e)
+                | CompiledExpr::SeqHead(e)
+                | CompiledExpr::SeqTail(e)
+                | CompiledExpr::BigUnion(e)
+                | CompiledExpr::Powerset(e)
+                | CompiledExpr::Fix { predicate: e } => {
+                    has_asymmetric_literal(e, sym_var_domain, sym_params)
+                }
+                CompiledExpr::Field { base, .. } => {
+                    has_asymmetric_literal(base, sym_var_domain, sym_params)
+                }
+                _ => None,
+            }
+        }
+
+        let mut warnings = Vec::new();
+        let empty_params = std::collections::HashMap::new();
+
+        // Check init predicate (no params)
+        if let Some(detail) = has_asymmetric_literal(&spec.init, &sym_var_domain, &empty_params) {
+            warnings.push(format!("symmetry may be unsound: init has {}", detail));
+        }
+
+        for action in &spec.actions {
+            // Build symmetric param set: params whose range matches a symmetry group domain
+            let mut sym_params: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            for (idx, (_name, ty)) in action.params.iter().enumerate() {
+                if let Type::Range(lo, hi) = ty {
+                    let size = (*hi - *lo + 1) as usize;
+                    if sym_domain_sizes.contains(&size) {
+                        sym_params.insert(idx, size);
+                    }
+                }
+            }
+
+            for (label, expr) in [("guard", &action.guard), ("effect", &action.effect)] {
+                if let Some(detail) = has_asymmetric_literal(expr, &sym_var_domain, &sym_params) {
+                    warnings.push(format!(
+                        "symmetry may be unsound: action '{}' {} has {}",
+                        action.name, label, detail
+                    ));
+                }
+            }
+        }
+        warnings
     }
 
     /// Compute Cone-of-Influence reduction.
@@ -1101,28 +1370,28 @@ impl Explorer {
         info!(count = initial_states.len(), "generated initial states");
 
         if self.config.parallel {
-            let mut queue: VecDeque<(Fingerprint, State, usize, u64)> = VecDeque::new();
+            let mut queue: VecDeque<QueueEntry> = VecDeque::new();
             let mut max_depth = 0;
 
             for state in initial_states {
                 let canonical = self.maybe_canonicalize(state);
                 let fp = canonical.fingerprint();
                 if self.store.insert(canonical.clone(), None, None, 0) {
-                    queue.push_back((fp, canonical, 0, u64::MAX));
+                    queue.push_back((fp, canonical, 0, u64::MAX, 0));
                 }
             }
 
             self.check_parallel(&mut queue, &mut max_depth)
         } else {
             // Sequential: carry state through queue to avoid store.get() cloning
-            let mut queue: VecDeque<(Fingerprint, State, usize, u64)> = VecDeque::new();
+            let mut queue: VecDeque<QueueEntry> = VecDeque::new();
             let mut max_depth = 0;
 
             for state in initial_states {
                 let canonical = self.maybe_canonicalize(state);
                 let fp = canonical.fingerprint();
                 if self.store.insert(canonical.clone(), None, None, 0) {
-                    queue.push_back((fp, canonical, 0, u64::MAX));
+                    queue.push_back((fp, canonical, 0, u64::MAX, 0));
                 }
             }
 
@@ -1157,7 +1426,7 @@ impl Explorer {
     /// Phase 1: Fast exploration storing only fingerprints.
     /// Returns violation type (with empty trace) or Ok.
     fn check_fast_phase1(&mut self) -> CheckResult<CheckOutcome> {
-        let mut queue: VecDeque<(Fingerprint, State, usize, u64)> = VecDeque::new();
+        let mut queue: VecDeque<QueueEntry> = VecDeque::new();
         let mut max_depth = 0;
         let mut next_vars_buf = Vec::new();
 
@@ -1174,11 +1443,11 @@ impl Explorer {
             let canonical = self.maybe_canonicalize(state);
             let fp = canonical.fingerprint();
             if self.store.insert(canonical.clone(), None, None, 0) {
-                queue.push_back((fp, canonical, 0, u64::MAX));
+                queue.push_back((fp, canonical, 0, u64::MAX, 0));
             }
         }
 
-        while let Some((fp, state, depth, change_mask)) = queue.pop_front() {
+        while let Some((fp, state, depth, change_mask, _sleep)) = queue.pop_front() {
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
@@ -1229,7 +1498,7 @@ impl Explorer {
 
             // Generate successor states
             let mut successors = Vec::new();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf)?;
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0)?;
 
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(&state)?;
@@ -1250,6 +1519,7 @@ impl Explorer {
                         canonical,
                         depth + 1,
                         self.action_write_masks[action_idx],
+                        0, // sleep sets not used in fast check
                     ));
                 }
             }
@@ -1316,7 +1586,7 @@ impl Explorer {
 
             // Generate successors
             let mut successors = Vec::new();
-            self.generate_successors(state, &mut successors, &mut next_vars_buf)?;
+            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0)?;
             for (next_state, action_idx) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
@@ -1360,7 +1630,7 @@ impl Explorer {
 
             // Check for deadlock
             let mut successors = Vec::new();
-            self.generate_successors(state, &mut successors, &mut next_vars_buf)?;
+            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0)?;
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(state)?;
                 if !any_enabled {
@@ -1391,7 +1661,7 @@ impl Explorer {
     /// Sequential BFS exploration.
     fn check_sequential(
         &mut self,
-        queue: &mut VecDeque<(Fingerprint, State, usize, u64)>,
+        queue: &mut VecDeque<QueueEntry>,
         max_depth: &mut usize,
     ) -> CheckResult<CheckOutcome> {
         let mut hit_state_limit = false;
@@ -1399,7 +1669,7 @@ impl Explorer {
         let mut memory_at_limit = 0usize;
         let mut next_vars_buf = Vec::new();
 
-        while let Some((fp, state, depth, change_mask)) = queue.pop_front() {
+        while let Some((fp, state, depth, change_mask, sleep_set)) = queue.pop_front() {
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
@@ -1444,12 +1714,12 @@ impl Explorer {
                 }
             }
 
-            // Generate successor states
+            // Generate successor states (sleep set filters actions when POR enabled)
             let mut successors = Vec::new();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf)?;
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set)?;
 
             if successors.is_empty() && self.config.check_deadlock {
-                // Check if any action is enabled
+                // Check if any action is enabled (ignoring sleep set — sleep doesn't cause deadlock)
                 let any_enabled = self.any_action_enabled(&state)?;
                 if !any_enabled {
                     let trace = self.store.trace_to(&fp, &self.action_names);
@@ -1457,8 +1727,16 @@ impl Explorer {
                 }
             }
 
-            // Add successors to queue
+            // Add successors to queue with propagated sleep sets.
+            // Sleep set accumulates: later actions' successors inherit earlier actions in sleep.
+            let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
+            let mut accumulated_sleep = sleep_set;
             for (next_state, action_idx) in successors {
+                let successor_sleep = if use_sleep {
+                    accumulated_sleep & self.independent_masks[action_idx]
+                } else {
+                    0
+                };
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
                 if self
@@ -1471,7 +1749,11 @@ impl Explorer {
                         canonical,
                         depth + 1,
                         self.action_write_masks[action_idx],
+                        successor_sleep,
                     ));
+                }
+                if use_sleep {
+                    accumulated_sleep |= 1u64 << action_idx;
                 }
             }
 
@@ -1514,7 +1796,7 @@ impl Explorer {
     /// Parallel BFS exploration.
     fn check_parallel(
         &self,
-        queue: &mut VecDeque<(Fingerprint, State, usize, u64)>,
+        queue: &mut VecDeque<QueueEntry>,
         max_depth: &mut usize,
     ) -> CheckResult<CheckOutcome> {
         // Flags to stop early
@@ -1549,13 +1831,12 @@ impl Explorer {
             }
 
             // Take a batch of states from the queue
-            let batch: Vec<(Fingerprint, State, usize, u64)> =
-                queue.drain(..queue.len().min(batch_size)).collect();
+            let batch: Vec<QueueEntry> = queue.drain(..queue.len().min(batch_size)).collect();
 
             // Process batch in parallel
             let results: Vec<_> = batch
                 .par_iter()
-                .filter_map(|(fp, state, depth, change_mask)| {
+                .filter_map(|(fp, state, depth, change_mask, _sleep_set)| {
                     if found_violation.load(Ordering::Relaxed) {
                         return None;
                     }
@@ -1588,7 +1869,7 @@ impl Explorer {
                     // Generate successor states
                     let mut successors = Vec::new();
                     let mut next_vars_buf = Vec::new();
-                    match self.generate_successors(state, &mut successors, &mut next_vars_buf) {
+                    match self.generate_successors(state, &mut successors, &mut next_vars_buf, 0) {
                         Ok(()) => {
                             if successors.is_empty() && self.config.check_deadlock {
                                 match self.any_action_enabled(state) {
@@ -1622,6 +1903,7 @@ impl Explorer {
                                         canonical,
                                         depth + 1,
                                         self.action_write_masks[action_idx],
+                                        0, // sleep sets not used in parallel mode
                                     ));
                                 }
                             }
@@ -2029,11 +2311,13 @@ impl Explorer {
     /// Generate successor states from a state.
     /// Successor: (next_state, action_index, params) - name formatting deferred.
     /// Uses per-thread operation cache to skip redundant evaluations.
+    /// sleep_set: bitmask of action indices to skip (0 = no sleep set).
     fn generate_successors(
         &self,
         state: &State,
         buf: &mut Vec<(State, usize)>,
         next_vars_buf: &mut Vec<Value>,
+        sleep_set: u64,
     ) -> CheckResult<()> {
         use std::cell::RefCell;
 
@@ -2052,6 +2336,19 @@ impl Explorer {
             (0..self.spec.actions.len()).collect()
         };
 
+        // Compute orbit representatives per symmetry group (if symmetry enabled)
+        // orbit_reps[group_idx] = set of representative domain elements
+        let orbit_reps: SmallVec<[Vec<usize>; 4]> =
+            if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
+                self.spec
+                    .symmetry_groups
+                    .iter()
+                    .map(|group| crate::state::orbit_representatives(&state.vars, group))
+                    .collect()
+            } else {
+                SmallVec::new()
+            };
+
         let num_actions = self.spec.actions.len();
         OP_CACHES.with(|cell| {
             let mut caches = cell.borrow_mut();
@@ -2059,12 +2356,17 @@ impl Explorer {
                 *caches = (0..num_actions).map(|_| OpCache::new()).collect();
             }
             for action_idx in actions_to_explore {
+                // Skip actions in sleep set
+                if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
+                    continue;
+                }
                 self.apply_action(
                     state,
                     action_idx,
                     buf,
                     next_vars_buf,
                     &mut caches[action_idx],
+                    &orbit_reps,
                 )?;
             }
             Ok::<(), CheckError>(())
@@ -2222,12 +2524,36 @@ impl Explorer {
         buf: &mut Vec<(State, usize)>,
         next_vars_buf: &mut Vec<Value>,
         cache: &mut OpCache,
+        orbit_reps: &SmallVec<[Vec<usize>; 4]>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
         let dynamic;
+        let orbit_filtered;
         let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
             dynamic = d;
             &dynamic
+        } else if !orbit_reps.is_empty() {
+            // Filter param domains to orbit representatives for symmetric params
+            let sym_groups = &self.sym_param_groups[action_idx];
+            if sym_groups.iter().any(|g| g.is_some()) {
+                orbit_filtered = self.cached_param_domains[action_idx]
+                    .iter()
+                    .enumerate()
+                    .map(|(param_idx, domain)| {
+                        if let Some(group_idx) = sym_groups[param_idx] {
+                            let reps = &orbit_reps[group_idx];
+                            reps.iter()
+                                .filter_map(|&rep| domain.get(rep).cloned())
+                                .collect()
+                        } else {
+                            domain.clone()
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                &orbit_filtered
+            } else {
+                &self.cached_param_domains[action_idx]
+            }
         } else {
             &self.cached_param_domains[action_idx]
         };
@@ -2905,6 +3231,68 @@ action IncY() {
     }
 
     #[test]
+    fn test_sleep_sets_find_all_states() {
+        // Three independent counters: sleep sets should find all reachable states.
+        // With sleep sets, successors inherit accumulated sleep, reducing redundant transitions
+        // while still visiting every reachable state.
+        let source = r#"
+module ThreeCounters
+var x: 0..2
+var y: 0..2
+var z: 0..2
+init { x == 0 and y == 0 and z == 0 }
+action IncX() {
+    require x < 2
+    x = x + 1
+}
+action IncY() {
+    require y < 2
+    y = y + 1
+}
+action IncZ() {
+    require z < 2
+    z = z + 1
+}
+"#;
+        // Without POR (no sleep sets)
+        let config_no_por = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_no_por = check_spec_with_config(source, vec![], config_no_por).unwrap();
+        let states_no_por = match result_no_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // With POR (includes sleep sets in sequential mode)
+        let config_por = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result_por = check_spec_with_config(source, vec![], config_por).unwrap();
+        let states_por = match result_por {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // All 27 states (3x3x3) must be found regardless of POR/sleep sets
+        assert_eq!(states_no_por, 27, "Should have 27 states (3x3x3 grid)");
+        assert_eq!(
+            states_por, 27,
+            "POR+sleep sets should also find all 27 states"
+        );
+    }
+
+    #[test]
     fn test_symmetry_detection() {
         // Test that symmetry groups are detected for Dict[0..N, T] types
         let source = r#"
@@ -3125,6 +3513,238 @@ action SetFlag(i: 0..9) {
         assert!(
             states_sym <= 15,
             "Should have at most ~11-15 equivalence classes (0-10 flags set)"
+        );
+    }
+
+    #[test]
+    fn test_orbit_representatives_same_state_count() {
+        // With orbit representatives, the same canonical states should be found
+        // as without them. The difference is fewer transitions explored.
+        // 5 processes with a boolean flag = 2^5=32 states without symmetry,
+        // 6 equivalence classes with symmetry (0..5 flags set).
+        let source = r#"
+module OrbitTest
+var flags: Dict[0..4, Bool]
+init { flags == {i: false for i in 0..4} }
+action SetFlag(i: 0..4) {
+    require flags[i] == false
+    flags = flags | { i: true }
+}
+"#;
+        let config = CheckConfig {
+            check_deadlock: false,
+            use_symmetry: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config).unwrap();
+        let states = match result {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            _ => panic!("expected Ok"),
+        };
+
+        // 6 equivalence classes: 0,1,2,3,4,5 flags set
+        assert_eq!(
+            states, 6,
+            "orbit representatives + symmetry should find exactly 6 equivalence classes"
+        );
+    }
+
+    #[test]
+    fn test_symmetry_soundness_warning_fires() {
+        // Spec where process 0 is treated specially — symmetry is unsound
+        let source = r#"
+module AsymmetricSpec
+var role: Dict[0..2, 0..2]
+init { role == {i: 0 for i in 0..2} }
+action Promote(i: 0..2) {
+    require i == 0
+    role = role | { i: 1 }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+        assert!(
+            !spec.symmetry_groups.is_empty(),
+            "should detect symmetry groups"
+        );
+
+        let warnings = Explorer::find_symmetry_warnings(&spec);
+        assert!(
+            !warnings.is_empty(),
+            "should warn about literal index 0 in guard of asymmetric action"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("Promote")),
+            "warning should mention the action name"
+        );
+    }
+
+    #[test]
+    fn test_symmetry_soundness_no_warning_for_symmetric_spec() {
+        // Fully symmetric spec — no warnings expected
+        let source = r#"
+module SymmetricSpec
+var role: Dict[0..2, 0..2]
+init { role == {i: 0 for i in 0..2} }
+action Promote(i: 0..2) {
+    require role[i] == 0
+    role = role | { i: 1 }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+        assert!(!spec.symmetry_groups.is_empty());
+
+        let warnings = Explorer::find_symmetry_warnings(&spec);
+        assert!(
+            warnings.is_empty(),
+            "symmetric spec should produce no warnings, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_por_and_symmetry_combined() {
+        // Verify that POR + symmetry together find the same states as no reduction.
+        // Spec: 4 processes, each can toggle independently. Symmetric.
+        let source = r#"
+module PorSymCombined
+var flags: Dict[0..3, Bool]
+init { flags == {i: false for i in 0..3} }
+action Toggle(i: 0..3) {
+    flags = flags | { i: not flags[i] }
+}
+"#;
+        // Baseline: no reductions
+        let config_none = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            use_symmetry: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let states_none = match check_spec_with_config(source, vec![], config_none).unwrap() {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // POR only
+        let config_por = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            use_symmetry: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let states_por = match check_spec_with_config(source, vec![], config_por).unwrap() {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // Symmetry only
+        let config_sym = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            use_symmetry: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let states_sym = match check_spec_with_config(source, vec![], config_sym).unwrap() {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // POR + Symmetry
+        let config_both = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            use_symmetry: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let states_both = match check_spec_with_config(source, vec![], config_both).unwrap() {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // 4 bools = 16 states without reduction
+        assert_eq!(states_none, 16, "baseline: 2^4 = 16 states");
+        // POR should find all 16 (these actions all read+write flags, so POR has limited effect here)
+        assert_eq!(states_por, 16, "POR should find all 16 states");
+        // Symmetry: 5 equivalence classes (0,1,2,3,4 flags set)
+        assert_eq!(states_sym, 5, "symmetry: 5 equivalence classes");
+        // POR + symmetry: same 5 classes
+        assert_eq!(
+            states_both, 5,
+            "POR + symmetry should find same 5 equivalence classes"
+        );
+    }
+
+    #[test]
+    fn test_por_and_symmetry_with_independent_actions() {
+        // Spec with both symmetry and truly independent actions.
+        // Two separate groups of processes: each group has its own variable.
+        let source = r#"
+module PorSymIndependent
+var x: 0..3
+var flags: Dict[0..2, Bool]
+init { x == 0 and flags == {i: false for i in 0..2} }
+action IncX() {
+    require x < 3
+    x = x + 1
+}
+action Toggle(i: 0..2) {
+    flags = flags | { i: not flags[i] }
+}
+"#;
+        // Baseline: no reductions
+        let config_none = CheckConfig {
+            check_deadlock: false,
+            use_por: false,
+            use_symmetry: false,
+            parallel: false,
+            ..Default::default()
+        };
+        let states_none = match check_spec_with_config(source, vec![], config_none).unwrap() {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // POR + Symmetry
+        let config_both = CheckConfig {
+            check_deadlock: false,
+            use_por: true,
+            use_symmetry: true,
+            parallel: false,
+            ..Default::default()
+        };
+        let states_both = match check_spec_with_config(source, vec![], config_both).unwrap() {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => states_explored,
+            other => panic!("expected Ok, got {:?}", other),
+        };
+
+        // x: 0..3 = 4 values, flags: 2^3 = 8 states, total = 32
+        // Symmetry reduces flags to 4 equivalence classes (0,1,2,3 set)
+        // So with symmetry: 4 * 4 = 16 states
+        assert_eq!(states_none, 32, "baseline: 4 * 8 = 32 states");
+        assert_eq!(
+            states_both, 16,
+            "POR + symmetry should find 4*4 = 16 canonical states"
         );
     }
 }
