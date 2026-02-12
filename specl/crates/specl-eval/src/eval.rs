@@ -700,14 +700,20 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
             BinOp::In => {
                 let left_val = eval(left, ctx)?;
                 let right_val = eval(right, ctx)?;
-                let set = expect_set(&right_val)?;
-                Ok(Value::set_contains(set, &left_val))
+                match &right_val {
+                    Value::Set(s) => Ok(Value::set_contains(s, &left_val)),
+                    Value::Fn(f) => Ok(Value::fn_get(f, &left_val).is_some()),
+                    _ => Err(type_mismatch("Set or Dict", &right_val)),
+                }
             }
             BinOp::NotIn => {
                 let left_val = eval(left, ctx)?;
                 let right_val = eval(right, ctx)?;
-                let set = expect_set(&right_val)?;
-                Ok(!Value::set_contains(set, &left_val))
+                match &right_val {
+                    Value::Set(s) => Ok(!Value::set_contains(s, &left_val)),
+                    Value::Fn(f) => Ok(Value::fn_get(f, &left_val).is_none()),
+                    _ => Err(type_mismatch("Set or Dict", &right_val)),
+                }
             }
             BinOp::SubsetOf => {
                 let left_val = eval(left, ctx)?;
@@ -1156,14 +1162,16 @@ fn eval_binary(
             Ok(Value::Int(a % b))
         }
 
-        BinOp::In => {
-            let set = expect_set(&right_val)?;
-            Ok(Value::Bool(Value::set_contains(set, &left_val)))
-        }
-        BinOp::NotIn => {
-            let set = expect_set(&right_val)?;
-            Ok(Value::Bool(!Value::set_contains(set, &left_val)))
-        }
+        BinOp::In => match &right_val {
+            Value::Set(s) => Ok(Value::Bool(Value::set_contains(s, &left_val))),
+            Value::Fn(f) => Ok(Value::Bool(Value::fn_get(f, &left_val).is_some())),
+            _ => Err(type_mismatch("Set or Dict", &right_val)),
+        },
+        BinOp::NotIn => match &right_val {
+            Value::Set(s) => Ok(Value::Bool(!Value::set_contains(s, &left_val))),
+            Value::Fn(f) => Ok(Value::Bool(Value::fn_get(f, &left_val).is_none())),
+            _ => Err(type_mismatch("Set or Dict", &right_val)),
+        },
 
         BinOp::Union => {
             match (left_val, right_val) {
@@ -1382,7 +1390,7 @@ fn sorted_vec_is_subset(a: &[Value], b: &[Value]) -> bool {
     true
 }
 
-fn type_mismatch(expected: &str, actual: &Value) -> EvalError {
+pub(crate) fn type_mismatch(expected: &str, actual: &Value) -> EvalError {
     EvalError::TypeMismatch {
         expected: expected.to_string(),
         actual: type_name(actual),

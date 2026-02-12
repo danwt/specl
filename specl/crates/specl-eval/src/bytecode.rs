@@ -3,7 +3,7 @@
 //! Compiles CompiledExpr trees to flat bytecode and executes them in a tight
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
-use crate::eval::{eval, eval_bool, eval_int, expect_int, expect_set};
+use crate::eval::{eval, eval_bool, eval_int, expect_int, type_mismatch};
 use crate::value::Value;
 use crate::{EvalContext, EvalError, EvalResult};
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
@@ -1038,16 +1038,24 @@ pub fn vm_eval(
                 stack.push(Value::Int(len));
             }
             Op::Contains => {
-                let set_val = stack.pop().unwrap();
+                let right_val = stack.pop().unwrap();
                 let elem = stack.pop().unwrap();
-                let set = expect_set(&set_val)?;
-                stack.push(Value::Bool(Value::set_contains(set, &elem)));
+                let result = match &right_val {
+                    Value::Set(s) => Value::set_contains(s, &elem),
+                    Value::Fn(f) => Value::fn_get(f, &elem).is_some(),
+                    _ => return Err(type_mismatch("Set or Dict", &right_val)),
+                };
+                stack.push(Value::Bool(result));
             }
             Op::NotContains => {
-                let set_val = stack.pop().unwrap();
+                let right_val = stack.pop().unwrap();
                 let elem = stack.pop().unwrap();
-                let set = expect_set(&set_val)?;
-                stack.push(Value::Bool(!Value::set_contains(set, &elem)));
+                let result = match &right_val {
+                    Value::Set(s) => !Value::set_contains(s, &elem),
+                    Value::Fn(f) => Value::fn_get(f, &elem).is_none(),
+                    _ => return Err(type_mismatch("Set or Dict", &right_val)),
+                };
+                stack.push(Value::Bool(result));
             }
 
             // Local variable management

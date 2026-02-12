@@ -889,6 +889,10 @@ impl TypeChecker {
                         self.unify(&left_ty, &elem_ty, left.span)?;
                         Ok(Type::Bool)
                     }
+                    Type::Fn(key_ty, _val_ty) => {
+                        self.unify(&left_ty, &key_ty, left.span)?;
+                        Ok(Type::Bool)
+                    }
                     _ => Err(TypeError::NotIterable {
                         ty: right_ty,
                         span: right.span,
