@@ -736,20 +736,22 @@ fn cmd_check(
         let start2 = start;
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(100));
-            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
-            if states == 0 {
+            let checked = p.checked.load(std::sync::atomic::Ordering::Relaxed);
+            if checked == 0 {
                 continue;
             }
+            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
             let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
             let elapsed = start2.elapsed().as_secs_f64();
             let rate = if elapsed > 0.0 {
-                states as f64 / elapsed
+                checked as f64 / elapsed
             } else {
                 0.0
             };
             pb2.set_message(format!(
-                "{} states | depth {} | {} states/s",
+                "{} found | {} checked | depth {} | {} states/s",
                 format_large_number(states as u128),
+                format_large_number(checked as u128),
                 depth,
                 format_large_number(rate as u128),
             ));
@@ -1134,12 +1136,10 @@ fn print_profile(
 }
 
 fn format_large_number(n: u128) -> String {
-    if n >= 1_000_000_000_000 {
-        format!("{:.1}T", n as f64 / 1e12)
-    } else if n >= 1_000_000_000 {
-        format!("{:.1}B", n as f64 / 1e9)
+    if n >= 1_000_000_000 {
+        format!("{:.2}B", n as f64 / 1e9)
     } else if n >= 1_000_000 {
-        format!("{:.1}M", n as f64 / 1e6)
+        format!("{:.2}M", n as f64 / 1e6)
     } else if n >= 1_000 {
         format!("{:.1}K", n as f64 / 1e3)
     } else {
@@ -1308,20 +1308,22 @@ fn run_check_iteration(
         let start2 = start;
         std::thread::spawn(move || loop {
             std::thread::sleep(Duration::from_millis(100));
-            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
-            if states == 0 {
+            let checked = p.checked.load(std::sync::atomic::Ordering::Relaxed);
+            if checked == 0 {
                 continue;
             }
+            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
             let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
             let elapsed = start2.elapsed().as_secs_f64();
             let rate = if elapsed > 0.0 {
-                states as f64 / elapsed
+                checked as f64 / elapsed
             } else {
                 0.0
             };
             pb2.set_message(format!(
-                "{} states | depth {} | {} states/s",
+                "{} found | {} checked | depth {} | {} states/s",
                 format_large_number(states as u128),
+                format_large_number(checked as u128),
                 depth,
                 format_large_number(rate as u128),
             ));

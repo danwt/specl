@@ -105,6 +105,8 @@ pub struct ProgressCounters {
     pub states: AtomicUsize,
     pub depth: AtomicUsize,
     pub queue_len: AtomicUsize,
+    /// States popped from queue and fully evaluated (always increasing, even when no new states found).
+    pub checked: AtomicUsize,
 }
 
 impl ProgressCounters {
@@ -113,6 +115,7 @@ impl ProgressCounters {
             states: AtomicUsize::new(0),
             depth: AtomicUsize::new(0),
             queue_len: AtomicUsize::new(0),
+            checked: AtomicUsize::new(0),
         }
     }
 }
@@ -1534,6 +1537,9 @@ impl Explorer {
         }
 
         while let Some((fp, state, depth, change_mask, _sleep)) = queue.pop_front() {
+            if let Some(ref p) = self.config.progress {
+                p.checked.fetch_add(1, Ordering::Relaxed);
+            }
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
@@ -1753,6 +1759,9 @@ impl Explorer {
         let mut next_vars_buf = Vec::new();
 
         while let Some((fp, state, depth, change_mask, sleep_set)) = queue.pop_front() {
+            if let Some(ref p) = self.config.progress {
+                p.checked.fetch_add(1, Ordering::Relaxed);
+            }
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
@@ -1881,7 +1890,11 @@ impl Explorer {
     ) -> CheckResult<CheckOutcome> {
         // Flags to stop early
         let found_violation = AtomicBool::new(false);
-        let batch_size = 512;
+        let batch_size = if self.config.num_threads > 0 {
+            self.config.num_threads * 256
+        } else {
+            rayon::current_num_threads() * 256
+        };
         let mut hit_state_limit = false;
         let mut hit_memory_limit = false;
         let mut memory_at_limit = 0usize;
@@ -1922,6 +1935,10 @@ impl Explorer {
                     }
 
                     let depth = *depth;
+
+                    if let Some(ref p) = self.config.progress {
+                        p.checked.fetch_add(1, Ordering::Relaxed);
+                    }
 
                     // Check depth limit
                     if self.config.max_depth > 0 && depth >= self.config.max_depth {
