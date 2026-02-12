@@ -7,6 +7,7 @@ members = [
     "crates/specl-eval",
     "crates/specl-mc",
     "crates/specl-tla",
+    "crates/specl-symbolic",
     "crates/specl-cli",
     "crates/specl-lsp",
 ]
@@ -29,6 +30,7 @@ specl-ir = { path = "crates/specl-ir", version = "0.1.0" }
 specl-eval = { path = "crates/specl-eval", version = "0.1.0" }
 specl-mc = { path = "crates/specl-mc", version = "0.1.0" }
 specl-tla = { path = "crates/specl-tla", version = "0.1.0" }
+specl-symbolic = { path = "crates/specl-symbolic", version = "0.1.0" }
 
 # Core
 thiserror = "1"
