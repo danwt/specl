@@ -7,7 +7,7 @@ use notify::{RecursiveMode, Watcher};
 use specl_eval::Value;
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
-use specl_mc::{CheckConfig, CheckOutcome, Explorer, State};
+use specl_mc::{CheckConfig, CheckOutcome, Explorer, ProgressCounters, State};
 use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::fs;
@@ -717,7 +717,10 @@ fn cmd_check(
         }
     }
 
-    // Set up progress spinner if stderr is a terminal
+    // Set up shared progress counters + spinner on its own timer thread
+    let progress = Arc::new(ProgressCounters::new());
+    let start = Instant::now();
+
     let spinner = if std::io::stderr().is_terminal() && !quiet {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -727,31 +730,37 @@ fn cmd_check(
         );
         pb.enable_steady_tick(Duration::from_millis(100));
         pb.set_message("starting...");
+        // Spinner reads from shared atomics on its own 100ms tick — never blocks
+        let p = progress.clone();
+        let pb2 = pb.clone();
+        let start2 = start;
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
+            if states == 0 {
+                continue;
+            }
+            let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
+            let elapsed = start2.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 {
+                states as f64 / elapsed
+            } else {
+                0.0
+            };
+            pb2.set_message(format!(
+                "{} states | depth {} | {} states/s",
+                format_large_number(states as u128),
+                depth,
+                format_large_number(rate as u128),
+            ));
+            if pb2.is_finished() {
+                break;
+            }
+        });
         Some(pb)
     } else {
         None
     };
-
-    let start = Instant::now();
-    let progress_callback: Option<Arc<dyn Fn(usize, usize, usize) + Send + Sync>> =
-        spinner.as_ref().map(|pb| {
-            let pb = pb.clone();
-            let start = start;
-            Arc::new(move |states: usize, _queue: usize, depth: usize| {
-                let elapsed = start.elapsed().as_secs_f64();
-                let rate = if elapsed > 0.0 {
-                    states as f64 / elapsed
-                } else {
-                    0.0
-                };
-                pb.set_message(format!(
-                    "{} states | depth {} | {} states/s",
-                    format_large_number(states as u128),
-                    depth,
-                    format_large_number(rate as u128)
-                ));
-            }) as Arc<dyn Fn(usize, usize, usize) + Send + Sync>
-        });
 
     let config = CheckConfig {
         check_deadlock,
@@ -763,7 +772,7 @@ fn cmd_check(
         use_por: actual_por,
         use_symmetry: actual_symmetry,
         fast_check,
-        progress_callback,
+        progress: Some(progress),
     };
 
     // Extract variable names for trace formatting before moving spec
@@ -1282,6 +1291,9 @@ fn run_check_iteration(
         eprintln!("  BFS proceeds because runtime values are bounded by init and action parameters.");
     }
 
+    let progress = Arc::new(ProgressCounters::new());
+    let start = Instant::now();
+
     let spinner = if std::io::stderr().is_terminal() {
         let pb = ProgressBar::new_spinner();
         pb.set_style(
@@ -1291,37 +1303,42 @@ fn run_check_iteration(
         );
         pb.enable_steady_tick(Duration::from_millis(100));
         pb.set_message("starting...");
+        let p = progress.clone();
+        let pb2 = pb.clone();
+        let start2 = start;
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
+            if states == 0 {
+                continue;
+            }
+            let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
+            let elapsed = start2.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 {
+                states as f64 / elapsed
+            } else {
+                0.0
+            };
+            pb2.set_message(format!(
+                "{} states | depth {} | {} states/s",
+                format_large_number(states as u128),
+                depth,
+                format_large_number(rate as u128),
+            ));
+            if pb2.is_finished() {
+                break;
+            }
+        });
         Some(pb)
     } else {
         None
     };
 
-    let start = Instant::now();
-    let progress_callback: Option<Arc<dyn Fn(usize, usize, usize) + Send + Sync>> =
-        spinner.as_ref().map(|pb| {
-            let pb = pb.clone();
-            let start = start;
-            Arc::new(move |states: usize, _queue: usize, depth: usize| {
-                let elapsed = start.elapsed().as_secs_f64();
-                let rate = if elapsed > 0.0 {
-                    states as f64 / elapsed
-                } else {
-                    0.0
-                };
-                pb.set_message(format!(
-                    "{} states | depth {} | {} states/s",
-                    format_large_number(states as u128),
-                    depth,
-                    format_large_number(rate as u128)
-                ));
-            }) as Arc<dyn Fn(usize, usize, usize) + Send + Sync>
-        });
-
     let config = CheckConfig {
         check_deadlock,
         max_states,
         max_depth,
-        progress_callback,
+        progress: Some(progress),
         ..Default::default()
     };
 

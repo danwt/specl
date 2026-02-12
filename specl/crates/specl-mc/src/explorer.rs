@@ -14,7 +14,7 @@ use specl_eval::{eval, EvalContext, EvalError, Value};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, error, info, trace};
@@ -100,6 +100,23 @@ enum AmpleResult {
     Instances(Vec<(usize, Vec<Value>)>),
 }
 
+/// Lock-free progress counters shared between the explorer and the CLI spinner.
+pub struct ProgressCounters {
+    pub states: AtomicUsize,
+    pub depth: AtomicUsize,
+    pub queue_len: AtomicUsize,
+}
+
+impl ProgressCounters {
+    pub fn new() -> Self {
+        Self {
+            states: AtomicUsize::new(0),
+            depth: AtomicUsize::new(0),
+            queue_len: AtomicUsize::new(0),
+        }
+    }
+}
+
 /// Configuration for the model checker.
 pub struct CheckConfig {
     /// Whether to check for deadlocks.
@@ -123,8 +140,9 @@ pub struct CheckConfig {
     /// is found, re-explores with full tracking to reconstruct the trace.
     /// Trade-off: Uses ~10x less memory but violations take 2x time to report.
     pub fast_check: bool,
-    /// Progress callback: called every 10K states with (states, queue_len, max_depth).
-    pub progress_callback: Option<Arc<dyn Fn(usize, usize, usize) + Send + Sync>>,
+    /// Shared progress counters: the explorer writes states/depth/queue_len atomically,
+    /// and the CLI reads them on its own timer. Never blocks the explorer.
+    pub progress: Option<Arc<ProgressCounters>>,
 }
 
 impl Default for CheckConfig {
@@ -139,7 +157,7 @@ impl Default for CheckConfig {
             use_por: false,
             use_symmetry: false,
             fast_check: false,
-            progress_callback: None,
+            progress: None,
         }
     }
 }
@@ -156,7 +174,7 @@ impl Clone for CheckConfig {
             use_por: self.use_por,
             use_symmetry: self.use_symmetry,
             fast_check: self.fast_check,
-            progress_callback: self.progress_callback.clone(),
+            progress: self.progress.clone(),
         }
     }
 }
@@ -173,7 +191,7 @@ impl std::fmt::Debug for CheckConfig {
             .field("use_por", &self.use_por)
             .field("use_symmetry", &self.use_symmetry)
             .field("fast_check", &self.fast_check)
-            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "..."))
+            .field("progress", &self.progress.as_ref().map(|_| "..."))
             .finish()
     }
 }
@@ -1592,11 +1610,11 @@ impl Explorer {
                 }
             }
 
-            // Progress reporting
-            if self.store.len() % 10000 == 0 {
-                if let Some(ref cb) = self.config.progress_callback {
-                    cb(self.store.len(), queue.len(), max_depth);
-                }
+            // Update progress counters (lock-free, near-zero overhead)
+            if let Some(ref p) = self.config.progress {
+                p.states.store(self.store.len(), Ordering::Relaxed);
+                p.depth.store(max_depth, Ordering::Relaxed);
+                p.queue_len.store(queue.len(), Ordering::Relaxed);
             }
         }
 
@@ -1822,11 +1840,11 @@ impl Explorer {
                 }
             }
 
-            // Progress reporting
-            if self.store.len() % 10000 == 0 {
-                if let Some(ref cb) = self.config.progress_callback {
-                    cb(self.store.len(), queue.len(), *max_depth);
-                }
+            // Update progress counters (lock-free, near-zero overhead)
+            if let Some(ref p) = self.config.progress {
+                p.states.store(self.store.len(), Ordering::Relaxed);
+                p.depth.store(*max_depth, Ordering::Relaxed);
+                p.queue_len.store(queue.len(), Ordering::Relaxed);
             }
         }
 
@@ -1960,6 +1978,11 @@ impl Explorer {
                                     depth + 1,
                                 ) {
                                     batch_max_depth = batch_max_depth.max(depth + 1);
+                                    // Update progress from inside par_iter so spinner never freezes
+                                    if let Some(ref p) = self.config.progress {
+                                        p.states.store(self.store.len(), Ordering::Relaxed);
+                                        p.depth.fetch_max(depth + 1, Ordering::Relaxed);
+                                    }
                                     new_entries.push((
                                         next_fp,
                                         canonical,
@@ -2001,11 +2024,11 @@ impl Explorer {
                 }
             }
 
-            // Progress reporting
-            if self.store.len() % 10000 == 0 {
-                if let Some(ref cb) = self.config.progress_callback {
-                    cb(self.store.len(), queue.len(), *max_depth);
-                }
+            // Update progress counters (lock-free, near-zero overhead)
+            if let Some(ref p) = self.config.progress {
+                p.states.store(self.store.len(), Ordering::Relaxed);
+                p.depth.store(*max_depth, Ordering::Relaxed);
+                p.queue_len.store(queue.len(), Ordering::Relaxed);
             }
         }
 
