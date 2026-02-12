@@ -12,6 +12,8 @@ pub struct SpecProfile {
     pub num_invariants: usize,
     /// Upper bound on state space size. None if unbounded types present.
     pub state_space_bound: Option<u128>,
+    /// Per-variable: (name, type string, domain size). None domain = unbounded.
+    pub var_domain_sizes: Vec<(String, String, Option<u128>)>,
     /// Per-action: (name, parameter combination count). None if unbounded.
     pub action_param_counts: Vec<(String, Option<u64>)>,
     /// Fraction of action pairs that are template-independent (0.0-1.0).
@@ -54,11 +56,7 @@ impl fmt::Display for Warning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Warning::UnboundedType { var, ty } => {
-                write!(
-                    f,
-                    "Variable '{}' has unbounded type {} (defaults to 0..10 in checker)",
-                    var, ty
-                )
+                write!(f, "Variable '{}' has unbounded type {}", var, ty)
             }
             Warning::LargeParamSpace { action, combos } => {
                 write!(
@@ -70,6 +68,22 @@ impl fmt::Display for Warning {
             }
             Warning::ExponentialVar { var, reason } => {
                 write!(f, "Variable '{}': {}", var, reason)
+            }
+        }
+    }
+}
+
+impl Warning {
+    pub fn fix_hint(&self) -> &'static str {
+        match self {
+            Warning::UnboundedType { .. } => {
+                "use a bounded range, e.g. change 'var x: Int' to 'var x: 0..N' with a const N"
+            }
+            Warning::LargeParamSpace { .. } => {
+                "add 'require' guards to prune invalid combinations, or reduce parameter ranges"
+            }
+            Warning::ExponentialVar { .. } => {
+                "reduce the range of the variable or its components, or use a simpler encoding"
             }
         }
     }
@@ -118,14 +132,16 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
     // Compute per-variable domain sizes
     let mut state_space_bound: Option<u128> = Some(1);
     let mut warnings = Vec::new();
+    let mut var_domain_sizes = Vec::new();
 
     for var in &spec.vars {
-        match type_domain_size(&var.ty) {
+        let domain_size = type_domain_size(&var.ty);
+        var_domain_sizes.push((var.name.clone(), format!("{}", var.ty), domain_size));
+        match domain_size {
             Some(size) => {
                 if let Some(ref mut bound) = state_space_bound {
                     *bound = bound.saturating_mul(size);
                 }
-                // Warn about exponential types
                 if size > 1_000_000 {
                     warnings.push(Warning::ExponentialVar {
                         var: var.name.clone(),
@@ -242,6 +258,7 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
         num_actions,
         num_invariants,
         state_space_bound,
+        var_domain_sizes,
         action_param_counts,
         independence_ratio,
         has_symmetry,
