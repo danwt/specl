@@ -3,6 +3,7 @@
 // No constants needed
 
 module DistributedCounter
+// Use: No constants needed
 
 // Counter value at each replica (2 replicas: 0 and 1)
 var counter: Dict[0..1, 0..5]

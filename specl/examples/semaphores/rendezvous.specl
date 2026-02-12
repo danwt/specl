@@ -54,6 +54,7 @@
 // =============================================================================
 
 module Rendezvous
+// Use: No constants needed
 
 // Thread progress: 0=init, 1=did_statement_1, 2=signaled, 3=waited, 4=did_statement_2
 var threadA: 0..4

@@ -1,4 +1,5 @@
 module Raft
+// Use: -c N=2 -c MaxTerm=2 -c MaxLogLen=2
 
 // ============================================================================
 // Simplified Raft Consensus Sketch

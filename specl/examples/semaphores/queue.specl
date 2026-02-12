@@ -60,6 +60,7 @@
 // =============================================================================
 
 module Queue
+// Use: -c NUM_LEADERS=2 -c NUM_FOLLOWERS=2
 
 const NUM_LEADERS: 0..5     // Number of leader threads
 const NUM_FOLLOWERS: 0..5   // Number of follower threads

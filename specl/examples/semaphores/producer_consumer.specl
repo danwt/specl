@@ -130,6 +130,7 @@
 // =============================================================================
 
 module ProducerConsumer
+// Use: -c NUM_PRODUCERS=1 -c NUM_CONSUMERS=1 -c BUFFER_SIZE=2
 
 const NUM_PRODUCERS: 0..3
 const NUM_CONSUMERS: 0..3

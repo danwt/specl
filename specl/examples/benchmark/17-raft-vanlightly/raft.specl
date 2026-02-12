@@ -1,4 +1,5 @@
 module RaftVanlightly
+// Use: -c N=2 -c MaxVal=1 -c MaxElections=1 -c MaxRestarts=0 -c MaxLogLen=2
 
 // ============================================================================
 // Vanlightly's Model-Checking Optimized Raft Specification

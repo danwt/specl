@@ -94,6 +94,7 @@
 // =============================================================================
 
 module DiningPhilosophers
+// Use: -c N=3
 
 const N: 0..5  // Number of philosophers (5 for the classic problem)
 
