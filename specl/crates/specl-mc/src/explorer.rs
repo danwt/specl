@@ -15,6 +15,7 @@ use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, Una
 use specl_syntax::{ExprKind, TypeExpr};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use thiserror::Error;
 use tracing::{debug, error, info, trace};
 
@@ -100,7 +101,6 @@ enum AmpleResult {
 }
 
 /// Configuration for the model checker.
-#[derive(Debug, Clone)]
 pub struct CheckConfig {
     /// Whether to check for deadlocks.
     pub check_deadlock: bool,
@@ -123,6 +123,8 @@ pub struct CheckConfig {
     /// is found, re-explores with full tracking to reconstruct the trace.
     /// Trade-off: Uses ~10x less memory but violations take 2x time to report.
     pub fast_check: bool,
+    /// Progress callback: called every 10K states with (states, queue_len, max_depth).
+    pub progress_callback: Option<Arc<dyn Fn(usize, usize, usize) + Send + Sync>>,
 }
 
 impl Default for CheckConfig {
@@ -137,7 +139,42 @@ impl Default for CheckConfig {
             use_por: false,
             use_symmetry: false,
             fast_check: false,
+            progress_callback: None,
         }
+    }
+}
+
+impl Clone for CheckConfig {
+    fn clone(&self) -> Self {
+        Self {
+            check_deadlock: self.check_deadlock,
+            max_states: self.max_states,
+            max_depth: self.max_depth,
+            memory_limit_mb: self.memory_limit_mb,
+            parallel: self.parallel,
+            num_threads: self.num_threads,
+            use_por: self.use_por,
+            use_symmetry: self.use_symmetry,
+            fast_check: self.fast_check,
+            progress_callback: self.progress_callback.clone(),
+        }
+    }
+}
+
+impl std::fmt::Debug for CheckConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CheckConfig")
+            .field("check_deadlock", &self.check_deadlock)
+            .field("max_states", &self.max_states)
+            .field("max_depth", &self.max_depth)
+            .field("memory_limit_mb", &self.memory_limit_mb)
+            .field("parallel", &self.parallel)
+            .field("num_threads", &self.num_threads)
+            .field("use_por", &self.use_por)
+            .field("use_symmetry", &self.use_symmetry)
+            .field("fast_check", &self.fast_check)
+            .field("progress_callback", &self.progress_callback.as_ref().map(|_| "..."))
+            .finish()
     }
 }
 
@@ -1555,14 +1592,11 @@ impl Explorer {
                 }
             }
 
-            // Progress logging
+            // Progress reporting
             if self.store.len() % 10000 == 0 {
-                info!(
-                    states = self.store.len(),
-                    queue_len = queue.len(),
-                    max_depth,
-                    "progress"
-                );
+                if let Some(ref cb) = self.config.progress_callback {
+                    cb(self.store.len(), queue.len(), max_depth);
+                }
             }
         }
 
@@ -1788,14 +1822,11 @@ impl Explorer {
                 }
             }
 
-            // Progress logging
+            // Progress reporting
             if self.store.len() % 10000 == 0 {
-                info!(
-                    states = self.store.len(),
-                    queue_len = queue.len(),
-                    max_depth = *max_depth,
-                    "progress"
-                );
+                if let Some(ref cb) = self.config.progress_callback {
+                    cb(self.store.len(), queue.len(), *max_depth);
+                }
             }
         }
 
@@ -1970,14 +2001,11 @@ impl Explorer {
                 }
             }
 
-            // Progress logging
+            // Progress reporting
             if self.store.len() % 10000 == 0 {
-                info!(
-                    states = self.store.len(),
-                    queue_len = queue.len(),
-                    max_depth = *max_depth,
-                    "progress"
-                );
+                if let Some(ref cb) = self.config.progress_callback {
+                    cb(self.store.len(), queue.len(), *max_depth);
+                }
             }
         }
 

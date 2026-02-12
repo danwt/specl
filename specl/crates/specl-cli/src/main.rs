@@ -1,6 +1,7 @@
 //! Command-line interface for Specl model checker.
 
 use clap::{Parser, Subcommand};
+use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use notify::{RecursiveMode, Watcher};
 use specl_eval::Value;
@@ -10,6 +11,7 @@ use specl_mc::{CheckConfig, CheckOutcome, Explorer, State};
 use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::fs;
+use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -168,7 +170,7 @@ enum Commands {
         // -- Symbolic (Z3) options --
         /// Bounded model checking (unroll transitions to --depth steps)
         #[arg(long, help_heading = "Symbolic (Z3)")]
-        symbolic: bool,
+        bmc: bool,
 
         /// BMC/symbolic depth bound
         #[arg(long, default_value = "10", help_heading = "Symbolic (Z3)")]
@@ -307,7 +309,7 @@ fn main() {
             por,
             symmetry,
             fast,
-            symbolic,
+            bmc,
             depth,
             inductive,
             k_induction,
@@ -318,7 +320,12 @@ fn main() {
             quiet,
             no_auto,
         } => {
-            if symbolic || inductive || k_induction.is_some() || ic3 || smart {
+            let user_requested_symbolic =
+                bmc || inductive || k_induction.is_some() || ic3 || smart;
+            let user_requested_explicit =
+                por || symmetry || fast || max_states > 0 || max_depth > 0 || memory_limit > 0;
+
+            if user_requested_symbolic {
                 cmd_check_symbolic(
                     &file,
                     &constant,
@@ -329,7 +336,7 @@ fn main() {
                     smart,
                     seq_bound,
                 )
-            } else {
+            } else if user_requested_explicit {
                 cmd_check(
                     &file,
                     &constant,
@@ -346,6 +353,36 @@ fn main() {
                     quiet,
                     no_auto,
                 )
+            } else {
+                // Auto-select: analyze spec to decide BFS vs symbolic
+                let auto_symbolic = auto_select_symbolic(&file, &constant);
+                if auto_symbolic {
+                    if !quiet {
+                        println!(
+                            "Auto-selected: symbolic checking (unbounded types detected)"
+                        );
+                    }
+                    cmd_check_symbolic(
+                        &file, &constant, depth, false, None, false, true, seq_bound,
+                    )
+                } else {
+                    cmd_check(
+                        &file,
+                        &constant,
+                        max_states,
+                        max_depth,
+                        memory_limit,
+                        !no_deadlock,
+                        !no_parallel,
+                        threads,
+                        por,
+                        symmetry,
+                        fast,
+                        verbose,
+                        quiet,
+                        no_auto,
+                    )
+                }
             }
         }
         Commands::Format { file, write } => cmd_format(&file, write),
@@ -536,27 +573,6 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
         }
     }
 
-    // Estimated check time
-    if let Some(bound) = total_bound {
-        if bound > 0 {
-            let throughput = 100_000.0_f64; // ~100K states/s typical
-            let secs = bound as f64 / throughput;
-            let time_str = if secs < 1.0 {
-                "<1 second".to_string()
-            } else if secs < 60.0 {
-                format!("~{:.0} seconds", secs)
-            } else if secs < 3600.0 {
-                format!("~{:.0} minutes", secs / 60.0)
-            } else if secs < 86400.0 {
-                format!("~{:.1} hours", secs / 3600.0)
-            } else {
-                format!("~{:.1} days", secs / 86400.0)
-            };
-            println!();
-            println!("Estimated check time: {} (at ~100K states/s)", time_str);
-        }
-    }
-
     // Suggested command — derive flags from recommendations
     println!();
     let const_flags: Vec<String> = spec
@@ -585,6 +601,35 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
 
     println!();
     Ok(())
+}
+
+/// Quick analysis pass to determine if symbolic checking should be auto-selected.
+/// Returns true if the spec has unbounded types. Falls back to false on any error
+/// (the actual check command will report the error properly).
+fn auto_select_symbolic(file: &PathBuf, constants: &[String]) -> bool {
+    let source = match fs::read_to_string(file) {
+        Ok(s) => Arc::new(s),
+        Err(_) => return false,
+    };
+    let module = match parse(&source) {
+        Ok(m) => m,
+        Err(_) => return false,
+    };
+    if specl_types::check_module(&module).is_err() {
+        return false;
+    }
+    let spec = match compile(&module) {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    if parse_constants(constants, &spec).is_err() {
+        return false;
+    }
+    let profile = analyze(&spec);
+    profile
+        .warnings
+        .iter()
+        .any(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
 }
 
 fn cmd_check(
@@ -682,6 +727,42 @@ fn cmd_check(
         }
     }
 
+    // Set up progress spinner if stderr is a terminal
+    let spinner = if std::io::stderr().is_terminal() && !quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_message("starting...");
+        Some(pb)
+    } else {
+        None
+    };
+
+    let start = Instant::now();
+    let progress_callback: Option<Arc<dyn Fn(usize, usize, usize) + Send + Sync>> =
+        spinner.as_ref().map(|pb| {
+            let pb = pb.clone();
+            let start = start;
+            Arc::new(move |states: usize, _queue: usize, depth: usize| {
+                let elapsed = start.elapsed().as_secs_f64();
+                let rate = if elapsed > 0.0 {
+                    states as f64 / elapsed
+                } else {
+                    0.0
+                };
+                pb.set_message(format!(
+                    "{} states | depth {} | {} states/s",
+                    format_large_number(states as u128),
+                    depth,
+                    format_large_number(rate as u128)
+                ));
+            }) as Arc<dyn Fn(usize, usize, usize) + Send + Sync>
+        });
+
     let config = CheckConfig {
         check_deadlock,
         max_states,
@@ -692,13 +773,11 @@ fn cmd_check(
         use_por: actual_por,
         use_symmetry: actual_symmetry,
         fast_check,
+        progress_callback,
     };
 
     // Extract variable names for trace formatting before moving spec
     let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
-
-    info!("model checking...");
-    let start = Instant::now();
 
     let mut explorer = Explorer::new(spec, consts, config);
     let result = explorer.check().map_err(|e| CliError::CheckError {
@@ -706,6 +785,10 @@ fn cmd_check(
     })?;
 
     let elapsed = start.elapsed();
+
+    if let Some(ref pb) = spinner {
+        pb.finish_and_clear();
+    }
 
     match result {
         CheckOutcome::Ok {
@@ -1213,24 +1296,65 @@ fn run_check_iteration(
         return;
     }
 
+    let spinner = if std::io::stderr().is_terminal() {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_message("starting...");
+        Some(pb)
+    } else {
+        None
+    };
+
+    let start = Instant::now();
+    let progress_callback: Option<Arc<dyn Fn(usize, usize, usize) + Send + Sync>> =
+        spinner.as_ref().map(|pb| {
+            let pb = pb.clone();
+            let start = start;
+            Arc::new(move |states: usize, _queue: usize, depth: usize| {
+                let elapsed = start.elapsed().as_secs_f64();
+                let rate = if elapsed > 0.0 {
+                    states as f64 / elapsed
+                } else {
+                    0.0
+                };
+                pb.set_message(format!(
+                    "{} states | depth {} | {} states/s",
+                    format_large_number(states as u128),
+                    depth,
+                    format_large_number(rate as u128)
+                ));
+            }) as Arc<dyn Fn(usize, usize, usize) + Send + Sync>
+        });
+
     let config = CheckConfig {
         check_deadlock,
         max_states,
         max_depth,
+        progress_callback,
         ..Default::default()
     };
 
-    let start = Instant::now();
     let mut explorer = Explorer::new(spec, consts, config);
     let result = match explorer.check() {
         Ok(r) => r,
         Err(e) => {
+            if let Some(ref pb) = spinner {
+                pb.finish_and_clear();
+            }
             eprintln!("Check error: {}", e);
             return;
         }
     };
 
     let elapsed = start.elapsed();
+    if let Some(ref pb) = spinner {
+        pb.finish_and_clear();
+    }
 
     match result {
         CheckOutcome::Ok {
@@ -1346,7 +1470,7 @@ SYMBOLIC CHECKING (Z3-backed)
   handle specs with very large or unbounded state spaces that would be impossible to
   explore exhaustively.
 
-  --symbolic     Bounded Model Checking (BMC)
+  --bmc          Bounded Model Checking (BMC)
                  Asks: \"can a bug happen within K steps?\" by encoding K transitions as
                  a formula and asking Z3 to find a satisfying assignment. Fast for bugs
                  that occur within a few steps. Set the bound with --depth (default 10).
@@ -1420,7 +1544,7 @@ EXPLICIT-STATE CHECKING (default)
 SYMBOLIC CHECKING (Z3-backed)
   Encodes spec as SMT formulas. Can handle unbounded/huge state spaces.
 
-  --symbolic     Bounded Model Checking (BMC)
+  --bmc          Bounded Model Checking (BMC)
                  Unrolls transitions to --depth steps. Fast for shallow bugs.
 
   --inductive    Inductive Invariant Checking
