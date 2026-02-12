@@ -2,7 +2,7 @@
 //!
 //! Tests parsing and translation of every .tla file found in:
 //! - references/tla-dump-real/ (community TLA+ specs)
-//! - specl/examples/benchmark/ (project benchmark specs)
+//! - specl/examples/ (showcase and other specs)
 
 use specl_tla::{translate, Parser};
 use std::fs;
@@ -42,8 +42,8 @@ fn parse_all_tla_files() {
     let root = repo_root();
     let mut all_files = Vec::new();
     all_files.extend(find_tla_files(&root.join("references/tla-dump-real")));
-    all_files.extend(find_tla_files(&root.join("specl/examples/benchmark")));
-    all_files.extend(find_tla_files(&root.join("specl/examples/realistic")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/showcase")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/other")));
 
     assert!(!all_files.is_empty(), "no .tla files found under {root:?}");
 
@@ -83,8 +83,8 @@ fn translate_all_tla_files() {
     let root = repo_root();
     let mut all_files = Vec::new();
     all_files.extend(find_tla_files(&root.join("references/tla-dump-real")));
-    all_files.extend(find_tla_files(&root.join("specl/examples/benchmark")));
-    all_files.extend(find_tla_files(&root.join("specl/examples/realistic")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/showcase")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/other")));
 
     assert!(!all_files.is_empty(), "no .tla files found under {root:?}");
 
@@ -146,8 +146,8 @@ const EXPECTED_TRANSLATE_FAILURES: &[&str] = &[
 fn benchmark_tla_files_translate() {
     let root = repo_root();
     let mut all_files = Vec::new();
-    all_files.extend(find_tla_files(&root.join("specl/examples/benchmark")));
-    all_files.extend(find_tla_files(&root.join("specl/examples/realistic")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/showcase")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/other")));
 
     assert!(!all_files.is_empty(), "no .tla files found in examples");
 
