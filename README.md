@@ -45,7 +45,7 @@ With parallelism: 1M+ states/second on typical workloads.
 
 | | |
 |---|---|
-| [Raft consensus](specl/examples/benchmark/01-raft/raft.specl) | Leader election + log replication (1.58M states) |
+| [Raft consensus](specl/examples/benchmark/17-raft-vanlightly/raft.specl) | Leader election + log replication (Vanlightly's async model) |
 | [Percolator](specl/examples/benchmark/14-percolator/percolator.specl) | Google's distributed transactions with snapshot isolation (4.2M states) |
 | [Parallel Commits](specl/examples/benchmark/15-parallel-commits/parallel-commits.specl) | CockroachDB's parallel commit protocol (13.3M states) |
 | [EPaxos](specl/examples/benchmark/12-epaxos/epaxos.specl) | Egalitarian Paxos (757K states) |
@@ -96,8 +96,6 @@ Or invoke it directly:
 ```
 /expert-specl help me model a consensus protocol
 ```
-
-See [PLUGIN.md](PLUGIN.md) for distribution and publishing options.
 
 ## Development
 

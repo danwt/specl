@@ -68,6 +68,10 @@ invariant Safe { x >= 0 and x <= C }
 | `Seq[T]` | `[a, b, c]` | Ordered list |
 | `Dict[K, V]` | `{k: 0 for k in 0..N}` | Map/function |
 | `String` | `"red"` | String literal |
+| `Option[T]` | `Some(x)`, `None` | Optional value |
+| `(T1, T2)` | `(1, true)` | Tuples |
+
+Type aliases: `type Name = TypeExpr`
 
 ### Dicts (the workhorse)
 
@@ -110,7 +114,10 @@ any x in 0..N: role[x] == 2          // existential: true for SOME x
 | Comparison | `==`, `!=`, `<`, `<=`, `>`, `>=` |
 | Arithmetic | `+`, `-`, `*`, `/`, `%` |
 | Set | `in`, `not in`, `union`, `intersect`, `diff`, `subset_of` |
-| Sequence | `++` (concat), `head(s)`, `tail(s)`, `len(s)` |
+| Sequence | `++` (concat), `head(s)`, `tail(s)`, `len(s)`, `s[lo..hi]` (slice) |
+| Dict | `keys(d)`, `values(d)` |
+| Set | `powerset(s)`, `union_all(s)` |
+| Choose | `choose x in S: P(x)` (pick a value satisfying P) |
 | Conditional | `if ... then ... else ...` (expression, always needs else) |
 
 ### Set Comprehensions
@@ -158,11 +165,12 @@ A spec defines a state machine: initial state + actions (transitions) + invarian
 
 ### Language Constraints
 
-- No `let` bindings — use inline expressions or function parameters.
+- `let` bindings available: `let x = expr in body` for local definitions within expressions.
 - `any` is a boolean quantifier, NOT a binder — can't use the bound variable outside.
 - Range expressions in parameters can't use arithmetic: `0..V+1` is invalid. Add a `const MaxVal` instead.
 - State spaces grow exponentially. Typical sizes: N=2 is ~100K-2M states, N=3 is ~10M-100M. Always start with N=2.
 - `implies` inside nested `all` quantifiers has precedence issues — flatten: `all c: all k: (A and B) implies C`.
+- `enabled(Action)`, `changes(var)`, `property`, `fairness`, temporal operators (`always`, `eventually`, `leads_to`) — parse and type-check but NOT yet in model checker.
 
 ## Analysing Results
 
