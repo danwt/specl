@@ -176,6 +176,10 @@ enum Commands {
         #[arg(long)]
         smart: bool,
 
+        /// Maximum sequence length for symbolic Seq[T] variables (default: 5)
+        #[arg(long, default_value = "5")]
+        seq_bound: usize,
+
         /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -279,10 +283,20 @@ fn main() {
             k_induction,
             ic3,
             smart,
+            seq_bound,
             verbose,
         } => {
             if symbolic || inductive || k_induction.is_some() || ic3 || smart {
-                cmd_check_symbolic(&file, &constant, depth, inductive, k_induction, ic3, smart)
+                cmd_check_symbolic(
+                    &file,
+                    &constant,
+                    depth,
+                    inductive,
+                    k_induction,
+                    ic3,
+                    smart,
+                    seq_bound,
+                )
             } else {
                 cmd_check(
                     &file,
@@ -505,6 +519,7 @@ fn cmd_check_symbolic(
     k_induction: Option<usize>,
     ic3: bool,
     smart: bool,
+    seq_bound: usize,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -539,6 +554,7 @@ fn cmd_check_symbolic(
             SymbolicMode::Bmc
         },
         depth,
+        seq_bound,
     };
 
     let mode_str = if smart {

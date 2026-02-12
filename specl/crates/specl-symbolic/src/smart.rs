@@ -16,10 +16,11 @@ pub fn check_smart(
     spec: &CompiledSpec,
     consts: &[Value],
     bmc_depth: usize,
+    seq_bound: usize,
 ) -> SymbolicResult<SymbolicOutcome> {
     // 1. Try simple induction
     info!("smart: trying inductive checking");
-    match crate::inductive::check_inductive(spec, consts)? {
+    match crate::inductive::check_inductive(spec, consts, seq_bound)? {
         SymbolicOutcome::Ok { .. } => {
             return Ok(SymbolicOutcome::Ok {
                 method: "smart(inductive)",
@@ -37,7 +38,7 @@ pub fn check_smart(
     // 2. Try k-induction with increasing K
     for k in [2, 3, 4, 5] {
         info!(k, "smart: trying k-induction");
-        match crate::k_induction::check_k_induction(spec, consts, k)? {
+        match crate::k_induction::check_k_induction(spec, consts, k, seq_bound)? {
             SymbolicOutcome::Ok { .. } => {
                 return Ok(SymbolicOutcome::Ok {
                     method: "smart(k-induction)",
@@ -55,7 +56,7 @@ pub fn check_smart(
 
     // 3. Try IC3/CHC
     info!("smart: trying IC3/CHC");
-    match crate::ic3::check_ic3(spec, consts)? {
+    match crate::ic3::check_ic3(spec, consts, seq_bound)? {
         SymbolicOutcome::Ok { .. } => {
             return Ok(SymbolicOutcome::Ok {
                 method: "smart(IC3)",
@@ -71,7 +72,7 @@ pub fn check_smart(
 
     // 4. Fall back to BMC
     info!(depth = bmc_depth, "smart: falling back to BMC");
-    match crate::bmc::check_bmc(spec, consts, bmc_depth)? {
+    match crate::bmc::check_bmc(spec, consts, bmc_depth, seq_bound)? {
         SymbolicOutcome::Ok { .. } => Ok(SymbolicOutcome::Ok {
             method: "smart(BMC)",
         }),
