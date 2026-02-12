@@ -54,6 +54,14 @@ fn identify_action(
                         .param_type_exprs
                         .get(i)
                         .and_then(|te| crate::state_vars::eval_type_expr_range(te, spec, consts)),
+                    Type::String => {
+                        let n = layout.string_table.len() as i64;
+                        if n > 0 {
+                            Some((0, n - 1))
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 }
             })
@@ -112,6 +120,8 @@ fn guard_satisfied(
         next_step: step + 1,
         params: &z3_params,
         locals: Vec::new(),
+        compound_locals: Vec::new(),
+        set_locals: Vec::new(),
     };
 
     let Ok(guard) = enc.encode_bool(&action.guard) else {
@@ -170,20 +180,34 @@ fn extract_state(
                 key_hi,
                 value_kind,
             } => {
+                let stride = value_kind.z3_var_count();
                 let mut pairs = Vec::new();
                 for (i, k) in (*key_lo..=*key_hi).enumerate() {
-                    let val = model
-                        .eval(&z3_vars[i], true)
-                        .and_then(|v| {
-                            v.as_int()
-                                .and_then(|i| i.as_i64())
-                                .map(|n| format_int_value(n, value_kind, &layout.string_table))
-                                .or_else(|| {
-                                    v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
-                                })
-                        })
-                        .unwrap_or_else(|| "?".to_string());
-                    pairs.push(format!("{}: {}", k, val));
+                    if stride == 1 {
+                        let val = model
+                            .eval(&z3_vars[i], true)
+                            .and_then(|v| {
+                                v.as_int()
+                                    .and_then(|i| i.as_i64())
+                                    .map(|n| format_int_value(n, value_kind, &layout.string_table))
+                                    .or_else(|| {
+                                        v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
+                                    })
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        pairs.push(format!("{}: {}", k, val));
+                    } else {
+                        // Compound value (e.g., Seq)
+                        let key_offset = i * stride;
+                        let key_vars = &z3_vars[key_offset..key_offset + stride];
+                        let val_str = format_compound_value(
+                            model,
+                            value_kind,
+                            key_vars,
+                            &layout.string_table,
+                        );
+                        pairs.push(format!("{}: {}", k, val_str));
+                    }
                 }
                 format!("{{{}}}", pairs.join(", "))
             }
@@ -201,12 +225,72 @@ fn extract_state(
                 }
                 format!("{{{}}}", members.join(", "))
             }
+            VarKind::ExplodedSeq { max_len, elem_kind } => {
+                let len = model
+                    .eval(&z3_vars[0], true)
+                    .and_then(|v| v.as_int())
+                    .and_then(|i| i.as_i64())
+                    .unwrap_or(0) as usize;
+                let len = len.min(*max_len);
+                let mut elems = Vec::new();
+                for i in 0..len {
+                    let val = model
+                        .eval(&z3_vars[1 + i], true)
+                        .and_then(|v| {
+                            v.as_int()
+                                .and_then(|i| i.as_i64())
+                                .map(|n| format_int_value(n, elem_kind, &layout.string_table))
+                                .or_else(|| {
+                                    v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
+                                })
+                        })
+                        .unwrap_or_else(|| "?".to_string());
+                    elems.push(val);
+                }
+                format!("[{}]", elems.join(", "))
+            }
         };
 
         state.push((entry.name.clone(), value_str));
     }
 
     state
+}
+
+/// Format a compound value (e.g., Seq within a Dict).
+fn format_compound_value(
+    model: &Model,
+    kind: &VarKind,
+    vars: &[Dynamic],
+    string_table: &[String],
+) -> String {
+    match kind {
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            let len = model
+                .eval(&vars[0], true)
+                .and_then(|v| v.as_int())
+                .and_then(|i| i.as_i64())
+                .unwrap_or(0) as usize;
+            let len = len.min(*max_len);
+            let mut elems = Vec::new();
+            for i in 0..len {
+                let val = model
+                    .eval(&vars[1 + i], true)
+                    .and_then(|v| {
+                        v.as_int()
+                            .and_then(|i| i.as_i64())
+                            .map(|n| format_int_value(n, elem_kind, string_table))
+                            .or_else(|| {
+                                v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
+                            })
+                    })
+                    .unwrap_or_else(|| "?".to_string());
+                elems.push(val);
+            }
+            format!("[{}]", elems.join(", "))
+        }
+        _ => "?".to_string(),
+    }
 }
 
 /// Format an integer value, using string table reverse-lookup if applicable.

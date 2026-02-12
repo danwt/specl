@@ -66,6 +66,8 @@ fn encode_init_expr(
                     next_step: 0,
                     params: &[],
                     locals: Vec::new(),
+                    compound_locals: Vec::new(),
+                    set_locals: Vec::new(),
                 };
                 let constraint = enc.encode_bool(expr)?;
                 solver.assert(&constraint);
@@ -86,6 +88,8 @@ fn encode_init_expr(
                 next_step: 0,
                 params: &[],
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
             let constraint = enc.encode_bool(expr)?;
             solver.assert(&constraint);
@@ -115,6 +119,8 @@ fn encode_init_assignment(
                 next_step: 0,
                 params: &[],
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
             let rhs_z3 = enc.encode(rhs)?;
             if let (Some(vi), Some(ri)) = (z3_vars[0].as_int(), rhs_z3.as_int()) {
@@ -124,9 +130,14 @@ fn encode_init_assignment(
             }
             Ok(())
         }
-        VarKind::ExplodedDict { key_lo, key_hi, .. } => {
+        VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } => {
             let key_lo = *key_lo;
             let key_hi = *key_hi;
+            let stride = value_kind.z3_var_count();
             match rhs {
                 CompiledExpr::FnLit { domain: _, body } => {
                     for (i, k) in (key_lo..=key_hi).enumerate() {
@@ -138,21 +149,56 @@ fn encode_init_assignment(
                             next_step: 0,
                             params: &[],
                             locals: Vec::new(),
+                            compound_locals: Vec::new(),
+                            set_locals: Vec::new(),
                         };
                         let k_val = Dynamic::from_ast(&Int::from_i64(k));
                         enc.locals.push(k_val);
-                        let body_z3 = enc.encode(body)?;
-                        if let (Some(vi), Some(ri)) = (z3_vars[i].as_int(), body_z3.as_int()) {
-                            solver.assert(&vi.eq(&ri));
-                        } else if let (Some(vb), Some(rb)) =
-                            (z3_vars[i].as_bool(), body_z3.as_bool())
-                        {
-                            solver.assert(&vb.eq(&rb));
+
+                        if stride == 1 {
+                            let body_z3 = enc.encode(body)?;
+                            if let (Some(vi), Some(ri)) = (z3_vars[i].as_int(), body_z3.as_int()) {
+                                solver.assert(&vi.eq(&ri));
+                            } else if let (Some(vb), Some(rb)) =
+                                (z3_vars[i].as_bool(), body_z3.as_bool())
+                            {
+                                solver.assert(&vb.eq(&rb));
+                            }
+                        } else {
+                            // Compound value: handle SeqLit
+                            let key_offset = i * stride;
+                            let key_vars = &z3_vars[key_offset..key_offset + stride];
+                            if let CompiledExpr::SeqLit(elems) = body.as_ref() {
+                                let len_var = key_vars[0].as_int().unwrap();
+                                solver.assert(&len_var.eq(&Int::from_i64(elems.len() as i64)));
+                                if let VarKind::ExplodedSeq { max_len, .. } = value_kind.as_ref() {
+                                    for (ei, elem_expr) in elems.iter().enumerate() {
+                                        if ei >= *max_len {
+                                            break;
+                                        }
+                                        let val = enc.encode(elem_expr)?;
+                                        let offset = 1 + ei;
+                                        if let (Some(vi), Some(ri)) =
+                                            (key_vars[offset].as_int(), val.as_int())
+                                        {
+                                            solver.assert(&vi.eq(&ri));
+                                        } else if let (Some(vb), Some(rb)) =
+                                            (key_vars[offset].as_bool(), val.as_bool())
+                                        {
+                                            solver.assert(&vb.eq(&rb));
+                                        }
+                                    }
+                                }
+                            } else {
+                                return Err(SymbolicError::Encoding(
+                                    "Dict[Range, Seq] init body must be SeqLit".into(),
+                                ));
+                            }
                         }
                     }
                     Ok(())
                 }
-                CompiledExpr::DictLit(pairs) => {
+                CompiledExpr::DictLit(pairs) if stride == 1 => {
                     for (key_expr, val_expr) in pairs {
                         let mut enc = EncoderCtx {
                             layout,
@@ -162,6 +208,8 @@ fn encode_init_assignment(
                             next_step: 0,
                             params: &[],
                             locals: Vec::new(),
+                            compound_locals: Vec::new(),
+                            set_locals: Vec::new(),
                         };
                         let key_val = enc.extract_concrete_int_helper(key_expr)?;
                         let offset = (key_val - key_lo) as usize;
@@ -191,6 +239,8 @@ fn encode_init_assignment(
                 next_step: 0,
                 params: &[],
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
             let flags = enc.encode_as_set(rhs, *lo, *hi)?;
             for (i, flag) in flags.iter().enumerate() {
@@ -198,6 +248,47 @@ fn encode_init_assignment(
                 solver.assert(&vb.eq(flag));
             }
             Ok(())
+        }
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            let mut enc = EncoderCtx {
+                layout,
+                consts,
+                step_vars,
+                current_step: 0,
+                next_step: 0,
+                params: &[],
+                locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
+            };
+            match rhs {
+                CompiledExpr::SeqLit(elems) => {
+                    // len = elems.len()
+                    let len_var = z3_vars[0].as_int().unwrap();
+                    solver.assert(&len_var.eq(&Int::from_i64(elems.len() as i64)));
+                    // assign each element
+                    let elem_stride = elem_kind.z3_var_count();
+                    for (i, elem_expr) in elems.iter().enumerate() {
+                        if i >= *max_len {
+                            break;
+                        }
+                        let val = enc.encode(elem_expr)?;
+                        let offset = 1 + i * elem_stride;
+                        if let (Some(vi), Some(ri)) = (z3_vars[offset].as_int(), val.as_int()) {
+                            solver.assert(&vi.eq(&ri));
+                        } else if let (Some(vb), Some(rb)) =
+                            (z3_vars[offset].as_bool(), val.as_bool())
+                        {
+                            solver.assert(&vb.eq(&rb));
+                        }
+                    }
+                    Ok(())
+                }
+                _ => Err(SymbolicError::Encoding(format!(
+                    "unsupported seq init rhs: {:?}",
+                    std::mem::discriminant(rhs)
+                ))),
+            }
         }
     }
 }
@@ -245,6 +336,16 @@ fn encode_action(
                     Err(SymbolicError::Unsupported("unbounded Int parameter".into()))
                 }
             }
+            Type::String => {
+                let n = layout.string_table.len() as i64;
+                if n == 0 {
+                    Err(SymbolicError::Encoding(
+                        "String parameter but no strings in spec".into(),
+                    ))
+                } else {
+                    Ok((0, n - 1))
+                }
+            }
             _ => Err(SymbolicError::Unsupported(format!(
                 "parameter type: {:?}",
                 ty
@@ -261,6 +362,8 @@ fn encode_action(
             next_step: step + 1,
             params: &[],
             locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
         };
 
         let guard = enc.encode_bool(&action.guard)?;
@@ -287,6 +390,8 @@ fn encode_action(
                 next_step: step + 1,
                 params: &z3_params,
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
 
             let guard = enc.encode_bool(&action.guard)?;
@@ -334,6 +439,8 @@ fn encode_effect(
         next_step: step + 1,
         params,
         locals: Vec::new(),
+        compound_locals: Vec::new(),
+        set_locals: Vec::new(),
     };
 
     encode_effect_expr(&action.effect, &mut enc, layout, step_vars, step)
@@ -406,9 +513,14 @@ fn encode_primed_assignment(
                 ))
             }
         }
-        VarKind::ExplodedDict { key_lo, key_hi, .. } => {
+        VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } => {
             let key_lo = *key_lo;
             let key_hi = *key_hi;
+            let stride = value_kind.z3_var_count();
             let curr_vars = &step_vars[step][var_idx];
 
             match rhs {
@@ -416,7 +528,7 @@ fn encode_primed_assignment(
                     base: _,
                     key,
                     value,
-                } => {
+                } if stride == 1 => {
                     let mut conjuncts = Vec::new();
                     let key_z3 = enc.encode_int(key)?;
                     let val_z3 = enc.encode(value)?;
@@ -442,7 +554,7 @@ fn encode_primed_assignment(
 
                     Ok(Bool::and(&conjuncts))
                 }
-                CompiledExpr::FnLit { domain: _, body } => {
+                CompiledExpr::FnLit { domain: _, body } if stride == 1 => {
                     let mut conjuncts = Vec::new();
                     for (i, k) in (key_lo..=key_hi).enumerate() {
                         let k_val = Dynamic::from_ast(&Int::from_i64(k));
@@ -461,12 +573,62 @@ fn encode_primed_assignment(
                     Ok(Bool::and(&conjuncts))
                 }
                 // Dict merge: state | { k1: v1, k2: v2, ... }
-                // For each key in range: next[k] = if k matches any pair key then pair value else curr[k]
                 CompiledExpr::Binary {
                     op: BinOp::Union,
                     left: _,
                     right,
-                } => encode_dict_merge(right, enc, next_vars, curr_vars, key_lo, key_hi),
+                } => {
+                    if stride == 1 {
+                        encode_dict_merge(right, enc, next_vars, curr_vars, key_lo, key_hi)
+                    } else {
+                        encode_dict_merge_compound(
+                            right, enc, next_vars, curr_vars, key_lo, key_hi, stride, value_kind,
+                            step_vars, step, var_idx,
+                        )
+                    }
+                }
+                // FnLit with compound values (Dict[Range, Seq[T]] init)
+                CompiledExpr::FnLit { domain: _, body } => {
+                    // body is evaluated per key, expecting a SeqLit
+                    let mut conjuncts = Vec::new();
+                    for (i, k) in (key_lo..=key_hi).enumerate() {
+                        let k_val = Dynamic::from_ast(&Int::from_i64(k));
+                        enc.locals.push(k_val);
+                        let key_offset = i * stride;
+                        let key_next = &next_vars[key_offset..key_offset + stride];
+                        if let CompiledExpr::SeqLit(elems) = body.as_ref() {
+                            let next_len = key_next[0].as_int().unwrap();
+                            conjuncts.push(next_len.eq(&Int::from_i64(elems.len() as i64)));
+                            if let VarKind::ExplodedSeq { max_len, elem_kind } = value_kind.as_ref()
+                            {
+                                let es = elem_kind.z3_var_count();
+                                for (ei, elem_expr) in elems.iter().enumerate() {
+                                    if ei >= *max_len {
+                                        break;
+                                    }
+                                    let val = enc.encode(elem_expr)?;
+                                    let offset = 1 + ei * es;
+                                    if let (Some(ni), Some(ri)) =
+                                        (key_next[offset].as_int(), val.as_int())
+                                    {
+                                        conjuncts.push(ni.eq(&ri));
+                                    } else if let (Some(nb), Some(rb)) =
+                                        (key_next[offset].as_bool(), val.as_bool())
+                                    {
+                                        conjuncts.push(nb.eq(&rb));
+                                    }
+                                }
+                            }
+                        } else {
+                            enc.locals.pop();
+                            return Err(SymbolicError::Encoding(
+                                "Dict[Range, Seq] init body must be a SeqLit".into(),
+                            ));
+                        }
+                        enc.locals.pop();
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
                 _ => Err(SymbolicError::Encoding(format!(
                     "unsupported dict rhs: {:?}",
                     std::mem::discriminant(rhs)
@@ -483,6 +645,161 @@ fn encode_primed_assignment(
                 conjuncts.push(nb.eq(flag));
             }
             Ok(Bool::and(&conjuncts))
+        }
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            let curr_vars = &step_vars[step][var_idx];
+            let elem_stride = elem_kind.z3_var_count();
+
+            match rhs {
+                CompiledExpr::SeqLit(elems) => {
+                    let mut conjuncts = Vec::new();
+                    let next_len = next_vars[0].as_int().unwrap();
+                    conjuncts.push(next_len.eq(&Int::from_i64(elems.len() as i64)));
+                    for (i, elem_expr) in elems.iter().enumerate() {
+                        if i >= *max_len {
+                            break;
+                        }
+                        let val = enc.encode(elem_expr)?;
+                        let offset = 1 + i * elem_stride;
+                        if let (Some(ni), Some(ri)) = (next_vars[offset].as_int(), val.as_int()) {
+                            conjuncts.push(ni.eq(&ri));
+                        } else if let (Some(nb), Some(rb)) =
+                            (next_vars[offset].as_bool(), val.as_bool())
+                        {
+                            conjuncts.push(nb.eq(&rb));
+                        }
+                    }
+                    // Frame remaining slots
+                    for i in elems.len()..*max_len {
+                        let offset = 1 + i * elem_stride;
+                        for j in 0..elem_stride {
+                            if let (Some(ni), Some(ci)) = (
+                                next_vars[offset + j].as_int(),
+                                curr_vars[offset + j].as_int(),
+                            ) {
+                                conjuncts.push(ni.eq(&ci));
+                            } else if let (Some(nb), Some(cb)) = (
+                                next_vars[offset + j].as_bool(),
+                                curr_vars[offset + j].as_bool(),
+                            ) {
+                                conjuncts.push(nb.eq(&cb));
+                            }
+                        }
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                // SeqTail: shift left, len - 1
+                CompiledExpr::SeqTail(_) => {
+                    let mut conjuncts = Vec::new();
+                    let curr_len = curr_vars[0].as_int().unwrap();
+                    let next_len = next_vars[0].as_int().unwrap();
+                    conjuncts.push(next_len.eq(&Int::sub(&[&curr_len, &Int::from_i64(1)])));
+                    for i in 0..max_len.saturating_sub(1) {
+                        let next_offset = 1 + i * elem_stride;
+                        let curr_offset = 1 + (i + 1) * elem_stride;
+                        for j in 0..elem_stride {
+                            if let (Some(ni), Some(ci)) = (
+                                next_vars[next_offset + j].as_int(),
+                                curr_vars[curr_offset + j].as_int(),
+                            ) {
+                                conjuncts.push(ni.eq(&ci));
+                            } else if let (Some(nb), Some(cb)) = (
+                                next_vars[next_offset + j].as_bool(),
+                                curr_vars[curr_offset + j].as_bool(),
+                            ) {
+                                conjuncts.push(nb.eq(&cb));
+                            }
+                        }
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                // Concat: base ++ [val] (append single element)
+                CompiledExpr::Binary {
+                    op: BinOp::Concat,
+                    left: _,
+                    right,
+                } => match right.as_ref() {
+                    CompiledExpr::SeqLit(elems) if elems.len() == 1 => {
+                        let mut conjuncts = Vec::new();
+                        let curr_len = curr_vars[0].as_int().unwrap();
+                        let next_len = next_vars[0].as_int().unwrap();
+                        conjuncts.push(next_len.eq(&Int::add(&[&curr_len, &Int::from_i64(1)])));
+                        let appended = enc.encode(&elems[0])?;
+                        for j in 0..*max_len {
+                            let offset = 1 + j * elem_stride;
+                            let j_z3 = Int::from_i64(j as i64);
+                            let is_append_slot = curr_len.eq(&j_z3);
+                            for s in 0..elem_stride {
+                                if let (Some(ni), Some(ci)) = (
+                                    next_vars[offset + s].as_int(),
+                                    curr_vars[offset + s].as_int(),
+                                ) {
+                                    let new_val = if s == 0 {
+                                        appended.as_int().unwrap()
+                                    } else {
+                                        ci.clone()
+                                    };
+                                    conjuncts.push(ni.eq(&is_append_slot.ite(&new_val, &ci)));
+                                } else if let (Some(nb), Some(cb)) = (
+                                    next_vars[offset + s].as_bool(),
+                                    curr_vars[offset + s].as_bool(),
+                                ) {
+                                    let new_val = if s == 0 {
+                                        appended.as_bool().unwrap()
+                                    } else {
+                                        cb.clone()
+                                    };
+                                    conjuncts.push(nb.eq(&is_append_slot.ite(&new_val, &cb)));
+                                }
+                            }
+                        }
+                        Ok(Bool::and(&conjuncts))
+                    }
+                    _ => Err(SymbolicError::Encoding(
+                        "concat in seq effect: only `base ++ [single_elem]` is supported".into(),
+                    )),
+                },
+                // Slice: base[lo..hi]
+                CompiledExpr::Slice { base: _, lo, hi } => {
+                    let mut conjuncts = Vec::new();
+                    let lo_z3 = enc.encode_int(lo)?;
+                    let hi_z3 = enc.encode_int(hi)?;
+                    let next_len = next_vars[0].as_int().unwrap();
+                    conjuncts.push(next_len.eq(&Int::sub(&[&hi_z3, &lo_z3])));
+                    for i in 0..*max_len {
+                        let next_offset = 1 + i * elem_stride;
+                        let i_z3 = Int::from_i64(i as i64);
+                        let src_idx = Int::add(&[&lo_z3, &i_z3]);
+                        // ITE chain over source elements
+                        for s in 0..elem_stride {
+                            if let Some(ni) = next_vars[next_offset + s].as_int() {
+                                let mut val = curr_vars[1 + s].as_int().unwrap().clone(); // default: elem 0
+                                for j in (0..*max_len).rev() {
+                                    let src_offset = 1 + j * elem_stride;
+                                    let cond = src_idx.eq(&Int::from_i64(j as i64));
+                                    let cv = curr_vars[src_offset + s].as_int().unwrap();
+                                    val = cond.ite(&cv, &val);
+                                }
+                                conjuncts.push(ni.eq(&val));
+                            } else if let Some(nb) = next_vars[next_offset + s].as_bool() {
+                                let mut val = curr_vars[1 + s].as_bool().unwrap().clone();
+                                for j in (0..*max_len).rev() {
+                                    let src_offset = 1 + j * elem_stride;
+                                    let cond = src_idx.eq(&Int::from_i64(j as i64));
+                                    let cv = curr_vars[src_offset + s].as_bool().unwrap();
+                                    val = cond.ite(&cv, &val);
+                                }
+                                conjuncts.push(nb.eq(&val));
+                            }
+                        }
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                _ => Err(SymbolicError::Encoding(format!(
+                    "unsupported seq effect rhs: {:?}",
+                    std::mem::discriminant(rhs)
+                ))),
+            }
         }
     }
 }
@@ -549,6 +866,204 @@ fn encode_dict_merge(
     }
 
     Ok(Bool::and(&conjuncts))
+}
+
+/// Dict merge for compound value kinds (e.g., Dict[Range, Seq[T]]).
+/// For each key k: if k is updated, encode the seq operation; otherwise frame.
+#[allow(clippy::too_many_arguments)]
+fn encode_dict_merge_compound(
+    merge_expr: &CompiledExpr,
+    enc: &mut EncoderCtx,
+    next_vars: &[Dynamic],
+    curr_vars: &[Dynamic],
+    key_lo: i64,
+    key_hi: i64,
+    stride: usize,
+    value_kind: &VarKind,
+    _step_vars: &[Vec<Vec<Dynamic>>],
+    _step: usize,
+    _var_idx: usize,
+) -> SymbolicResult<Bool> {
+    let pairs: Vec<(&CompiledExpr, &CompiledExpr)> = match merge_expr {
+        CompiledExpr::DictLit(ps) => ps.iter().map(|(k, v)| (k, v)).collect(),
+        _ => {
+            return Err(SymbolicError::Encoding(format!(
+                "unsupported compound dict merge rhs: {:?}",
+                std::mem::discriminant(merge_expr)
+            )));
+        }
+    };
+
+    let max_len = match value_kind {
+        VarKind::ExplodedSeq { max_len, .. } => *max_len,
+        _ => {
+            return Err(SymbolicError::Encoding(
+                "compound dict merge only supports Seq values".into(),
+            ));
+        }
+    };
+
+    // Encode Z3 key expressions for each update pair
+    let mut encoded_keys: Vec<(Int, &CompiledExpr)> = Vec::new();
+    for (key_expr, val_expr) in &pairs {
+        let key_z3 = enc.encode_int(key_expr)?;
+        encoded_keys.push((key_z3, val_expr));
+    }
+
+    let mut conjuncts = Vec::new();
+
+    for k in key_lo..=key_hi {
+        let k_idx = (k - key_lo) as usize;
+        let key_offset = k_idx * stride;
+        let key_next = &next_vars[key_offset..key_offset + stride];
+        let key_curr = &curr_vars[key_offset..key_offset + stride];
+        let k_z3 = Int::from_i64(k);
+
+        // Check if any update key matches this slot
+        // Build ITE: for each update pair, if key matches → apply operation, else frame
+        // With multiple update pairs, later pairs shadow earlier ones (last match wins)
+        // We process pairs in reverse to build nested ITEs correctly.
+
+        // First, compute the "framed" values (copy current to next)
+        let frame_len = key_curr[0].as_int().unwrap();
+        let mut frame_elems: Vec<Dynamic> = Vec::new();
+        for j in 0..stride {
+            frame_elems.push(key_curr[j].clone());
+        }
+
+        // For each update pair, compute what the updated values would be
+        // and build ITE selection
+        let mut result_vars: Vec<Dynamic> = frame_elems;
+        for (pair_key, val_expr) in encoded_keys.iter().rev() {
+            let is_match = pair_key.eq(&k_z3);
+            let updated =
+                encode_seq_update_for_slot(enc, *val_expr, key_curr, max_len, &frame_len)?;
+            // ITE per var: if this key matches, use updated; else use previous result
+            let mut new_result = Vec::with_capacity(stride);
+            for j in 0..stride {
+                let selected = ite_dynamic(&is_match, &updated[j], &result_vars[j])?;
+                new_result.push(selected);
+            }
+            result_vars = new_result;
+        }
+
+        // Assert next == result
+        for j in 0..stride {
+            let c = eq_dynamic(&key_next[j], &result_vars[j])?;
+            conjuncts.push(c);
+        }
+    }
+
+    Ok(Bool::and(&conjuncts))
+}
+
+/// Encode a seq operation (append, tail, literal) for a single dict key slot.
+/// Returns the updated Z3 var values (len + elements).
+fn encode_seq_update_for_slot(
+    enc: &mut EncoderCtx,
+    val_expr: &CompiledExpr,
+    key_curr: &[Dynamic],
+    max_len: usize,
+    curr_len: &Int,
+) -> SymbolicResult<Vec<Dynamic>> {
+    let stride = key_curr.len();
+    match val_expr {
+        CompiledExpr::Binary {
+            op: BinOp::Concat,
+            left: _,
+            right: concat_right,
+        } => {
+            // Append: base ++ [elem]
+            if let CompiledExpr::SeqLit(elems) = concat_right.as_ref() {
+                if elems.len() == 1 {
+                    let new_len = Dynamic::from_ast(&Int::add(&[curr_len, &Int::from_i64(1)]));
+                    let appended = enc.encode(&elems[0])?;
+                    let mut result = vec![new_len];
+                    for j in 0..max_len {
+                        let j_z3 = Int::from_i64(j as i64);
+                        let is_append = curr_len.eq(&j_z3);
+                        let updated = ite_dynamic(&is_append, &appended, &key_curr[1 + j])?;
+                        result.push(updated);
+                    }
+                    return Ok(result);
+                }
+            }
+            Err(SymbolicError::Encoding(
+                "dict-of-seq merge: only single-element append supported".into(),
+            ))
+        }
+        CompiledExpr::SeqTail(_) => {
+            let new_len = Dynamic::from_ast(&Int::sub(&[curr_len, &Int::from_i64(1)]));
+            let mut result = vec![new_len];
+            for i in 0..max_len.saturating_sub(1) {
+                result.push(key_curr[1 + (i + 1)].clone()); // shift left
+            }
+            // Last element slot: keep current (doesn't matter, beyond new len)
+            if max_len > 0 {
+                result.push(key_curr[stride - 1].clone());
+            }
+            Ok(result)
+        }
+        CompiledExpr::SeqLit(elems) => {
+            let mut result = vec![Dynamic::from_ast(&Int::from_i64(elems.len() as i64))];
+            for (i, elem_expr) in elems.iter().enumerate() {
+                if i >= max_len {
+                    break;
+                }
+                result.push(enc.encode(elem_expr)?);
+            }
+            // Pad remaining slots with current values
+            while result.len() < stride {
+                result.push(key_curr[result.len()].clone());
+            }
+            Ok(result)
+        }
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            let cond_z3 = enc.encode_bool(cond)?;
+            let then_vars =
+                encode_seq_update_for_slot(enc, then_branch, key_curr, max_len, curr_len)?;
+            let else_vars =
+                encode_seq_update_for_slot(enc, else_branch, key_curr, max_len, curr_len)?;
+            let mut result = Vec::with_capacity(stride);
+            for i in 0..stride {
+                result.push(ite_dynamic(&cond_z3, &then_vars[i], &else_vars[i])?);
+            }
+            Ok(result)
+        }
+        // Index into same variable (identity/frame): just return current slot values.
+        // This handles patterns like `d = d | {i: d[i]}` where the value is unchanged.
+        CompiledExpr::Index { .. } | CompiledExpr::Local(_) => Ok(key_curr.to_vec()),
+        _ => Err(SymbolicError::Encoding(format!(
+            "unsupported seq operation in dict merge: {:?}",
+            std::mem::discriminant(val_expr)
+        ))),
+    }
+}
+
+/// ITE on Dynamic values (works for both Int and Bool).
+fn ite_dynamic(cond: &Bool, then_val: &Dynamic, else_val: &Dynamic) -> SymbolicResult<Dynamic> {
+    if let (Some(t), Some(e)) = (then_val.as_int(), else_val.as_int()) {
+        Ok(Dynamic::from_ast(&cond.ite(&t, &e)))
+    } else if let (Some(t), Some(e)) = (then_val.as_bool(), else_val.as_bool()) {
+        Ok(Dynamic::from_ast(&cond.ite(&t, &e)))
+    } else {
+        Err(SymbolicError::Encoding("ite_dynamic: type mismatch".into()))
+    }
+}
+
+/// Equality on Dynamic values (works for both Int and Bool).
+fn eq_dynamic(a: &Dynamic, b: &Dynamic) -> SymbolicResult<Bool> {
+    if let (Some(ai), Some(bi)) = (a.as_int(), b.as_int()) {
+        Ok(ai.eq(&bi))
+    } else if let (Some(ab), Some(bb)) = (a.as_bool(), b.as_bool()) {
+        Ok(ab.eq(&bb))
+    } else {
+        Err(SymbolicError::Encoding("eq_dynamic: type mismatch".into()))
+    }
 }
 
 fn encode_frame(

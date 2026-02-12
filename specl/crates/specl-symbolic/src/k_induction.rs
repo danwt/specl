@@ -22,10 +22,11 @@ pub fn check_k_induction(
     spec: &CompiledSpec,
     consts: &[Value],
     k: usize,
+    seq_bound: usize,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!(k, "starting k-induction");
 
-    let layout = VarLayout::from_spec(spec, consts)?;
+    let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
 
     // === Base case: BMC to depth K ===
     info!(k, "k-induction base case");
@@ -75,6 +76,8 @@ fn check_base_case(
                 next_step: depth,
                 params: &[],
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
             let inv_encoded = enc.encode_bool(&inv.body)?;
             solver.assert(&inv_encoded.not());
@@ -146,6 +149,8 @@ fn check_inductive_step(
                 next_step: step,
                 params: &[],
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
             let inv_at_step = enc.encode_bool(&inv.body)?;
             solver.assert(&inv_at_step);
@@ -160,6 +165,8 @@ fn check_inductive_step(
             next_step: k,
             params: &[],
             locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
         };
         let inv_at_k = enc_k.encode_bool(&inv.body)?;
         solver.assert(&inv_at_k.not());

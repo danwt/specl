@@ -15,10 +15,11 @@ pub fn check_bmc(
     spec: &CompiledSpec,
     consts: &[Value],
     max_depth: usize,
+    seq_bound: usize,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!(depth = max_depth, "starting symbolic BMC");
 
-    let layout = VarLayout::from_spec(spec, consts)?;
+    let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let solver = Solver::new();
 
     // Create Z3 variables for steps 0..=max_depth
@@ -54,6 +55,8 @@ pub fn check_bmc(
                 next_step: k,
                 params: &[],
                 locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
             };
 
             let inv_encoded = enc.encode_bool(&inv.body)?;

@@ -21,6 +21,12 @@ pub struct EncoderCtx<'a> {
     pub params: &'a [Dynamic],
     /// Local variable stack (for Let/Forall/Exists bindings).
     pub locals: Vec<Dynamic>,
+    /// Compound locals: tracks locals bound to compound dict values (e.g., d[k] where d is Dict[Range, Seq]).
+    /// Each entry: (abs_depth, var_idx, step, key_z3) where abs_depth is the locals stack position.
+    pub compound_locals: Vec<(usize, usize, usize, Int)>,
+    /// Set locals: maps absolute locals stack position → concrete set members.
+    /// Used for powerset quantifier bindings where the local represents a concrete subset.
+    pub set_locals: Vec<(usize, Vec<i64>)>,
 }
 
 impl<'a> EncoderCtx<'a> {
@@ -107,11 +113,35 @@ impl<'a> EncoderCtx<'a> {
 
             // === Let binding ===
             CompiledExpr::Let { value, body } => {
-                let val = self.encode(value)?;
-                self.locals.push(val);
-                let result = self.encode(body);
-                self.locals.pop();
-                result
+                // Try to encode the value as a scalar
+                match self.encode(value) {
+                    Ok(val) => {
+                        self.locals.push(val);
+                        let result = self.encode(body);
+                        self.locals.pop();
+                        result
+                    }
+                    Err(_) => {
+                        // Value might be a compound expression (e.g., d[k] where d is Dict[Range, Seq]).
+                        // Track as a compound local.
+                        if let Some((var_idx, step, key_z3)) =
+                            self.try_resolve_compound_local(value)
+                        {
+                            // Push a dummy value to maintain local index alignment
+                            let abs_depth = self.locals.len();
+                            self.locals.push(Dynamic::from_ast(&Int::from_i64(0)));
+                            self.compound_locals
+                                .push((abs_depth, var_idx, step, key_z3));
+                            let result = self.encode(body);
+                            self.compound_locals.pop();
+                            self.locals.pop();
+                            result
+                        } else {
+                            // Re-raise the original error
+                            self.encode(value).and_then(|_| unreachable!())
+                        }
+                    }
+                }
             }
 
             // === Quantifiers ===
@@ -149,27 +179,61 @@ impl<'a> EncoderCtx<'a> {
                 "Range expression used outside quantifier context".into(),
             )),
 
+            // === Seq operations ===
+            CompiledExpr::SeqHead(inner) => self.encode_seq_head(inner),
+            CompiledExpr::SeqTail(_) => Err(SymbolicError::Encoding(
+                "SeqTail should be handled at the effect level".into(),
+            )),
+            CompiledExpr::SeqLit(_) => Err(SymbolicError::Encoding(
+                "SeqLit should be handled at the init/effect level".into(),
+            )),
+            CompiledExpr::Slice { .. } => Err(SymbolicError::Encoding(
+                "Slice should be handled at the effect level".into(),
+            )),
+
+            // === Choose ===
+            CompiledExpr::Choose { domain, predicate } => self.encode_choose(domain, predicate),
+
+            // === Keys/Values (set-returning — error in scalar context) ===
+            CompiledExpr::Keys(_) => Err(SymbolicError::Encoding(
+                "keys() returns a set; use in set context (in, len, quantifier)".into(),
+            )),
+            CompiledExpr::Values(_) => Err(SymbolicError::Encoding(
+                "values() returns a set; use in set context (in, len, quantifier)".into(),
+            )),
+
             // === Unsupported ===
-            CompiledExpr::SeqLit(_)
-            | CompiledExpr::SeqHead(_)
-            | CompiledExpr::SeqTail(_)
-            | CompiledExpr::Slice { .. }
-            | CompiledExpr::Powerset(_)
-            | CompiledExpr::BigUnion(_)
-            | CompiledExpr::Fix { .. }
-            | CompiledExpr::Keys(_)
-            | CompiledExpr::Values(_)
-            | CompiledExpr::Changes(_)
-            | CompiledExpr::Enabled(_)
-            | CompiledExpr::ActionCall { .. }
-            | CompiledExpr::Field { .. }
-            | CompiledExpr::RecordUpdate { .. }
-            | CompiledExpr::TupleLit(_)
-            | CompiledExpr::Call { .. }
-            | CompiledExpr::Choose { .. } => Err(SymbolicError::Unsupported(format!(
-                "{:?}",
-                std::mem::discriminant(expr)
-            ))),
+            CompiledExpr::Powerset(_) => Err(SymbolicError::Unsupported(
+                "powerset() as a value; use in quantifier context (any Q in powerset(S): ...)"
+                    .into(),
+            )),
+            CompiledExpr::BigUnion(_) => Err(SymbolicError::Unsupported(
+                "union_all requires set-of-sets encoding".into(),
+            )),
+            CompiledExpr::Fix { .. } => Err(SymbolicError::Unsupported(
+                "fix expression requires unbounded domain".into(),
+            )),
+            CompiledExpr::Changes(_) => Err(SymbolicError::Unsupported(
+                "changes() is a temporal operator".into(),
+            )),
+            CompiledExpr::Enabled(_) => Err(SymbolicError::Unsupported(
+                "enabled() is a temporal operator".into(),
+            )),
+            CompiledExpr::ActionCall { .. } => Err(SymbolicError::Unsupported(
+                "action calls in expressions not supported".into(),
+            )),
+            CompiledExpr::Call { .. } => Err(SymbolicError::Unsupported(
+                "function calls should be inlined by the compiler; this is a bug".into(),
+            )),
+            CompiledExpr::Field { .. } => Err(SymbolicError::Unsupported(
+                "record field access not yet supported in symbolic mode".into(),
+            )),
+            CompiledExpr::RecordUpdate { .. } => Err(SymbolicError::Unsupported(
+                "record update not yet supported in symbolic mode".into(),
+            )),
+            CompiledExpr::TupleLit(_) => Err(SymbolicError::Unsupported(
+                "tuple literal not yet supported in symbolic mode".into(),
+            )),
         }
     }
 
@@ -179,12 +243,12 @@ impl<'a> EncoderCtx<'a> {
             VarKind::Bool | VarKind::Int { .. } => {
                 Ok(self.step_vars[step][specl_var_idx][0].clone())
             }
-            VarKind::ExplodedDict { .. } | VarKind::ExplodedSet { .. } => {
-                Err(SymbolicError::Encoding(format!(
-                    "dict/set variable '{}' accessed directly (use index operator)",
-                    entry.name
-                )))
-            }
+            VarKind::ExplodedDict { .. }
+            | VarKind::ExplodedSet { .. }
+            | VarKind::ExplodedSeq { .. } => Err(SymbolicError::Encoding(format!(
+                "compound variable '{}' accessed directly (use index/len/head operator)",
+                entry.name
+            ))),
         }
     }
 
@@ -193,6 +257,12 @@ impl<'a> EncoderCtx<'a> {
         match val {
             Value::Bool(b) => Ok(Dynamic::from_ast(&Bool::from_bool(*b))),
             Value::Int(n) => Ok(Dynamic::from_ast(&Int::from_i64(*n))),
+            Value::String(s) => {
+                let id = self.layout.string_id(s).ok_or_else(|| {
+                    SymbolicError::Encoding(format!("string constant not in table: {:?}", s))
+                })?;
+                Ok(Dynamic::from_ast(&Int::from_i64(id)))
+            }
             _ => Err(SymbolicError::Unsupported(format!(
                 "constant type: {:?}",
                 val
@@ -309,7 +379,9 @@ impl<'a> EncoderCtx<'a> {
                 Ok(Dynamic::from_ast(&Bool::and(&conjuncts)))
             }
 
-            BinOp::Concat => Err(SymbolicError::Unsupported("sequence concat".into())),
+            BinOp::Concat => Err(SymbolicError::Encoding(
+                "sequence concat (++) should be handled at the effect level".into(),
+            )),
         }
     }
 
@@ -324,6 +396,11 @@ impl<'a> EncoderCtx<'a> {
                 conjuncts.push(lb.eq(rb));
             }
             return Ok(Dynamic::from_ast(&Bool::and(&conjuncts)));
+        }
+
+        // Check if either side is a seq expression — compare len + elements
+        if self.is_seq_expr(left) || self.is_seq_expr(right) {
+            return self.encode_seq_eq(left, right);
         }
 
         let l = self.encode(left)?;
@@ -358,6 +435,19 @@ impl<'a> EncoderCtx<'a> {
         body: &CompiledExpr,
         is_forall: bool,
     ) -> SymbolicResult<Dynamic> {
+        // Powerset domain: enumerate all subsets
+        if let CompiledExpr::Powerset(inner) = domain {
+            return self.encode_powerset_quantifier(inner, body, is_forall);
+        }
+
+        // Set local domain (e.g., `all a in Q` where Q is a powerset-bound local)
+        if let CompiledExpr::Local(idx) = domain {
+            if let Some(members) = self.resolve_set_local(*idx) {
+                let members = members.clone();
+                return self.encode_set_local_quantifier(&members, body, is_forall);
+            }
+        }
+
         let (lo, hi) = self.extract_range(domain)?;
         let mut conjuncts = Vec::new();
 
@@ -376,41 +466,162 @@ impl<'a> EncoderCtx<'a> {
         }
     }
 
+    fn encode_powerset_quantifier(
+        &mut self,
+        inner: &CompiledExpr,
+        body: &CompiledExpr,
+        is_forall: bool,
+    ) -> SymbolicResult<Dynamic> {
+        let (lo, hi) = self.extract_range(inner)?;
+        let n = (hi - lo + 1) as u32;
+        if n > 20 {
+            return Err(SymbolicError::Encoding(format!(
+                "powerset too large: 2^{} subsets",
+                n
+            )));
+        }
+        let num_subsets = 1u32 << n;
+        let mut results = Vec::new();
+
+        for mask in 0..num_subsets {
+            let members: Vec<i64> = (0..n)
+                .filter(|bit| mask & (1 << bit) != 0)
+                .map(|bit| lo + bit as i64)
+                .collect();
+
+            // Push a dummy local for the set variable
+            let abs_depth = self.locals.len();
+            self.locals.push(Dynamic::from_ast(&Int::from_i64(0)));
+            self.set_locals.push((abs_depth, members));
+            let result = self.encode_bool(body)?;
+            self.set_locals.pop();
+            self.locals.pop();
+            results.push(result);
+        }
+
+        if is_forall {
+            Ok(Dynamic::from_ast(&Bool::and(&results)))
+        } else {
+            Ok(Dynamic::from_ast(&Bool::or(&results)))
+        }
+    }
+
+    fn encode_set_local_quantifier(
+        &mut self,
+        members: &[i64],
+        body: &CompiledExpr,
+        is_forall: bool,
+    ) -> SymbolicResult<Dynamic> {
+        if members.is_empty() {
+            return Ok(Dynamic::from_ast(&Bool::from_bool(is_forall)));
+        }
+        let mut results = Vec::new();
+        for &val in members {
+            let z3_val = Dynamic::from_ast(&Int::from_i64(val));
+            self.locals.push(z3_val);
+            let result = self.encode_bool(body)?;
+            self.locals.pop();
+            results.push(result);
+        }
+        if is_forall {
+            Ok(Dynamic::from_ast(&Bool::and(&results)))
+        } else {
+            Ok(Dynamic::from_ast(&Bool::or(&results)))
+        }
+    }
+
+    /// Resolve a Local(idx) as a set local, returning its concrete members.
+    fn resolve_set_local(&self, local_idx: usize) -> Option<&Vec<i64>> {
+        let depth = self.locals.len();
+        let abs_idx = depth - 1 - local_idx;
+        for (abs_depth, members) in self.set_locals.iter().rev() {
+            if *abs_depth == abs_idx {
+                return Some(members);
+            }
+        }
+        None
+    }
+
+    fn encode_choose(
+        &mut self,
+        domain: &CompiledExpr,
+        predicate: &CompiledExpr,
+    ) -> SymbolicResult<Dynamic> {
+        let (lo, hi) = self.extract_range(domain)?;
+        // Build ITE chain: if P(lo) then lo else if P(lo+1) then lo+1 else ... else lo
+        let mut result = Dynamic::from_ast(&Int::from_i64(lo)); // default fallback
+        for val in (lo..=hi).rev() {
+            let z3_val = Dynamic::from_ast(&Int::from_i64(val));
+            self.locals.push(z3_val);
+            let pred = self.encode_bool(predicate)?;
+            self.locals.pop();
+            let val_int = Int::from_i64(val);
+            if let Some(ri) = result.as_int() {
+                result = Dynamic::from_ast(&pred.ite(&val_int, &ri));
+            }
+        }
+        Ok(result)
+    }
+
     fn encode_index(
         &mut self,
         base: &CompiledExpr,
         index: &CompiledExpr,
     ) -> SymbolicResult<Dynamic> {
-        let (specl_var_idx, step) = match base {
-            CompiledExpr::Var(idx) => (*idx, self.current_step),
-            CompiledExpr::PrimedVar(idx) => (*idx, self.next_step),
-            _ => {
-                return Err(SymbolicError::Encoding(
-                    "index base must be a state variable".into(),
-                ))
-            }
-        };
+        // Handle nested index: d[k][i] where d is Dict[Range, Seq[T]]
+        if let CompiledExpr::Index {
+            base: outer_base,
+            index: outer_key,
+        } = base
+        {
+            return self.encode_nested_index(outer_base, outer_key, index);
+        }
 
+        // Handle Local(n)[i] for compound locals (seq within dict)
+        if let CompiledExpr::Local(local_idx) = base {
+            if let Some((var_idx, step, key_z3)) = self
+                .resolve_compound_local(*local_idx)
+                .map(|(v, s, k)| (*v, *s, k.clone()))
+            {
+                return self.encode_compound_local_index(var_idx, step, &key_z3, index);
+            }
+        }
+
+        let (specl_var_idx, step) = self.extract_var_step(base)?;
         let entry = &self.layout.entries[specl_var_idx];
         match &entry.kind {
-            VarKind::ExplodedDict { key_lo, key_hi, .. } => {
+            VarKind::ExplodedDict {
+                key_lo,
+                key_hi,
+                value_kind,
+            } => {
                 let key_lo = *key_lo;
                 let key_hi = *key_hi;
                 let z3_vars = &self.step_vars[step][specl_var_idx];
+                let stride = value_kind.z3_var_count();
 
-                if let Some(concrete_key) = self.try_concrete_int(index) {
-                    let offset = (concrete_key - key_lo) as usize;
-                    if offset < z3_vars.len() {
-                        Ok(z3_vars[offset].clone())
+                if stride == 1 {
+                    // Simple value kind (Bool/Int): one var per key
+                    if let Some(concrete_key) = self.try_concrete_int(index) {
+                        let offset = (concrete_key - key_lo) as usize;
+                        if offset < z3_vars.len() {
+                            Ok(z3_vars[offset].clone())
+                        } else {
+                            Err(SymbolicError::Encoding(format!(
+                                "dict key {} out of range [{}, {}]",
+                                concrete_key, key_lo, key_hi
+                            )))
+                        }
                     } else {
-                        Err(SymbolicError::Encoding(format!(
-                            "dict key {} out of range [{}, {}]",
-                            concrete_key, key_lo, key_hi
-                        )))
+                        let key_z3 = self.encode_int(index)?;
+                        self.build_ite_chain(&key_z3, z3_vars, key_lo)
                     }
                 } else {
-                    let key_z3 = self.encode_int(index)?;
-                    self.build_ite_chain(&key_z3, z3_vars, key_lo)
+                    // Compound value kind: d[k] is not a scalar
+                    Err(SymbolicError::Encoding(format!(
+                        "dict variable '{}' has compound values; use nested index (d[k][i]) or len(d[k])",
+                        entry.name
+                    )))
                 }
             }
             VarKind::ExplodedSet { lo, .. } => {
@@ -428,10 +639,149 @@ impl<'a> EncoderCtx<'a> {
                     self.build_ite_chain(&key_z3, z3_vars, lo)
                 }
             }
+            VarKind::ExplodedSeq { max_len, .. } => {
+                let max_len = *max_len;
+                let z3_vars = &self.step_vars[step][specl_var_idx];
+                let elem_vars = &z3_vars[1..1 + max_len];
+                if let Some(concrete_idx) = self.try_concrete_int(index) {
+                    let idx = concrete_idx as usize;
+                    if idx < max_len {
+                        Ok(elem_vars[idx].clone())
+                    } else {
+                        Err(SymbolicError::Encoding(format!(
+                            "seq index {} out of bounds (max_len {})",
+                            concrete_idx, max_len
+                        )))
+                    }
+                } else {
+                    let idx_z3 = self.encode_int(index)?;
+                    self.build_ite_chain(&idx_z3, elem_vars, 0)
+                }
+            }
             _ => Err(SymbolicError::Encoding(format!(
-                "index on non-dict/set variable '{}'",
+                "index on non-dict/set/seq variable '{}'",
                 entry.name
             ))),
+        }
+    }
+
+    /// Nested index: d[k][i] where d is Dict[Range, Seq[T]].
+    fn encode_nested_index(
+        &mut self,
+        dict_base: &CompiledExpr,
+        dict_key: &CompiledExpr,
+        seq_index: &CompiledExpr,
+    ) -> SymbolicResult<Dynamic> {
+        let (var_idx, step) = self.extract_var_step(dict_base)?;
+        let entry = &self.layout.entries[var_idx];
+        let (key_lo, key_hi, value_kind) = match &entry.kind {
+            VarKind::ExplodedDict {
+                key_lo,
+                key_hi,
+                value_kind,
+            } => (*key_lo, *key_hi, value_kind.as_ref()),
+            _ => {
+                return Err(SymbolicError::Encoding(
+                    "nested index requires dict base".into(),
+                ))
+            }
+        };
+
+        let stride = value_kind.z3_var_count();
+        let max_len = match value_kind {
+            VarKind::ExplodedSeq { max_len, .. } => *max_len,
+            _ => {
+                return Err(SymbolicError::Encoding(
+                    "nested index: dict value must be Seq".into(),
+                ))
+            }
+        };
+
+        let z3_vars = &self.step_vars[step][var_idx];
+
+        if let Some(concrete_key) = self.try_concrete_int(dict_key) {
+            // Concrete dict key: directly access the seq elements for this key
+            let key_offset = (concrete_key - key_lo) as usize * stride;
+            let elem_vars = &z3_vars[key_offset + 1..key_offset + 1 + max_len];
+            if let Some(concrete_idx) = self.try_concrete_int(seq_index) {
+                let idx = concrete_idx as usize;
+                if idx < max_len {
+                    Ok(elem_vars[idx].clone())
+                } else {
+                    Err(SymbolicError::Encoding(format!(
+                        "seq index {} out of bounds (max_len {})",
+                        concrete_idx, max_len
+                    )))
+                }
+            } else {
+                let idx_z3 = self.encode_int(seq_index)?;
+                self.build_ite_chain(&idx_z3, elem_vars, 0)
+            }
+        } else {
+            // Symbolic dict key: ITE chain over all keys, each resolving the seq element
+            let key_z3 = self.encode_int(dict_key)?;
+            let idx_z3 = self.encode_int(seq_index)?;
+            let num_keys = (key_hi - key_lo + 1) as usize;
+            // Build the ITE: for each possible key, get the element at seq_index
+            let mut result: Option<Dynamic> = None;
+            for k in (0..num_keys).rev() {
+                let key_offset = k * stride;
+                let elem_vars = &z3_vars[key_offset + 1..key_offset + 1 + max_len];
+                // ITE chain for seq_index within this key's elements
+                let elem_val = self.build_ite_chain(&idx_z3, elem_vars, 0)?;
+                let k_z3 = Int::from_i64(key_lo + k as i64);
+                let cond = key_z3.eq(&k_z3);
+                result = Some(match result {
+                    None => elem_val,
+                    Some(prev) => {
+                        if let (Some(ei), Some(pi)) = (elem_val.as_int(), prev.as_int()) {
+                            Dynamic::from_ast(&cond.ite(&ei, &pi))
+                        } else if let (Some(eb), Some(pb)) = (elem_val.as_bool(), prev.as_bool()) {
+                            Dynamic::from_ast(&cond.ite(&eb, &pb))
+                        } else {
+                            prev
+                        }
+                    }
+                });
+            }
+            result.ok_or_else(|| SymbolicError::Encoding("empty dict for nested index".into()))
+        }
+    }
+
+    /// len(d[k]) for Dict[Range, Seq[T]]: return the len var for the seq at key k.
+    fn encode_nested_len(
+        &mut self,
+        dict_base: &CompiledExpr,
+        dict_key: &CompiledExpr,
+    ) -> SymbolicResult<Dynamic> {
+        let (var_idx, step) = self.extract_var_step(dict_base)?;
+        let entry = &self.layout.entries[var_idx];
+        let (key_lo, key_hi, value_kind) = match &entry.kind {
+            VarKind::ExplodedDict {
+                key_lo,
+                key_hi,
+                value_kind,
+            } => (*key_lo, *key_hi, value_kind.as_ref()),
+            _ => {
+                return Err(SymbolicError::Encoding(
+                    "nested len requires dict base".into(),
+                ))
+            }
+        };
+
+        let stride = value_kind.z3_var_count();
+        let z3_vars = &self.step_vars[step][var_idx];
+
+        if let Some(concrete_key) = self.try_concrete_int(dict_key) {
+            let key_offset = (concrete_key - key_lo) as usize * stride;
+            Ok(z3_vars[key_offset].clone()) // len var is at offset 0 within each key's stride
+        } else {
+            // Symbolic key: ITE chain over all len vars
+            let key_z3 = self.encode_int(dict_key)?;
+            let num_keys = (key_hi - key_lo + 1) as usize;
+            let len_vars: Vec<Dynamic> =
+                (0..num_keys).map(|k| z3_vars[k * stride].clone()).collect();
+            self.build_ite_chain(&key_z3, &len_vars, key_lo)
         }
     }
 
@@ -468,20 +818,54 @@ impl<'a> EncoderCtx<'a> {
                         _ => self.next_step,
                     };
                     let entry = &self.layout.entries[*idx];
-                    if let VarKind::ExplodedSet { .. } = &entry.kind {
-                        let z3_vars = &self.step_vars[step][*idx];
-                        let one = Int::from_i64(1);
-                        let zero = Int::from_i64(0);
-                        let terms: Vec<Int> = z3_vars
-                            .iter()
-                            .map(|v| v.as_bool().unwrap().ite(&one, &zero))
-                            .collect();
-                        Ok(Dynamic::from_ast(&Int::add(&terms)))
+                    match &entry.kind {
+                        VarKind::ExplodedSet { .. } => {
+                            let z3_vars = &self.step_vars[step][*idx];
+                            let one = Int::from_i64(1);
+                            let zero = Int::from_i64(0);
+                            let terms: Vec<Int> = z3_vars
+                                .iter()
+                                .map(|v| v.as_bool().unwrap().ite(&one, &zero))
+                                .collect();
+                            Ok(Dynamic::from_ast(&Int::add(&terms)))
+                        }
+                        VarKind::ExplodedSeq { .. } => {
+                            // len is the first var (offset 0)
+                            Ok(self.step_vars[step][*idx][0].clone())
+                        }
+                        _ => Err(SymbolicError::Unsupported(
+                            "len() on non-set/seq variable".into(),
+                        )),
+                    }
+                }
+                // len(d[k]) for Dict[Range, Seq[T]]
+                CompiledExpr::Index { base, index } => self.encode_nested_len(base, index),
+                // len(Local(n)) for compound locals or set locals
+                CompiledExpr::Local(idx) => {
+                    if let Some((var_idx, step, key_z3)) = self
+                        .resolve_compound_local(*idx)
+                        .map(|(v, s, k)| (*v, *s, k.clone()))
+                    {
+                        self.encode_compound_local_len(var_idx, step, &key_z3)
+                    } else if let Some(members) = self.resolve_set_local(*idx) {
+                        Ok(Dynamic::from_ast(&Int::from_i64(members.len() as i64)))
                     } else {
                         Err(SymbolicError::Unsupported(
-                            "len() on non-set variable".into(),
+                            "len() on non-compound/non-set local".into(),
                         ))
                     }
+                }
+                // len(keys(d)) = number of keys in dict
+                CompiledExpr::Keys(inner) => {
+                    if let CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) = inner.as_ref() {
+                        let entry = &self.layout.entries[*idx];
+                        if let VarKind::ExplodedDict { key_lo, key_hi, .. } = &entry.kind {
+                            return Ok(Dynamic::from_ast(&Int::from_i64(key_hi - key_lo + 1)));
+                        }
+                    }
+                    Err(SymbolicError::Encoding(
+                        "len(keys()) requires a dict variable".into(),
+                    ))
                 }
                 _ => {
                     // Try encoding as a set expression
@@ -607,6 +991,138 @@ impl<'a> EncoderCtx<'a> {
                 let final_val = if negate { result.not() } else { result };
                 Ok(Dynamic::from_ast(&final_val))
             }
+            // Set local membership (e.g., `a in Q` where Q is powerset-bound)
+            CompiledExpr::Local(idx) => {
+                if let Some(members) = self.resolve_set_local(*idx) {
+                    let members = members.clone();
+                    let elem_z3 = self.encode_int(elem)?;
+                    let mut disjuncts = Vec::new();
+                    for m in &members {
+                        disjuncts.push(elem_z3.eq(&Int::from_i64(*m)));
+                    }
+                    let result = if disjuncts.is_empty() {
+                        Bool::from_bool(false)
+                    } else {
+                        Bool::or(&disjuncts)
+                    };
+                    let final_val = if negate { result.not() } else { result };
+                    Ok(Dynamic::from_ast(&final_val))
+                } else {
+                    Err(SymbolicError::Encoding(format!(
+                        "'in' with Local({}) is not a set local",
+                        idx
+                    )))
+                }
+            }
+            // Powerset membership (e.g., `s in powerset({1,2,3})`)
+            CompiledExpr::Powerset(inner) => {
+                // A set is always in the powerset of its superset — encode as subset check
+                let (lo, hi) = self.extract_range(inner)?;
+                if let CompiledExpr::Var(var_idx) | CompiledExpr::PrimedVar(var_idx) = elem {
+                    let step = match elem {
+                        CompiledExpr::Var(_) => self.current_step,
+                        _ => self.next_step,
+                    };
+                    let entry = &self.layout.entries[*var_idx];
+                    if let VarKind::ExplodedSet {
+                        lo: set_lo,
+                        hi: set_hi,
+                    } = &entry.kind
+                    {
+                        let z3_vars = &self.step_vars[step][*var_idx];
+                        // s in powerset(lo..hi) iff all members of s are in lo..hi
+                        // Since s is ExplodedSet over set_lo..set_hi, check that flags
+                        // outside lo..hi are false
+                        let mut constraints = Vec::new();
+                        for (i, k) in (*set_lo..=*set_hi).enumerate() {
+                            if k < lo || k > hi {
+                                // This element is outside powerset range — must not be member
+                                if let Some(b) = z3_vars[i].as_bool() {
+                                    constraints.push(b.not());
+                                }
+                            }
+                        }
+                        let result = if constraints.is_empty() {
+                            Bool::from_bool(true)
+                        } else {
+                            Bool::and(&constraints)
+                        };
+                        let final_val = if negate { result.not() } else { result };
+                        return Ok(Dynamic::from_ast(&final_val));
+                    }
+                }
+                // For set locals bound by outer powerset quantifier
+                // `s in powerset(R)` where s is a set local is always true by construction
+                if let CompiledExpr::Local(idx) = elem {
+                    if self.resolve_set_local(*idx).is_some() {
+                        let result = Bool::from_bool(!negate);
+                        return Ok(Dynamic::from_ast(&result));
+                    }
+                }
+                Err(SymbolicError::Encoding(
+                    "'in' powerset: unsupported element expression".into(),
+                ))
+            }
+            // keys(d): for ExplodedDict, keys is always the full range
+            CompiledExpr::Keys(inner) => {
+                if let CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) = inner.as_ref() {
+                    let entry = &self.layout.entries[*idx];
+                    if let VarKind::ExplodedDict { key_lo, key_hi, .. } = &entry.kind {
+                        let elem_z3 = self.encode_int(elem)?;
+                        let lo_z3 = Int::from_i64(*key_lo);
+                        let hi_z3 = Int::from_i64(*key_hi);
+                        let in_range = Bool::and(&[elem_z3.ge(&lo_z3), elem_z3.le(&hi_z3)]);
+                        let final_val = if negate { in_range.not() } else { in_range };
+                        return Ok(Dynamic::from_ast(&final_val));
+                    }
+                }
+                Err(SymbolicError::Encoding(
+                    "keys() requires a dict variable".into(),
+                ))
+            }
+            // values(d): v in values(d) iff exists k in key_range: d[k] == v
+            CompiledExpr::Values(inner) => {
+                if let CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) = inner.as_ref() {
+                    let step = match inner.as_ref() {
+                        CompiledExpr::Var(_) => self.current_step,
+                        _ => self.next_step,
+                    };
+                    let entry = &self.layout.entries[*idx];
+                    if let VarKind::ExplodedDict {
+                        key_lo,
+                        key_hi,
+                        value_kind,
+                    } = &entry.kind
+                    {
+                        if value_kind.z3_var_count() == 1 {
+                            let elem_z3 = self.encode(elem)?;
+                            let z3_vars = &self.step_vars[step][*idx];
+                            let mut disjuncts = Vec::new();
+                            for (i, _k) in (*key_lo..=*key_hi).enumerate() {
+                                if let (Some(ei), Some(vi)) =
+                                    (elem_z3.as_int(), z3_vars[i].as_int())
+                                {
+                                    disjuncts.push(ei.eq(&vi));
+                                } else if let (Some(eb), Some(vb)) =
+                                    (elem_z3.as_bool(), z3_vars[i].as_bool())
+                                {
+                                    disjuncts.push(eb.eq(&vb));
+                                }
+                            }
+                            let result = if disjuncts.is_empty() {
+                                Bool::from_bool(false)
+                            } else {
+                                Bool::or(&disjuncts)
+                            };
+                            let final_val = if negate { result.not() } else { result };
+                            return Ok(Dynamic::from_ast(&final_val));
+                        }
+                    }
+                }
+                Err(SymbolicError::Encoding(
+                    "values() requires a simple-valued dict variable".into(),
+                ))
+            }
             _ => {
                 // Try as a set expression with known bounds (union, intersect, etc.)
                 if self.is_set_expr(set) {
@@ -662,6 +1178,184 @@ impl<'a> EncoderCtx<'a> {
         Ok(Dynamic::from_ast(&Bool::and(&eqs)))
     }
 
+    // === Compound local helpers ===
+
+    /// Try to resolve an expression as a compound local (d[k] where d is Dict[Range, Seq]).
+    /// Returns Some((var_idx, step, key_z3)) on success.
+    fn try_resolve_compound_local(&mut self, expr: &CompiledExpr) -> Option<(usize, usize, Int)> {
+        if let CompiledExpr::Index { base, index } = expr {
+            let (var_idx, step) = match base.as_ref() {
+                CompiledExpr::Var(idx) => (*idx, self.current_step),
+                CompiledExpr::PrimedVar(idx) => (*idx, self.next_step),
+                _ => return None,
+            };
+            let entry = &self.layout.entries[var_idx];
+            if let VarKind::ExplodedDict { value_kind, .. } = &entry.kind {
+                let stride = value_kind.z3_var_count();
+                if stride > 1 {
+                    let key_z3 = self.encode_int(index).ok()?;
+                    return Some((var_idx, step, key_z3));
+                }
+            }
+        }
+        None
+    }
+
+    /// Check if a Local(idx) resolves to a compound local.
+    /// Returns (var_idx, step, key_z3) if so.
+    fn resolve_compound_local(&self, local_idx: usize) -> Option<(&usize, &usize, &Int)> {
+        let depth = self.locals.len();
+        let abs_idx = depth - 1 - local_idx;
+        for (abs_depth, var_idx, step, key_z3) in self.compound_locals.iter().rev() {
+            if *abs_depth == abs_idx {
+                return Some((var_idx, step, key_z3));
+            }
+        }
+        None
+    }
+
+    /// Access element `elem_idx` of a compound local (seq within dict).
+    fn encode_compound_local_index(
+        &mut self,
+        var_idx: usize,
+        step: usize,
+        key_z3: &Int,
+        elem_index: &CompiledExpr,
+    ) -> SymbolicResult<Dynamic> {
+        let entry = &self.layout.entries[var_idx];
+        if let VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } = &entry.kind
+        {
+            let stride = value_kind.z3_var_count();
+            if let VarKind::ExplodedSeq { max_len, .. } = value_kind.as_ref() {
+                let max_len = *max_len;
+                let idx_z3 = self.encode_int(elem_index)?;
+                let z3_vars = &self.step_vars[step][var_idx];
+                // Build ITE chain: for each key k, for each element index i
+                // if key == k && idx == i then z3_vars[k*stride + 1 + i]
+                let key_lo = *key_lo;
+                let key_hi = *key_hi;
+                let mut result: Option<Dynamic> = None;
+                for k in (key_lo..=key_hi).rev() {
+                    let k_offset = (k - key_lo) as usize * stride;
+                    for i in (0..max_len).rev() {
+                        let elem_var = z3_vars[k_offset + 1 + i].clone();
+                        let cond = Bool::and(&[
+                            &key_z3.eq(&Int::from_i64(k)),
+                            &idx_z3.eq(&Int::from_i64(i as i64)),
+                        ]);
+                        result = Some(match result {
+                            None => elem_var,
+                            Some(prev) => {
+                                if let (Some(ev), Some(pv)) = (elem_var.as_int(), prev.as_int()) {
+                                    Dynamic::from_ast(&cond.ite(&ev, &pv))
+                                } else if let (Some(ev), Some(pv)) =
+                                    (elem_var.as_bool(), prev.as_bool())
+                                {
+                                    Dynamic::from_ast(&cond.ite(&ev, &pv))
+                                } else {
+                                    return Err(SymbolicError::Encoding(
+                                        "compound local index: type mismatch".into(),
+                                    ));
+                                }
+                            }
+                        });
+                    }
+                }
+                return result
+                    .ok_or_else(|| SymbolicError::Encoding("empty compound local".into()));
+            }
+        }
+        Err(SymbolicError::Encoding(
+            "compound local index on non-dict-of-seq".into(),
+        ))
+    }
+
+    /// Get the len of a compound local (seq within dict).
+    fn encode_compound_local_len(
+        &self,
+        var_idx: usize,
+        step: usize,
+        key_z3: &Int,
+    ) -> SymbolicResult<Dynamic> {
+        let entry = &self.layout.entries[var_idx];
+        if let VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } = &entry.kind
+        {
+            let stride = value_kind.z3_var_count();
+            let z3_vars = &self.step_vars[step][var_idx];
+            let num_keys = (*key_hi - *key_lo + 1) as usize;
+            let len_vars: Vec<Dynamic> =
+                (0..num_keys).map(|k| z3_vars[k * stride].clone()).collect();
+            return self.build_ite_chain(key_z3, &len_vars, *key_lo);
+        }
+        Err(SymbolicError::Encoding(
+            "compound local len on non-dict".into(),
+        ))
+    }
+
+    /// Get head (first element) of a compound local (seq within dict).
+    fn encode_compound_local_head(
+        &self,
+        var_idx: usize,
+        step: usize,
+        key_z3: &Int,
+    ) -> SymbolicResult<Dynamic> {
+        let entry = &self.layout.entries[var_idx];
+        if let VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } = &entry.kind
+        {
+            let stride = value_kind.z3_var_count();
+            let z3_vars = &self.step_vars[step][var_idx];
+            let num_keys = (*key_hi - *key_lo + 1) as usize;
+            // elem 0 is at offset 1 within each key's stride
+            let head_vars: Vec<Dynamic> = (0..num_keys)
+                .map(|k| z3_vars[k * stride + 1].clone())
+                .collect();
+            return self.build_ite_chain(key_z3, &head_vars, *key_lo);
+        }
+        Err(SymbolicError::Encoding(
+            "compound local head on non-dict".into(),
+        ))
+    }
+
+    // === Seq helpers ===
+
+    fn encode_seq_head(&mut self, inner: &CompiledExpr) -> SymbolicResult<Dynamic> {
+        // Handle head(d[k]) for Dict[Range, Seq[T]]
+        if let CompiledExpr::Index { base, index } = inner {
+            return self.encode_nested_index(base, index, &CompiledExpr::Int(0));
+        }
+        // Handle head(Local(n)) for compound local
+        if let CompiledExpr::Local(idx) = inner {
+            if let Some((var_idx, step, key_z3)) = self
+                .resolve_compound_local(*idx)
+                .map(|(v, s, k)| (*v, *s, k.clone()))
+            {
+                return self.encode_compound_local_head(var_idx, step, &key_z3);
+            }
+        }
+        let (var_idx, step) = self.extract_var_step(inner)?;
+        let entry = &self.layout.entries[var_idx];
+        if !matches!(entry.kind, VarKind::ExplodedSeq { .. }) {
+            return Err(SymbolicError::Encoding(format!(
+                "head() on non-seq variable '{}'",
+                entry.name
+            )));
+        }
+        // Element 0 is at offset 1 (after len var)
+        Ok(self.step_vars[step][var_idx][1].clone())
+    }
+
     // === Set helpers ===
 
     /// Check if an expression represents a set (for equality routing).
@@ -675,6 +1369,86 @@ impl<'a> EncoderCtx<'a> {
                 matches!(self.layout.entries[*idx].kind, VarKind::ExplodedSet { .. })
             }
             _ => false,
+        }
+    }
+
+    // === Seq helpers ===
+
+    fn is_seq_expr(&self, expr: &CompiledExpr) -> bool {
+        match expr {
+            CompiledExpr::SeqLit(_) => true,
+            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+                matches!(self.layout.entries[*idx].kind, VarKind::ExplodedSeq { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// Encode seq equality: `seq == []` → `len == 0`; general: `len1 == len2 ∧ elem-wise eq`.
+    fn encode_seq_eq(
+        &mut self,
+        left: &CompiledExpr,
+        right: &CompiledExpr,
+    ) -> SymbolicResult<Dynamic> {
+        // Detect seq == [] or [] == seq
+        if let CompiledExpr::SeqLit(elems) = right {
+            if elems.is_empty() {
+                let len = self.encode_len(left)?;
+                return Ok(Dynamic::from_ast(&len.eq(&Int::from_i64(0))));
+            }
+        }
+        if let CompiledExpr::SeqLit(elems) = left {
+            if elems.is_empty() {
+                let len = self.encode_len(right)?;
+                return Ok(Dynamic::from_ast(&len.eq(&Int::from_i64(0))));
+            }
+        }
+
+        // General case: get both seq vars and compare len + elements
+        let (l_idx, l_step) = self.extract_var_step(left)?;
+        let (r_idx, r_step) = self.extract_var_step(right)?;
+        let l_kind = &self.layout.entries[l_idx].kind;
+        let r_kind = &self.layout.entries[r_idx].kind;
+        let max_len = match (l_kind, r_kind) {
+            (
+                VarKind::ExplodedSeq { max_len: ml, .. },
+                VarKind::ExplodedSeq { max_len: mr, .. },
+            ) => (*ml).min(*mr),
+            _ => {
+                return Err(SymbolicError::Encoding(
+                    "seq equality requires two sequence variables".into(),
+                ));
+            }
+        };
+
+        let l_vars = &self.step_vars[l_step][l_idx];
+        let r_vars = &self.step_vars[r_step][r_idx];
+
+        let mut conjuncts = Vec::new();
+        // len equality
+        let l_len = l_vars[0].as_int().unwrap();
+        let r_len = r_vars[0].as_int().unwrap();
+        conjuncts.push(l_len.eq(&r_len));
+        // element equality (for all positions up to max_len)
+        for i in 0..max_len {
+            let l_elem = &l_vars[1 + i];
+            let r_elem = &r_vars[1 + i];
+            if let (Some(li), Some(ri)) = (l_elem.as_int(), r_elem.as_int()) {
+                conjuncts.push(li.eq(&ri));
+            } else if let (Some(lb), Some(rb)) = (l_elem.as_bool(), r_elem.as_bool()) {
+                conjuncts.push(lb.eq(&rb));
+            }
+        }
+        Ok(Dynamic::from_ast(&Bool::and(&conjuncts)))
+    }
+
+    fn extract_var_step(&self, expr: &CompiledExpr) -> SymbolicResult<(usize, usize)> {
+        match expr {
+            CompiledExpr::Var(idx) => Ok((*idx, self.current_step)),
+            CompiledExpr::PrimedVar(idx) => Ok((*idx, self.next_step)),
+            _ => Err(SymbolicError::Encoding(
+                "expected state variable in seq equality".into(),
+            )),
         }
     }
 
@@ -928,20 +1702,12 @@ fn create_var_z3(entry: &VarEntry, step: usize) -> Vec<Dynamic> {
         } => {
             let mut vars = Vec::new();
             for k in *key_lo..=*key_hi {
-                match value_kind.as_ref() {
-                    VarKind::Bool => {
-                        vars.push(Dynamic::from_ast(&Bool::new_const(format!(
-                            "{}_{}_s{}",
-                            entry.name, k, step
-                        ))));
-                    }
-                    _ => {
-                        vars.push(Dynamic::from_ast(&Int::new_const(format!(
-                            "{}_{}_s{}",
-                            entry.name, k, step
-                        ))));
-                    }
-                }
+                create_vars_for_kind(
+                    value_kind,
+                    &format!("{}_{}", entry.name, k),
+                    step,
+                    &mut vars,
+                );
             }
             vars
         }
@@ -954,6 +1720,63 @@ fn create_var_z3(entry: &VarEntry, step: usize) -> Vec<Dynamic> {
                 ))));
             }
             vars
+        }
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            let mut vars = Vec::new();
+            // First var: length
+            vars.push(Dynamic::from_ast(&Int::new_const(format!(
+                "{}_len_s{}",
+                entry.name, step
+            ))));
+            // Element vars
+            for i in 0..*max_len {
+                create_vars_for_kind(elem_kind, &format!("{}_{}", entry.name, i), step, &mut vars);
+            }
+            vars
+        }
+    }
+}
+
+/// Recursively create Z3 variables for a VarKind (used for compound value kinds).
+fn create_vars_for_kind(kind: &VarKind, prefix: &str, step: usize, out: &mut Vec<Dynamic>) {
+    match kind {
+        VarKind::Bool => {
+            out.push(Dynamic::from_ast(&Bool::new_const(format!(
+                "{}_s{}",
+                prefix, step
+            ))));
+        }
+        VarKind::Int { .. } => {
+            out.push(Dynamic::from_ast(&Int::new_const(format!(
+                "{}_s{}",
+                prefix, step
+            ))));
+        }
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            out.push(Dynamic::from_ast(&Int::new_const(format!(
+                "{}_len_s{}",
+                prefix, step
+            ))));
+            for i in 0..*max_len {
+                create_vars_for_kind(elem_kind, &format!("{}_{}", prefix, i), step, out);
+            }
+        }
+        VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } => {
+            for k in *key_lo..=*key_hi {
+                create_vars_for_kind(value_kind, &format!("{}_{}", prefix, k), step, out);
+            }
+        }
+        VarKind::ExplodedSet { lo, hi } => {
+            for k in *lo..=*hi {
+                out.push(Dynamic::from_ast(&Bool::new_const(format!(
+                    "{}_{}_s{}",
+                    prefix, k, step
+                ))));
+            }
         }
     }
 }
@@ -982,9 +1805,28 @@ fn assert_var_range(solver: &Solver, kind: &VarKind, z3_vars: &[Dynamic]) {
                 solver.assert(&z3_vars[0].as_int().unwrap().le(&z3_hi));
             }
         }
-        VarKind::ExplodedDict { value_kind, .. } => {
-            for var in z3_vars {
-                assert_var_range(solver, value_kind, &[var.clone()]);
+        VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } => {
+            let stride = value_kind.z3_var_count();
+            let num_keys = (*key_hi - *key_lo + 1) as usize;
+            for k in 0..num_keys {
+                let start = k * stride;
+                assert_var_range(solver, value_kind, &z3_vars[start..start + stride]);
+            }
+        }
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            // len bounded: 0 <= len <= max_len
+            let len_var = z3_vars[0].as_int().unwrap();
+            solver.assert(&len_var.ge(&Int::from_i64(0)));
+            solver.assert(&len_var.le(&Int::from_i64(*max_len as i64)));
+            // Element range constraints
+            let elem_stride = elem_kind.z3_var_count();
+            for i in 0..*max_len {
+                let start = 1 + i * elem_stride;
+                assert_var_range(solver, elem_kind, &z3_vars[start..start + elem_stride]);
             }
         }
         VarKind::Bool | VarKind::ExplodedSet { .. } => {}

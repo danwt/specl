@@ -15,10 +15,14 @@ use z3::ast::{Ast, Dynamic};
 use z3::{Context, Solver};
 
 /// Run IC3/CHC verification using Z3's Spacer engine.
-pub fn check_ic3(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<SymbolicOutcome> {
+pub fn check_ic3(
+    spec: &CompiledSpec,
+    consts: &[Value],
+    seq_bound: usize,
+) -> SymbolicResult<SymbolicOutcome> {
     info!("starting IC3/CHC verification");
 
-    let layout = VarLayout::from_spec(spec, consts)?;
+    let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let ctx = Context::thread_local().get_z3_context();
     let fp = Fixedpoint::new();
 
@@ -92,6 +96,8 @@ pub fn check_ic3(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<Symbol
             next_step: 0,
             params: &[],
             locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
         };
         let inv_encoded = enc.encode_bool(&inv.body)?;
         let inv_raw = inv_encoded.get_z3_ast();
@@ -267,6 +273,12 @@ fn collect_sorts_for_kind(
         VarKind::ExplodedSet { lo, hi } => {
             for _ in 0..(*hi - *lo + 1) {
                 out.push(bool_sort);
+            }
+        }
+        VarKind::ExplodedSeq { max_len, elem_kind } => {
+            out.push(int_sort); // len
+            for _ in 0..*max_len {
+                collect_sorts_for_kind(elem_kind, bool_sort, int_sort, out);
             }
         }
     }

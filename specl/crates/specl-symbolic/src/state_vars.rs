@@ -14,6 +14,8 @@ pub struct VarLayout {
     pub entries: Vec<VarEntry>,
     /// String interning table: maps string literals to integer IDs.
     pub string_table: Vec<String>,
+    /// Maximum sequence length for ExplodedSeq variables.
+    pub seq_bound: usize,
 }
 
 /// How a single specl variable maps to Z3 variables.
@@ -42,15 +44,25 @@ pub enum VarKind {
     },
     /// Set over bounded domain: one Z3 Bool per element.
     ExplodedSet { lo: i64, hi: i64 },
+    /// Bounded sequence: len_var (Int) + max_len element variables.
+    /// Z3 layout: [len, elem_0, elem_1, ..., elem_{max_len-1}]
+    ExplodedSeq {
+        max_len: usize,
+        elem_kind: Box<VarKind>,
+    },
 }
 
 impl VarLayout {
     /// Analyze a compiled spec and compute the Z3 variable layout.
-    pub fn from_spec(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<Self> {
+    pub fn from_spec(
+        spec: &CompiledSpec,
+        consts: &[Value],
+        seq_bound: usize,
+    ) -> SymbolicResult<Self> {
         let string_table = build_string_table(spec);
         let mut entries = Vec::new();
         for var in &spec.vars {
-            let kind = type_to_kind(&var.ty, var.index, spec, consts, &string_table)?;
+            let kind = type_to_kind(&var.ty, var.index, spec, consts, &string_table, seq_bound)?;
             entries.push(VarEntry {
                 specl_var_idx: var.index,
                 name: var.name.clone(),
@@ -60,6 +72,7 @@ impl VarLayout {
         Ok(VarLayout {
             entries,
             string_table,
+            seq_bound,
         })
     }
 
@@ -78,6 +91,7 @@ fn type_to_kind(
     spec: &CompiledSpec,
     consts: &[Value],
     string_table: &[String],
+    seq_bound: usize,
 ) -> SymbolicResult<VarKind> {
     match ty {
         Type::Bool => Ok(VarKind::Bool),
@@ -102,16 +116,15 @@ fn type_to_kind(
         }),
         Type::Fn(key_ty, val_ty) => {
             if let Type::Range(lo, hi) = key_ty.as_ref() {
-                let value_kind = type_to_kind_simple(val_ty)?;
+                let value_kind = type_to_kind_simple(val_ty, seq_bound)?;
                 Ok(VarKind::ExplodedDict {
                     key_lo: *lo,
                     key_hi: *hi,
                     value_kind: Box::new(value_kind),
                 })
             } else if matches!(key_ty.as_ref(), Type::Int | Type::Nat) {
-                // Key type is Int/Nat — try to infer range from init expression
                 if let Some((lo, hi)) = infer_dict_range(var_idx, spec, consts) {
-                    let value_kind = type_to_kind_simple(val_ty)?;
+                    let value_kind = type_to_kind_simple(val_ty, seq_bound)?;
                     Ok(VarKind::ExplodedDict {
                         key_lo: lo,
                         key_hi: hi,
@@ -134,7 +147,6 @@ fn type_to_kind(
             if let Type::Range(lo, hi) = elem_ty.as_ref() {
                 Ok(VarKind::ExplodedSet { lo: *lo, hi: *hi })
             } else if matches!(elem_ty.as_ref(), Type::Int | Type::Nat) {
-                // Try to infer range from action parameters or init
                 if let Some((lo, hi)) = infer_set_range_from_actions(var_idx, spec, consts) {
                     Ok(VarKind::ExplodedSet { lo, hi })
                 } else {
@@ -150,6 +162,24 @@ fn type_to_kind(
                 )))
             }
         }
+        Type::Seq(elem_ty) => {
+            let elem_kind = type_to_kind_simple(elem_ty, seq_bound)?;
+            let max_len = infer_seq_max_len(var_idx, spec, consts).unwrap_or(seq_bound);
+            Ok(VarKind::ExplodedSeq {
+                max_len,
+                elem_kind: Box::new(elem_kind),
+            })
+        }
+        Type::Tuple(elems) => Err(crate::SymbolicError::Unsupported(format!(
+            "Tuple type ({} elements) not yet supported in symbolic mode",
+            elems.len()
+        ))),
+        Type::Record(_) => Err(crate::SymbolicError::Unsupported(
+            "Record type not yet supported in symbolic mode".into(),
+        )),
+        Type::Option(_) => Err(crate::SymbolicError::Unsupported(
+            "Option[T] type not yet supported in symbolic mode".into(),
+        )),
         _ => Err(crate::SymbolicError::Unsupported(format!(
             "variable type: {:?}",
             ty
@@ -158,7 +188,7 @@ fn type_to_kind(
 }
 
 /// Simple type_to_kind without spec/const context (for value types within containers).
-fn type_to_kind_simple(ty: &Type) -> SymbolicResult<VarKind> {
+fn type_to_kind_simple(ty: &Type, seq_bound: usize) -> SymbolicResult<VarKind> {
     match ty {
         Type::Bool => Ok(VarKind::Bool),
         Type::Int | Type::String => Ok(VarKind::Int { lo: None, hi: None }),
@@ -170,6 +200,23 @@ fn type_to_kind_simple(ty: &Type) -> SymbolicResult<VarKind> {
             lo: Some(*lo),
             hi: Some(*hi),
         }),
+        Type::Seq(elem_ty) => {
+            let elem_kind = type_to_kind_simple(elem_ty, seq_bound)?;
+            Ok(VarKind::ExplodedSeq {
+                max_len: seq_bound,
+                elem_kind: Box::new(elem_kind),
+            })
+        }
+        Type::Tuple(elems) => Err(crate::SymbolicError::Unsupported(format!(
+            "Tuple type ({} elements) not yet supported in symbolic mode",
+            elems.len()
+        ))),
+        Type::Record(_) => Err(crate::SymbolicError::Unsupported(
+            "Record type not yet supported in symbolic mode".into(),
+        )),
+        Type::Option(_) => Err(crate::SymbolicError::Unsupported(
+            "Option[T] type not yet supported in symbolic mode".into(),
+        )),
         _ => Err(crate::SymbolicError::Unsupported(format!(
             "value type in container: {:?}",
             ty
@@ -428,6 +475,59 @@ impl VarKind {
                 num_keys * value_kind.z3_var_count()
             }
             VarKind::ExplodedSet { lo, hi } => (*hi - *lo + 1) as usize,
+            VarKind::ExplodedSeq { max_len, elem_kind } => 1 + max_len * elem_kind.z3_var_count(), // len + elements
         }
     }
+}
+
+/// Infer max sequence length from action guards (look for len(var) < K patterns).
+fn infer_seq_max_len(var_idx: usize, spec: &CompiledSpec, consts: &[Value]) -> Option<usize> {
+    for action in &spec.actions {
+        if let Some(bound) = find_len_bound(&action.guard, var_idx, consts) {
+            return Some(bound);
+        }
+    }
+    None
+}
+
+/// Walk an expression looking for `Len(Var(var_idx)) < K` or `Len(Var(var_idx)) <= K`.
+fn find_len_bound(expr: &CompiledExpr, var_idx: usize, consts: &[Value]) -> Option<usize> {
+    match expr {
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::And,
+            left,
+            right,
+        } => {
+            find_len_bound(left, var_idx, consts).or_else(|| find_len_bound(right, var_idx, consts))
+        }
+        // len(var) < K → max_len = K
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::Lt,
+            left,
+            right,
+        } => {
+            if is_len_of_var(left, var_idx) {
+                eval_const_int(right, consts).map(|k| k as usize)
+            } else {
+                None
+            }
+        }
+        // len(var) <= K → max_len = K + 1
+        CompiledExpr::Binary {
+            op: specl_ir::BinOp::Le,
+            left,
+            right,
+        } => {
+            if is_len_of_var(left, var_idx) {
+                eval_const_int(right, consts).map(|k| (k + 1) as usize)
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn is_len_of_var(expr: &CompiledExpr, var_idx: usize) -> bool {
+    matches!(expr, CompiledExpr::Len(inner) if matches!(inner.as_ref(), CompiledExpr::Var(idx) if *idx == var_idx))
 }

@@ -17,10 +17,14 @@ use z3::{SatResult, Solver};
 ///
 /// If UNSAT, I is inductive and holds for all reachable states.
 /// If SAT, I is not inductive — the model gives a counterexample to induction (CTI).
-pub fn check_inductive(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<SymbolicOutcome> {
+pub fn check_inductive(
+    spec: &CompiledSpec,
+    consts: &[Value],
+    seq_bound: usize,
+) -> SymbolicResult<SymbolicOutcome> {
     info!("starting inductive invariant checking");
 
-    let layout = VarLayout::from_spec(spec, consts)?;
+    let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let solver = Solver::new();
 
     let step0_vars = create_step_vars(&layout, 0);
@@ -44,6 +48,8 @@ pub fn check_inductive(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<
             next_step: 0,
             params: &[],
             locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
         };
         let inv_at_0 = enc0.encode_bool(&inv.body)?;
         solver.assert(&inv_at_0);
@@ -56,6 +62,8 @@ pub fn check_inductive(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<
             next_step: 1,
             params: &[],
             locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
         };
         let inv_at_1 = enc1.encode_bool(&inv.body)?;
         solver.assert(&inv_at_1.not());

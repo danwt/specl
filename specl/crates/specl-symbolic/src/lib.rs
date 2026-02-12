@@ -64,6 +64,8 @@ pub struct TraceStep {
 pub struct SymbolicConfig {
     pub mode: SymbolicMode,
     pub depth: usize,
+    /// Maximum sequence length for Seq[T] variables (default: 5).
+    pub seq_bound: usize,
 }
 
 /// Symbolic checking mode.
@@ -87,11 +89,12 @@ pub fn check(
     consts: &[Value],
     config: &SymbolicConfig,
 ) -> SymbolicResult<SymbolicOutcome> {
+    let sb = config.seq_bound;
     match config.mode {
-        SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth),
-        SymbolicMode::Inductive => inductive::check_inductive(spec, consts),
-        SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k),
-        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts),
-        SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth),
+        SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth, sb),
+        SymbolicMode::Inductive => inductive::check_inductive(spec, consts, sb),
+        SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k, sb),
+        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb),
+        SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth, sb),
     }
 }
