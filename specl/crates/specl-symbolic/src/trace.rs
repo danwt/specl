@@ -257,7 +257,7 @@ fn extract_state(
     state
 }
 
-/// Format a compound value (e.g., Seq within a Dict).
+/// Format a compound value (e.g., Seq, Dict, Set within a Dict).
 fn format_compound_value(
     model: &Model,
     kind: &VarKind,
@@ -289,7 +289,63 @@ fn format_compound_value(
             }
             format!("[{}]", elems.join(", "))
         }
-        _ => "?".to_string(),
+        VarKind::ExplodedDict {
+            key_lo,
+            key_hi,
+            value_kind,
+        } => {
+            let inner_stride = value_kind.z3_var_count();
+            let mut pairs = Vec::new();
+            for (i, k) in (*key_lo..=*key_hi).enumerate() {
+                if inner_stride == 1 {
+                    let val = model
+                        .eval(&vars[i], true)
+                        .and_then(|v| {
+                            v.as_int()
+                                .and_then(|i| i.as_i64())
+                                .map(|n| format_int_value(n, value_kind, string_table))
+                                .or_else(|| {
+                                    v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
+                                })
+                        })
+                        .unwrap_or_else(|| "?".to_string());
+                    pairs.push(format!("{}: {}", k, val));
+                } else {
+                    let offset = i * inner_stride;
+                    let inner_vars = &vars[offset..offset + inner_stride];
+                    let val_str =
+                        format_compound_value(model, value_kind, inner_vars, string_table);
+                    pairs.push(format!("{}: {}", k, val_str));
+                }
+            }
+            format!("{{{}}}", pairs.join(", "))
+        }
+        VarKind::ExplodedSet { lo, hi } => {
+            let mut members = Vec::new();
+            for (i, k) in (*lo..=*hi).enumerate() {
+                let is_member = model
+                    .eval(&vars[i], true)
+                    .and_then(|v| v.as_bool())
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false);
+                if is_member {
+                    members.push(k.to_string());
+                }
+            }
+            format!("{{{}}}", members.join(", "))
+        }
+        VarKind::Bool => model
+            .eval(&vars[0], true)
+            .and_then(|v| v.as_bool())
+            .and_then(|b| b.as_bool())
+            .map(|b| b.to_string())
+            .unwrap_or_else(|| "?".to_string()),
+        VarKind::Int { .. } => model
+            .eval(&vars[0], true)
+            .and_then(|v| v.as_int())
+            .and_then(|i| i.as_i64())
+            .map(|n| format_int_value(n, kind, string_table))
+            .unwrap_or_else(|| "?".to_string()),
     }
 }
 
