@@ -399,16 +399,20 @@ impl PrettyPrinter {
                 self.write(")");
             }
             ExprKind::DictLit(entries) => {
-                self.write("{ ");
-                for (i, (key, value)) in entries.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
+                if entries.is_empty() {
+                    self.write("{:}");
+                } else {
+                    self.write("{ ");
+                    for (i, (key, value)) in entries.iter().enumerate() {
+                        if i > 0 {
+                            self.write(", ");
+                        }
+                        self.print_expr(key);
+                        self.write(": ");
+                        self.print_expr(value);
                     }
-                    self.print_expr(key);
-                    self.write(": ");
-                    self.print_expr(value);
+                    self.write(" }");
                 }
-                self.write(" }");
             }
             ExprKind::FnLit { var, domain, body } => {
                 self.write("fn(");

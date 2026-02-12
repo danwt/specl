@@ -854,7 +854,15 @@ impl Parser {
         let start = self.current_span();
         self.expect(TokenKind::LBrace)?;
 
-        // Empty set
+        // Empty dict {:}
+        if self.check(TokenKind::Colon) {
+            self.advance();
+            self.expect(TokenKind::RBrace)?;
+            let span = start.merge(self.prev_span());
+            return Ok(Expr::new(ExprKind::DictLit(vec![]), span));
+        }
+
+        // Empty set {}
         if self.check(TokenKind::RBrace) {
             self.advance();
             let span = start.merge(self.prev_span());
