@@ -1,5 +1,8 @@
 /target/
 
+# Z3 trace files
+.z3-trace
+
 # TLC model checker outputs
 states/
 *_TTrace_*.tla
