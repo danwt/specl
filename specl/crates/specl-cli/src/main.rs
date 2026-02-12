@@ -107,6 +107,17 @@ enum Commands {
         file: PathBuf,
     },
 
+    /// Analyze a spec and show profile, recommendations, and action details
+    Info {
+        /// Input file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Constant assignments (name=value)
+        #[arg(short, long, value_name = "CONST=VALUE")]
+        constant: Vec<String>,
+    },
+
     /// Model check a Specl file
     Check {
         /// Input file
@@ -272,6 +283,7 @@ fn main() {
     let result = match cli.command {
         Commands::Parse { file, verbose } => cmd_parse(&file, verbose),
         Commands::Typecheck { file } => cmd_typecheck(&file),
+        Commands::Info { file, constant } => cmd_info(&file, &constant),
         Commands::Check {
             file,
             constant,
@@ -390,6 +402,100 @@ fn cmd_typecheck(file: &PathBuf) -> CliResult<()> {
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
 
     println!("typecheck: ok");
+    Ok(())
+}
+
+fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
+    let filename = file.display().to_string();
+    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?);
+
+    let module =
+        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
+    specl_types::check_module(&module)
+        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
+    let spec = compile(&module).map_err(|e| CliError::CompileError {
+        message: e.to_string(),
+    })?;
+    let consts = parse_constants(constants, &spec)?;
+
+    let profile = analyze(&spec);
+
+    // Header
+    println!();
+    println!("Module: {}", module.name.name);
+    println!("  Variables: {}", profile.num_vars);
+    println!("  Actions: {}", profile.num_actions);
+    println!("  Invariants: {}", profile.num_invariants);
+
+    // Constants
+    if !spec.consts.is_empty() {
+        let const_strs: Vec<String> = spec
+            .consts
+            .iter()
+            .map(|c| format!("{}={}", c.name, consts[c.index]))
+            .collect();
+        println!("  Constants: {}", const_strs.join(", "));
+    }
+
+    // State space
+    println!();
+    println!("State Space:");
+    match profile.state_space_bound {
+        Some(b) => println!("  Estimated bound: ~{}", format_large_number(b)),
+        None => println!("  Estimated bound: unbounded"),
+    }
+
+    // Action details
+    println!();
+    println!("Action Analysis:");
+    for (name, combos) in &profile.action_param_counts {
+        let combo_str = match combos {
+            Some(c) => format_large_number(*c as u128),
+            None => "unbounded".to_string(),
+        };
+        println!("  {:30} {} param combos", name, combo_str);
+    }
+
+    // Independence / symmetry
+    println!();
+    println!("Optimizations:");
+    let independence_pct = (profile.independence_ratio * 100.0) as u32;
+    println!("  POR: {}% independent pairs", independence_pct);
+    if profile.has_symmetry {
+        let sizes: Vec<String> = profile
+            .symmetry_domain_sizes
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        println!("  Symmetry: domains of size {}", sizes.join(", "));
+    } else {
+        println!("  Symmetry: none detected");
+    }
+    if profile.has_refinable_pairs {
+        println!("  Instance POR: refinable pairs detected (keyed Dict access)");
+    }
+
+    // Warnings
+    if !profile.warnings.is_empty() {
+        println!();
+        println!("Warnings:");
+        for w in &profile.warnings {
+            println!("  {}", w);
+        }
+    }
+
+    // Recommendations
+    if !profile.recommendations.is_empty() {
+        println!();
+        println!("Recommendations:");
+        for r in &profile.recommendations {
+            println!("  {}", r);
+        }
+    }
+
+    println!();
     Ok(())
 }
 
