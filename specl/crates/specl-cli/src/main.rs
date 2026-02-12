@@ -675,26 +675,16 @@ fn cmd_check(
         print_profile(&profile, use_por, use_symmetry);
     }
 
-    // Reject unbounded types for explicit-state checking
+    // Warn about unbounded types (BFS may still work if runtime values are bounded by init/actions)
     let unbounded_warnings: Vec<_> = profile
         .warnings
         .iter()
         .filter(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
         .collect();
-    if !unbounded_warnings.is_empty() {
-        let lines: Vec<String> = unbounded_warnings
-            .iter()
-            .map(|w| format!("  {}", w))
-            .collect();
-        return Err(CliError::Other {
-            message: format!(
-                "explicit-state checking requires finite domains\n\n{}\n\n\
-                 Fix: {}\n\
-                 For unbounded types, use symbolic checking: --smart",
-                lines.join("\n"),
-                unbounded_warnings[0].fix_hint()
-            ),
-        });
+    if !unbounded_warnings.is_empty() && !quiet {
+        eprintln!("Note: spec has types the checker considers unbounded (Dict[Int, ...]).");
+        eprintln!("  BFS proceeds because runtime values are bounded by init and action parameters.");
+        eprintln!("  If checking hangs, use --smart for symbolic checking instead.");
     }
 
     let mut actual_por = use_por;
@@ -1288,12 +1278,8 @@ fn run_check_iteration(
         .filter(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
         .collect();
     if !unbounded_warnings.is_empty() {
-        eprintln!("Error: explicit-state checking requires finite domains");
-        for w in &unbounded_warnings {
-            eprintln!("  {}", w);
-        }
-        eprintln!("Fix: {}", unbounded_warnings[0].fix_hint());
-        return;
+        eprintln!("Note: spec has types the checker considers unbounded (Dict[Int, ...]).");
+        eprintln!("  BFS proceeds because runtime values are bounded by init and action parameters.");
     }
 
     let spinner = if std::io::stderr().is_terminal() {
