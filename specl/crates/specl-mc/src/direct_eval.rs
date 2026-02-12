@@ -89,7 +89,7 @@ fn extract_from_expr(
                 _ => None,
             };
             if let Some(idx) = left_idx {
-                if let Some(value) = try_eval_value(right, consts) {
+                if let Some(value) = try_eval_value(right, consts, assignments) {
                     if assignments[idx].is_none() {
                         assignments[idx] = Some(value);
                         return true;
@@ -105,7 +105,7 @@ fn extract_from_expr(
                 _ => None,
             };
             if let Some(idx) = right_idx {
-                if let Some(value) = try_eval_value(left, consts) {
+                if let Some(value) = try_eval_value(left, consts, assignments) {
                     if assignments[idx].is_none() {
                         assignments[idx] = Some(value);
                         return true;
@@ -123,13 +123,19 @@ fn extract_from_expr(
     }
 }
 
-/// Try to evaluate an expression to a value.
-/// Returns None if the expression references unassigned variables.
-fn try_eval_value(expr: &CompiledExpr, consts: &[Value]) -> Option<Value> {
-    // Create a dummy context with empty state (we only need consts and literals)
-    let dummy_vars: Vec<Value> = vec![];
-    let mut ctx = EvalContext::new(&dummy_vars, &dummy_vars, consts, &[]);
-
+/// Try to evaluate an expression to a value using already-extracted assignments.
+/// Uses partial assignments as variable context so that init expressions like
+/// `sigs = {k: {} for k in certs}` can reference previously assigned `certs`.
+fn try_eval_value(
+    expr: &CompiledExpr,
+    consts: &[Value],
+    partial_assignments: &[Option<Value>],
+) -> Option<Value> {
+    let vars: Vec<Value> = partial_assignments
+        .iter()
+        .map(|a| a.clone().unwrap_or(Value::None))
+        .collect();
+    let mut ctx = EvalContext::new(&vars, &vars, consts, &[]);
     eval(expr, &mut ctx).ok()
 }
 

@@ -17,6 +17,6 @@ jobs:
         with:
           workspaces: specl
       - run: cargo fmt --check
-      - run: cargo clippy --workspace -- -D warnings -A clippy::only_used_in_recursion -A clippy::collapsible_match -A clippy::too_many_arguments
+      - run: cargo clippy --workspace -- -D warnings -A clippy::only_used_in_recursion -A clippy::collapsible_match -A clippy::too_many_arguments -A clippy::manual_is_multiple_of
       - run: cargo test --workspace --exclude specl-tla
       - run: cargo test -p specl-tla --test translate_corpus -- --skip benchmark_tla_files_translate

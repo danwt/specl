@@ -187,9 +187,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
 
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
-            let mut map = Vec::with_capacity(domain_set.len());
-            for key in domain_set {
+            let domain_elems = extract_domain_elements(&domain_val)?;
+            let mut map = Vec::with_capacity(domain_elems.len());
+            for key in &domain_elems {
                 ctx.push_local(key.clone());
                 let value = eval(body, ctx)?;
                 ctx.pop_local();
@@ -358,9 +358,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
 
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
+            let domain_elems = extract_domain_elements(&domain_val)?;
 
-            for item in domain_set {
+            for item in &domain_elems {
                 ctx.push_local(item.clone());
 
                 let include = if let Some(f) = filter {
@@ -406,9 +406,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
 
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
+            let domain_elems = extract_domain_elements(&domain_val)?;
 
-            for item in domain_set {
+            for item in &domain_elems {
                 ctx.push_local(item.clone());
                 let result = expect_bool(&eval(body, ctx)?)?;
                 ctx.pop_local();
@@ -446,9 +446,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
 
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
+            let domain_elems = extract_domain_elements(&domain_val)?;
 
-            for item in domain_set {
+            for item in &domain_elems {
                 ctx.push_local(item.clone());
                 let result = expect_bool(&eval(body, ctx)?)?;
                 ctx.pop_local();
@@ -462,10 +462,10 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
 
         CompiledExpr::Choose { domain, predicate } => {
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
+            let domain_elems = extract_domain_elements(&domain_val)?;
 
             // Find the first satisfying element (deterministic due to sorted ordering)
-            for item in domain_set {
+            for item in &domain_elems {
                 ctx.push_local(item.clone());
                 let result = expect_bool(&eval(predicate, ctx)?)?;
                 ctx.pop_local();
@@ -752,8 +752,8 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
             }
 
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
-            for item in domain_set {
+            let domain_elems = extract_domain_elements(&domain_val)?;
+            for item in &domain_elems {
                 ctx.push_local(item.clone());
                 let result = eval_bool(body, ctx)?;
                 ctx.pop_local();
@@ -786,8 +786,8 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
             }
 
             let domain_val = eval(domain, ctx)?;
-            let domain_set = expect_set(&domain_val)?;
-            for item in domain_set {
+            let domain_elems = extract_domain_elements(&domain_val)?;
+            for item in &domain_elems {
                 ctx.push_local(item.clone());
                 let result = eval_bool(body, ctx)?;
                 ctx.pop_local();
@@ -1026,8 +1026,7 @@ fn eval_set_domain(domain_expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalRes
         return Ok((lo_val..=hi_val).map(Value::Int).collect());
     }
     let domain_val = eval(domain_expr, ctx)?;
-    let domain_set = expect_set(&domain_val)?;
-    Ok(domain_set.to_vec())
+    extract_domain_elements(&domain_val)
 }
 
 /// Count items in a domain that satisfy a filter, without materializing a Set.
@@ -1050,8 +1049,8 @@ fn count_filtered(
         }
     } else {
         let domain_val = eval(domain, ctx)?;
-        let domain_set = expect_set(&domain_val)?;
-        for item in domain_set {
+        let domain_elems = extract_domain_elements(&domain_val)?;
+        for item in &domain_elems {
             ctx.push_local(item.clone());
             if eval_bool(filter, ctx)? {
                 count += 1;
@@ -1298,6 +1297,17 @@ pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
     match val {
         Value::Set(s) => Ok(s),
         _ => Err(type_mismatch("Set", val)),
+    }
+}
+
+/// Extract elements for domain iteration: Set elements, Dict/Fn keys, or IntMap indices.
+/// Use this for quantifier/comprehension domains where iterating over a Dict yields its keys.
+fn extract_domain_elements(val: &Value) -> EvalResult<Vec<Value>> {
+    match val {
+        Value::Set(s) => Ok((**s).clone()),
+        Value::Fn(m) => Ok(m.iter().map(|(k, _)| k.clone()).collect()),
+        Value::IntMap(arr) => Ok((0..arr.len() as i64).map(Value::Int).collect()),
+        _ => Err(type_mismatch("Set or Dict", val)),
     }
 }
 

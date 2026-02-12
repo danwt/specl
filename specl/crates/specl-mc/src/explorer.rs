@@ -1903,6 +1903,15 @@ impl Explorer {
             return vec![Value::Fn(std::sync::Arc::new(Vec::new()))];
         }
 
+        // Bail early for large key domains (e.g. Dict[Seq[Int], T])
+        if key_domain.len() > 100 {
+            info!(
+                keys = key_domain.len(),
+                "fn_domain key domain too large, returning empty"
+            );
+            return vec![];
+        }
+
         // Guard against combinatorial explosion: val_domain^key_domain combinations
         let total = (val_domain.len() as f64).powi(key_domain.len() as i32);
         if total > 100_000.0 {
