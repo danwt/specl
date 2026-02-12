@@ -47,10 +47,10 @@ impl<'a> EncoderCtx<'a> {
             CompiledExpr::Bool(b) => Ok(Dynamic::from_ast(&Bool::from_bool(*b))),
             CompiledExpr::Int(n) => Ok(Dynamic::from_ast(&Int::from_i64(*n))),
             CompiledExpr::String(s) => {
-                let hash = s
-                    .bytes()
-                    .fold(0i64, |acc, b| acc.wrapping_mul(31).wrapping_add(b as i64));
-                Ok(Dynamic::from_ast(&Int::from_i64(hash)))
+                let id = self.layout.string_id(s).ok_or_else(|| {
+                    SymbolicError::Encoding(format!("string literal not in table: {:?}", s))
+                })?;
+                Ok(Dynamic::from_ast(&Int::from_i64(id)))
             }
 
             // === Variables ===
@@ -130,13 +130,13 @@ impl<'a> EncoderCtx<'a> {
                 "DictLit should be handled at the init/effect level".into(),
             )),
 
-            // === Set operations ===
-            CompiledExpr::SetLit(_) => Err(SymbolicError::Unsupported(
-                "set literal as expression (only supported in membership checks)".into(),
-            )),
-            CompiledExpr::SetComprehension { .. } => Err(SymbolicError::Unsupported(
-                "set comprehension as expression (only supported in len() and membership)".into(),
-            )),
+            // === Set operations (handled as expressions for equality/assignment) ===
+            CompiledExpr::SetLit(_) | CompiledExpr::SetComprehension { .. } => {
+                Err(SymbolicError::Encoding(
+                    "set expression used in non-set context (use in equality, membership, or len)"
+                        .into(),
+                ))
+            }
 
             // === Len ===
             CompiledExpr::Len(inner) => self.encode_len(inner),
@@ -288,16 +288,44 @@ impl<'a> EncoderCtx<'a> {
             BinOp::In => self.encode_set_membership(left, right, false),
             BinOp::NotIn => self.encode_set_membership(left, right, true),
 
-            // Set operations (not yet implemented)
-            BinOp::Union | BinOp::Intersect | BinOp::Diff | BinOp::SubsetOf => Err(
-                SymbolicError::Unsupported(format!("set operation {:?}", op)),
-            ),
+            // Set operations on ExplodedSet
+            BinOp::Union | BinOp::Intersect | BinOp::Diff => {
+                // These produce a set — cannot be used as a scalar expression.
+                // They are handled at the effect/equality level via encode_as_set.
+                Err(SymbolicError::Encoding(format!(
+                    "set operation {:?} used in scalar context (handled in effects/equality)",
+                    op
+                )))
+            }
+            BinOp::SubsetOf => {
+                // subset_of returns a Bool: for all elements, left[i] implies right[i]
+                let (lo, hi) = self.infer_set_bounds(left, right)?;
+                let l_set = self.encode_as_set(left, lo, hi)?;
+                let r_set = self.encode_as_set(right, lo, hi)?;
+                let mut conjuncts = Vec::new();
+                for (lb, rb) in l_set.iter().zip(r_set.iter()) {
+                    conjuncts.push(lb.implies(rb));
+                }
+                Ok(Dynamic::from_ast(&Bool::and(&conjuncts)))
+            }
 
             BinOp::Concat => Err(SymbolicError::Unsupported("sequence concat".into())),
         }
     }
 
     fn encode_eq(&mut self, left: &CompiledExpr, right: &CompiledExpr) -> SymbolicResult<Dynamic> {
+        // Check if either side is a set expression — use per-element equality
+        if self.is_set_expr(left) || self.is_set_expr(right) {
+            let (lo, hi) = self.infer_set_bounds(left, right)?;
+            let l_set = self.encode_as_set(left, lo, hi)?;
+            let r_set = self.encode_as_set(right, lo, hi)?;
+            let mut conjuncts = Vec::new();
+            for (lb, rb) in l_set.iter().zip(r_set.iter()) {
+                conjuncts.push(lb.eq(rb));
+            }
+            return Ok(Dynamic::from_ast(&Bool::and(&conjuncts)));
+        }
+
         let l = self.encode(left)?;
         let r = self.encode(right)?;
         if let (Some(li), Some(ri)) = (l.as_int(), r.as_int()) {
@@ -455,9 +483,22 @@ impl<'a> EncoderCtx<'a> {
                         ))
                     }
                 }
-                _ => Err(SymbolicError::Unsupported(
-                    "len() on complex expression".into(),
-                )),
+                _ => {
+                    // Try encoding as a set expression
+                    if self.is_set_expr(inner) {
+                        if let Some((lo, hi)) = self.try_set_bounds(inner) {
+                            let flags = self.encode_as_set(inner, lo, hi)?;
+                            let one = Int::from_i64(1);
+                            let zero = Int::from_i64(0);
+                            let terms: Vec<Int> =
+                                flags.iter().map(|b| b.ite(&one, &zero)).collect();
+                            return Ok(Dynamic::from_ast(&Int::add(&terms)));
+                        }
+                    }
+                    Err(SymbolicError::Unsupported(
+                        "len() on complex expression".into(),
+                    ))
+                }
             }
         }
     }
@@ -546,10 +587,60 @@ impl<'a> EncoderCtx<'a> {
                 let final_val = if negate { result.not() } else { result };
                 Ok(Dynamic::from_ast(&final_val))
             }
-            _ => Err(SymbolicError::Unsupported(format!(
-                "'in' operator with set expression: {:?}",
-                std::mem::discriminant(set)
-            ))),
+            CompiledExpr::SetLit(elements) => {
+                let elem_z3 = self.encode(elem)?;
+                let mut disjuncts = Vec::new();
+                for set_elem in elements {
+                    let set_elem_z3 = self.encode(set_elem)?;
+                    if let (Some(ei), Some(si)) = (elem_z3.as_int(), set_elem_z3.as_int()) {
+                        disjuncts.push(ei.eq(&si));
+                    } else if let (Some(eb), Some(sb)) = (elem_z3.as_bool(), set_elem_z3.as_bool())
+                    {
+                        disjuncts.push(eb.eq(&sb));
+                    }
+                }
+                let result = if disjuncts.is_empty() {
+                    Bool::from_bool(false)
+                } else {
+                    Bool::or(&disjuncts)
+                };
+                let final_val = if negate { result.not() } else { result };
+                Ok(Dynamic::from_ast(&final_val))
+            }
+            _ => {
+                // Try as a set expression with known bounds (union, intersect, etc.)
+                if self.is_set_expr(set) {
+                    if let Some((lo, hi)) = self.try_set_bounds(set) {
+                        let flags = self.encode_as_set(set, lo, hi)?;
+                        if let Some(concrete_elem) = self.try_concrete_int(elem) {
+                            let offset = (concrete_elem - lo) as usize;
+                            let result = if offset < flags.len() {
+                                flags[offset].clone()
+                            } else {
+                                Bool::from_bool(false)
+                            };
+                            let final_val = if negate { result.not() } else { result };
+                            return Ok(Dynamic::from_ast(&final_val));
+                        } else {
+                            let elem_z3 = self.encode_int(elem)?;
+                            let z3_vars: Vec<Dynamic> =
+                                flags.iter().map(|b| Dynamic::from_ast(b)).collect();
+                            let result = self.build_ite_chain(&elem_z3, &z3_vars, lo)?;
+                            let result_bool = result.as_bool().unwrap();
+                            let final_val = if negate {
+                                result_bool.not()
+                            } else {
+                                result_bool
+                            };
+                            return Ok(Dynamic::from_ast(&final_val));
+                        }
+                    }
+                }
+                Err(SymbolicError::Unsupported(format!(
+                    "'in' operator with set expression: {:?}",
+                    std::mem::discriminant(set)
+                )))
+            }
         }
     }
 
@@ -569,6 +660,162 @@ impl<'a> EncoderCtx<'a> {
             }
         }
         Ok(Dynamic::from_ast(&Bool::and(&eqs)))
+    }
+
+    // === Set helpers ===
+
+    /// Check if an expression represents a set (for equality routing).
+    fn is_set_expr(&self, expr: &CompiledExpr) -> bool {
+        match expr {
+            CompiledExpr::SetLit(_) | CompiledExpr::SetComprehension { .. } => true,
+            CompiledExpr::Binary { op, .. } => {
+                matches!(op, BinOp::Union | BinOp::Intersect | BinOp::Diff)
+            }
+            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+                matches!(self.layout.entries[*idx].kind, VarKind::ExplodedSet { .. })
+            }
+            _ => false,
+        }
+    }
+
+    /// Infer set bounds from two operands (at least one must reveal bounds).
+    fn infer_set_bounds(
+        &mut self,
+        left: &CompiledExpr,
+        right: &CompiledExpr,
+    ) -> SymbolicResult<(i64, i64)> {
+        self.try_set_bounds(left)
+            .or_else(|| self.try_set_bounds(right))
+            .ok_or_else(|| SymbolicError::Encoding("cannot infer set bounds from operands".into()))
+    }
+
+    fn try_set_bounds(&self, expr: &CompiledExpr) -> Option<(i64, i64)> {
+        match expr {
+            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+                if let VarKind::ExplodedSet { lo, hi } = &self.layout.entries[*idx].kind {
+                    Some((*lo, *hi))
+                } else {
+                    None
+                }
+            }
+            CompiledExpr::SetComprehension { domain, .. } => {
+                if let CompiledExpr::Range { lo, hi } = domain.as_ref() {
+                    let lo_val = self.extract_concrete_int(lo).ok()?;
+                    let hi_val = self.extract_concrete_int(hi).ok()?;
+                    Some((lo_val, hi_val))
+                } else {
+                    None
+                }
+            }
+            CompiledExpr::Binary { left, right, .. } => self
+                .try_set_bounds(left)
+                .or_else(|| self.try_set_bounds(right)),
+            _ => None,
+        }
+    }
+
+    /// Encode a set expression as a Vec<Bool> of per-element membership flags.
+    pub fn encode_as_set(
+        &mut self,
+        expr: &CompiledExpr,
+        lo: i64,
+        hi: i64,
+    ) -> SymbolicResult<Vec<Bool>> {
+        let count = (hi - lo + 1) as usize;
+        match expr {
+            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+                let step = match expr {
+                    CompiledExpr::Var(_) => self.current_step,
+                    _ => self.next_step,
+                };
+                let z3_vars = &self.step_vars[step][*idx];
+                Ok(z3_vars.iter().map(|v| v.as_bool().unwrap()).collect())
+            }
+            CompiledExpr::SetLit(elements) => {
+                let mut flags = vec![Bool::from_bool(false); count];
+                for elem in elements {
+                    if let Some(val) = self.try_concrete_int(elem) {
+                        let offset = (val - lo) as usize;
+                        if offset < count {
+                            flags[offset] = Bool::from_bool(true);
+                        }
+                    } else {
+                        // Symbolic element: set the flag at the symbolic index
+                        let elem_z3 = self.encode_int(elem)?;
+                        for (i, k) in (lo..=hi).enumerate() {
+                            let k_z3 = Int::from_i64(k);
+                            let is_match = elem_z3.eq(&k_z3);
+                            flags[i] = Bool::or(&[flags[i].clone(), is_match]);
+                        }
+                    }
+                }
+                Ok(flags)
+            }
+            CompiledExpr::SetComprehension {
+                element: _,
+                domain,
+                filter,
+            } => {
+                let (dom_lo, dom_hi) = self.extract_range(domain)?;
+                let mut flags = vec![Bool::from_bool(false); count];
+                for val in dom_lo..=dom_hi {
+                    let offset = (val - lo) as usize;
+                    if offset >= count {
+                        continue;
+                    }
+                    let z3_val = Dynamic::from_ast(&Int::from_i64(val));
+                    self.locals.push(z3_val);
+                    let included = if let Some(f) = filter {
+                        self.encode_bool(f)?
+                    } else {
+                        Bool::from_bool(true)
+                    };
+                    self.locals.pop();
+                    flags[offset] = included;
+                }
+                Ok(flags)
+            }
+            CompiledExpr::Binary {
+                op: BinOp::Union,
+                left,
+                right,
+            } => {
+                let l = self.encode_as_set(left, lo, hi)?;
+                let r = self.encode_as_set(right, lo, hi)?;
+                Ok(l.iter()
+                    .zip(r.iter())
+                    .map(|(a, b)| Bool::or(&[a.clone(), b.clone()]))
+                    .collect())
+            }
+            CompiledExpr::Binary {
+                op: BinOp::Intersect,
+                left,
+                right,
+            } => {
+                let l = self.encode_as_set(left, lo, hi)?;
+                let r = self.encode_as_set(right, lo, hi)?;
+                Ok(l.iter()
+                    .zip(r.iter())
+                    .map(|(a, b)| Bool::and(&[a.clone(), b.clone()]))
+                    .collect())
+            }
+            CompiledExpr::Binary {
+                op: BinOp::Diff,
+                left,
+                right,
+            } => {
+                let l = self.encode_as_set(left, lo, hi)?;
+                let r = self.encode_as_set(right, lo, hi)?;
+                Ok(l.iter()
+                    .zip(r.iter())
+                    .map(|(a, b)| Bool::and(&[a.clone(), b.not()]))
+                    .collect())
+            }
+            _ => Err(SymbolicError::Encoding(format!(
+                "cannot encode as set: {:?}",
+                std::mem::discriminant(expr)
+            ))),
+        }
     }
 
     // === Helpers ===

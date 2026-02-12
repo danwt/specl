@@ -18,7 +18,7 @@ pub fn check_bmc(
 ) -> SymbolicResult<SymbolicOutcome> {
     info!(depth = max_depth, "starting symbolic BMC");
 
-    let layout = VarLayout::from_spec(spec)?;
+    let layout = VarLayout::from_spec(spec, consts)?;
     let solver = Solver::new();
 
     // Create Z3 variables for steps 0..=max_depth

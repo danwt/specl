@@ -20,7 +20,7 @@ use z3::{SatResult, Solver};
 pub fn check_inductive(spec: &CompiledSpec, consts: &[Value]) -> SymbolicResult<SymbolicOutcome> {
     info!("starting inductive invariant checking");
 
-    let layout = VarLayout::from_spec(spec)?;
+    let layout = VarLayout::from_spec(spec, consts)?;
     let solver = Solver::new();
 
     let step0_vars = create_step_vars(&layout, 0);

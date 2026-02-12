@@ -164,6 +164,18 @@ enum Commands {
         #[arg(long)]
         inductive: bool,
 
+        /// Use k-induction with given strengthening depth (Z3-backed)
+        #[arg(long, value_name = "K")]
+        k_induction: Option<usize>,
+
+        /// Use IC3/CHC verification via Z3's Spacer engine (unbounded, Z3-backed)
+        #[arg(long)]
+        ic3: bool,
+
+        /// Smart mode: automatically try induction, k-induction, IC3, then BMC (Z3-backed)
+        #[arg(long)]
+        smart: bool,
+
         /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -264,10 +276,13 @@ fn main() {
             symbolic,
             depth,
             inductive,
+            k_induction,
+            ic3,
+            smart,
             verbose,
         } => {
-            if symbolic || inductive {
-                cmd_check_symbolic(&file, &constant, depth, inductive)
+            if symbolic || inductive || k_induction.is_some() || ic3 || smart {
+                cmd_check_symbolic(&file, &constant, depth, inductive, k_induction, ic3, smart)
             } else {
                 cmd_check(
                     &file,
@@ -487,6 +502,9 @@ fn cmd_check_symbolic(
     constants: &[String],
     depth: usize,
     inductive: bool,
+    k_induction: Option<usize>,
+    ic3: bool,
+    smart: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -509,7 +527,13 @@ fn cmd_check_symbolic(
     let consts = parse_constants(constants, &spec)?;
 
     let config = SymbolicConfig {
-        mode: if inductive {
+        mode: if smart {
+            SymbolicMode::Smart
+        } else if ic3 {
+            SymbolicMode::Ic3
+        } else if let Some(k) = k_induction {
+            SymbolicMode::KInduction(k)
+        } else if inductive {
             SymbolicMode::Inductive
         } else {
             SymbolicMode::Bmc
@@ -517,7 +541,13 @@ fn cmd_check_symbolic(
         depth,
     };
 
-    let mode_str = if inductive {
+    let mode_str = if smart {
+        "smart"
+    } else if ic3 {
+        "IC3"
+    } else if k_induction.is_some() {
+        "k-induction"
+    } else if inductive {
         "inductive"
     } else {
         "symbolic BMC"
@@ -537,7 +567,9 @@ fn cmd_check_symbolic(
             println!();
             println!("Result: OK");
             println!("  Method: {}", method);
-            if !inductive {
+            if let Some(k) = k_induction {
+                println!("  K: {}", k);
+            } else if !inductive && !ic3 {
                 println!("  Depth: {}", depth);
             }
             println!("  Time: {:.2}s", elapsed.as_secs_f64());
