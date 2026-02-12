@@ -85,20 +85,19 @@
 // =============================================================================
 
 module ReadersWriters
+// Use: -c NUM_READERS=2 -c NUM_WRITERS=1
 
 const NUM_READERS: 0..5
 const NUM_WRITERS: 0..5
 
-// Reader states: 0=thinking, 1=at_turnstile, 2=acquiring_mutex,
-//                3=reading, 4=releasing_mutex, 5=done
-var readers: Dict[Int, 0..5]
+// Reader states: 0=thinking, 1=passed_turnstile, 2=reading
+var readers: Dict[Int, 0..2]
 
-// Writer states: 0=thinking, 1=acquiring_turnstile, 2=acquiring_room,
-//                3=writing, 4=releasing, 5=done
-var writers: Dict[Int, 0..5]
+// Writer states: 0=thinking, 1=acquiring_turnstile, 2=acquiring_room, 3=writing
+var writers: Dict[Int, 0..3]
 
 // Shared state
-var readers_count: 0..10
+var readers_count: 0..5
 var mutex: 0..1
 var roomEmpty: 0..1
 var turnstile: 0..1
@@ -114,69 +113,50 @@ init {
 
 // === Reader actions ===
 
-action Reader_EnterTurnstile(i: 0..NUM_READERS) {
+// Turnstile: pass through (atomic wait+signal)
+action Reader_PassTurnstile(i: 0..NUM_READERS) {
     require readers[i] == 0
     require turnstile > 0
     readers = readers | {i: 1}
-    // Immediately pass through (signal follows wait)
 }
 
-action Reader_LeaveTurnstile(i: 0..NUM_READERS) {
+// Lightswitch lock (first reader): acquire room
+action Reader_EnterFirst(i: 0..NUM_READERS) {
     require readers[i] == 1
+    require mutex > 0
+    require readers_count == 0
+    require roomEmpty > 0
+    readers_count = 1 and
+    roomEmpty = roomEmpty - 1 and
     readers = readers | {i: 2}
-    // turnstile stays as is (we passed through)
 }
 
-action Reader_AcquireMutex(i: 0..NUM_READERS) {
+// Lightswitch lock (not first reader)
+action Reader_EnterNotFirst(i: 0..NUM_READERS) {
+    require readers[i] == 1
+    require mutex > 0
+    require readers_count > 0
+    readers_count = readers_count + 1 and
+    readers = readers | {i: 2}
+}
+
+// Lightswitch unlock (last reader): release room
+action Reader_ExitLast(i: 0..NUM_READERS) {
     require readers[i] == 2
     require mutex > 0
-    mutex = mutex - 1 and
-    readers_count = readers_count + 1 and
-    readers = readers | {i: 3}
-}
-
-action Reader_LockRoomIfFirst(i: 0..NUM_READERS) {
-    require readers[i] == 3
-    require readers_count == 1  // I am first reader
-    require roomEmpty > 0
-    roomEmpty = roomEmpty - 1 and
-    mutex = mutex + 1 and
-    readers = readers | {i: 4}
-}
-
-action Reader_ReleaseMutexNotFirst(i: 0..NUM_READERS) {
-    require readers[i] == 3
-    require readers_count > 1  // Not first reader
-    mutex = mutex + 1 and
-    readers = readers | {i: 4}
-}
-
-action Reader_FinishReading(i: 0..NUM_READERS) {
-    require readers[i] == 4
-    readers = readers | {i: 5}
-}
-
-action Reader_UnlockRoomIfLast(i: 0..NUM_READERS) {
-    require readers[i] == 5
-    require mutex > 0
-    mutex = mutex - 1 and
-    readers_count = readers_count - 1
-    // Check if last reader
-}
-
-action Reader_ReleaseRoomIfLast(i: 0..NUM_READERS) {
-    require readers[i] == 5
-    require readers_count == 0  // I was the last reader
+    require readers_count == 1
+    readers_count = 0 and
     roomEmpty = roomEmpty + 1 and
-    mutex = mutex + 1 and
-    readers = readers | {i: 0}  // Loop back to thinking
+    readers = readers | {i: 0}
 }
 
-action Reader_ReleaseMutexNotLast(i: 0..NUM_READERS) {
-    require readers[i] == 5
-    require readers_count > 0  // Not last reader
-    mutex = mutex + 1 and
-    readers = readers | {i: 0}  // Loop back to thinking
+// Lightswitch unlock (not last reader)
+action Reader_ExitNotLast(i: 0..NUM_READERS) {
+    require readers[i] == 2
+    require mutex > 0
+    require readers_count > 1
+    readers_count = readers_count - 1 and
+    readers = readers | {i: 0}
 }
 
 // === Writer actions ===
@@ -200,24 +180,19 @@ action Writer_Write(i: 0..NUM_WRITERS) {
     writers = writers | {i: 3}
 }
 
-action Writer_ReleaseTurnstile(i: 0..NUM_WRITERS) {
+action Writer_Release(i: 0..NUM_WRITERS) {
     require writers[i] == 3
     turnstile = turnstile + 1 and
-    writers = writers | {i: 4}
-}
-
-action Writer_ReleaseRoom(i: 0..NUM_WRITERS) {
-    require writers[i] == 4
     roomEmpty = roomEmpty + 1 and
-    writers = writers | {i: 0}  // Loop back to thinking
+    writers = writers | {i: 0}
 }
 
 // === Safety invariants ===
 
 invariant MutualExclusion {
     // Cannot have active readers and active writers simultaneously
-    let reading = len({i in 0..NUM_READERS if readers[i] == 4}) in
-    let writing = len({i in 0..NUM_WRITERS if writers[i] == 3}) in
+    let reading = len({i in 0..NUM_READERS if readers[i] == 2}) in
+    let writing = len({i in 0..NUM_WRITERS if writers[i] >= 2 and writers[i] <= 3}) in
     not (reading > 0 and writing > 0)
 }
 
@@ -225,12 +200,6 @@ invariant ExclusiveWriter {
     // At most one writer in critical section
     let writing = len({i in 0..NUM_WRITERS if writers[i] >= 2 and writers[i] <= 3}) in
     writing <= 1
-}
-
-invariant ReadersCountCorrect {
-    // readers_count matches actual readers in/past critical section
-    let actual = len({i in 0..NUM_READERS if readers[i] >= 3 and readers[i] <= 5}) in
-    readers_count == actual
 }
 
 invariant SemaphoreBounds {

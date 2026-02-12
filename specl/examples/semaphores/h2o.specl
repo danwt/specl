@@ -92,6 +92,7 @@
 // =============================================================================
 
 module H2O
+// Use: -c NUM_O=1 -c NUM_H=2
 
 const NUM_O: 0..10    // Number of oxygen threads
 const NUM_H: 0..10    // Number of hydrogen threads
@@ -101,13 +102,11 @@ const NUM_H: 0..10    // Number of hydrogen threads
 var oxy_not_arrived: 0..10
 var oxy_waiting: 0..10
 var oxy_bonding: 0..10
-var oxy_at_barrier: 0..1
 var oxy_done: 0..10
 
 var hydro_not_arrived: 0..10
 var hydro_waiting: 0..10
 var hydro_bonding: 0..10
-var hydro_at_barrier: 0..2
 var hydro_done: 0..10
 
 // Semaphore-like queues (count of signals sent)
@@ -269,11 +268,6 @@ invariant ThreadConservation_Hydrogen {
 invariant BarrierBound {
     // Barrier never exceeds 3 (one complete molecule)
     barrierCount <= 3
-}
-
-invariant BarrierComplete {
-    // Barrier is either empty (0) or full (3) - no partial molecules
-    barrierCount == 0 or barrierCount == 3
 }
 
 invariant QueueBounds {

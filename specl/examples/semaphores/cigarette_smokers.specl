@@ -110,6 +110,7 @@
 // =============================================================================
 
 module CigaretteSmokers
+// Use: -c NUM_ROUNDS=2
 
 const NUM_ROUNDS: 0..5  // Number of agent rounds to model
 
@@ -217,33 +218,27 @@ action Pusher_Tobacco_Wait() {
 action Pusher_Tobacco_CheckPaper() {
     require pusher_tobacco == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_paper == true
     is_paper = false and
     match_sem = match_sem + 1 and
-    mutex = mutex + 1 and
     pusher_tobacco = 0
 }
 
 action Pusher_Tobacco_CheckMatch() {
     require pusher_tobacco == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_match == true
     is_match = false and
     paper_sem = paper_sem + 1 and
-    mutex = mutex + 1 and
     pusher_tobacco = 0
 }
 
 action Pusher_Tobacco_SetFlag() {
     require pusher_tobacco == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_paper == false
     require is_match == false
     is_tobacco = true and
-    mutex = mutex + 1 and
     pusher_tobacco = 0
 }
 
@@ -257,33 +252,27 @@ action Pusher_Paper_Wait() {
 action Pusher_Paper_CheckTobacco() {
     require pusher_paper == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_tobacco == true
     is_tobacco = false and
     match_sem = match_sem + 1 and
-    mutex = mutex + 1 and
     pusher_paper = 0
 }
 
 action Pusher_Paper_CheckMatch() {
     require pusher_paper == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_match == true
     is_match = false and
     tobacco_sem = tobacco_sem + 1 and
-    mutex = mutex + 1 and
     pusher_paper = 0
 }
 
 action Pusher_Paper_SetFlag() {
     require pusher_paper == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_tobacco == false
     require is_match == false
     is_paper = true and
-    mutex = mutex + 1 and
     pusher_paper = 0
 }
 
@@ -297,33 +286,27 @@ action Pusher_Match_Wait() {
 action Pusher_Match_CheckTobacco() {
     require pusher_match == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_tobacco == true
     is_tobacco = false and
     paper_sem = paper_sem + 1 and
-    mutex = mutex + 1 and
     pusher_match = 0
 }
 
 action Pusher_Match_CheckPaper() {
     require pusher_match == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_paper == true
     is_paper = false and
     tobacco_sem = tobacco_sem + 1 and
-    mutex = mutex + 1 and
     pusher_match = 0
 }
 
 action Pusher_Match_SetFlag() {
     require pusher_match == 1
     require mutex > 0
-    mutex = mutex - 1 and
     require is_tobacco == false
     require is_paper == false
     is_match = true and
-    mutex = mutex + 1 and
     pusher_match = 0
 }
 

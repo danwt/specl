@@ -86,29 +86,26 @@
 // =============================================================================
 
 module UnisexBathroom
+// Use: -c NUM_MALES=2 -c NUM_FEMALES=2 -c CAPACITY=3
 
 const NUM_MALES: 0..5
 const NUM_FEMALES: 0..5
 const CAPACITY: 0..5
 
-// Male states: 0=outside, 1=at_turnstile, 2=passed_turnstile,
-//              3=acquiring_multiplex, 4=locking, 5=in_bathroom, 6=unlocking
-var males_state: Dict[Int, 0..6]
+// Male states: 0=outside, 1=passed_turnstile, 2=in_bathroom
+var males_state: Dict[Int, 0..2]
 
-// Female states: 0=outside, 1=at_turnstile, 2=passed_turnstile,
-//                3=acquiring_multiplex, 4=locking, 5=in_bathroom, 6=unlocking
-var females_state: Dict[Int, 0..6]
+// Female states: 0=outside, 1=passed_turnstile, 2=in_bathroom
+var females_state: Dict[Int, 0..2]
 
-// Counters
-var males_count: 0..10
-var females_count: 0..10
+// Counters (how many of each gender in the bathroom)
+var males_count: 0..5
+var females_count: 0..5
 
 // Semaphores
 var empty: 0..1
-var male_multiplex: 0..10
-var female_multiplex: 0..10
-var male_mutex: 0..1
-var female_mutex: 0..1
+var male_multiplex: 0..5
+var female_multiplex: 0..5
 var turnstile: 0..1
 
 init {
@@ -119,160 +116,101 @@ init {
     empty = 1 and
     male_multiplex = CAPACITY and
     female_multiplex = CAPACITY and
-    male_mutex = 1 and
-    female_mutex = 1 and
     turnstile = 1
 }
 
 // === Male actions ===
 
-action Male_EnterTurnstile(i: 0..NUM_MALES) {
+// Turnstile: pass through (atomic wait+signal)
+action Male_PassTurnstile(i: 0..NUM_MALES) {
     require males_state[i] == 0
     require turnstile > 0
     males_state = males_state | {i: 1}
 }
 
-action Male_LeaveTurnstile(i: 0..NUM_MALES) {
+// Lightswitch lock (first male): acquire multiplex + empty, enter bathroom
+action Male_EnterFirst(i: 0..NUM_MALES) {
     require males_state[i] == 1
+    require male_multiplex > 0
+    require males_count == 0
+    require empty > 0
+    male_multiplex = male_multiplex - 1 and
+    empty = empty - 1 and
+    males_count = 1 and
     males_state = males_state | {i: 2}
 }
 
-action Male_AcquireMultiplex(i: 0..NUM_MALES) {
-    require males_state[i] == 2
+// Lightswitch lock (not first male): acquire multiplex, enter bathroom
+action Male_EnterNotFirst(i: 0..NUM_MALES) {
+    require males_state[i] == 1
     require male_multiplex > 0
+    require males_count > 0
     male_multiplex = male_multiplex - 1 and
-    males_state = males_state | {i: 3}
+    males_count = males_count + 1 and
+    males_state = males_state | {i: 2}
 }
 
-action Male_LockIfFirst(i: 0..NUM_MALES) {
-    require males_state[i] == 3
-    require male_mutex > 0
-    male_mutex = male_mutex - 1 and
-    males_count = males_count + 1
-}
-
-action Male_AcquireEmpty(i: 0..NUM_MALES) {
-    require males_state[i] == 3
-    require males_count == 1  // I am first male
-    require empty > 0
-    empty = empty - 1 and
-    male_mutex = male_mutex + 1 and
-    males_state = males_state | {i: 4}
-}
-
-action Male_ReleaseMutexNotFirst(i: 0..NUM_MALES) {
-    require males_state[i] == 3
-    require males_count > 1  // Not first male
-    male_mutex = male_mutex + 1 and
-    males_state = males_state | {i: 4}
-}
-
-action Male_UseBathroom(i: 0..NUM_MALES) {
-    require males_state[i] == 4
-    males_state = males_state | {i: 5}
-}
-
-action Male_ReleaseMultiplex(i: 0..NUM_MALES) {
-    require males_state[i] == 5
+// Lightswitch unlock (last male): release multiplex + empty
+action Male_ExitLast(i: 0..NUM_MALES) {
+    require males_state[i] == 2
+    require males_count == 1
     male_multiplex = male_multiplex + 1 and
-    males_state = males_state | {i: 6}
-}
-
-action Male_UnlockAcquireMutex(i: 0..NUM_MALES) {
-    require males_state[i] == 6
-    require male_mutex > 0
-    male_mutex = male_mutex - 1 and
-    males_count = males_count - 1
-}
-
-action Male_ReleaseEmptyIfLast(i: 0..NUM_MALES) {
-    require males_state[i] == 6
-    require males_count == 0  // I was last male
+    males_count = 0 and
     empty = empty + 1 and
-    male_mutex = male_mutex + 1 and
     males_state = males_state | {i: 0}
 }
 
-action Male_ReleaseMutexNotLast(i: 0..NUM_MALES) {
-    require males_state[i] == 6
-    require males_count > 0  // Not last male
-    male_mutex = male_mutex + 1 and
+// Lightswitch unlock (not last male): release multiplex
+action Male_ExitNotLast(i: 0..NUM_MALES) {
+    require males_state[i] == 2
+    require males_count > 1
+    male_multiplex = male_multiplex + 1 and
+    males_count = males_count - 1 and
     males_state = males_state | {i: 0}
 }
 
 // === Female actions ===
 
-action Female_EnterTurnstile(i: 0..NUM_FEMALES) {
+action Female_PassTurnstile(i: 0..NUM_FEMALES) {
     require females_state[i] == 0
     require turnstile > 0
     females_state = females_state | {i: 1}
 }
 
-action Female_LeaveTurnstile(i: 0..NUM_FEMALES) {
+action Female_EnterFirst(i: 0..NUM_FEMALES) {
     require females_state[i] == 1
+    require female_multiplex > 0
+    require females_count == 0
+    require empty > 0
+    female_multiplex = female_multiplex - 1 and
+    empty = empty - 1 and
+    females_count = 1 and
     females_state = females_state | {i: 2}
 }
 
-action Female_AcquireMultiplex(i: 0..NUM_FEMALES) {
-    require females_state[i] == 2
+action Female_EnterNotFirst(i: 0..NUM_FEMALES) {
+    require females_state[i] == 1
     require female_multiplex > 0
+    require females_count > 0
     female_multiplex = female_multiplex - 1 and
-    females_state = females_state | {i: 3}
+    females_count = females_count + 1 and
+    females_state = females_state | {i: 2}
 }
 
-action Female_LockIfFirst(i: 0..NUM_FEMALES) {
-    require females_state[i] == 3
-    require female_mutex > 0
-    female_mutex = female_mutex - 1 and
-    females_count = females_count + 1
-}
-
-action Female_AcquireEmpty(i: 0..NUM_FEMALES) {
-    require females_state[i] == 3
-    require females_count == 1  // I am first female
-    require empty > 0
-    empty = empty - 1 and
-    female_mutex = female_mutex + 1 and
-    females_state = females_state | {i: 4}
-}
-
-action Female_ReleaseMutexNotFirst(i: 0..NUM_FEMALES) {
-    require females_state[i] == 3
-    require females_count > 1  // Not first female
-    female_mutex = female_mutex + 1 and
-    females_state = females_state | {i: 4}
-}
-
-action Female_UseBathroom(i: 0..NUM_FEMALES) {
-    require females_state[i] == 4
-    females_state = females_state | {i: 5}
-}
-
-action Female_ReleaseMultiplex(i: 0..NUM_FEMALES) {
-    require females_state[i] == 5
+action Female_ExitLast(i: 0..NUM_FEMALES) {
+    require females_state[i] == 2
+    require females_count == 1
     female_multiplex = female_multiplex + 1 and
-    females_state = females_state | {i: 6}
-}
-
-action Female_UnlockAcquireMutex(i: 0..NUM_FEMALES) {
-    require females_state[i] == 6
-    require female_mutex > 0
-    female_mutex = female_mutex - 1 and
-    females_count = females_count - 1
-}
-
-action Female_ReleaseEmptyIfLast(i: 0..NUM_FEMALES) {
-    require females_state[i] == 6
-    require females_count == 0  // I was last female
+    females_count = 0 and
     empty = empty + 1 and
-    female_mutex = female_mutex + 1 and
     females_state = females_state | {i: 0}
 }
 
-action Female_ReleaseMutexNotLast(i: 0..NUM_FEMALES) {
-    require females_state[i] == 6
-    require females_count > 0  // Not last female
-    female_mutex = female_mutex + 1 and
+action Female_ExitNotLast(i: 0..NUM_FEMALES) {
+    require females_state[i] == 2
+    require females_count > 1
+    female_multiplex = female_multiplex + 1 and
+    females_count = females_count - 1 and
     females_state = females_state | {i: 0}
 }
 
@@ -288,19 +226,8 @@ invariant CapacityLimit {
     males_count + females_count <= CAPACITY
 }
 
-invariant MaleCountCorrect {
-    let actual = len({i in 0..NUM_MALES if males_state[i] >= 4 and males_state[i] <= 6}) in
-    males_count == actual
-}
-
-invariant FemaleCountCorrect {
-    let actual = len({i in 0..NUM_FEMALES if females_state[i] >= 4 and females_state[i] <= 6}) in
-    females_count == actual
-}
-
 invariant SemaphoreBounds {
     empty <= 1 and
-    male_mutex <= 1 and female_mutex <= 1 and
     turnstile <= 1 and
     male_multiplex <= CAPACITY and
     female_multiplex <= CAPACITY

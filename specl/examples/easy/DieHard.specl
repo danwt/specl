@@ -1,8 +1,10 @@
 // DieHard Water Jug Puzzle
 // From Die Hard 3: Use a 3-gallon and 5-gallon jug to measure exactly 4 gallons.
-// The model checker finds a solution by searching for a counterexample to "NotSolved".
+// The model checker finds a solution by searching for an intentional
+// counterexample to "NotSolved" — the violation trace IS the solution.
 
 module DieHard
+// Use: No constants needed
 
 var small: 0..3
 var big: 0..5
@@ -31,14 +33,28 @@ action EmptyBig() {
     big = 0
 }
 
-// Pour from small into big (until big is full or small is empty)
-action SmallToBig() {
-    if small + big <= 5 then (small = 0 and big = small + big) else (small = small - (5 - big) and big = 5)
+// Pour from small into big (small fits entirely)
+action SmallToBig_Fits() {
+    require small + big <= 5
+    big = small + big and small = 0
 }
 
-// Pour from big into small (until small is full or big is empty)
-action BigToSmall() {
-    if small + big <= 3 then (big = 0 and small = small + big) else (big = big - (3 - small) and small = 3)
+// Pour from small into big (big overflows)
+action SmallToBig_Overflow() {
+    require small + big > 5
+    small = small - (5 - big) and big = 5
+}
+
+// Pour from big into small (big fits entirely)
+action BigToSmall_Fits() {
+    require small + big <= 3
+    small = small + big and big = 0
+}
+
+// Pour from big into small (small overflows)
+action BigToSmall_Overflow() {
+    require small + big > 3
+    big = big - (3 - small) and small = 3
 }
 
 // The puzzle is solved when we have exactly 4 gallons in the big jug.

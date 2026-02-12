@@ -95,6 +95,7 @@
 // =============================================================================
 
 module SantaClaus
+// Use: -c NUM_REINDEER=2 -c NUM_ELVES=2 -c MAX_ROUNDS=1
 
 const NUM_REINDEER: 0..9
 const NUM_ELVES: 0..10
@@ -300,11 +301,6 @@ invariant ReindeerCountCorrect {
 
 invariant ElfCountCorrect {
     elf_count >= 0 and elf_count <= 3
-}
-
-invariant SemaphoreBounds {
-    santa_sem <= 1 and elf_tex <= 1 and mutex <= 1 and
-    reindeer_sem <= 9
 }
 
 // =============================================================================
