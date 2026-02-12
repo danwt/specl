@@ -1,8 +1,9 @@
 module Raft
-// Use: -c N=2 -c MaxTerm=2 -c MaxLogLen=2
+// Use: -c N=1 -c MaxTerm=2 -c MaxLogLen=2
 
 // ============================================================================
 // Simplified Raft Consensus Sketch
+// N CONVENTION: 0..N gives N+1 servers. N=1 → 2 servers, N=2 → 3 servers.
 // ============================================================================
 // Based on: Ongaro & Ousterhout, "In Search of an Understandable Consensus Algorithm"
 // https://raft.github.io/raft.pdf

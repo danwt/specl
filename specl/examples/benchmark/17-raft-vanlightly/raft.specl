@@ -1,10 +1,25 @@
 module RaftVanlightly
-// Use: -c N=2 -c MaxVal=1 -c MaxElections=1 -c MaxRestarts=0 -c MaxLogLen=2
+// Use: -c N=1 -c MaxVal=1 -c MaxElections=1 -c MaxRestarts=0 -c MaxLogLen=2
 
 // ============================================================================
 // Vanlightly's Model-Checking Optimized Raft Specification
 // ============================================================================
 // Translated from https://github.com/Vanlightly/raft-tlaplus
+//
+// N CONVENTION: 0..N gives N+1 servers (inclusive range). So:
+//   N=1 → servers {0,1} = 2 servers (equivalent to TLA+ Server={s1,s2})
+//   N=2 → servers {0,1,2} = 3 servers
+//   N=4 → servers {0,1,2,3,4} = 5 servers
+//
+// EQUIVALENT TLA+ CONFIGS for fair benchmarking:
+//   TLC: Server={s1,s2}, Value={v1}, MaxElections=2, MaxRestarts=0
+//   Specl: -c N=1 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=2
+//
+// MODELING DIFFERENCES vs TLA+:
+//   1. AdvanceCommitIndex: Specl uses parameterized guessing (k: 1..MaxLogLen)
+//      with guard ensuring k is maximum. TLA+ computes max directly.
+//   2. UpdateTerm: Specl splits into 4 actions (one per message type).
+//      TLA+ uses 1 action quantifying over all messages.
 //
 // Message encoding (term at [0], src at [1], dest at [2] for all types):
 //   ReqVoteReq:  [term, src, dest, lastLogTerm, lastLogIndex]
@@ -12,8 +27,6 @@ module RaftVanlightly
 //   AEReq:       [term, src, dest, prevLogIndex, prevLogTerm,
 //                  hasEntry(0/1), entryTerm, entryValue, commitIndex]
 //   AEResp:      [term, src, dest, success(0/1), matchIndex]
-//
-// Usage: specl check raft.specl -c N=2 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=1
 
 const N: Int
 const MaxVal: Int
