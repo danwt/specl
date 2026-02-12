@@ -116,68 +116,70 @@ enum Commands {
         #[arg(short, long, value_name = "CONST=VALUE")]
         constant: Vec<String>,
 
+        // -- Explicit-state options --
         /// Maximum number of states to explore (0 = unlimited)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "0", help_heading = "Explicit-State")]
         max_states: usize,
 
         /// Maximum depth to explore (0 = unlimited)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "0", help_heading = "Explicit-State")]
         max_depth: usize,
 
         /// Maximum memory usage in MB (0 = unlimited)
-        #[arg(long, default_value = "0")]
+        #[arg(long, default_value = "0", help_heading = "Explicit-State")]
         memory_limit: usize,
 
         /// Disable deadlock checking
-        #[arg(long)]
+        #[arg(long, help_heading = "Explicit-State")]
         no_deadlock: bool,
 
         /// Disable parallel exploration
-        #[arg(long)]
+        #[arg(long, help_heading = "Explicit-State")]
         no_parallel: bool,
 
-        /// Number of threads for parallel exploration (0 = use all available)
-        #[arg(long, default_value = "0")]
+        /// Number of threads (0 = all available)
+        #[arg(long, default_value = "0", help_heading = "Explicit-State")]
         threads: usize,
 
-        /// Enable partial order reduction
-        #[arg(long)]
+        /// Partial order reduction (skip redundant interleavings)
+        #[arg(long, help_heading = "Explicit-State")]
         por: bool,
 
-        /// Enable symmetry reduction
-        #[arg(long)]
+        /// Symmetry reduction (collapse equivalent process permutations)
+        #[arg(long, help_heading = "Explicit-State")]
         symmetry: bool,
 
-        /// Fast check mode: minimal memory, re-explore for traces on violation
-        #[arg(long)]
+        /// Fingerprint-only mode: 10x less memory, re-explores for traces on violation
+        #[arg(long, help_heading = "Explicit-State")]
         fast: bool,
 
-        /// Use symbolic (Z3-backed) bounded model checking
-        #[arg(long)]
+        // -- Symbolic (Z3) options --
+        /// Bounded model checking (unroll transitions to --depth steps)
+        #[arg(long, help_heading = "Symbolic (Z3)")]
         symbolic: bool,
 
-        /// BMC depth for symbolic checking (default: 10)
-        #[arg(long, default_value = "10")]
+        /// BMC/symbolic depth bound
+        #[arg(long, default_value = "10", help_heading = "Symbolic (Z3)")]
         depth: usize,
 
-        /// Use inductive invariant checking (Z3-backed)
-        #[arg(long)]
+        /// Inductive invariant checking (single-step proof)
+        #[arg(long, help_heading = "Symbolic (Z3)")]
         inductive: bool,
 
-        /// Use k-induction with given strengthening depth (Z3-backed)
-        #[arg(long, value_name = "K")]
+        /// k-induction with given strengthening depth
+        #[arg(long, value_name = "K", help_heading = "Symbolic (Z3)")]
         k_induction: Option<usize>,
 
-        /// Use IC3/CHC verification via Z3's Spacer engine (unbounded, Z3-backed)
-        #[arg(long)]
+        /// IC3/CHC unbounded verification via Z3 Spacer
+        #[arg(long, help_heading = "Symbolic (Z3)")]
         ic3: bool,
 
-        /// Smart mode: automatically try induction, k-induction, IC3, then BMC (Z3-backed)
-        #[arg(long)]
+        /// Auto cascade: induction -> k-induction -> IC3 -> BMC
+        #[arg(long, help_heading = "Symbolic (Z3)")]
         smart: bool,
 
-        /// Maximum sequence length for symbolic Seq[T] variables (default: 5)
-        #[arg(long, default_value = "5")]
+        /// Max sequence length for symbolic Seq[T] encoding
+        #[arg(long, default_value = "5", help_heading = "Symbolic (Z3)")]
         seq_bound: usize,
 
         /// Show verbose output
