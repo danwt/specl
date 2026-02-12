@@ -6,6 +6,7 @@ use notify::{RecursiveMode, Watcher};
 use specl_eval::Value;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer, State};
+use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::fs;
 use std::path::PathBuf;
@@ -151,6 +152,18 @@ enum Commands {
         #[arg(long)]
         fast: bool,
 
+        /// Use symbolic (Z3-backed) bounded model checking
+        #[arg(long)]
+        symbolic: bool,
+
+        /// BMC depth for symbolic checking (default: 10)
+        #[arg(long, default_value = "10")]
+        depth: usize,
+
+        /// Use inductive invariant checking (Z3-backed)
+        #[arg(long)]
+        inductive: bool,
+
         /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -248,21 +261,30 @@ fn main() {
             por,
             symmetry,
             fast,
+            symbolic,
+            depth,
+            inductive,
             verbose,
-        } => cmd_check(
-            &file,
-            &constant,
-            max_states,
-            max_depth,
-            memory_limit,
-            !no_deadlock,
-            !no_parallel,
-            threads,
-            por,
-            symmetry,
-            fast,
-            verbose,
-        ),
+        } => {
+            if symbolic || inductive {
+                cmd_check_symbolic(&file, &constant, depth, inductive)
+            } else {
+                cmd_check(
+                    &file,
+                    &constant,
+                    max_states,
+                    max_depth,
+                    memory_limit,
+                    !no_deadlock,
+                    !no_parallel,
+                    threads,
+                    por,
+                    symmetry,
+                    fast,
+                    verbose,
+                )
+            }
+        }
         Commands::Format { file, write } => cmd_format(&file, write),
         Commands::Watch {
             file,
@@ -453,6 +475,98 @@ fn cmd_check(
             println!("  States explored: {}", states_explored);
             println!("  Max depth: {}", max_depth);
             println!("  Time: {:.2}s", elapsed.as_secs_f64());
+            std::process::exit(2);
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_check_symbolic(
+    file: &PathBuf,
+    constants: &[String],
+    depth: usize,
+    inductive: bool,
+) -> CliResult<()> {
+    let filename = file.display().to_string();
+    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?);
+
+    info!("parsing...");
+    let module =
+        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
+
+    info!("type checking...");
+    specl_types::check_module(&module)
+        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
+
+    info!("compiling...");
+    let spec = compile(&module).map_err(|e| CliError::CompileError {
+        message: e.to_string(),
+    })?;
+
+    let consts = parse_constants(constants, &spec)?;
+
+    let config = SymbolicConfig {
+        mode: if inductive {
+            SymbolicMode::Inductive
+        } else {
+            SymbolicMode::Bmc
+        },
+        depth,
+    };
+
+    let mode_str = if inductive {
+        "inductive"
+    } else {
+        "symbolic BMC"
+    };
+    info!(mode = mode_str, "checking...");
+    let start = Instant::now();
+
+    let result =
+        specl_symbolic::check(&spec, &consts, &config).map_err(|e| CliError::CheckError {
+            message: e.to_string(),
+        })?;
+
+    let elapsed = start.elapsed();
+
+    match result {
+        SymbolicOutcome::Ok { method } => {
+            println!();
+            println!("Result: OK");
+            println!("  Method: {}", method);
+            if !inductive {
+                println!("  Depth: {}", depth);
+            }
+            println!("  Time: {:.2}s", elapsed.as_secs_f64());
+        }
+        SymbolicOutcome::InvariantViolation { invariant, trace } => {
+            println!();
+            if inductive {
+                println!("Result: NOT INDUCTIVE");
+            } else {
+                println!("Result: INVARIANT VIOLATION");
+            }
+            println!("  Invariant: {}", invariant);
+            println!("  Trace ({} steps):", trace.len());
+            for (i, step) in trace.iter().enumerate() {
+                let action_str = step.action.as_deref().unwrap_or("init");
+                let state_str = step
+                    .state
+                    .iter()
+                    .map(|(k, v)| format!("{}={}", k, v))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                println!("    {}: {} -> {}", i, action_str, state_str);
+            }
+            std::process::exit(1);
+        }
+        SymbolicOutcome::Unknown { reason } => {
+            println!();
+            println!("Result: UNKNOWN");
+            println!("  Reason: {}", reason);
             std::process::exit(2);
         }
     }

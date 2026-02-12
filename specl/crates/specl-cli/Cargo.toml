@@ -18,6 +18,7 @@ specl-ir.workspace = true
 specl-eval.workspace = true
 specl-mc.workspace = true
 specl-tla.workspace = true
+specl-symbolic.workspace = true
 clap.workspace = true
 indicatif.workspace = true
 tracing.workspace = true
