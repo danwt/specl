@@ -12,12 +12,13 @@ module RaftVanlightly
 //                  hasEntry(0/1), entryTerm, entryValue, commitIndex]
 //   AEResp:      [term, src, dest, success(0/1), matchIndex]
 //
-// Usage: specl check raft.specl -c N=2 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0
+// Usage: specl check raft.specl -c N=2 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=1
 
 const N: Int
 const MaxVal: Int
 const MaxElections: Int
 const MaxRestarts: Int
+const MaxLogLen: Int  // must be >= MaxVal + 1 (max possible log entries)
 
 // Per-server state
 var currentTerm: Dict[Int, Int]
@@ -155,14 +156,14 @@ action AppendEntries(i: 0..N, j: 0..N) {
 }
 
 // Leader i advances commitIndex
-action AdvanceCommitIndex(i: 0..N, k: 1..N) {
+action AdvanceCommitIndex(i: 0..N, k: 1..MaxLogLen) {
     require state[i] == 2
     require k <= len(logTerm[i])
     require k > commitIndex[i]
     require logTerm[i][k - 1] == currentTerm[i]
     require len({j in 0..N if matchIndex[i][j] >= k or j == i}) * 2 > N + 1
     // k must be maximum valid index
-    require all k2 in 1..N:
+    require all k2 in 1..MaxLogLen:
         (k2 > k and k2 <= len(logTerm[i]) and logTerm[i][k2 - 1] == currentTerm[i]
          and len({j in 0..N if matchIndex[i][j] >= k2 or j == i}) * 2 > N + 1)
         implies false
@@ -349,7 +350,7 @@ action HandleAppendEntriesResponse(msg: Seq[Int]) {
 invariant NoLogDivergence {
     all s1 in 0..N: all s2 in 0..N:
         (s1 != s2 and commitIndex[s1] > 0 and commitIndex[s2] > 0)
-        implies (all idx in 1..N:
+        implies (all idx in 1..MaxLogLen:
             (idx <= commitIndex[s1] and idx <= commitIndex[s2]
              and idx <= len(logTerm[s1]) and idx <= len(logTerm[s2]))
             implies (logTerm[s1][idx - 1] == logTerm[s2][idx - 1]
