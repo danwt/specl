@@ -1,0 +1,103 @@
+module EPaxos
+
+// Model of one EPaxos consensus instance with 3 replicas.
+//
+// Each replica tracks its status, ballot, and accepted value. A single
+// ballot variable tracks the highest ballot seen per replica, as in the
+// original EPaxos paper (Moraru et al., 2013).
+//
+// Models pre-accept, accept propagation, recovery, and commit.
+// Fast-path commit is omitted (it requires command leader identity and
+// specific fast quorum membership rules that are orthogonal to the
+// consensus safety property being checked here).
+//
+// Use: specl check epaxos.specl -c MaxBal=5 -c NB=6 --no-deadlock --no-auto --max-states 50000000
+
+const MaxBal: Int
+const NB: Int // must equal MaxBal + 1
+
+// 3 replicas: 0, 1, 2
+// Status: 0=none, 1=preaccepted, 2=accepted, 3=committed
+
+var status: Dict[0..2, 0..3]
+var ballot: Dict[0..2, 0..MaxBal]
+var val: Dict[0..2, 0..1]
+var next_bal: 1..NB
+
+init {
+    status = {r: 0 for r in 0..2}
+    and ballot = {r: 0 for r in 0..2}
+    and val = {r: 0 for r in 0..2}
+    and next_bal = 1
+}
+
+// Phase 1: replica pre-accepts a value (dependency set) at the initial ballot.
+action PreAccept(r: 0..2, v: 0..1) {
+    require status[r] == 0
+    require ballot[r] == 0
+    status = status | {r: 1}
+    and val = val | {r: v}
+}
+
+// Process a Prepare from some recovery attempt.
+// Updates ballot without changing status or value.
+action ReceivePrepare(r: 0..2) {
+    require next_bal <= MaxBal
+    require next_bal > ballot[r]
+    require status[r] != 3
+    ballot = ballot | {r: next_bal}
+    and next_bal = next_bal + 1
+}
+
+// Recovery: leader collects state from quorum {leader, other} and decides.
+// Priority: committed > accepted (highest ballot) > preaccepted > none.
+action Recovery(leader: 0..2, other: 0..2, pick: 0..1) {
+    require leader != other
+    require next_bal <= MaxBal
+    require next_bal > ballot[leader]
+    require next_bal > ballot[other]
+    require status[leader] != 3
+    require status[leader] >= 1 or status[other] >= 1
+
+    val = val | {leader:
+        if status[other] == 3 then val[other]
+        else if status[leader] == 2 and status[other] == 2 then
+            if ballot[leader] > ballot[other] then val[leader]
+            else if ballot[other] > ballot[leader] then val[other]
+            else val[leader]
+        else if status[other] == 2 then val[other]
+        else if status[leader] == 2 then val[leader]
+        else if status[leader] == 1 and status[other] == 1 then
+            if val[leader] == val[other] then val[leader] else pick
+        else if status[leader] == 1 then val[leader]
+        else if status[other] == 1 then val[other]
+        else pick
+    }
+    and status = status | {leader: 2}
+    and ballot = ballot | {leader: next_bal, other: next_bal}
+    and next_bal = next_bal + 1
+}
+
+// Phase 2: propagate accepted value to another replica.
+action Accept(src: 0..2, dst: 0..2) {
+    require src != dst
+    require status[src] == 2
+    require status[dst] != 3
+    require ballot[src] >= ballot[dst]
+    status = status | {dst: 2}
+    and ballot = ballot | {dst: ballot[src]}
+    and val = val | {dst: val[src]}
+}
+
+// Commit: quorum of 2 accepted replicas agree on value and ballot.
+action Commit(r: 0..2) {
+    require status[r] == 2
+    require any r2 in 0..2:
+        r2 != r and status[r2] >= 2 and val[r2] == val[r] and ballot[r2] == ballot[r]
+    status = status | {r: 3}
+}
+
+invariant Agreement {
+    all r1 in 0..2: all r2 in 0..2:
+        (status[r1] == 3 and status[r2] == 3) implies val[r1] == val[r2]
+}
