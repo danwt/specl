@@ -216,6 +216,10 @@ enum Commands {
         #[arg(long, help_heading = "Explicit-State")]
         fast: bool,
 
+        /// Swarm verification: run N parallel instances with shuffled action orders
+        #[arg(long, value_name = "N", help_heading = "Explicit-State")]
+        swarm: Option<usize>,
+
         // -- Symbolic (Z3) options --
         /// Bounded model checking (unroll transitions to --bmc-depth steps)
         #[arg(long, help_heading = "Symbolic (Z3)")]
@@ -399,6 +403,7 @@ fn main() {
             por,
             symmetry,
             fast,
+            swarm,
             bmc,
             bmc_depth,
             inductive,
@@ -414,8 +419,13 @@ fn main() {
             let quiet = quiet || json;
 
             let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3;
-            let specific_explicit =
-                por || symmetry || fast || max_states > 0 || max_depth > 0 || memory_limit > 0;
+            let specific_explicit = por
+                || symmetry
+                || fast
+                || swarm.is_some()
+                || max_states > 0
+                || max_depth > 0
+                || memory_limit > 0;
 
             let use_symbolic = symbolic || specific_symbolic;
             let use_bfs = bfs || specific_explicit;
@@ -472,6 +482,7 @@ fn main() {
                     quiet,
                     no_auto,
                     json,
+                    swarm,
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
@@ -500,6 +511,7 @@ fn main() {
                         quiet,
                         no_auto,
                         json,
+                        swarm,
                     )
                 }
             };
@@ -801,6 +813,7 @@ fn cmd_check(
     quiet: bool,
     no_auto: bool,
     json: bool,
+    swarm: Option<usize>,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -822,6 +835,9 @@ fn cmd_check(
 
     // Parse constants
     let consts = parse_constants(constants, &spec)?;
+
+    // Extract variable names for trace formatting
+    let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
 
     // Spec analysis, recommendations, and auto-enable
     let profile = analyze(&spec);
@@ -886,6 +902,23 @@ fn cmd_check(
         }
     }
 
+    // Swarm verification: run N independent instances with shuffled action orders
+    if let Some(n) = swarm {
+        return cmd_check_swarm(
+            spec,
+            consts,
+            &var_names,
+            n,
+            check_deadlock,
+            max_states,
+            max_depth,
+            memory_limit_mb,
+            actual_por,
+            actual_symmetry,
+            json,
+        );
+    }
+
     // Set up shared progress counters + spinner on its own timer thread
     let progress = Arc::new(ProgressCounters::new());
     let start = Instant::now();
@@ -944,10 +977,8 @@ fn cmd_check(
         use_symmetry: actual_symmetry,
         fast_check,
         progress: Some(progress),
+        action_shuffle_seed: None,
     };
-
-    // Extract variable names for trace formatting before moving spec
-    let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
 
     let mut explorer = Explorer::new(spec, consts, config);
     let result = explorer.check().map_err(|e| CliError::CheckError {
@@ -1125,6 +1156,201 @@ fn cmd_check(
                 println!("  Time: {:.2}s", secs);
                 std::process::exit(2);
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn cmd_check_swarm(
+    spec: specl_ir::CompiledSpec,
+    consts: Vec<Value>,
+    var_names: &[String],
+    num_workers: usize,
+    check_deadlock: bool,
+    max_states: usize,
+    max_depth: usize,
+    memory_limit_mb: usize,
+    use_por: bool,
+    use_symmetry: bool,
+    json: bool,
+) -> CliResult<()> {
+    use std::sync::atomic::AtomicBool;
+
+    let n = num_workers.max(2);
+    if !json {
+        println!("Swarm verification: {} workers", n);
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let start = Instant::now();
+    let spec = Arc::new(spec);
+    let consts = Arc::new(consts);
+
+    let handles: Vec<_> = (0..n)
+        .map(|i| {
+            let spec = Arc::clone(&spec);
+            let consts = Arc::clone(&consts);
+            let stop = Arc::clone(&stop);
+            std::thread::spawn(move || {
+                let config = CheckConfig {
+                    check_deadlock,
+                    max_states,
+                    max_depth,
+                    memory_limit_mb,
+                    parallel: false, // each worker is single-threaded
+                    num_threads: 1,
+                    use_por,
+                    use_symmetry,
+                    fast_check: true, // fingerprint-only for speed
+                    progress: None,
+                    action_shuffle_seed: Some(i as u64),
+                };
+                let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
+                explorer.set_stop_flag(Arc::clone(&stop));
+                let result = explorer.check();
+                // Signal other workers to stop on violation
+                if let Ok(CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. }) =
+                    &result
+                {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
+                result
+            })
+        })
+        .collect();
+
+    // Collect results
+    let mut first_violation: Option<CheckOutcome> = None;
+    let mut all_ok = true;
+    for handle in handles {
+        match handle.join() {
+            Ok(Ok(outcome)) => match &outcome {
+                CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
+                    if first_violation.is_none() {
+                        first_violation = Some(outcome);
+                    }
+                    all_ok = false;
+                }
+                CheckOutcome::Ok { .. } => {}
+                _ => {
+                    all_ok = false;
+                }
+            },
+            Ok(Err(_)) | Err(_) => {
+                all_ok = false;
+            }
+        }
+    }
+
+    let secs = start.elapsed().as_secs_f64();
+
+    // If a violation was found (fast mode), re-run with trace reconstruction
+    if let Some(violation) = first_violation {
+        match &violation {
+            CheckOutcome::InvariantViolation { invariant, .. } => {
+                if !json {
+                    println!(
+                        "Swarm: found invariant violation '{}', reconstructing trace...",
+                        invariant
+                    );
+                }
+                // Re-run with the same shuffled order but full tracking
+                let config = CheckConfig {
+                    check_deadlock,
+                    max_states,
+                    max_depth,
+                    memory_limit_mb,
+                    parallel: true,
+                    num_threads: 0,
+                    use_por,
+                    use_symmetry,
+                    fast_check: false,
+                    progress: None,
+                    action_shuffle_seed: None,
+                };
+                let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
+                let result = explorer.check().map_err(|e| CliError::CheckError {
+                    message: e.to_string(),
+                })?;
+                let total_secs = start.elapsed().as_secs_f64();
+                if json {
+                    if let CheckOutcome::InvariantViolation { invariant, trace } = result {
+                        let out = JsonOutput {
+                            result: "invariant_violation",
+                            invariant: Some(invariant),
+                            trace: Some(trace_to_json(&trace, var_names)),
+                            duration_secs: total_secs,
+                            states_explored: None,
+                            max_depth: None,
+                            memory_mb: None,
+                            method: None,
+                            reason: None,
+                            error: None,
+                        };
+                        println!("{}", serde_json::to_string(&out).unwrap());
+                    }
+                } else if let CheckOutcome::InvariantViolation { invariant, trace } = result {
+                    println!();
+                    println!(
+                        "Result: INVARIANT VIOLATION (swarm found in {:.1}s, trace reconstructed)",
+                        secs
+                    );
+                    println!("  Invariant: {}", invariant);
+                    println!("  Trace ({} steps):", trace.len());
+                    for (i, (state, action)) in trace.iter().enumerate() {
+                        let action_str = action.as_deref().unwrap_or("init");
+                        let state_str = format_state_with_names(state, var_names);
+                        println!("    {}: {} -> {}", i, action_str, state_str);
+                    }
+                    println!("  Total time: {:.1}s", total_secs);
+                }
+                std::process::exit(1);
+            }
+            CheckOutcome::Deadlock { .. } => {
+                // Similar for deadlock — simplified: just report
+                if json {
+                    let out = JsonOutput {
+                        result: "deadlock",
+                        trace: None,
+                        duration_secs: secs,
+                        invariant: None,
+                        states_explored: None,
+                        max_depth: None,
+                        memory_mb: None,
+                        method: None,
+                        reason: None,
+                        error: None,
+                    };
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                } else {
+                    println!("Result: DEADLOCK (found by swarm in {:.1}s)", secs);
+                }
+                std::process::exit(1);
+            }
+            _ => {}
+        }
+    }
+
+    if all_ok {
+        if json {
+            let out = JsonOutput {
+                result: "ok",
+                duration_secs: secs,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                invariant: None,
+                trace: None,
+                method: None,
+                reason: None,
+                error: None,
+            };
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else {
+            println!();
+            println!("Result: OK (swarm, {} workers)", n);
+            println!("  Time: {:.1}s", secs);
         }
     }
 

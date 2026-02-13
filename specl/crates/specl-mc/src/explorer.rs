@@ -168,6 +168,8 @@ pub struct CheckConfig {
     /// Shared progress counters: the explorer writes states/depth/queue_len atomically,
     /// and the CLI reads them on its own timer. Never blocks the explorer.
     pub progress: Option<Arc<ProgressCounters>>,
+    /// If set, shuffle action exploration order using this seed (for swarm verification).
+    pub action_shuffle_seed: Option<u64>,
 }
 
 impl Default for CheckConfig {
@@ -183,6 +185,7 @@ impl Default for CheckConfig {
             use_symmetry: false,
             fast_check: false,
             progress: None,
+            action_shuffle_seed: None,
         }
     }
 }
@@ -200,6 +203,7 @@ impl Clone for CheckConfig {
             use_symmetry: self.use_symmetry,
             fast_check: self.fast_check,
             progress: self.progress.clone(),
+            action_shuffle_seed: self.action_shuffle_seed,
         }
     }
 }
@@ -217,6 +221,7 @@ impl std::fmt::Debug for CheckConfig {
             .field("use_symmetry", &self.use_symmetry)
             .field("fast_check", &self.fast_check)
             .field("progress", &self.progress.as_ref().map(|_| "..."))
+            .field("action_shuffle_seed", &self.action_shuffle_seed)
             .finish()
     }
 }
@@ -249,12 +254,16 @@ pub struct Explorer {
     guard_indices: Vec<Option<GuardIndex>>,
     /// Action names for trace reconstruction (avoids formatting per-successor).
     action_names: Vec<String>,
+    /// Default action exploration order (shuffled for swarm, sequential otherwise).
+    default_action_order: Vec<usize>,
     /// For each action, for each param: Some(var_idx) if domain comes from state variable.
     /// Detected from `require param in var` guard patterns.
     state_dep_domains: Vec<Vec<Option<usize>>>,
     /// Precomputed bitmask: independent_masks[a] has bit b set iff action a is independent of b.
     /// Used for sleep set propagation.
     independent_masks: Vec<u64>,
+    /// External stop flag (for swarm verification cancellation).
+    stop_flag: Option<Arc<AtomicBool>>,
     /// For each action, for each param: Some(group_idx) if the param's domain size matches
     /// a symmetry group. Used for orbit representative filtering.
     sym_param_groups: Vec<Vec<Option<usize>>>,
@@ -955,6 +964,8 @@ impl Explorer {
             action_write_masks,
             guard_indices,
             action_names: Vec::new(),
+            default_action_order: Vec::new(),
+            stop_flag: None,
             state_dep_domains,
             independent_masks,
             sym_param_groups: Vec::new(),
@@ -969,6 +980,18 @@ impl Explorer {
             .iter()
             .map(|action| action.name.clone())
             .collect();
+
+        // Build default action exploration order (shuffled for swarm)
+        let num_actions = explorer.spec.actions.len();
+        explorer.default_action_order = (0..num_actions).collect();
+        if let Some(seed) = explorer.config.action_shuffle_seed {
+            use rand::rngs::StdRng;
+            use rand::seq::SliceRandom;
+            use rand::SeedableRng;
+            let mut rng = StdRng::seed_from_u64(seed);
+            explorer.default_action_order.shuffle(&mut rng);
+            info!(seed, order = ?explorer.default_action_order, "swarm: shuffled action order");
+        }
 
         // Precompute parameter domains for each action
         // State-dependent params get empty placeholder (domain extracted from state at runtime)
@@ -1785,6 +1808,13 @@ impl Explorer {
         let mut next_vars_buf = Vec::new();
 
         while let Some((fp, state, depth, change_mask, sleep_set)) = queue.pop_front() {
+            // Check external stop flag (swarm cancellation)
+            if let Some(ref flag) = self.stop_flag {
+                if flag.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+
             if let Some(ref p) = self.config.progress {
                 p.checked.fetch_add(1, Ordering::Relaxed);
             }
@@ -2491,7 +2521,7 @@ impl Explorer {
         } else if let Some(ref relevant) = self.relevant_actions {
             relevant.clone()
         } else {
-            (0..self.spec.actions.len()).collect()
+            self.default_action_order.clone()
         };
 
         self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set)
@@ -3470,6 +3500,11 @@ impl Explorer {
             trace,
             var_names,
         })
+    }
+
+    /// Set an external stop flag (for swarm verification cancellation).
+    pub fn set_stop_flag(&mut self, flag: Arc<AtomicBool>) {
+        self.stop_flag = Some(flag);
     }
 
     /// Get the state store for inspection.
