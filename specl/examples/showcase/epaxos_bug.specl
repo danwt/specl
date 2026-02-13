@@ -1,0 +1,112 @@
+module EPaxosBug
+
+// EPaxos single-ballot recovery bug (Sutra 2019)
+//
+// Demonstrates the correctness bug in Egalitarian Paxos where using a single
+// ballot variable (instead of separate bal and vbal) allows ballot inflation
+// during recovery to cause replica disagreement on command dependencies.
+//
+// Based on: "On the correctness of Egalitarian Paxos" by Pierre Sutra, 2019
+// Paper: https://arxiv.org/abs/1906.10917
+//
+// Models ONE consensus instance with 3 replicas. The "value" being agreed on
+// is the dependency set: 0 = empty deps, 1 = has dependency.
+//
+// The bug: recovery compares BAL (line 74) instead of VBAL to determine which
+// accepted value is most recent. bal is inflated by prepare messages, making
+// stale acceptances appear recent.
+//
+// Compare with epaxos_fix.specl which uses VBAL on that line and passes.
+//
+// Use: specl check epaxos_bug.specl -c MaxBal=5 -c NB=6 --no-deadlock --no-auto --max-states 50000000
+
+const MaxBal: Int
+const NB: Int // must equal MaxBal + 1
+
+// 3 replicas: 0, 1, 2
+// Status: 0=none, 1=preaccepted, 2=accepted, 3=committed
+
+var status: Dict[0..2, 0..3]
+var bal: Dict[0..2, 0..MaxBal]   // last ballot joined (inflated by prepares)
+var vbal: Dict[0..2, 0..MaxBal]  // ballot of last acceptance (only set by accept)
+var val: Dict[0..2, 0..1]
+var next_bal: 1..NB
+
+init {
+    status = {r: 0 for r in 0..2}
+    and bal = {r: 0 for r in 0..2}
+    and vbal = {r: 0 for r in 0..2}
+    and val = {r: 0 for r in 0..2}
+    and next_bal = 1
+}
+
+action PreAccept(r: 0..2, v: 0..1) {
+    require status[r] == 0
+    status = status | {r: 1}
+    and val = val | {r: v}
+}
+
+// Processes a prepare from an abandoned recovery. Inflates bal only.
+action JoinBallot(r: 0..2) {
+    require next_bal <= MaxBal
+    require next_bal > bal[r]
+    require status[r] != 3
+    bal = bal | {r: next_bal}
+    and next_bal = next_bal + 1
+}
+
+// Atomic recovery with quorum {leader, other}.
+// BUG ON LINE 74: compares bal instead of vbal.
+action DoRecovery(leader: 0..2, other: 0..2, pick: 0..1) {
+    require leader != other
+    require next_bal <= MaxBal
+    require next_bal > bal[leader]
+    require next_bal > bal[other]
+    require status[leader] != 3
+    require status[leader] >= 1 or status[other] >= 1
+
+    val = val | {leader:
+        if status[other] == 3 then val[other]
+        else if status[leader] == 2 and status[other] == 2 then
+            if bal[leader] > bal[other] then val[leader]      // BUG: bal not vbal
+            else if bal[other] > bal[leader] then val[other]   // BUG: bal not vbal
+            else val[leader]
+        else if status[other] == 2 then val[other]
+        else if status[leader] == 2 then val[leader]
+        else if status[leader] == 1 and status[other] == 1 then
+            if val[leader] == val[other] then val[leader] else pick
+        else if status[leader] == 1 then val[leader]
+        else if status[other] == 1 then val[other]
+        else pick
+    }
+    and status = status | {leader: 2}
+    and bal = bal | {leader: next_bal, other: next_bal}
+    and vbal = vbal | {leader: next_bal}
+    and next_bal = next_bal + 1
+}
+
+// Accept propagation (Phase 2): leader sends value to replica.
+action AcceptProp(src: 0..2, dst: 0..2) {
+    require src != dst
+    require status[src] == 2
+    require status[dst] != 3
+    require bal[src] >= bal[dst]
+    status = status | {dst: 2}
+    and bal = bal | {dst: bal[src]}
+    and vbal = vbal | {dst: vbal[src]}
+    and val = val | {dst: val[src]}
+}
+
+// Commit: quorum of 2 must have accepted at the same ballot (vbal match).
+action Commit(r: 0..2) {
+    require status[r] == 2
+    require vbal[r] == bal[r]
+    require any r2 in 0..2:
+        r2 != r and status[r2] >= 2 and vbal[r2] == vbal[r] and val[r2] == val[r]
+    status = status | {r: 3}
+}
+
+invariant Agreement {
+    all r1 in 0..2: all r2 in 0..2:
+        (status[r1] == 3 and status[r2] == 3) implies val[r1] == val[r2]
+}
