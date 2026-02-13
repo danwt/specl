@@ -188,10 +188,6 @@ enum Commands {
         #[arg(long, help_heading = "Symbolic (Z3)")]
         ic3: bool,
 
-        /// Auto cascade: induction -> k-induction -> IC3 -> BMC
-        #[arg(long, help_heading = "Symbolic (Z3)")]
-        smart: bool,
-
         /// Max sequence length for symbolic Seq[T] encoding
         #[arg(long, default_value = "5", help_heading = "Symbolic (Z3)")]
         seq_bound: usize,
@@ -314,14 +310,13 @@ fn main() {
             inductive,
             k_induction,
             ic3,
-            smart,
             seq_bound,
             verbose,
             quiet,
             no_auto,
         } => {
             let user_requested_symbolic =
-                bmc || inductive || k_induction.is_some() || ic3 || smart;
+                bmc || inductive || k_induction.is_some() || ic3;
             let user_requested_explicit =
                 por || symmetry || fast || max_states > 0 || max_depth > 0 || memory_limit > 0;
 
@@ -330,10 +325,10 @@ fn main() {
                     &file,
                     &constant,
                     bmc_depth,
+                    bmc,
                     inductive,
                     k_induction,
                     ic3,
-                    smart,
                     seq_bound,
                 )
             } else if user_requested_explicit {
@@ -363,7 +358,7 @@ fn main() {
                         );
                     }
                     cmd_check_symbolic(
-                        &file, &constant, bmc_depth, false, None, false, true, seq_bound,
+                        &file, &constant, bmc_depth, false, false, None, false, seq_bound,
                     )
                 } else {
                     cmd_check(
@@ -593,7 +588,7 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
                 flags.push("--fast".to_string());
             }
             specl_ir::analyze::Recommendation::UseSymbolic { .. } => {
-                flags.push("--smart".to_string());
+                flags.push("--bmc".to_string());
             }
         }
     }
@@ -684,7 +679,7 @@ fn cmd_check(
     if !unbounded_warnings.is_empty() && !quiet {
         eprintln!("Note: spec has types the checker considers unbounded (Dict[Int, ...]).");
         eprintln!("  BFS proceeds because runtime values are bounded by init and action parameters.");
-        eprintln!("  If checking hangs, use --smart for symbolic checking instead.");
+        eprintln!("  If checking hangs, use --bmc for symbolic checking instead.");
     }
 
     let mut actual_por = use_por;
@@ -895,10 +890,10 @@ fn cmd_check_symbolic(
     file: &PathBuf,
     constants: &[String],
     bmc_depth: usize,
+    bmc: bool,
     inductive: bool,
     k_induction: Option<usize>,
     ic3: bool,
-    smart: bool,
     seq_bound: usize,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
@@ -922,31 +917,31 @@ fn cmd_check_symbolic(
     let consts = parse_constants(constants, &spec)?;
 
     let config = SymbolicConfig {
-        mode: if smart {
-            SymbolicMode::Smart
-        } else if ic3 {
+        mode: if ic3 {
             SymbolicMode::Ic3
         } else if let Some(k) = k_induction {
             SymbolicMode::KInduction(k)
         } else if inductive {
             SymbolicMode::Inductive
-        } else {
+        } else if bmc {
             SymbolicMode::Bmc
+        } else {
+            SymbolicMode::Smart
         },
         depth: bmc_depth,
         seq_bound,
     };
 
-    let mode_str = if smart {
-        "smart"
-    } else if ic3 {
+    let mode_str = if ic3 {
         "IC3"
     } else if k_induction.is_some() {
         "k-induction"
     } else if inductive {
         "inductive"
-    } else {
+    } else if bmc {
         "symbolic BMC"
+    } else {
+        "smart"
     };
     info!(mode = mode_str, "checking...");
     let start = Instant::now();
@@ -1510,19 +1505,16 @@ SYMBOLIC CHECKING (Z3-backed)
                  any depth bound. However, it may take a long time or return \"unknown\"
                  for very complex specs.
 
-  --smart        Automatic Cascade
-                 Tries verification techniques in order from fastest to most powerful:
-                 induction, then k-induction (K=2..5), then IC3, falling back to BMC if
-                 nothing else works. This is the recommended default for symbolic checking
-                 — it will use the simplest technique that succeeds.
+  When no specific symbolic flag is given, Specl automatically tries techniques
+  in order: induction, k-induction (K=2..5), IC3, then BMC fallback.
 
 CHOOSING A STRATEGY
   1. Start small:          specl check spec.specl -c N=2
   2. Analyze first:        specl info spec.specl -c N=2
      This shows state space estimates and recommended flags.
-  3. Specl auto-enables POR and symmetry when beneficial.
-  4. For large state spaces (>10M states): add --fast
-  5. For unbounded types (Int, Nat): use --smart for symbolic checking
+  3. Specl auto-selects BFS or symbolic based on spec types.
+  4. Specl auto-enables POR and symmetry when beneficial.
+  5. For large state spaces (>10M states): add --fast
   6. Scale up gradually: N=2 first, then N=3. State spaces grow exponentially.
 "
         );
@@ -1569,15 +1561,13 @@ SYMBOLIC CHECKING (Z3-backed)
                  Unbounded verification via Z3 Spacer. Most powerful symbolic mode.
                  Can prove invariants hold for ALL depths. May return \"unknown\" for hard specs.
 
-  --smart        Automatic Cascade
-                 Tries: induction -> k-induction(2..5) -> IC3 -> BMC fallback.
-                 Best default for symbolic checking.
+  When no specific symbolic flag is given, Specl automatically cascades:
+  induction -> k-induction(2..5) -> IC3 -> BMC fallback.
 
 CHOOSING A STRATEGY
   Start with:           specl check spec.specl -c N=2
-  Specl auto-enables POR and symmetry when beneficial.
+  Specl auto-selects BFS or symbolic, and auto-enables POR and symmetry.
   For large state spaces: add --fast
-  For unbounded specs:    use --smart
   Use `specl info` to analyze your spec before a long run.
 "
         );

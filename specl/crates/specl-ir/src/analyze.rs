@@ -117,7 +117,7 @@ impl fmt::Display for Recommendation {
                 )
             }
             Recommendation::UseSymbolic { reason } => {
-                write!(f, "--smart: {}", reason)
+                write!(f, "--bmc: {}", reason)
             }
         }
     }
