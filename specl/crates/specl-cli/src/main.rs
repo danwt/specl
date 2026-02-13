@@ -27,6 +27,8 @@ use tracing_subscriber::EnvFilter;
 enum OutputFormat {
     Text,
     Json,
+    /// Informal Trace Format (Apalache-compatible trace interchange)
+    Itf,
 }
 
 /// Top-level JSON output for `specl check --output json`.
@@ -416,7 +418,7 @@ fn main() {
             output,
         } => {
             let json = output == OutputFormat::Json;
-            let quiet = quiet || json;
+            let quiet = quiet || output != OutputFormat::Text;
 
             let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3;
             let specific_explicit = por
@@ -431,7 +433,7 @@ fn main() {
             let use_bfs = bfs || specific_explicit;
 
             if use_symbolic && use_bfs {
-                if json {
+                if output != OutputFormat::Text {
                     let out = JsonOutput {
                         result: "error",
                         error: Some(
@@ -481,7 +483,7 @@ fn main() {
                     verbose,
                     quiet,
                     no_auto,
-                    json,
+                    output,
                     swarm,
                 )
             } else {
@@ -510,13 +512,13 @@ fn main() {
                         verbose,
                         quiet,
                         no_auto,
-                        json,
+                        output,
                         swarm,
                     )
                 }
             };
-            // In JSON mode, emit errors as JSON instead of miette
-            if json {
+            // In non-text mode, emit errors as JSON instead of miette
+            if output != OutputFormat::Text {
                 if let Err(e) = inner {
                     let out = JsonOutput {
                         result: "error",
@@ -812,9 +814,10 @@ fn cmd_check(
     _verbose: bool,
     quiet: bool,
     no_auto: bool,
-    json: bool,
+    output_format: OutputFormat,
     swarm: Option<usize>,
 ) -> CliResult<()> {
+    let json = output_format != OutputFormat::Text;
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
         message: e.to_string(),
@@ -915,7 +918,7 @@ fn cmd_check(
             memory_limit_mb,
             actual_por,
             actual_symmetry,
-            json,
+            output_format,
         );
     }
 
@@ -993,7 +996,32 @@ fn cmd_check(
 
     let secs = elapsed.as_secs_f64();
 
-    if json {
+    if output_format == OutputFormat::Itf {
+        // ITF mode: emit Apalache-compatible trace JSON
+        match result {
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                let itf = trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
+                println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                std::process::exit(1);
+            }
+            CheckOutcome::Deadlock { trace } => {
+                let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
+                println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                std::process::exit(1);
+            }
+            CheckOutcome::Ok { states_explored, .. } => {
+                eprintln!("Result: OK ({} states, no trace to export)", states_explored);
+            }
+            CheckOutcome::StateLimitReached { states_explored, .. } => {
+                eprintln!("Result: STATE LIMIT REACHED ({} states, no trace)", states_explored);
+                std::process::exit(2);
+            }
+            CheckOutcome::MemoryLimitReached { states_explored, .. } => {
+                eprintln!("Result: MEMORY LIMIT REACHED ({} states, no trace)", states_explored);
+                std::process::exit(2);
+            }
+        }
+    } else if json {
         let out = match result {
             CheckOutcome::Ok {
                 states_explored,
@@ -1173,8 +1201,9 @@ fn cmd_check_swarm(
     memory_limit_mb: usize,
     use_por: bool,
     use_symmetry: bool,
-    json: bool,
+    output_format: OutputFormat,
 ) -> CliResult<()> {
+    let json = output_format != OutputFormat::Text;
     use std::sync::atomic::AtomicBool;
 
     let n = num_workers.max(2);
@@ -1274,36 +1303,43 @@ fn cmd_check_swarm(
                     message: e.to_string(),
                 })?;
                 let total_secs = start.elapsed().as_secs_f64();
-                if json {
-                    if let CheckOutcome::InvariantViolation { invariant, trace } = result {
-                        let out = JsonOutput {
-                            result: "invariant_violation",
-                            invariant: Some(invariant),
-                            trace: Some(trace_to_json(&trace, var_names)),
-                            duration_secs: total_secs,
-                            states_explored: None,
-                            max_depth: None,
-                            memory_mb: None,
-                            method: None,
-                            reason: None,
-                            error: None,
-                        };
-                        println!("{}", serde_json::to_string(&out).unwrap());
+                if let CheckOutcome::InvariantViolation { invariant, trace } = result {
+                    match output_format {
+                        OutputFormat::Itf => {
+                            let itf = trace_to_itf(&trace, var_names, "invariant_violation", Some(&invariant));
+                            println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                        }
+                        OutputFormat::Json => {
+                            let out = JsonOutput {
+                                result: "invariant_violation",
+                                invariant: Some(invariant),
+                                trace: Some(trace_to_json(&trace, var_names)),
+                                duration_secs: total_secs,
+                                states_explored: None,
+                                max_depth: None,
+                                memory_mb: None,
+                                method: None,
+                                reason: None,
+                                error: None,
+                            };
+                            println!("{}", serde_json::to_string(&out).unwrap());
+                        }
+                        OutputFormat::Text => {
+                            println!();
+                            println!(
+                                "Result: INVARIANT VIOLATION (swarm found in {:.1}s, trace reconstructed)",
+                                secs
+                            );
+                            println!("  Invariant: {}", invariant);
+                            println!("  Trace ({} steps):", trace.len());
+                            for (i, (state, action)) in trace.iter().enumerate() {
+                                let action_str = action.as_deref().unwrap_or("init");
+                                let state_str = format_state_with_names(state, var_names);
+                                println!("    {}: {} -> {}", i, action_str, state_str);
+                            }
+                            println!("  Total time: {:.1}s", total_secs);
+                        }
                     }
-                } else if let CheckOutcome::InvariantViolation { invariant, trace } = result {
-                    println!();
-                    println!(
-                        "Result: INVARIANT VIOLATION (swarm found in {:.1}s, trace reconstructed)",
-                        secs
-                    );
-                    println!("  Invariant: {}", invariant);
-                    println!("  Trace ({} steps):", trace.len());
-                    for (i, (state, action)) in trace.iter().enumerate() {
-                        let action_str = action.as_deref().unwrap_or("init");
-                        let state_str = format_state_with_names(state, var_names);
-                        println!("    {}: {} -> {}", i, action_str, state_str);
-                    }
-                    println!("  Total time: {:.1}s", total_secs);
                 }
                 std::process::exit(1);
             }
@@ -1706,7 +1742,29 @@ fn cmd_simulate(
         })?;
     let secs = start.elapsed().as_secs_f64();
 
-    if json {
+    if output == OutputFormat::Itf {
+        // ITF output for simulation traces
+        let (trace, var_names, result_kind, invariant) = match &result {
+            SimulateOutcome::Ok { trace, var_names, .. } => {
+                (trace, var_names, "ok", None)
+            }
+            SimulateOutcome::InvariantViolation { invariant, trace, var_names } => {
+                (trace, var_names, "invariant_violation", Some(invariant.as_str()))
+            }
+            SimulateOutcome::Deadlock { trace, var_names } => {
+                (trace, var_names, "deadlock", None)
+            }
+        };
+        let itf = trace_to_itf(trace, var_names, result_kind, invariant);
+        println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+        match &result {
+            SimulateOutcome::InvariantViolation { .. } | SimulateOutcome::Deadlock { .. } => {
+                std::process::exit(1);
+            }
+            _ => {}
+        }
+        return Ok(());
+    } else if json {
         let out = match &result {
             SimulateOutcome::Ok {
                 steps,
@@ -1942,6 +2000,109 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         Value::None => serde_json::Value::Null,
         Value::Some(inner) => value_to_json(inner),
     }
+}
+
+/// Convert a specl Value to ITF-encoded serde_json::Value.
+/// ITF uses tagged objects for non-primitive types:
+///   Int → {"#bigint": "42"}, Set → {"#set": [...]}, Map → {"#map": [[k,v],...]},
+///   Tuple → {"#tup": [...]}, Seq → plain array, Record → plain object.
+fn value_to_itf(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(n) => serde_json::json!({"#bigint": n.to_string()}),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Set(elems) => {
+            serde_json::json!({"#set": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
+        }
+        Value::Seq(elems) => {
+            serde_json::Value::Array(elems.iter().map(value_to_itf).collect())
+        }
+        Value::Fn(pairs) => {
+            let entries: Vec<serde_json::Value> = pairs
+                .iter()
+                .map(|(k, v)| serde_json::json!([value_to_itf(k), value_to_itf(v)]))
+                .collect();
+            serde_json::json!({"#map": entries})
+        }
+        Value::IntMap(vals) => {
+            let entries: Vec<serde_json::Value> = vals
+                .iter()
+                .enumerate()
+                .map(|(i, v)| {
+                    serde_json::json!([
+                        serde_json::json!({"#bigint": i.to_string()}),
+                        serde_json::json!({"#bigint": v.to_string()})
+                    ])
+                })
+                .collect();
+            serde_json::json!({"#map": entries})
+        }
+        Value::Record(fields) => {
+            let obj: serde_json::Map<String, serde_json::Value> = fields
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_itf(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        Value::Tuple(elems) => {
+            serde_json::json!({"#tup": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
+        }
+        Value::None => serde_json::json!({"tag": "None", "value": serde_json::json!({})}),
+        Value::Some(inner) => {
+            serde_json::json!({"tag": "Some", "value": value_to_itf(inner)})
+        }
+    }
+}
+
+/// Build an ITF trace JSON object from a specl trace.
+fn trace_to_itf(
+    trace: &[(State, Option<String>)],
+    var_names: &[String],
+    result_kind: &str,
+    invariant: Option<&str>,
+) -> serde_json::Value {
+    let states: Vec<serde_json::Value> = trace
+        .iter()
+        .enumerate()
+        .map(|(i, (state, action))| {
+            let mut obj = serde_json::Map::new();
+            let mut meta = serde_json::Map::new();
+            meta.insert(
+                "index".into(),
+                serde_json::Value::Number(serde_json::Number::from(i)),
+            );
+            if let Some(a) = action {
+                meta.insert("action".into(), serde_json::Value::String(a.clone()));
+            }
+            obj.insert("#meta".into(), serde_json::Value::Object(meta));
+            for (j, v) in state.vars.iter().enumerate() {
+                let name = var_names
+                    .get(j)
+                    .cloned()
+                    .unwrap_or_else(|| format!("v{}", j));
+                obj.insert(name, value_to_itf(v));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
+
+    let mut meta = serde_json::Map::new();
+    meta.insert("format".into(), "ITF".into());
+    meta.insert(
+        "format-description".into(),
+        "https://apalache-mc.org/docs/adr/015adr-trace.html".into(),
+    );
+    meta.insert("source".into(), "specl".into());
+    meta.insert("result".into(), result_kind.into());
+    if let Some(inv) = invariant {
+        meta.insert("invariant".into(), inv.into());
+    }
+
+    serde_json::json!({
+        "#meta": meta,
+        "vars": var_names,
+        "states": states,
+    })
 }
 
 /// Format a state with variable names for readable trace output.

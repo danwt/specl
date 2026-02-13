@@ -59,5 +59,13 @@ Working through milestones from `/Users/danwt/Documents/repos/demo-state-enumera
 - **CAS spin-backoff**: Added `std::hint::spin_loop()` on CAS failure in AtomicFPSet::insert for reduced contention.
 - All 38 existing tests pass. EPaxos bug still correctly found.
 
+### Task 6: ITF trace export
+- Status: DONE
+- `specl check --output itf` and `specl simulate --output itf`
+- Full Apalache-compatible Informal Trace Format encoding
+- Type mapping: Int → `{"#bigint": "N"}`, Set → `{"#set": [...]}`, Dict → `{"#map": [[k,v],...]}`, Tuple → `{"#tup": [...]}`, Seq → array, Record → object, Option → variant
+- Metadata includes format version, source, result kind, violated invariant
+- Works with check, simulate, and swarm commands
+
 ### Blockers / Questions for Daniel
 (None yet)
