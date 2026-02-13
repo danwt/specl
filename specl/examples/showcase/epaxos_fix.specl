@@ -2,7 +2,7 @@ module EPaxosFix
 
 // EPaxos recovery with CORRECT two-ballot design (Sutra 2019 fix)
 //
-// Same model as epaxos_bug.specl but recovery compares VBAL (line 74)
+// Same model as epaxos_bug.specl but recovery compares VBAL (lines 61-62)
 // instead of BAL. VBAL tracks the actual acceptance ballot and is NOT
 // inflated by prepare messages, so recovery correctly identifies the
 // most recent accepted value.
@@ -46,7 +46,7 @@ action JoinBallot(r: 0..2) {
 }
 
 // Atomic recovery with quorum {leader, other}.
-// FIX ON LINE 74: compares vbal (not bal).
+// FIX ON LINES 61-62: compares vbal (not bal).
 action DoRecovery(leader: 0..2, other: 0..2, pick: 0..1) {
     require leader != other
     require next_bal <= MaxBal
@@ -79,6 +79,7 @@ action AcceptProp(src: 0..2, dst: 0..2) {
     require src != dst
     require status[src] == 2
     require status[dst] != 3
+    require vbal[src] == bal[src]  // source hasn't joined a higher ballot since accepting
     require bal[src] >= bal[dst]
     status = status | {dst: 2}
     and bal = bal | {dst: bal[src]}

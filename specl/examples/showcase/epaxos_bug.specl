@@ -12,7 +12,7 @@ module EPaxosBug
 // Models ONE consensus instance with 3 replicas. The "value" being agreed on
 // is the dependency set: 0 = empty deps, 1 = has dependency.
 //
-// The bug: recovery compares BAL (line 74) instead of VBAL to determine which
+// The bug: recovery compares BAL (lines 71-72) instead of VBAL to determine which
 // accepted value is most recent. bal is inflated by prepare messages, making
 // stale acceptances appear recent.
 //
@@ -56,7 +56,7 @@ action JoinBallot(r: 0..2) {
 }
 
 // Atomic recovery with quorum {leader, other}.
-// BUG ON LINE 74: compares bal instead of vbal.
+// BUG ON LINES 71-72: compares bal instead of vbal.
 action DoRecovery(leader: 0..2, other: 0..2, pick: 0..1) {
     require leader != other
     require next_bal <= MaxBal
@@ -90,6 +90,7 @@ action AcceptProp(src: 0..2, dst: 0..2) {
     require src != dst
     require status[src] == 2
     require status[dst] != 3
+    require vbal[src] == bal[src]  // source hasn't joined a higher ballot since accepting
     require bal[src] >= bal[dst]
     status = status | {dst: 2}
     and bal = bal | {dst: bal[src]}
