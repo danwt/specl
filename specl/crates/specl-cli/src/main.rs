@@ -303,6 +303,21 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Fast syntax, type, and compile check without model checking
+    Lint {
+        /// Input file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Constant assignments (name=value)
+        #[arg(short, long, value_name = "CONST=VALUE")]
+        constant: Vec<String>,
+
+        /// Output format (text or json)
+        #[arg(long, value_enum, default_value = "text")]
+        output: OutputFormat,
+    },
+
     /// Simulate a random trace through the state space
     Simulate {
         /// Input file
@@ -511,6 +526,11 @@ fn main() {
                 inner
             }
         }
+        Commands::Lint {
+            file,
+            constant,
+            output,
+        } => cmd_lint(&file, &constant, output),
         Commands::Simulate {
             file,
             constant,
@@ -1284,6 +1304,141 @@ fn cmd_check_symbolic(
                 std::process::exit(2);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliResult<()> {
+    let json = output == OutputFormat::Json;
+    let filename = file.display().to_string();
+    let start = Instant::now();
+
+    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?);
+
+    // Parse
+    let module = match parse(&source) {
+        Ok(m) => m,
+        Err(e) => {
+            let secs = start.elapsed().as_secs_f64();
+            if json {
+                let out = JsonOutput {
+                    result: "error",
+                    error: Some(format!("parse error: {}", e)),
+                    duration_secs: secs,
+                    invariant: None,
+                    trace: None,
+                    states_explored: None,
+                    max_depth: None,
+                    memory_mb: None,
+                    method: None,
+                    reason: None,
+                };
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(1);
+            }
+            return Err(CliError::from_parse_error(e, source.clone(), &filename));
+        }
+    };
+
+    // Type check
+    if let Err(e) = specl_types::check_module(&module) {
+        let secs = start.elapsed().as_secs_f64();
+        if json {
+            let out = JsonOutput {
+                result: "error",
+                error: Some(format!("type error: {}", e)),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+            };
+            println!("{}", serde_json::to_string(&out).unwrap());
+            std::process::exit(1);
+        }
+        return Err(CliError::from_type_error(e, source.clone(), &filename));
+    }
+
+    // Compile
+    let spec = match compile(&module) {
+        Ok(s) => s,
+        Err(e) => {
+            let secs = start.elapsed().as_secs_f64();
+            if json {
+                let out = JsonOutput {
+                    result: "error",
+                    error: Some(format!("compile error: {}", e)),
+                    duration_secs: secs,
+                    invariant: None,
+                    trace: None,
+                    states_explored: None,
+                    max_depth: None,
+                    memory_mb: None,
+                    method: None,
+                    reason: None,
+                };
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(1);
+            }
+            return Err(CliError::CompileError {
+                message: e.to_string(),
+            });
+        }
+    };
+
+    // Validate constants if provided
+    if !constants.is_empty() {
+        if let Err(e) = parse_constants(constants, &spec) {
+            let secs = start.elapsed().as_secs_f64();
+            if json {
+                let out = JsonOutput {
+                    result: "error",
+                    error: Some(e.to_string()),
+                    duration_secs: secs,
+                    invariant: None,
+                    trace: None,
+                    states_explored: None,
+                    max_depth: None,
+                    memory_mb: None,
+                    method: None,
+                    reason: None,
+                };
+                println!("{}", serde_json::to_string(&out).unwrap());
+                std::process::exit(1);
+            }
+            return Err(e);
+        }
+    }
+
+    let secs = start.elapsed().as_secs_f64();
+    if json {
+        let out = JsonOutput {
+            result: "ok",
+            duration_secs: secs,
+            invariant: None,
+            trace: None,
+            states_explored: None,
+            max_depth: None,
+            memory_mb: None,
+            method: None,
+            reason: None,
+            error: None,
+        };
+        println!("{}", serde_json::to_string(&out).unwrap());
+    } else {
+        let num_vars = spec.vars.len();
+        let num_actions = spec.actions.len();
+        let num_invariants = spec.invariants.len();
+        println!(
+            "lint: ok ({} vars, {} actions, {} invariants) {:.3}s",
+            num_vars, num_actions, num_invariants, secs
+        );
     }
 
     Ok(())
