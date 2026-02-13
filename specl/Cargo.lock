@@ -2225,6 +2225,8 @@ dependencies = [
  "indicatif",
  "miette",
  "notify",
+ "serde",
+ "serde_json",
  "specl-eval",
  "specl-ir",
  "specl-mc",

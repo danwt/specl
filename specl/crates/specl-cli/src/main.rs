@@ -1,15 +1,17 @@
 //! Command-line interface for Specl model checker.
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use notify::{RecursiveMode, Watcher};
+use serde::Serialize;
 use specl_eval::Value;
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer, ProgressCounters, State};
 use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::PathBuf;
@@ -19,6 +21,44 @@ use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
+
+/// Output format for check results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+enum OutputFormat {
+    Text,
+    Json,
+}
+
+/// Top-level JSON output for `specl check --output json`.
+#[derive(Serialize)]
+struct JsonOutput {
+    result: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    invariant: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    trace: Option<Vec<JsonTraceStep>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    states_explored: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    max_depth: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memory_mb: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    method: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+    duration_secs: f64,
+}
+
+/// A single trace step in JSON output.
+#[derive(Serialize)]
+struct JsonTraceStep {
+    step: usize,
+    action: String,
+    state: BTreeMap<String, serde_json::Value>,
+}
 
 /// CLI error with source context for pretty printing.
 #[derive(Debug, Error, Diagnostic)]
@@ -212,6 +252,10 @@ enum Commands {
         /// Disable auto-enabling of optimizations (POR, symmetry)
         #[arg(long)]
         no_auto: bool,
+
+        /// Output format (text or json)
+        #[arg(long, value_enum, default_value = "text")]
+        output: OutputFormat,
     },
 
     /// Format a Specl file
@@ -294,6 +338,7 @@ fn main() {
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)
+        .with_writer(std::io::stderr)
         .with_target(false)
         .without_time()
         .init();
@@ -325,9 +370,12 @@ fn main() {
             verbose,
             quiet,
             no_auto,
+            output,
         } => {
-            let specific_symbolic =
-                bmc || inductive || k_induction.is_some() || ic3;
+            let json = output == OutputFormat::Json;
+            let quiet = quiet || json;
+
+            let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3;
             let specific_explicit =
                 por || symmetry || fast || max_states > 0 || max_depth > 0 || memory_limit > 0;
 
@@ -335,11 +383,29 @@ fn main() {
             let use_bfs = bfs || specific_explicit;
 
             if use_symbolic && use_bfs {
-                eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
+                if json {
+                    let out = JsonOutput {
+                        result: "error",
+                        error: Some(
+                            "cannot combine --symbolic/--bfs flags or their sub-options".into(),
+                        ),
+                        duration_secs: 0.0,
+                        invariant: None,
+                        trace: None,
+                        states_explored: None,
+                        max_depth: None,
+                        memory_mb: None,
+                        method: None,
+                        reason: None,
+                    };
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                } else {
+                    eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
+                }
                 std::process::exit(1);
             }
 
-            if use_symbolic {
+            let inner = if use_symbolic {
                 cmd_check_symbolic(
                     &file,
                     &constant,
@@ -349,6 +415,7 @@ fn main() {
                     k_induction,
                     ic3,
                     seq_bound,
+                    json,
                 )
             } else if use_bfs {
                 cmd_check(
@@ -366,18 +433,17 @@ fn main() {
                     verbose,
                     quiet,
                     no_auto,
+                    json,
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
                 let auto_symbolic = auto_select_symbolic(&file, &constant);
                 if auto_symbolic {
                     if !quiet {
-                        println!(
-                            "Auto-selected: symbolic checking (unbounded types detected)"
-                        );
+                        println!("Auto-selected: symbolic checking (unbounded types detected)");
                     }
                     cmd_check_symbolic(
-                        &file, &constant, bmc_depth, false, false, None, false, seq_bound,
+                        &file, &constant, bmc_depth, false, false, None, false, seq_bound, json,
                     )
                 } else {
                     cmd_check(
@@ -395,8 +461,31 @@ fn main() {
                         verbose,
                         quiet,
                         no_auto,
+                        json,
                     )
                 }
+            };
+            // In JSON mode, emit errors as JSON instead of miette
+            if json {
+                if let Err(e) = inner {
+                    let out = JsonOutput {
+                        result: "error",
+                        error: Some(e.to_string()),
+                        duration_secs: 0.0,
+                        invariant: None,
+                        trace: None,
+                        states_explored: None,
+                        max_depth: None,
+                        memory_mb: None,
+                        method: None,
+                        reason: None,
+                    };
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                    std::process::exit(1);
+                }
+                Ok(())
+            } else {
+                inner
             }
         }
         Commands::Format { file, write } => cmd_format(&file, write),
@@ -661,6 +750,7 @@ fn cmd_check(
     _verbose: bool,
     quiet: bool,
     no_auto: bool,
+    json: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -697,7 +787,9 @@ fn cmd_check(
         .collect();
     if !unbounded_warnings.is_empty() && !quiet {
         eprintln!("Note: spec has types the checker considers unbounded (Dict[Int, ...]).");
-        eprintln!("  BFS proceeds because runtime values are bounded by init and action parameters.");
+        eprintln!(
+            "  BFS proceeds because runtime values are bounded by init and action parameters."
+        );
         eprintln!("  If checking hangs, use --bmc for symbolic checking instead.");
     }
 
@@ -818,87 +910,171 @@ fn cmd_check(
         pb.finish_and_clear();
     }
 
-    match result {
-        CheckOutcome::Ok {
-            states_explored,
-            max_depth,
-        } => {
-            println!();
-            println!("Result: OK");
-            println!(
-                "  States explored: {}",
-                format_large_number(states_explored as u128)
-            );
-            println!("  Max depth: {}", max_depth);
-            let secs = elapsed.as_secs_f64();
-            println!("  Time: {:.1}s", secs);
-            if secs > 0.001 {
+    let secs = elapsed.as_secs_f64();
+
+    if json {
+        let out = match result {
+            CheckOutcome::Ok {
+                states_explored,
+                max_depth,
+            } => JsonOutput {
+                result: "ok",
+                states_explored: Some(states_explored),
+                max_depth: Some(max_depth),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            CheckOutcome::InvariantViolation { invariant, trace } => JsonOutput {
+                result: "invariant_violation",
+                invariant: Some(invariant),
+                trace: Some(trace_to_json(&trace, &var_names)),
+                duration_secs: secs,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            CheckOutcome::Deadlock { trace } => JsonOutput {
+                result: "deadlock",
+                trace: Some(trace_to_json(&trace, &var_names)),
+                duration_secs: secs,
+                invariant: None,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            CheckOutcome::StateLimitReached {
+                states_explored,
+                max_depth,
+            } => JsonOutput {
+                result: "state_limit_reached",
+                states_explored: Some(states_explored),
+                max_depth: Some(max_depth),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            CheckOutcome::MemoryLimitReached {
+                states_explored,
+                max_depth,
+                memory_mb,
+            } => JsonOutput {
+                result: "memory_limit_reached",
+                states_explored: Some(states_explored),
+                max_depth: Some(max_depth),
+                memory_mb: Some(memory_mb),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+        };
+        println!("{}", serde_json::to_string(&out).unwrap());
+        let exit_code = match out.result {
+            "ok" => 0,
+            "invariant_violation" | "deadlock" => 1,
+            _ => 2,
+        };
+        if exit_code != 0 {
+            std::process::exit(exit_code);
+        }
+    } else {
+        match result {
+            CheckOutcome::Ok {
+                states_explored,
+                max_depth,
+            } => {
+                println!();
+                println!("Result: OK");
                 println!(
-                    "  Throughput: {} states/s",
-                    format_large_number((states_explored as f64 / secs) as u128)
+                    "  States explored: {}",
+                    format_large_number(states_explored as u128)
                 );
+                println!("  Max depth: {}", max_depth);
+                println!("  Time: {:.1}s", secs);
+                if secs > 0.001 {
+                    println!(
+                        "  Throughput: {} states/s",
+                        format_large_number((states_explored as f64 / secs) as u128)
+                    );
+                }
+                let mut opts = Vec::new();
+                if actual_por {
+                    opts.push("POR");
+                }
+                if actual_symmetry {
+                    opts.push("symmetry");
+                }
+                if fast_check {
+                    opts.push("fast");
+                }
+                if !opts.is_empty() {
+                    println!("  Optimizations: {}", opts.join(", "));
+                }
             }
-            // Show active optimizations
-            let mut opts = Vec::new();
-            if actual_por {
-                opts.push("POR");
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                println!();
+                println!("Result: INVARIANT VIOLATION");
+                println!("  Invariant: {}", invariant);
+                println!("  Trace ({} steps):", trace.len());
+                for (i, (state, action)) in trace.iter().enumerate() {
+                    let action_str = action.as_deref().unwrap_or("init");
+                    let state_str = format_state_with_names(state, &var_names);
+                    println!("    {}: {} -> {}", i, action_str, state_str);
+                }
+                std::process::exit(1);
             }
-            if actual_symmetry {
-                opts.push("symmetry");
+            CheckOutcome::Deadlock { trace } => {
+                println!();
+                println!("Result: DEADLOCK");
+                println!("  Trace ({} steps):", trace.len());
+                for (i, (state, action)) in trace.iter().enumerate() {
+                    let action_str = action.as_deref().unwrap_or("init");
+                    let state_str = format_state_with_names(state, &var_names);
+                    println!("    {}: {} -> {}", i, action_str, state_str);
+                }
+                std::process::exit(1);
             }
-            if fast_check {
-                opts.push("fast");
+            CheckOutcome::StateLimitReached {
+                states_explored,
+                max_depth,
+            } => {
+                println!();
+                println!("Result: STATE LIMIT REACHED");
+                println!("  States explored: {}", states_explored);
+                println!("  Max depth: {}", max_depth);
+                println!("  Time: {:.2}s", secs);
+                std::process::exit(2);
             }
-            if !opts.is_empty() {
-                println!("  Optimizations: {}", opts.join(", "));
+            CheckOutcome::MemoryLimitReached {
+                states_explored,
+                max_depth,
+                memory_mb,
+            } => {
+                println!();
+                println!("Result: MEMORY LIMIT REACHED");
+                println!("  Memory usage: {} MB", memory_mb);
+                println!("  States explored: {}", states_explored);
+                println!("  Max depth: {}", max_depth);
+                println!("  Time: {:.2}s", secs);
+                std::process::exit(2);
             }
-        }
-        CheckOutcome::InvariantViolation { invariant, trace } => {
-            println!();
-            println!("Result: INVARIANT VIOLATION");
-            println!("  Invariant: {}", invariant);
-            println!("  Trace ({} steps):", trace.len());
-            for (i, (state, action)) in trace.iter().enumerate() {
-                let action_str = action.as_deref().unwrap_or("init");
-                let state_str = format_state_with_names(state, &var_names);
-                println!("    {}: {} -> {}", i, action_str, state_str);
-            }
-            std::process::exit(1);
-        }
-        CheckOutcome::Deadlock { trace } => {
-            println!();
-            println!("Result: DEADLOCK");
-            println!("  Trace ({} steps):", trace.len());
-            for (i, (state, action)) in trace.iter().enumerate() {
-                let action_str = action.as_deref().unwrap_or("init");
-                let state_str = format_state_with_names(state, &var_names);
-                println!("    {}: {} -> {}", i, action_str, state_str);
-            }
-            std::process::exit(1);
-        }
-        CheckOutcome::StateLimitReached {
-            states_explored,
-            max_depth,
-        } => {
-            println!();
-            println!("Result: STATE LIMIT REACHED");
-            println!("  States explored: {}", states_explored);
-            println!("  Max depth: {}", max_depth);
-            println!("  Time: {:.2}s", elapsed.as_secs_f64());
-            std::process::exit(2);
-        }
-        CheckOutcome::MemoryLimitReached {
-            states_explored,
-            max_depth,
-            memory_mb,
-        } => {
-            println!();
-            println!("Result: MEMORY LIMIT REACHED");
-            println!("  Memory usage: {} MB", memory_mb);
-            println!("  States explored: {}", states_explored);
-            println!("  Max depth: {}", max_depth);
-            println!("  Time: {:.2}s", elapsed.as_secs_f64());
-            std::process::exit(2);
         }
     }
 
@@ -914,6 +1090,7 @@ fn cmd_check_symbolic(
     k_induction: Option<usize>,
     ic3: bool,
     seq_bound: usize,
+    json: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -972,37 +1149,110 @@ fn cmd_check_symbolic(
 
     let elapsed = start.elapsed();
 
-    match result {
-        SymbolicOutcome::Ok { method } => {
-            println!();
-            println!("Result: OK");
-            println!("  Method: {}", method);
-            if let Some(k) = k_induction {
-                println!("  K: {}", k);
-            } else if !inductive && !ic3 && bmc_depth > 0 {
-                println!("  Depth: {}", bmc_depth);
+    let secs = elapsed.as_secs_f64();
+
+    if json {
+        let out = match result {
+            SymbolicOutcome::Ok { method } => JsonOutput {
+                result: "ok",
+                method: Some(method.to_string()),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                reason: None,
+                error: None,
+            },
+            SymbolicOutcome::InvariantViolation { invariant, trace } => {
+                let json_trace: Vec<JsonTraceStep> = trace
+                    .iter()
+                    .enumerate()
+                    .map(|(i, step)| {
+                        let mut state = BTreeMap::new();
+                        for (name, val) in &step.state {
+                            state.insert(name.clone(), serde_json::Value::String(val.clone()));
+                        }
+                        JsonTraceStep {
+                            step: i,
+                            action: step.action.clone().unwrap_or_else(|| "init".into()),
+                            state,
+                        }
+                    })
+                    .collect();
+                JsonOutput {
+                    result: if inductive {
+                        "not_inductive"
+                    } else {
+                        "invariant_violation"
+                    },
+                    invariant: Some(invariant),
+                    trace: Some(json_trace),
+                    duration_secs: secs,
+                    states_explored: None,
+                    max_depth: None,
+                    memory_mb: None,
+                    method: None,
+                    reason: None,
+                    error: None,
+                }
             }
-            println!("  Time: {:.2}s", elapsed.as_secs_f64());
+            SymbolicOutcome::Unknown { reason } => JsonOutput {
+                result: "unknown",
+                reason: Some(reason),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                error: None,
+            },
+        };
+        println!("{}", serde_json::to_string(&out).unwrap());
+        let exit_code = match out.result {
+            "ok" => 0,
+            "invariant_violation" | "not_inductive" => 1,
+            _ => 2,
+        };
+        if exit_code != 0 {
+            std::process::exit(exit_code);
         }
-        SymbolicOutcome::InvariantViolation { invariant, trace } => {
-            println!();
-            if inductive {
-                println!("Result: NOT INDUCTIVE");
-            } else {
-                println!("Result: INVARIANT VIOLATION");
+    } else {
+        match result {
+            SymbolicOutcome::Ok { method } => {
+                println!();
+                println!("Result: OK");
+                println!("  Method: {}", method);
+                if let Some(k) = k_induction {
+                    println!("  K: {}", k);
+                } else if !inductive && !ic3 && bmc_depth > 0 {
+                    println!("  Depth: {}", bmc_depth);
+                }
+                println!("  Time: {:.2}s", secs);
             }
-            println!("  Invariant: {}", invariant);
-            println!(
-                "  Trace: {} steps (use BFS for detailed trace — symbolic trace reconstruction is not yet reliable)",
-                trace.len()
-            );
-            std::process::exit(1);
-        }
-        SymbolicOutcome::Unknown { reason } => {
-            println!();
-            println!("Result: UNKNOWN");
-            println!("  Reason: {}", reason);
-            std::process::exit(2);
+            SymbolicOutcome::InvariantViolation { invariant, trace } => {
+                println!();
+                if inductive {
+                    println!("Result: NOT INDUCTIVE");
+                } else {
+                    println!("Result: INVARIANT VIOLATION");
+                }
+                println!("  Invariant: {}", invariant);
+                println!(
+                    "  Trace: {} steps (use BFS for detailed trace — symbolic trace reconstruction is not yet reliable)",
+                    trace.len()
+                );
+                std::process::exit(1);
+            }
+            SymbolicOutcome::Unknown { reason } => {
+                println!();
+                println!("Result: UNKNOWN");
+                println!("  Reason: {}", reason);
+                std::process::exit(2);
+            }
         }
     }
 
@@ -1089,6 +1339,65 @@ fn parse_value(s: &str) -> CliResult<Value> {
     Err(CliError::Other {
         message: format!("cannot parse value '{}'", s),
     })
+}
+
+/// Convert a BFS trace to JSON trace steps.
+fn trace_to_json(trace: &[(State, Option<String>)], var_names: &[String]) -> Vec<JsonTraceStep> {
+    trace
+        .iter()
+        .enumerate()
+        .map(|(i, (state, action))| {
+            let mut state_map = BTreeMap::new();
+            for (j, v) in state.vars.iter().enumerate() {
+                let name = var_names
+                    .get(j)
+                    .cloned()
+                    .unwrap_or_else(|| format!("v{}", j));
+                state_map.insert(name, value_to_json(v));
+            }
+            JsonTraceStep {
+                step: i,
+                action: action.clone().unwrap_or_else(|| "init".into()),
+                state: state_map,
+            }
+        })
+        .collect()
+}
+
+/// Convert a specl Value to a serde_json::Value.
+fn value_to_json(v: &Value) -> serde_json::Value {
+    match v {
+        Value::Bool(b) => serde_json::Value::Bool(*b),
+        Value::Int(n) => serde_json::json!(*n),
+        Value::String(s) => serde_json::Value::String(s.clone()),
+        Value::Set(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
+        Value::Seq(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
+        Value::Fn(pairs) => {
+            let obj: serde_json::Map<String, serde_json::Value> = pairs
+                .iter()
+                .map(|(k, v)| (format!("{}", k), value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        Value::IntMap(vals) => {
+            let obj: serde_json::Map<String, serde_json::Value> = vals
+                .iter()
+                .enumerate()
+                .map(|(i, v)| (i.to_string(), serde_json::json!(*v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        Value::Record(fields) => {
+            let obj: serde_json::Map<String, serde_json::Value> = fields
+                .iter()
+                .map(|(k, v)| (k.clone(), value_to_json(v)))
+                .collect();
+            serde_json::Value::Object(obj)
+        }
+        Value::Tuple(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
+        Value::None => serde_json::Value::Null,
+        Value::Some(inner) => value_to_json(inner),
+    }
 }
 
 /// Format a state with variable names for readable trace output.
@@ -1308,7 +1617,9 @@ fn run_check_iteration(
         .collect();
     if !unbounded_warnings.is_empty() {
         eprintln!("Note: spec has types the checker considers unbounded (Dict[Int, ...]).");
-        eprintln!("  BFS proceeds because runtime values are bounded by init and action parameters.");
+        eprintln!(
+            "  BFS proceeds because runtime values are bounded by init and action parameters."
+        );
     }
 
     let progress = Arc::new(ProgressCounters::new());
