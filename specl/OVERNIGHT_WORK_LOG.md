@@ -31,5 +31,33 @@ Working through milestones from `/Users/danwt/Documents/repos/demo-state-enumera
 - Errors (parse/type/compile/check) emitted as JSON when in JSON mode
 - Fixed tracing to write to stderr (was incorrectly on stdout)
 
+### Task 2: Simulate command
+- Status: DONE
+- `specl simulate spec.specl --steps 100 --seed 42`
+- Random walk: picks one enabled action per step, checks invariants
+- Supports `--output json` for LLM harness
+- Added `simulate()` method to Explorer, `SimulateOutcome` type
+
+### Task 3: Lint command
+- Status: DONE
+- `specl lint spec.specl` — parse + typecheck + compile in ~1ms
+- Supports `--output json` with structured error messages
+- Validates constants if provided
+
+### Task 4: Swarm verification
+- Status: DONE
+- `specl check --swarm 4` — N independent BFS instances with shuffled action orders
+- Each worker uses fingerprint-only mode for low memory
+- First violation stops all workers, triggers trace reconstruction
+- Added `action_shuffle_seed` to CheckConfig, `stop_flag` to Explorer
+- Tested: finds EPaxos bug in 0.3s with 4 workers
+
+### Task 5: Micro-optimizations
+- Status: DONE
+- **hash_var specialization**: Splitmix64-style direct arithmetic for Int/Bool (skip AHasher construction). Constant XOR seed prevents zero-hash for val=0.
+- **AtomicFPSet lower load factor**: Grow at 37.5% instead of 50%, reducing average probe length from ~2.0 to ~1.6.
+- **CAS spin-backoff**: Added `std::hint::spin_loop()` on CAS failure in AtomicFPSet::insert for reduced contention.
+- All 38 existing tests pass. EPaxos bug still correctly found.
+
 ### Blockers / Questions for Daniel
 (None yet)

@@ -12,7 +12,7 @@ const EMPTY: u64 = u64::MAX;
 
 /// A set of 64-bit fingerprints using open addressing with linear probing.
 ///
-/// Starts with an initial capacity and grows automatically when load exceeds 50%.
+/// Starts with an initial capacity and grows automatically when load exceeds 37.5%.
 /// Uses atomic CAS for concurrent insertion within a generation; resizing
 /// is single-threaded (requires &mut self or external synchronization).
 /// Fingerprint value `u64::MAX` is remapped to avoid collision with the empty sentinel.
@@ -24,9 +24,9 @@ pub struct AtomicFPSet {
 
 impl AtomicFPSet {
     /// Create a new set with the given capacity (rounded up to power of 2).
-    /// Actual slot count is 2x capacity to maintain ~50% load factor.
+    /// Actual slot count is ~2.67x capacity to maintain ~37.5% load factor.
     pub fn new(expected_capacity: usize) -> Self {
-        let min_slots = (expected_capacity * 2).max(1024).next_power_of_two();
+        let min_slots = (expected_capacity * 3).max(1024).next_power_of_two();
         let mut slots = Vec::with_capacity(min_slots);
         for _ in 0..min_slots {
             slots.push(AtomicU64::new(EMPTY));
@@ -48,10 +48,12 @@ impl AtomicFPSet {
         }
     }
 
-    /// Returns true if the load factor exceeds 50% and the set should be grown.
+    /// Returns true if the load factor exceeds 37.5% and the set should be grown.
+    /// Lower threshold than 50% reduces average probe length from ~2.0 to ~1.6
+    /// and dramatically improves worst-case behavior under linear probing.
     #[inline]
     pub fn should_grow(&self) -> bool {
-        self.count.load(Ordering::Relaxed) * 2 >= self.slots.len()
+        self.count.load(Ordering::Relaxed) * 8 >= self.slots.len() * 3
     }
 
     /// Double the capacity and rehash all entries.
@@ -109,7 +111,9 @@ impl AtomicFPSet {
                         if actual == val {
                             return false; // Another thread inserted same value
                         }
-                        // Another thread inserted a different value, continue probing
+                        // Another thread inserted a different value — hint CPU to reduce
+                        // contention before continuing probe sequence
+                        std::hint::spin_loop();
                     }
                 }
             }
