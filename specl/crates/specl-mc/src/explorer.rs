@@ -73,6 +73,28 @@ pub enum CheckOutcome {
     },
 }
 
+/// Result of simulation.
+#[derive(Debug)]
+pub enum SimulateOutcome {
+    /// Simulation completed without violations.
+    Ok {
+        steps: usize,
+        trace: Vec<(State, Option<String>)>,
+        var_names: Vec<String>,
+    },
+    /// Invariant violation found during simulation.
+    InvariantViolation {
+        invariant: String,
+        trace: Vec<(State, Option<String>)>,
+        var_names: Vec<String>,
+    },
+    /// Deadlock (no enabled actions).
+    Deadlock {
+        trace: Vec<(State, Option<String>)>,
+        var_names: Vec<String>,
+    },
+}
+
 /// BFS queue entry: (fingerprint, state, depth, change_mask, sleep_set).
 /// sleep_set is a bitmask of action indices to skip (sleep set POR enhancement).
 type QueueEntry = (Fingerprint, State, usize, u64, u64);
@@ -3377,6 +3399,77 @@ impl Explorer {
         }
 
         Ok(false)
+    }
+
+    /// Simulate a random trace through the state space.
+    ///
+    /// Picks one random enabled action per step. Checks invariants at each state.
+    /// Returns the trace and outcome.
+    pub fn simulate(&mut self, max_steps: usize, seed: u64) -> CheckResult<SimulateOutcome> {
+        use rand::rngs::StdRng;
+        use rand::seq::SliceRandom;
+        use rand::SeedableRng;
+
+        let mut rng = StdRng::seed_from_u64(seed);
+
+        // Generate initial states, pick one randomly
+        let initial_states = self.generate_initial_states()?;
+        if initial_states.is_empty() {
+            return Err(CheckError::NoInitialStates);
+        }
+        let state = initial_states.choose(&mut rng).unwrap().clone();
+
+        let var_names: Vec<String> = self.spec.vars.iter().map(|v| v.name.clone()).collect();
+        let mut trace: Vec<(State, Option<String>)> = vec![(state.clone(), None)];
+
+        // Check invariants on initial state
+        for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+            if !self.check_invariant_bc(inv_idx, &state)? {
+                return Ok(SimulateOutcome::InvariantViolation {
+                    invariant: inv.name.clone(),
+                    trace,
+                    var_names,
+                });
+            }
+        }
+
+        let mut current = state;
+        let mut successors_buf: Vec<(State, usize)> = Vec::new();
+        let mut next_vars_buf: Vec<Value> = Vec::new();
+
+        for _step in 0..max_steps {
+            // Generate all successors (no POR, no symmetry)
+            self.generate_successors(&current, &mut successors_buf, &mut next_vars_buf, 0)?;
+
+            if successors_buf.is_empty() {
+                return Ok(SimulateOutcome::Deadlock { trace, var_names });
+            }
+
+            // Pick a random successor
+            let (next_state, action_idx) = successors_buf.choose(&mut rng).unwrap().clone();
+
+            let action_name = self.action_names[action_idx].clone();
+            trace.push((next_state.clone(), Some(action_name)));
+
+            // Check invariants
+            for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if !self.check_invariant_bc(inv_idx, &next_state)? {
+                    return Ok(SimulateOutcome::InvariantViolation {
+                        invariant: inv.name.clone(),
+                        trace,
+                        var_names,
+                    });
+                }
+            }
+
+            current = next_state;
+        }
+
+        Ok(SimulateOutcome::Ok {
+            steps: trace.len() - 1,
+            trace,
+            var_names,
+        })
     }
 
     /// Get the state store for inspection.

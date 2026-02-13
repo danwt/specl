@@ -8,7 +8,7 @@ use serde::Serialize;
 use specl_eval::Value;
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
-use specl_mc::{CheckConfig, CheckOutcome, Explorer, ProgressCounters, State};
+use specl_mc::{CheckConfig, CheckOutcome, Explorer, ProgressCounters, SimulateOutcome, State};
 use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
@@ -303,6 +303,29 @@ enum Commands {
         output: Option<PathBuf>,
     },
 
+    /// Simulate a random trace through the state space
+    Simulate {
+        /// Input file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Constant assignments (name=value)
+        #[arg(short, long, value_name = "CONST=VALUE")]
+        constant: Vec<String>,
+
+        /// Maximum number of steps to simulate
+        #[arg(long, default_value = "100")]
+        steps: usize,
+
+        /// Random seed for reproducibility
+        #[arg(long, default_value = "0")]
+        seed: u64,
+
+        /// Output format (text or json)
+        #[arg(long, value_enum, default_value = "text")]
+        output: OutputFormat,
+    },
+
     /// Show reference of all available checking techniques and when to use them
     Techniques {
         /// Show extended plain-English explanations for each technique
@@ -488,6 +511,13 @@ fn main() {
                 inner
             }
         }
+        Commands::Simulate {
+            file,
+            constant,
+            steps,
+            seed,
+            output,
+        } => cmd_simulate(&file, &constant, steps, seed, output),
         Commands::Format { file, write } => cmd_format(&file, write),
         Commands::Watch {
             file,
@@ -1254,6 +1284,139 @@ fn cmd_check_symbolic(
                 std::process::exit(2);
             }
         }
+    }
+
+    Ok(())
+}
+
+fn cmd_simulate(
+    file: &PathBuf,
+    constants: &[String],
+    max_steps: usize,
+    seed: u64,
+    output: OutputFormat,
+) -> CliResult<()> {
+    let json = output == OutputFormat::Json;
+    let filename = file.display().to_string();
+    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?);
+
+    let module =
+        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
+    specl_types::check_module(&module)
+        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
+    let spec = compile(&module).map_err(|e| CliError::CompileError {
+        message: e.to_string(),
+    })?;
+    let consts = parse_constants(constants, &spec)?;
+
+    let config = CheckConfig {
+        check_deadlock: false,
+        ..Default::default()
+    };
+
+    let mut explorer = Explorer::new(spec, consts, config);
+    let start = Instant::now();
+    let result = explorer
+        .simulate(max_steps, seed)
+        .map_err(|e| CliError::CheckError {
+            message: e.to_string(),
+        })?;
+    let secs = start.elapsed().as_secs_f64();
+
+    if json {
+        let out = match &result {
+            SimulateOutcome::Ok {
+                steps,
+                trace,
+                var_names,
+            } => JsonOutput {
+                result: "ok",
+                states_explored: Some(*steps),
+                trace: Some(trace_to_json(trace, var_names)),
+                duration_secs: secs,
+                invariant: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            SimulateOutcome::InvariantViolation {
+                invariant,
+                trace,
+                var_names,
+            } => JsonOutput {
+                result: "invariant_violation",
+                invariant: Some(invariant.clone()),
+                trace: Some(trace_to_json(trace, var_names)),
+                duration_secs: secs,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            SimulateOutcome::Deadlock { trace, var_names } => JsonOutput {
+                result: "deadlock",
+                trace: Some(trace_to_json(trace, var_names)),
+                duration_secs: secs,
+                invariant: None,
+                states_explored: None,
+                max_depth: None,
+                memory_mb: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+        };
+        println!("{}", serde_json::to_string(&out).unwrap());
+    } else {
+        match &result {
+            SimulateOutcome::Ok {
+                steps,
+                trace,
+                var_names,
+            } => {
+                println!("Simulation: {} steps, no violation (seed={})", steps, seed);
+                println!();
+                for (i, (state, action)) in trace.iter().enumerate() {
+                    let action_str = action.as_deref().unwrap_or("init");
+                    let state_str = format_state_with_names(state, var_names);
+                    println!("  {}: {} -> {}", i, action_str, state_str);
+                }
+            }
+            SimulateOutcome::InvariantViolation {
+                invariant,
+                trace,
+                var_names,
+            } => {
+                println!("Simulation: INVARIANT VIOLATION");
+                println!("  Invariant: {}", invariant);
+                println!("  Trace ({} steps):", trace.len());
+                for (i, (state, action)) in trace.iter().enumerate() {
+                    let action_str = action.as_deref().unwrap_or("init");
+                    let state_str = format_state_with_names(state, var_names);
+                    println!("    {}: {} -> {}", i, action_str, state_str);
+                }
+                std::process::exit(1);
+            }
+            SimulateOutcome::Deadlock { trace, var_names } => {
+                println!("Simulation: DEADLOCK after {} steps", trace.len() - 1);
+                println!("  Trace ({} steps):", trace.len());
+                for (i, (state, action)) in trace.iter().enumerate() {
+                    let action_str = action.as_deref().unwrap_or("init");
+                    let state_str = format_state_with_names(state, var_names);
+                    println!("    {}: {} -> {}", i, action_str, state_str);
+                }
+                std::process::exit(1);
+            }
+        }
+    }
+    if !json {
+        println!("  Time: {:.3}s", secs);
     }
 
     Ok(())

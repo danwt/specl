@@ -6,6 +6,8 @@ pub mod fpset;
 pub mod state;
 pub mod store;
 
-pub use explorer::{CheckConfig, CheckError, CheckOutcome, CheckResult, Explorer, ProgressCounters};
+pub use explorer::{
+    CheckConfig, CheckError, CheckOutcome, CheckResult, Explorer, ProgressCounters, SimulateOutcome,
+};
 pub use state::{Fingerprint, State};
 pub use store::{StateInfo, StateStore};

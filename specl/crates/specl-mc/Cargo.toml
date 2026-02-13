@@ -21,6 +21,7 @@ tracing.workspace = true
 rayon.workspace = true
 memory-stats.workspace = true
 smallvec.workspace = true
+rand.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
