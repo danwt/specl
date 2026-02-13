@@ -16,6 +16,7 @@ use specl_syntax::{ExprKind, TypeExpr};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use thiserror::Error;
 use tracing::{debug, error, info, trace};
 
@@ -170,6 +171,8 @@ pub struct CheckConfig {
     pub progress: Option<Arc<ProgressCounters>>,
     /// If set, shuffle action exploration order using this seed (for swarm verification).
     pub action_shuffle_seed: Option<u64>,
+    /// Enable profiling: collect per-action firing counts and phase timing.
+    pub profile: bool,
 }
 
 impl Default for CheckConfig {
@@ -186,6 +189,7 @@ impl Default for CheckConfig {
             fast_check: false,
             progress: None,
             action_shuffle_seed: None,
+            profile: false,
         }
     }
 }
@@ -204,6 +208,7 @@ impl Clone for CheckConfig {
             fast_check: self.fast_check,
             progress: self.progress.clone(),
             action_shuffle_seed: self.action_shuffle_seed,
+            profile: self.profile,
         }
     }
 }
@@ -222,8 +227,24 @@ impl std::fmt::Debug for CheckConfig {
             .field("fast_check", &self.fast_check)
             .field("progress", &self.progress.as_ref().map(|_| "..."))
             .field("action_shuffle_seed", &self.action_shuffle_seed)
+            .field("profile", &self.profile)
             .finish()
     }
+}
+
+/// Profiling data collected during model checking.
+#[derive(Debug, Clone)]
+pub struct ProfileData {
+    /// Per-action firing counts (number of successor states produced).
+    pub action_fire_counts: Vec<usize>,
+    /// Action names for display.
+    pub action_names: Vec<String>,
+    /// Time spent checking invariants.
+    pub time_invariants: Duration,
+    /// Time spent generating successors.
+    pub time_successors: Duration,
+    /// Time spent on store operations (insert, canonicalize, queue).
+    pub time_store: Duration,
 }
 
 /// Model checker explorer.
@@ -271,6 +292,8 @@ pub struct Explorer {
     has_refinable_pairs: bool,
     /// Per-action: participates in at least one refinable pair.
     action_has_refinable: Vec<bool>,
+    /// Profile data accumulated during checking (only when config.profile is true).
+    profile_data: Option<ProfileData>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -971,6 +994,7 @@ impl Explorer {
             sym_param_groups: Vec::new(),
             has_refinable_pairs,
             action_has_refinable,
+            profile_data: None,
         };
 
         // Precompute action names for trace reconstruction
@@ -1807,6 +1831,14 @@ impl Explorer {
         let mut memory_at_limit = 0usize;
         let mut next_vars_buf = Vec::new();
 
+        // Profile accumulators (zero-cost when profiling disabled)
+        let profiling = self.config.profile;
+        let n_actions = self.spec.actions.len();
+        let mut prof_action_counts = if profiling { vec![0usize; n_actions] } else { vec![] };
+        let mut prof_time_inv = Duration::ZERO;
+        let mut prof_time_succ = Duration::ZERO;
+        let mut prof_time_store = Duration::ZERO;
+
         while let Some((fp, state, depth, change_mask, sleep_set)) = queue.pop_front() {
             // Check external stop flag (swarm cancellation)
             if let Some(ref flag) = self.stop_flag {
@@ -1848,12 +1880,22 @@ impl Explorer {
                 }
             }
 
-            // Check invariants (skip if no relevant variables changed)
+            // --- Phase 1: Check invariants ---
+            let t0 = if profiling { Instant::now() } else { Instant::now() };
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
                 if change_mask & self.inv_dep_masks[inv_idx] == 0 {
                     continue;
                 }
                 if !self.check_invariant_bc(inv_idx, &state)? {
+                    if profiling {
+                        self.profile_data = Some(ProfileData {
+                            action_fire_counts: prof_action_counts,
+                            action_names: self.action_names.clone(),
+                            time_invariants: prof_time_inv,
+                            time_successors: prof_time_succ,
+                            time_store: prof_time_store,
+                        });
+                    }
                     let trace = self.store.trace_to(&fp, &self.action_names);
                     return Ok(CheckOutcome::InvariantViolation {
                         invariant: inv.name.clone(),
@@ -1861,25 +1903,38 @@ impl Explorer {
                     });
                 }
             }
+            if profiling { prof_time_inv += t0.elapsed(); }
 
-            // Generate successor states (sleep set filters actions when POR enabled)
+            // --- Phase 2: Generate successor states ---
+            let t1 = if profiling { Instant::now() } else { Instant::now() };
             let mut successors = Vec::new();
             self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set)?;
+            if profiling { prof_time_succ += t1.elapsed(); }
 
             if successors.is_empty() && self.config.check_deadlock {
                 // Check if any action is enabled (ignoring sleep set — sleep doesn't cause deadlock)
                 let any_enabled = self.any_action_enabled(&state)?;
                 if !any_enabled {
+                    if profiling {
+                        self.profile_data = Some(ProfileData {
+                            action_fire_counts: prof_action_counts,
+                            action_names: self.action_names.clone(),
+                            time_invariants: prof_time_inv,
+                            time_successors: prof_time_succ,
+                            time_store: prof_time_store,
+                        });
+                    }
                     let trace = self.store.trace_to(&fp, &self.action_names);
                     return Ok(CheckOutcome::Deadlock { trace });
                 }
             }
 
-            // Add successors to queue with propagated sleep sets.
-            // Sleep set accumulates: later actions' successors inherit earlier actions in sleep.
+            // --- Phase 3: Store insert + queue management ---
+            let t2 = if profiling { Instant::now() } else { Instant::now() };
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
             for (next_state, action_idx) in successors {
+                if profiling { prof_action_counts[action_idx] += 1; }
                 let successor_sleep = if use_sleep {
                     accumulated_sleep & self.independent_masks[action_idx]
                 } else {
@@ -1907,6 +1962,7 @@ impl Explorer {
 
             // Grow FPSet between batches if needed (no concurrent inserts at this point)
             self.store.maybe_grow_fpset();
+            if profiling { prof_time_store += t2.elapsed(); }
 
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
@@ -1914,6 +1970,17 @@ impl Explorer {
                 p.depth.store(*max_depth, Ordering::Relaxed);
                 p.queue_len.store(queue.len(), Ordering::Relaxed);
             }
+        }
+
+        // Store profile data
+        if profiling {
+            self.profile_data = Some(ProfileData {
+                action_fire_counts: prof_action_counts,
+                action_names: self.action_names.clone(),
+                time_invariants: prof_time_inv,
+                time_successors: prof_time_succ,
+                time_store: prof_time_store,
+            });
         }
 
         info!(
@@ -3510,6 +3577,11 @@ impl Explorer {
     /// Get the state store for inspection.
     pub fn store(&self) -> &StateStore {
         &self.store
+    }
+
+    /// Get profile data collected during checking (only available when config.profile is true).
+    pub fn profile_data(&self) -> Option<&ProfileData> {
+        self.profile_data.as_ref()
     }
 }
 

@@ -7,7 +7,8 @@ pub mod state;
 pub mod store;
 
 pub use explorer::{
-    CheckConfig, CheckError, CheckOutcome, CheckResult, Explorer, ProgressCounters, SimulateOutcome,
+    CheckConfig, CheckError, CheckOutcome, CheckResult, Explorer, ProfileData, ProgressCounters,
+    SimulateOutcome,
 };
 pub use state::{Fingerprint, State};
 pub use store::{StateInfo, StateStore};

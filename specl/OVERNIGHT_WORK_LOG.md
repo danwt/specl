@@ -67,5 +67,14 @@ Working through milestones from `/Users/danwt/Documents/repos/demo-state-enumera
 - Metadata includes format version, source, result kind, violated invariant
 - Works with check, simulate, and swarm commands
 
+### Task 7: Profiling mode
+- Status: DONE
+- `specl check --profile` — phase-level timing and per-action firing counts
+- Three phases timed: invariant checking, successor generation, store + queue
+- Action firings sorted by count with percentages
+- Profile data stored before early returns (invariant violation, deadlock)
+- Extracted `print_check_profile()` helper to avoid duplication
+- Works with sequential BFS (parallel mode doesn't profile yet — lower priority)
+
 ### Blockers / Questions for Daniel
 (None yet)

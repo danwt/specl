@@ -259,9 +259,13 @@ enum Commands {
         #[arg(long)]
         no_auto: bool,
 
-        /// Output format (text or json)
+        /// Output format (text, json, or itf)
         #[arg(long, value_enum, default_value = "text")]
         output: OutputFormat,
+
+        /// Show profiling breakdown (per-action firing counts, phase timing)
+        #[arg(long, help_heading = "Explicit-State")]
+        profile: bool,
     },
 
     /// Format a Specl file
@@ -416,6 +420,7 @@ fn main() {
             quiet,
             no_auto,
             output,
+            profile,
         } => {
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
@@ -485,6 +490,7 @@ fn main() {
                     no_auto,
                     output,
                     swarm,
+                    profile,
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
@@ -514,6 +520,7 @@ fn main() {
                         no_auto,
                         output,
                         swarm,
+                        profile,
                     )
                 }
             };
@@ -816,6 +823,7 @@ fn cmd_check(
     no_auto: bool,
     output_format: OutputFormat,
     swarm: Option<usize>,
+    profile: bool,
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     let filename = file.display().to_string();
@@ -843,13 +851,13 @@ fn cmd_check(
     let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
 
     // Spec analysis, recommendations, and auto-enable
-    let profile = analyze(&spec);
+    let spec_profile = analyze(&spec);
     if !quiet {
-        print_profile(&profile, use_por, use_symmetry);
+        print_profile(&spec_profile, use_por, use_symmetry);
     }
 
     // Warn about unbounded types (BFS may still work if runtime values are bounded by init/actions)
-    let unbounded_warnings: Vec<_> = profile
+    let unbounded_warnings: Vec<_> = spec_profile
         .warnings
         .iter()
         .filter(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
@@ -866,19 +874,19 @@ fn cmd_check(
     let mut actual_symmetry = use_symmetry;
 
     if !no_auto {
-        if !use_por && profile.independence_ratio > 0.3 {
+        if !use_por && spec_profile.independence_ratio > 0.3 {
             actual_por = true;
             if !quiet {
-                let pct = (profile.independence_ratio * 100.0) as u32;
+                let pct = (spec_profile.independence_ratio * 100.0) as u32;
                 println!("Auto-enabled: --por ({}% independent actions)", pct);
             }
         }
-        if !use_symmetry && profile.has_symmetry {
+        if !use_symmetry && spec_profile.has_symmetry {
             let sym_warnings = specl_mc::Explorer::find_symmetry_warnings(&spec);
             if sym_warnings.is_empty() {
                 actual_symmetry = true;
                 if !quiet {
-                    let sizes: Vec<String> = profile
+                    let sizes: Vec<String> = spec_profile
                         .symmetry_domain_sizes
                         .iter()
                         .map(|s| s.to_string())
@@ -889,7 +897,7 @@ fn cmd_check(
                     );
                 }
             } else if !quiet {
-                let sizes: Vec<String> = profile
+                let sizes: Vec<String> = spec_profile
                     .symmetry_domain_sizes
                     .iter()
                     .map(|s| s.to_string())
@@ -981,6 +989,7 @@ fn cmd_check(
         fast_check,
         progress: Some(progress),
         action_shuffle_seed: None,
+        profile,
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -1104,7 +1113,7 @@ fn cmd_check(
             std::process::exit(exit_code);
         }
     } else {
-        match result {
+        let exit_code = match result {
             CheckOutcome::Ok {
                 states_explored,
                 max_depth,
@@ -1136,6 +1145,7 @@ fn cmd_check(
                 if !opts.is_empty() {
                     println!("  Optimizations: {}", opts.join(", "));
                 }
+                0
             }
             CheckOutcome::InvariantViolation { invariant, trace } => {
                 println!();
@@ -1147,7 +1157,7 @@ fn cmd_check(
                     let state_str = format_state_with_names(state, &var_names);
                     println!("    {}: {} -> {}", i, action_str, state_str);
                 }
-                std::process::exit(1);
+                1
             }
             CheckOutcome::Deadlock { trace } => {
                 println!();
@@ -1158,7 +1168,7 @@ fn cmd_check(
                     let state_str = format_state_with_names(state, &var_names);
                     println!("    {}: {} -> {}", i, action_str, state_str);
                 }
-                std::process::exit(1);
+                1
             }
             CheckOutcome::StateLimitReached {
                 states_explored,
@@ -1169,7 +1179,7 @@ fn cmd_check(
                 println!("  States explored: {}", states_explored);
                 println!("  Max depth: {}", max_depth);
                 println!("  Time: {:.2}s", secs);
-                std::process::exit(2);
+                2
             }
             CheckOutcome::MemoryLimitReached {
                 states_explored,
@@ -1182,10 +1192,16 @@ fn cmd_check(
                 println!("  States explored: {}", states_explored);
                 println!("  Max depth: {}", max_depth);
                 println!("  Time: {:.2}s", secs);
-                std::process::exit(2);
+                2
             }
+        };
+        if exit_code != 0 {
+            print_check_profile(&explorer);
+            std::process::exit(exit_code);
         }
     }
+
+    print_check_profile(&explorer);
 
     Ok(())
 }
@@ -1234,6 +1250,7 @@ fn cmd_check_swarm(
                     fast_check: true, // fingerprint-only for speed
                     progress: None,
                     action_shuffle_seed: Some(i as u64),
+                    profile: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1297,6 +1314,7 @@ fn cmd_check_swarm(
                     fast_check: false,
                     progress: None,
                     action_shuffle_seed: None,
+                    profile: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {
@@ -2167,6 +2185,62 @@ fn print_profile(
     }
 
     println!();
+}
+
+fn print_check_profile(explorer: &Explorer) {
+    if let Some(prof) = explorer.profile_data() {
+        println!();
+        println!("Profile:");
+        let total = prof.time_invariants + prof.time_successors + prof.time_store;
+        let total_secs = total.as_secs_f64().max(0.001);
+        println!(
+            "  Invariant checking: {:.1}% ({:.3}s)",
+            prof.time_invariants.as_secs_f64() / total_secs * 100.0,
+            prof.time_invariants.as_secs_f64()
+        );
+        println!(
+            "  Successor generation: {:.1}% ({:.3}s)",
+            prof.time_successors.as_secs_f64() / total_secs * 100.0,
+            prof.time_successors.as_secs_f64()
+        );
+        println!(
+            "  Store + queue: {:.1}% ({:.3}s)",
+            prof.time_store.as_secs_f64() / total_secs * 100.0,
+            prof.time_store.as_secs_f64()
+        );
+
+        let total_firings: usize = prof.action_fire_counts.iter().sum();
+        if total_firings > 0 {
+            println!();
+            println!(
+                "  Action firings ({} total):",
+                format_large_number(total_firings as u128)
+            );
+            let mut sorted: Vec<(usize, &str, usize)> = prof
+                .action_fire_counts
+                .iter()
+                .enumerate()
+                .map(|(i, &count)| (i, prof.action_names[i].as_str(), count))
+                .collect();
+            sorted.sort_by(|a, b| b.2.cmp(&a.2));
+            for (_idx, name, count) in &sorted {
+                if *count == 0 {
+                    continue;
+                }
+                let pct = *count as f64 / total_firings as f64 * 100.0;
+                println!(
+                    "    {}: {} ({:.1}%)",
+                    name,
+                    format_large_number(*count as u128),
+                    pct
+                );
+            }
+            let zero_count = sorted.iter().filter(|s| s.2 == 0).count();
+            if zero_count > 0 {
+                println!("    ({} actions never fired)", zero_count);
+            }
+        }
+    }
 }
 
 fn format_large_number(n: u128) -> String {
