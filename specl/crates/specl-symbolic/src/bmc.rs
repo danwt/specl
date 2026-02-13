@@ -10,35 +10,36 @@ use specl_ir::CompiledSpec;
 use tracing::info;
 use z3::{SatResult, Solver};
 
-/// Run bounded model checking up to the given depth.
+/// Maximum depth when no bound is specified (safety net).
+const DEFAULT_MAX_DEPTH: usize = 500;
+
+/// Run bounded model checking up to the given depth (0 = unbounded).
 pub fn check_bmc(
     spec: &CompiledSpec,
     consts: &[Value],
     max_depth: usize,
     seq_bound: usize,
 ) -> SymbolicResult<SymbolicOutcome> {
-    info!(depth = max_depth, "starting symbolic BMC");
+    let effective_max = if max_depth == 0 {
+        DEFAULT_MAX_DEPTH
+    } else {
+        max_depth
+    };
+    info!(depth = effective_max, "starting symbolic BMC");
 
     let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let solver = Solver::new();
 
-    // Create Z3 variables for steps 0..=max_depth
     let mut all_step_vars = Vec::new();
-    for step in 0..=max_depth {
-        all_step_vars.push(create_step_vars(&layout, step));
-    }
 
-    // Assert range constraints for all steps
-    for step in 0..=max_depth {
-        assert_range_constraints(&solver, &layout, &all_step_vars, step);
-    }
+    for k in 0..=effective_max {
+        // Incrementally add step variables
+        all_step_vars.push(create_step_vars(&layout, k));
+        assert_range_constraints(&solver, &layout, &all_step_vars, k);
 
-    // Assert init at step 0
-    encode_init(&solver, spec, consts, &layout, &all_step_vars)?;
-
-    // Assert transitions step by step and check invariants at each depth
-    for k in 0..=max_depth {
-        if k > 0 {
+        if k == 0 {
+            encode_init(&solver, spec, consts, &layout, &all_step_vars)?;
+        } else {
             let trans = encode_transition(spec, consts, &layout, &all_step_vars, k - 1)?;
             solver.assert(&trans);
         }
@@ -89,6 +90,6 @@ pub fn check_bmc(
         }
     }
 
-    info!(depth = max_depth, "BMC complete, no violations found");
+    info!(depth = effective_max, "BMC complete, no violations found");
     Ok(SymbolicOutcome::Ok { method: "BMC" })
 }

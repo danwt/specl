@@ -168,13 +168,13 @@ enum Commands {
         fast: bool,
 
         // -- Symbolic (Z3) options --
-        /// Bounded model checking (unroll transitions to --depth steps)
+        /// Bounded model checking (unroll transitions to --bmc-depth steps)
         #[arg(long, help_heading = "Symbolic (Z3)")]
         bmc: bool,
 
-        /// BMC/symbolic depth bound
-        #[arg(long, default_value = "10", help_heading = "Symbolic (Z3)")]
-        depth: usize,
+        /// BMC depth bound (0 = unlimited)
+        #[arg(long, default_value = "0", help_heading = "Symbolic (Z3)")]
+        bmc_depth: usize,
 
         /// Inductive invariant checking (single-step proof)
         #[arg(long, help_heading = "Symbolic (Z3)")]
@@ -310,7 +310,7 @@ fn main() {
             symmetry,
             fast,
             bmc,
-            depth,
+            bmc_depth,
             inductive,
             k_induction,
             ic3,
@@ -329,7 +329,7 @@ fn main() {
                 cmd_check_symbolic(
                     &file,
                     &constant,
-                    depth,
+                    bmc_depth,
                     inductive,
                     k_induction,
                     ic3,
@@ -363,7 +363,7 @@ fn main() {
                         );
                     }
                     cmd_check_symbolic(
-                        &file, &constant, depth, false, None, false, true, seq_bound,
+                        &file, &constant, bmc_depth, false, None, false, true, seq_bound,
                     )
                 } else {
                     cmd_check(
@@ -699,15 +699,28 @@ fn cmd_check(
             }
         }
         if !use_symmetry && profile.has_symmetry {
-            actual_symmetry = true;
-            if !quiet {
+            let sym_warnings = specl_mc::Explorer::find_symmetry_warnings(&spec);
+            if sym_warnings.is_empty() {
+                actual_symmetry = true;
+                if !quiet {
+                    let sizes: Vec<String> = profile
+                        .symmetry_domain_sizes
+                        .iter()
+                        .map(|s| s.to_string())
+                        .collect();
+                    println!(
+                        "Auto-enabled: --symmetry (symmetric domains: {})",
+                        sizes.join(", ")
+                    );
+                }
+            } else if !quiet {
                 let sizes: Vec<String> = profile
                     .symmetry_domain_sizes
                     .iter()
                     .map(|s| s.to_string())
                     .collect();
                 println!(
-                    "Auto-enabled: --symmetry (symmetric domains: {})",
+                    "Skipped auto --symmetry (domains: {}): spec has asymmetric patterns",
                     sizes.join(", ")
                 );
             }
@@ -881,7 +894,7 @@ fn cmd_check(
 fn cmd_check_symbolic(
     file: &PathBuf,
     constants: &[String],
-    depth: usize,
+    bmc_depth: usize,
     inductive: bool,
     k_induction: Option<usize>,
     ic3: bool,
@@ -920,7 +933,7 @@ fn cmd_check_symbolic(
         } else {
             SymbolicMode::Bmc
         },
-        depth,
+        depth: bmc_depth,
         seq_bound,
     };
 
@@ -952,8 +965,8 @@ fn cmd_check_symbolic(
             println!("  Method: {}", method);
             if let Some(k) = k_induction {
                 println!("  K: {}", k);
-            } else if !inductive && !ic3 {
-                println!("  Depth: {}", depth);
+            } else if !inductive && !ic3 && bmc_depth > 0 {
+                println!("  Depth: {}", bmc_depth);
             }
             println!("  Time: {:.2}s", elapsed.as_secs_f64());
         }
@@ -1471,7 +1484,7 @@ SYMBOLIC CHECKING (Z3-backed)
   --bmc          Bounded Model Checking (BMC)
                  Asks: \"can a bug happen within K steps?\" by encoding K transitions as
                  a formula and asking Z3 to find a satisfying assignment. Fast for bugs
-                 that occur within a few steps. Set the bound with --depth (default 10).
+                 that occur within a few steps. Set the bound with --bmc-depth (default: unlimited).
                  If no bug is found within K steps, that does NOT prove the spec is safe
                  — the bug might require more steps.
 
@@ -1543,7 +1556,7 @@ SYMBOLIC CHECKING (Z3-backed)
   Encodes spec as SMT formulas. Can handle unbounded/huge state spaces.
 
   --bmc          Bounded Model Checking (BMC)
-                 Unrolls transitions to --depth steps. Fast for shallow bugs.
+                 Unrolls transitions to --bmc-depth steps. Fast for shallow bugs.
 
   --inductive    Inductive Invariant Checking
                  Single-step induction proof. Fast but may fail for non-inductive invariants.

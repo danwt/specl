@@ -1026,7 +1026,7 @@ impl Explorer {
     /// Scan compiled spec for literal indices into symmetric variables
     /// and literal comparisons with symmetric parameters.
     /// Returns a list of human-readable warning strings.
-    fn find_symmetry_warnings(spec: &CompiledSpec) -> Vec<String> {
+    pub fn find_symmetry_warnings(spec: &CompiledSpec) -> Vec<String> {
         use specl_ir::CompiledExpr;
         use specl_types::Type;
 
