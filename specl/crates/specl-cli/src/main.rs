@@ -130,6 +130,15 @@ enum Commands {
         #[arg(short, long, value_name = "CONST=VALUE")]
         constant: Vec<String>,
 
+        // -- Mode selection --
+        /// Force BFS explicit-state checking
+        #[arg(long, help_heading = "Mode")]
+        bfs: bool,
+
+        /// Force symbolic checking (auto-cascades: induction → k-induction → IC3 → BMC)
+        #[arg(long, help_heading = "Mode")]
+        symbolic: bool,
+
         // -- Explicit-state options --
         /// Maximum number of states to explore (0 = unlimited)
         #[arg(long, default_value = "0", help_heading = "Explicit-State")]
@@ -296,6 +305,8 @@ fn main() {
         Commands::Check {
             file,
             constant,
+            bfs,
+            symbolic,
             max_states,
             max_depth,
             memory_limit,
@@ -315,12 +326,20 @@ fn main() {
             quiet,
             no_auto,
         } => {
-            let user_requested_symbolic =
+            let specific_symbolic =
                 bmc || inductive || k_induction.is_some() || ic3;
-            let user_requested_explicit =
+            let specific_explicit =
                 por || symmetry || fast || max_states > 0 || max_depth > 0 || memory_limit > 0;
 
-            if user_requested_symbolic {
+            let use_symbolic = symbolic || specific_symbolic;
+            let use_bfs = bfs || specific_explicit;
+
+            if use_symbolic && use_bfs {
+                eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
+                std::process::exit(1);
+            }
+
+            if use_symbolic {
                 cmd_check_symbolic(
                     &file,
                     &constant,
@@ -331,7 +350,7 @@ fn main() {
                     ic3,
                     seq_bound,
                 )
-            } else if user_requested_explicit {
+            } else if use_bfs {
                 cmd_check(
                     &file,
                     &constant,
