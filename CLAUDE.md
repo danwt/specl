@@ -261,7 +261,7 @@ specl/crates/
 
 ## Language Server (LSP)
 
-The `specl-lsp` binary provides IDE support via the Language Server Protocol (35 unit tests):
+The `specl-lsp` binary provides IDE support via the Language Server Protocol (36 unit tests):
 
 - **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
 - **Completion**: Keywords, types, and symbols (vars, consts, actions, funcs, invariants) from the current file
@@ -278,6 +278,7 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (35
 - **Call hierarchy**: Incoming/outgoing call relationships between actions and funcs
 - **Inlay hints**: Parameter names shown inline at call sites (e.g. `Recovery(leader: 0, other: 2)`)
 - **Code actions**: Insert templates for init blocks, actions, invariants; quick fix for undefined variables
+- **Code lens**: Reference counts above action and func declarations (click to find all references)
 - **Folding ranges**: Collapse declaration blocks and comment groups
 - **Formatting**: Pretty-print the document
 - **Semantic tokens**: Syntax highlighting (keywords, types, variables, functions, etc.)
@@ -285,4 +286,4 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (35
 
 ## Examples
 
-See `specl/examples/showcase/` (40 curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, G-Counter CRDT, PN-Counter CRDT, OR-Set CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, Leader Election, ABD Register, CAS Register, Lamport Mutex, Ricart-Agrawala, Ticket Lock, Byzantine Generals, RCU, Seqlock, Barrier, Two-Phase Locking, Bounded Buffer, WAL, Michael-Scott Queue, Snapshot Isolation, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (51 curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, G-Counter CRDT, PN-Counter CRDT, OR-Set CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, Leader Election, ABD Register, CAS Register, Lamport Mutex, Ricart-Agrawala, Ticket Lock, Byzantine Generals, RCU, Seqlock, Barrier, Two-Phase Locking, Bounded Buffer, WAL, Michael-Scott Queue, Snapshot Isolation, Hazard Pointers, Two-Phase Commit, ABA Problem, Sleeping Barber, Epoch Reclamation, Treiber Stack, Dining Savages, Cigarette Smokers, RW Write Preference, Priority Inversion, Crash Consensus, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
