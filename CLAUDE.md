@@ -21,9 +21,24 @@ specl check spec.specl --no-deadlock        # skip deadlock check (common for pr
 specl check spec.specl --no-parallel        # single-threaded
 specl check spec.specl --threads 4          # control parallelism
 specl check spec.specl --max-states 100000  # limit exploration
+specl check spec.specl --max-time 60        # time limit in seconds
 specl check spec.specl --fast               # fingerprint-only (10x less memory, no traces)
 specl check spec.specl --por                # partial order reduction
 specl check spec.specl --symmetry           # symmetry reduction
+specl check spec.specl --bloom              # bloom filter (fixed memory, probabilistic)
+specl check spec.specl --directed           # priority BFS toward violations
+specl check spec.specl --swarm 8            # parallel instances with shuffled orders
+specl check spec.specl --check-only Safety  # only check named invariant(s)
+specl check spec.specl --diff               # show only changed vars in traces
+specl check spec.specl --output json        # JSON output
+specl check spec.specl --output itf         # Apalache-compatible ITF trace
+specl check spec.specl --output mermaid     # Mermaid sequence diagram
+specl check spec.specl --profile            # per-action firing counts and timing
+specl info spec.specl -c N=3               # analyze spec: state space, actions, optimizations
+specl estimate spec.specl -c N=3           # estimate state space size and resources
+specl test examples/                        # batch check all .specl files using // Use: comments
+specl simulate spec.specl -c N=3           # random trace simulation
+specl lint spec.specl                       # fast syntax + type + compile check (no MC)
 specl format spec.specl --write             # format in place
 specl watch spec.specl -c N=3              # re-check on file change
 specl translate spec.tla -o spec.specl     # convert TLA+ to Specl
