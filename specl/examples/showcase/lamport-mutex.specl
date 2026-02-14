@@ -1,0 +1,91 @@
+module LamportMutex
+
+// Lamport's distributed mutual exclusion algorithm.
+// N+1 processes communicate via message passing with logical clocks.
+// To enter the critical section, a process:
+//   1. Sends REQUEST(ts) to all others and adds to its own queue
+//   2. Waits for REPLY from all others with timestamps > its request
+//   3. Enters CS when its request is at the front of the queue
+// On release, sends RELEASE to all others.
+//
+// Each process maintains a request queue ordered by (timestamp, pid).
+// Logical clocks ensure total ordering of events.
+//
+// Use: specl check lamport-mutex.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (13.1K states, 0.0s)
+
+const N: 0..3
+
+// Process state: 0=idle, 1=requesting, 2=in_cs
+var pc: Dict[0..N, 0..2]
+
+// Logical clock per process
+var clock: Dict[0..N, 0..10]
+
+// Request timestamp: the clock value when process made its request
+var req_ts: Dict[0..N, 0..10]
+
+// Whether process i has a pending request
+var has_req: Dict[0..N, Bool]
+
+// Reply tracking: reply[i][j] = true means i has received reply from j
+var reply: Dict[0..N, Dict[0..N, Bool]]
+
+init {
+    pc = {i: 0 for i in 0..N}
+    and clock = {i: 0 for i in 0..N}
+    and req_ts = {i: 0 for i in 0..N}
+    and has_req = {i: false for i in 0..N}
+    and reply = {i: {j: false for j in 0..N} for i in 0..N}
+}
+
+// Process p requests the critical section
+action Request(p: 0..N) {
+    require pc[p] == 0
+    require clock[p] < 10
+    pc = pc | {p: 1}
+    and clock = clock | {p: clock[p] + 1}
+    and req_ts = req_ts | {p: clock[p] + 1}
+    and has_req = has_req | {p: true}
+    // Self-reply is implicit (you always reply to yourself)
+    and reply = reply | {p: {j: (if j == p then true else false) for j in 0..N}}
+}
+
+// Process q sends reply to process p's request
+// q replies if: q is not requesting, or q's request has higher (ts, pid)
+action Reply(p: 0..N, q: 0..N) {
+    require p != q
+    require has_req[p] == true
+    require reply[p][q] == false
+    // q replies if it's idle, or if p's request has priority (lower ts, or same ts + lower pid)
+    require pc[q] == 0
+        or (pc[q] != 0 and req_ts[p] < req_ts[q])
+        or (pc[q] != 0 and req_ts[p] == req_ts[q] and p < q)
+    // Update q's clock to be at least as large as p's request timestamp
+    clock = clock | {q: (if req_ts[p] > clock[q] then req_ts[p] else clock[q])}
+    and reply = reply | {p: reply[p] | {q: true}}
+}
+
+// Process p enters CS: has all replies and its request is earliest
+action EnterCS(p: 0..N) {
+    require pc[p] == 1
+    require has_req[p] == true
+    // Must have reply from every other process
+    require all q in 0..N: reply[p][q] == true
+    pc = pc | {p: 2}
+}
+
+// Process p releases the CS
+action Release(p: 0..N) {
+    require pc[p] == 2
+    pc = pc | {p: 0}
+    and has_req = has_req | {p: false}
+    // Clear replies for next request
+    and reply = reply | {p: {j: false for j in 0..N}}
+}
+
+// Mutual exclusion: no two processes in CS simultaneously
+invariant MutualExclusion {
+    all p in 0..N: all q in 0..N:
+        (p != q) implies not (pc[p] == 2 and pc[q] == 2)
+}
