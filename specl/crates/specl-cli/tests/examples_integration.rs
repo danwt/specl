@@ -152,13 +152,13 @@ fn examples_with_constants_check() {
         };
 
         // Build constant values
-        let mut const_values = vec![Value::None; spec.consts.len()];
+        let mut const_values = vec![Value::none(); spec.consts.len()];
         for const_decl in &spec.consts {
             if let Some(&v) = constants.get(&const_decl.name) {
-                const_values[const_decl.index] = Value::Int(v);
+                const_values[const_decl.index] = Value::int(v);
             } else {
                 // Use default value of 1 for unspecified constants
-                const_values[const_decl.index] = Value::Int(1);
+                const_values[const_decl.index] = Value::int(1);
             }
         }
 
