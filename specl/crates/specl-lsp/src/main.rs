@@ -1343,7 +1343,10 @@ impl LanguageServer for SpeclLanguageServer {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
-                rename_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Right(RenameOptions {
+                    prepare_provider: Some(true),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                })),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
@@ -1545,6 +1548,47 @@ impl LanguageServer for SpeclLanguageServer {
             changes: Some(changes),
             ..Default::default()
         }))
+    }
+
+    async fn prepare_rename(
+        &self,
+        params: TextDocumentPositionParams,
+    ) -> Result<Option<PrepareRenameResponse>> {
+        let uri = &params.text_document.uri;
+        let position = params.position;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+
+        // Check the cursor is on a valid identifier
+        let word = match Self::word_at_position(&content, position) {
+            Some(w) => w,
+            None => return Ok(None),
+        };
+
+        // Verify it references a known declaration
+        if let Ok(module) = parse(&content) {
+            for decl in &module.decls {
+                if let Some((name, _)) = decl_name_span(decl) {
+                    if name == word {
+                        // Find the exact token range at cursor position
+                        let tokens = Lexer::new(&content).tokenize();
+                        for token in &tokens {
+                            if let TokenKind::Ident(n) = &token.kind {
+                                if n == &word {
+                                    let range = Self::span_to_range(token.span);
+                                    let line = position.line + 1;
+                                    let col = position.character + 1;
+                                    if Self::position_in_span(line, col, &token.span) {
+                                        return Ok(Some(PrepareRenameResponse::Range(range)));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
