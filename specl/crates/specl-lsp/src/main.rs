@@ -961,6 +961,57 @@ impl SpeclLanguageServer {
         result
     }
 
+    fn get_workspace_symbols(&self, query: &str) -> Vec<SymbolInformation> {
+        let mut result = Vec::new();
+
+        for entry in self.documents.iter() {
+            let uri = entry.key().clone();
+            let content = entry.value().content.to_string();
+
+            let module = match parse(&content) {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+
+            for decl in &module.decls {
+                let (name, kind, span) = match decl {
+                    Decl::Var(d) => (d.name.name.clone(), SymbolKind::VARIABLE, d.span),
+                    Decl::Const(d) => (d.name.name.clone(), SymbolKind::CONSTANT, d.span),
+                    Decl::Action(d) => (d.name.name.clone(), SymbolKind::FUNCTION, d.span),
+                    Decl::Invariant(d) => (d.name.name.clone(), SymbolKind::BOOLEAN, d.span),
+                    Decl::Func(d) => (d.name.name.clone(), SymbolKind::FUNCTION, d.span),
+                    Decl::Type(d) => (d.name.name.clone(), SymbolKind::TYPE_PARAMETER, d.span),
+                    Decl::Property(d) => (d.name.name.clone(), SymbolKind::PROPERTY, d.span),
+                    _ => continue,
+                };
+
+                // Filter by query (case-insensitive substring match)
+                if !query.is_empty() {
+                    let name_lower = name.to_lowercase();
+                    let query_lower = query.to_lowercase();
+                    if !name_lower.contains(&query_lower) {
+                        continue;
+                    }
+                }
+
+                #[allow(deprecated)]
+                result.push(SymbolInformation {
+                    name,
+                    kind,
+                    tags: None,
+                    deprecated: None,
+                    location: Location {
+                        uri: uri.clone(),
+                        range: Self::span_to_range(span),
+                    },
+                    container_name: None,
+                });
+            }
+        }
+
+        result
+    }
+
     fn get_code_actions(&self, source: &str, uri: &Url) -> Vec<CodeActionOrCommand> {
         let module = match parse(source) {
             Ok(m) => m,
@@ -1126,6 +1177,7 @@ impl LanguageServer for SpeclLanguageServer {
                     ),
                 ),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                workspace_symbol_provider: Some(OneOf::Left(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -1193,6 +1245,18 @@ impl LanguageServer for SpeclLanguageServer {
         let position = params.text_document_position_params.position;
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         Ok(self.get_signature_help(&content, position))
+    }
+
+    async fn symbol(
+        &self,
+        params: WorkspaceSymbolParams,
+    ) -> Result<Option<Vec<SymbolInformation>>> {
+        let symbols = self.get_workspace_symbols(&params.query);
+        Ok(if symbols.is_empty() {
+            None
+        } else {
+            Some(symbols)
+        })
     }
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
