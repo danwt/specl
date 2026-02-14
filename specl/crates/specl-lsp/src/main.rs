@@ -459,6 +459,119 @@ impl SpeclLanguageServer {
         locations
     }
 
+    /// Get signature help at the cursor position.
+    /// Detects when cursor is inside `func(...)` or `action(...)` and returns parameter info.
+    fn get_signature_help(&self, source: &str, position: Position) -> Option<SignatureHelp> {
+        let lines: Vec<&str> = source.lines().collect();
+        let line = lines.get(position.line as usize)?;
+        let col = position.character as usize;
+        if col == 0 || col > line.len() {
+            return None;
+        }
+
+        // Walk backwards from cursor to find matching '(' and the function name before it
+        let bytes = line.as_bytes();
+        let mut depth = 0i32;
+        let mut paren_pos = None;
+        let mut active_param: u32 = 0;
+
+        // Count commas at current nesting level to determine active parameter
+        for i in (0..col).rev() {
+            match bytes[i] {
+                b')' => depth += 1,
+                b'(' => {
+                    if depth == 0 {
+                        paren_pos = Some(i);
+                        break;
+                    }
+                    depth -= 1;
+                }
+                b',' if depth == 0 => active_param += 1,
+                _ => {}
+            }
+        }
+
+        let paren_pos = paren_pos?;
+
+        // Extract the identifier before the '('
+        let mut end = paren_pos;
+        while end > 0 && bytes[end - 1] == b' ' {
+            end -= 1;
+        }
+        let mut start = end;
+        while start > 0 && Self::is_ident_char(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == end {
+            return None;
+        }
+        let func_name = &line[start..end];
+
+        // Find the declaration and build signature
+        let module = parse(source).ok()?;
+        for decl in &module.decls {
+            match decl {
+                Decl::Action(d) if d.name.name == func_name => {
+                    let params: Vec<ParameterInformation> = d
+                        .params
+                        .iter()
+                        .map(|p| ParameterInformation {
+                            label: ParameterLabel::Simple(format!(
+                                "{}: {}",
+                                p.name.name,
+                                specl_syntax::pretty::pretty_print_type(&p.ty)
+                            )),
+                            documentation: None,
+                        })
+                        .collect();
+                    let label = format!(
+                        "action {}({})",
+                        d.name.name,
+                        format_action_params(&d.params)
+                    );
+                    return Some(SignatureHelp {
+                        signatures: vec![SignatureInformation {
+                            label,
+                            documentation: None,
+                            parameters: Some(params),
+                            active_parameter: Some(active_param),
+                        }],
+                        active_signature: Some(0),
+                        active_parameter: Some(active_param),
+                    });
+                }
+                Decl::Func(d) if d.name.name == func_name => {
+                    let params: Vec<ParameterInformation> = d
+                        .params
+                        .iter()
+                        .map(|p| ParameterInformation {
+                            label: ParameterLabel::Simple(p.name.name.clone()),
+                            documentation: None,
+                        })
+                        .collect();
+                    let label = format!(
+                        "func {}({})",
+                        d.name.name,
+                        format_func_params(&d.params)
+                    );
+                    return Some(SignatureHelp {
+                        signatures: vec![SignatureInformation {
+                            label,
+                            documentation: None,
+                            parameters: Some(params),
+                            active_parameter: Some(active_param),
+                        }],
+                        active_signature: Some(0),
+                        active_parameter: Some(active_param),
+                    });
+                }
+                _ => {}
+            }
+        }
+
+        None
+    }
+
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
     const TT_KEYWORD: u32 = 0;
     const TT_TYPE: u32 = 1;
@@ -575,6 +688,10 @@ impl LanguageServer for SpeclLanguageServer {
                     trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
                     ..Default::default()
                 }),
+                signature_help_provider: Some(SignatureHelpOptions {
+                    trigger_characters: Some(vec!["(".to_string(), ",".to_string()]),
+                    ..Default::default()
+                }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
@@ -662,6 +779,13 @@ impl LanguageServer for SpeclLanguageServer {
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         let items = self.get_completions(&content, position);
         Ok(Some(CompletionResponse::Array(items)))
+    }
+
+    async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        Ok(self.get_signature_help(&content, position))
     }
 
     async fn goto_definition(
