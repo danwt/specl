@@ -1703,6 +1703,47 @@ impl SpeclLanguageServer {
 
         result
     }
+
+    fn find_document_links(content: &str) -> Vec<DocumentLink> {
+        let mut links = Vec::new();
+        for (line_idx, line) in content.lines().enumerate() {
+            let trimmed = line.trim_start();
+            if !trimmed.starts_with("//") {
+                continue;
+            }
+            let mut search_from = 0;
+            while let Some(start) = line[search_from..]
+                .find("https://")
+                .or_else(|| line[search_from..].find("http://"))
+            {
+                let abs_start = search_from + start;
+                let url_end = line[abs_start..]
+                    .find(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '>')
+                    .map(|e| abs_start + e)
+                    .unwrap_or(line.len());
+                let url_str = &line[abs_start..url_end];
+                if let Ok(target) = Url::parse(url_str) {
+                    links.push(DocumentLink {
+                        range: Range {
+                            start: Position {
+                                line: line_idx as u32,
+                                character: abs_start as u32,
+                            },
+                            end: Position {
+                                line: line_idx as u32,
+                                character: url_end as u32,
+                            },
+                        },
+                        target: Some(target),
+                        tooltip: None,
+                        data: None,
+                    });
+                }
+                search_from = url_end;
+            }
+        }
+        links
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1772,6 +1813,10 @@ impl LanguageServer for SpeclLanguageServer {
                 linked_editing_range_provider: Some(
                     LinkedEditingRangeServerCapabilities::Simple(true),
                 ),
+                document_link_provider: Some(DocumentLinkOptions {
+                    resolve_provider: Some(false),
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
+                }),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -2198,6 +2243,22 @@ impl LanguageServer for SpeclLanguageServer {
             },
             new_text: formatted,
         }]))
+    }
+
+    async fn document_link(
+        &self,
+        params: DocumentLinkParams,
+    ) -> Result<Option<Vec<DocumentLink>>> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
+        let links = Self::find_document_links(&content);
+        if links.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(links))
+        }
     }
 
     async fn semantic_tokens_full(
@@ -2778,5 +2839,37 @@ action A() { x = y }
         assert!(result.is_some(), "should find linked editing ranges for x");
         let ranges = result.unwrap().ranges;
         assert!(ranges.len() >= 3, "x appears at least 3 times, found {}", ranges.len());
+    }
+
+    #[test]
+    fn document_links_finds_urls_in_comments() {
+        let src = r#"module Test
+// See https://example.com/docs for reference.
+// Also http://foo.bar/baz
+var x: 0..10
+init { x = 0 }
+"#;
+        let links = SpeclLanguageServer::find_document_links(src);
+        assert_eq!(links.len(), 2, "should find 2 URLs");
+        assert_eq!(
+            links[0].target.as_ref().unwrap().as_str(),
+            "https://example.com/docs"
+        );
+        assert_eq!(links[0].range.start.line, 1);
+        assert_eq!(
+            links[1].target.as_ref().unwrap().as_str(),
+            "http://foo.bar/baz"
+        );
+        assert_eq!(links[1].range.start.line, 2);
+    }
+
+    #[test]
+    fn document_links_ignores_urls_outside_comments() {
+        let src = r#"module Test
+var x: 0..10
+init { x = 0 }
+"#;
+        let links = SpeclLanguageServer::find_document_links(src);
+        assert!(links.is_empty(), "no URLs in non-comment lines");
     }
 }
