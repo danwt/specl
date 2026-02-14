@@ -1817,6 +1817,13 @@ impl LanguageServer for SpeclLanguageServer {
                     resolve_provider: Some(false),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
+                diagnostic_provider: Some(DiagnosticServerCapabilities::Options(
+                    DiagnosticOptions {
+                        inter_file_dependencies: false,
+                        workspace_diagnostics: false,
+                        ..Default::default()
+                    },
+                )),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -2259,6 +2266,34 @@ impl LanguageServer for SpeclLanguageServer {
         } else {
             Ok(Some(links))
         }
+    }
+
+    async fn diagnostic(
+        &self,
+        params: DocumentDiagnosticParams,
+    ) -> Result<DocumentDiagnosticReportResult> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else {
+            return Ok(DocumentDiagnosticReportResult::Report(
+                DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                    related_documents: None,
+                    full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                        result_id: None,
+                        items: vec![],
+                    },
+                }),
+            ));
+        };
+        let diagnostics = Self::get_diagnostics(&content);
+        Ok(DocumentDiagnosticReportResult::Report(
+            DocumentDiagnosticReport::Full(RelatedFullDocumentDiagnosticReport {
+                related_documents: None,
+                full_document_diagnostic_report: FullDocumentDiagnosticReport {
+                    result_id: None,
+                    items: diagnostics,
+                },
+            }),
+        ))
     }
 
     async fn semantic_tokens_full(
@@ -2871,5 +2906,17 @@ init { x = 0 }
 "#;
         let links = SpeclLanguageServer::find_document_links(src);
         assert!(links.is_empty(), "no URLs in non-comment lines");
+    }
+
+    #[test]
+    fn pull_diagnostics_returns_errors() {
+        let diags = SpeclLanguageServer::get_diagnostics("module Test\nvar x:");
+        assert!(!diags.is_empty(), "pull diagnostics should find parse errors");
+    }
+
+    #[test]
+    fn pull_diagnostics_returns_empty_for_valid() {
+        let diags = SpeclLanguageServer::get_diagnostics(SAMPLE_SPEC);
+        assert!(diags.is_empty(), "pull diagnostics should be empty for valid spec");
     }
 }
