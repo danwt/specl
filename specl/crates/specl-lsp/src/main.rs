@@ -567,6 +567,33 @@ impl SpeclLanguageServer {
         locations
     }
 
+    /// Get linked editing ranges (all occurrences of identifier for simultaneous edit).
+    fn get_linked_editing_ranges(&self, source: &str, position: Position) -> Option<LinkedEditingRanges> {
+        let word = Self::word_at_position(source, position)?;
+
+        let tokens = Lexer::new(source).tokenize();
+        let ranges: Vec<Range> = tokens
+            .iter()
+            .filter_map(|token| {
+                if let TokenKind::Ident(name) = &token.kind {
+                    if name == &word {
+                        return Some(Self::span_to_range(token.span));
+                    }
+                }
+                None
+            })
+            .collect();
+
+        if ranges.len() < 2 {
+            return None;
+        }
+
+        Some(LinkedEditingRanges {
+            ranges,
+            word_pattern: None,
+        })
+    }
+
     /// Get document highlights (all occurrences of symbol under cursor).
     fn get_document_highlights(&self, source: &str, position: Position) -> Vec<DocumentHighlight> {
         let word = match Self::word_at_position(source, position) {
@@ -1681,6 +1708,9 @@ impl LanguageServer for SpeclLanguageServer {
                 document_highlight_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
+                linked_editing_range_provider: Some(
+                    LinkedEditingRangeServerCapabilities::Simple(true),
+                ),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -1828,6 +1858,16 @@ impl LanguageServer for SpeclLanguageServer {
         } else {
             Some(highlights)
         })
+    }
+
+    async fn linked_editing_range(
+        &self,
+        params: LinkedEditingRangeParams,
+    ) -> Result<Option<LinkedEditingRanges>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        Ok(self.get_linked_editing_ranges(&content, position))
     }
 
     async fn document_symbol(
@@ -2516,5 +2556,16 @@ action A() { x = y }
         // 'x' has type 0..10 (range, no named type)
         let loc = server.get_type_definition(SAMPLE_SPEC, Position { line: 13, character: 12 }, &uri);
         assert!(loc.is_none(), "range type should not have a type definition");
+    }
+
+    #[test]
+    fn linked_editing_ranges_for_var() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        // Cursor on 'x' in "var x: 0..10" — line 4, char 4
+        let result = server.get_linked_editing_ranges(SAMPLE_SPEC, Position { line: 4, character: 4 });
+        assert!(result.is_some(), "should find linked editing ranges for x");
+        let ranges = result.unwrap().ranges;
+        assert!(ranges.len() >= 3, "x appears at least 3 times, found {}", ranges.len());
     }
 }
