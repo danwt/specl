@@ -226,6 +226,10 @@ enum Commands {
         #[arg(long, default_value = "30", help_heading = "Explicit-State")]
         bloom_bits: u32,
 
+        /// Directed model checking: priority BFS exploring states closest to violation first
+        #[arg(long, help_heading = "Explicit-State")]
+        directed: bool,
+
         /// Swarm verification: run N parallel instances with shuffled action orders
         #[arg(long, value_name = "N", help_heading = "Explicit-State")]
         swarm: Option<usize>,
@@ -419,6 +423,7 @@ fn main() {
             fast,
             bloom,
             bloom_bits,
+            directed,
             swarm,
             bmc,
             bmc_depth,
@@ -440,6 +445,7 @@ fn main() {
                 || symmetry
                 || fast
                 || bloom
+                || directed
                 || swarm.is_some()
                 || max_states > 0
                 || max_depth > 0
@@ -498,6 +504,7 @@ fn main() {
                     fast,
                     bloom,
                     bloom_bits,
+                    directed,
                     verbose,
                     quiet,
                     no_auto,
@@ -530,6 +537,7 @@ fn main() {
                         fast,
                         bloom,
                         bloom_bits,
+                        directed,
                         verbose,
                         quiet,
                         no_auto,
@@ -835,6 +843,7 @@ fn cmd_check(
     fast_check: bool,
     bloom: bool,
     bloom_bits: u32,
+    directed: bool,
     _verbose: bool,
     quiet: bool,
     no_auto: bool,
@@ -1009,6 +1018,7 @@ fn cmd_check(
         profile,
         bloom,
         bloom_bits,
+        directed,
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -1163,6 +1173,9 @@ fn cmd_check(
                 } else if fast_check {
                     opts.push("fast");
                 }
+                if directed {
+                    opts.push("directed");
+                }
                 if !opts.is_empty() {
                     println!("  Optimizations: {}", opts.join(", "));
                 }
@@ -1274,6 +1287,7 @@ fn cmd_check_swarm(
                     profile: false,
                     bloom: false,
                     bloom_bits: 30,
+                    directed: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1340,6 +1354,7 @@ fn cmd_check_swarm(
                     profile: false,
                     bloom: false,
                     bloom_bits: 30,
+                    directed: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {

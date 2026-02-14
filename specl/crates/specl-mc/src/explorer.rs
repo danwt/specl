@@ -13,6 +13,7 @@ use specl_eval::bytecode::{compile_expr, vm_eval_bool, Bytecode};
 use specl_eval::{eval, EvalContext, EvalError, Value};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
+use std::collections::BinaryHeap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::Arc;
@@ -177,6 +178,8 @@ pub struct CheckConfig {
     pub bloom: bool,
     /// Bloom filter size as log2(bits). Default 30 = 128 MiB.
     pub bloom_bits: u32,
+    /// Use directed model checking (priority BFS with heuristic distance to violation).
+    pub directed: bool,
 }
 
 impl Default for CheckConfig {
@@ -196,6 +199,7 @@ impl Default for CheckConfig {
             profile: false,
             bloom: false,
             bloom_bits: 30,
+            directed: false,
         }
     }
 }
@@ -217,6 +221,7 @@ impl Clone for CheckConfig {
             profile: self.profile,
             bloom: self.bloom,
             bloom_bits: self.bloom_bits,
+            directed: self.directed,
         }
     }
 }
@@ -238,6 +243,7 @@ impl std::fmt::Debug for CheckConfig {
             .field("profile", &self.profile)
             .field("bloom", &self.bloom)
             .field("bloom_bits", &self.bloom_bits)
+            .field("directed", &self.directed)
             .finish()
     }
 }
@@ -1514,7 +1520,9 @@ impl Explorer {
             "starting model checking"
         );
 
-        let result = if self.config.fast_check {
+        let result = if self.config.directed {
+            self.check_directed()
+        } else if self.config.fast_check {
             self.check_fast()
         } else {
             self.check_full()
@@ -1569,6 +1577,176 @@ impl Explorer {
 
             self.check_sequential(&mut queue, &mut max_depth)
         }
+    }
+
+    /// Directed model checking with priority BFS.
+    ///
+    /// Uses a heuristic to estimate "distance to invariant violation" and explores
+    /// states with lower safety margins first. Finds bugs faster than BFS but
+    /// counterexamples may not be shortest.
+    fn check_directed(&mut self) -> CheckResult<CheckOutcome> {
+        let initial_states = self.generate_initial_states()?;
+        if initial_states.is_empty() {
+            return Err(CheckError::NoInitialStates);
+        }
+
+        info!(count = initial_states.len(), "generated initial states (directed)");
+
+        // Priority queue entry sorted by heuristic score (lower = closer to violation = higher priority)
+        struct PQEntry {
+            score: u32,
+            fp: Fingerprint,
+            state: State,
+            depth: usize,
+        }
+        impl PartialEq for PQEntry {
+            fn eq(&self, other: &Self) -> bool { self.score == other.score }
+        }
+        impl Eq for PQEntry {}
+        impl PartialOrd for PQEntry {
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+        }
+        impl Ord for PQEntry {
+            fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+                other.score.cmp(&self.score) // min-heap: lower score = higher priority
+            }
+        }
+
+        let mut queue: BinaryHeap<PQEntry> = BinaryHeap::new();
+        let mut max_depth = 0usize;
+        let mut next_vars_buf = Vec::new();
+
+        for state in initial_states {
+            let canonical = self.maybe_canonicalize(state);
+            let fp = canonical.fingerprint();
+            if self.store.insert(canonical.clone(), None, None, 0) {
+                let h = self.invariant_heuristic(&canonical);
+                queue.push(PQEntry { score: h, fp, state: canonical, depth: 0 });
+            }
+        }
+
+        while let Some(PQEntry { fp, state, depth, .. }) = queue.pop() {
+            // Check external stop flag
+            if let Some(ref flag) = self.stop_flag {
+                if flag.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+
+            if let Some(ref p) = self.config.progress {
+                p.checked.fetch_add(1, Ordering::Relaxed);
+            }
+
+            if depth > max_depth {
+                max_depth = depth;
+                if let Some(ref p) = self.config.progress {
+                    p.depth.store(max_depth, Ordering::Relaxed);
+                }
+            }
+
+            // Check depth limit
+            if self.config.max_depth > 0 && depth >= self.config.max_depth {
+                continue;
+            }
+
+            // Check state limit
+            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
+                return Ok(CheckOutcome::StateLimitReached {
+                    states_explored: self.store.len(),
+                    max_depth,
+                });
+            }
+
+            // Check memory limit (every 1000 states)
+            if self.config.memory_limit_mb > 0 && self.store.len() % 1000 == 0 {
+                if let Some(mem_mb) = current_memory_mb() {
+                    if mem_mb >= self.config.memory_limit_mb {
+                        return Ok(CheckOutcome::MemoryLimitReached {
+                            states_explored: self.store.len(),
+                            max_depth,
+                            memory_mb: mem_mb,
+                        });
+                    }
+                }
+            }
+
+            // Check invariants
+            for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if !self.check_invariant_bc(inv_idx, &state)? {
+                    let trace = self.store.trace_to(&fp, &self.action_names);
+                    return Ok(CheckOutcome::InvariantViolation {
+                        invariant: inv.name.clone(),
+                        trace,
+                    });
+                }
+            }
+
+            // Generate successors
+            let mut successors = Vec::new();
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0)?;
+
+            if successors.is_empty() && self.config.check_deadlock {
+                let any_enabled = self.any_action_enabled(&state)?;
+                if !any_enabled {
+                    let trace = self.store.trace_to(&fp, &self.action_names);
+                    return Ok(CheckOutcome::Deadlock { trace });
+                }
+            }
+
+            // Insert successors with heuristic priority
+            for (succ, action_idx) in successors {
+                let canonical = self.maybe_canonicalize(succ);
+                let succ_fp = canonical.fingerprint();
+                if self.store.insert_with_fp(
+                    succ_fp,
+                    canonical.clone(),
+                    Some(fp),
+                    Some(action_idx),
+                    depth + 1,
+                ) {
+                    if let Some(ref p) = self.config.progress {
+                        p.states.store(self.store.len(), Ordering::Relaxed);
+                        p.queue_len.store(queue.len(), Ordering::Relaxed);
+                    }
+                    let h = self.invariant_heuristic(&canonical);
+                    queue.push(PQEntry { score: h, fp: succ_fp, state: canonical, depth: depth + 1 });
+                }
+            }
+        }
+
+        Ok(CheckOutcome::Ok {
+            states_explored: self.store.len(),
+            max_depth,
+        })
+    }
+
+    /// Heuristic: estimate how "close" a state is to violating any invariant.
+    /// Returns a safety margin score: 0 = violated, higher = safer.
+    /// Used by directed model checking to prioritize states closer to violation.
+    ///
+    /// The heuristic counts how many invariants pass. States where fewer
+    /// invariants pass (closer to violation) get lower scores and are explored
+    /// first. States with equal invariant counts are differentiated by a
+    /// fingerprint-based hash to ensure exploration diversity.
+    fn invariant_heuristic(&self, state: &State) -> u32 {
+        let mut passing = 0u32;
+        for (inv_idx, _inv) in self.spec.invariants.iter().enumerate() {
+            let result = vm_eval_bool(
+                &self.compiled_invariants[inv_idx],
+                &state.vars,
+                &state.vars,
+                &self.consts,
+                &[],
+            );
+            match result {
+                Ok(true) => passing += 1,
+                Ok(false) => return 0,
+                Err(_) => passing += 1,
+            }
+        }
+        // Use fingerprint low bits for diversity within same invariant count
+        let diversity = (state.fingerprint().as_u64() & 0xF) as u32;
+        passing * 16 + diversity
     }
 
     /// Fast model checking with minimal memory.
