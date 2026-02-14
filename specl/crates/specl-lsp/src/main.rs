@@ -308,6 +308,22 @@ impl SpeclLanguageServer {
                             ..Default::default()
                         });
                     }
+                    Decl::Func(d) => {
+                        items.push(CompletionItem {
+                            label: d.name.name.clone(),
+                            kind: Some(CompletionItemKind::FUNCTION),
+                            detail: Some("func".to_string()),
+                            ..Default::default()
+                        });
+                    }
+                    Decl::Invariant(d) => {
+                        items.push(CompletionItem {
+                            label: d.name.name.clone(),
+                            kind: Some(CompletionItemKind::EVENT),
+                            detail: Some("invariant".to_string()),
+                            ..Default::default()
+                        });
+                    }
                     _ => {}
                 }
             }
@@ -1196,4 +1212,293 @@ async fn main() {
 
     let (service, socket) = LspService::new(SpeclLanguageServer::new);
     Server::new(stdin, stdout, socket).serve(service).await;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SAMPLE_SPEC: &str = r#"module Test
+
+const N: 0..5
+
+var x: 0..10
+var flag: Bool
+
+init {
+    x = 0
+    and flag = false
+}
+
+action Step(p: 0..N) {
+    require x < 10
+    x = x + 1
+}
+
+action Toggle() {
+    flag = not flag
+}
+
+func Double(v) {
+    v * 2
+}
+
+invariant Safe {
+    x >= 0 and x <= 10
+}
+"#;
+
+    #[test]
+    fn diagnostics_valid_spec() {
+        let diags = SpeclLanguageServer::get_diagnostics(SAMPLE_SPEC);
+        assert!(diags.is_empty(), "valid spec should have no diagnostics");
+    }
+
+    #[test]
+    fn diagnostics_parse_error() {
+        let diags = SpeclLanguageServer::get_diagnostics("module Test\nvar x:");
+        assert_eq!(diags.len(), 1);
+        assert!(diags[0].message.contains("unexpected"));
+    }
+
+    #[test]
+    fn diagnostics_type_error() {
+        // Use an undefined variable reference to trigger a type error
+        let src = r#"module Test
+var x: 0..10
+init { x = 0 }
+action A() { x = y }
+"#;
+        let diags = SpeclLanguageServer::get_diagnostics(src);
+        assert!(!diags.is_empty(), "undefined variable should produce diagnostics");
+    }
+
+    #[test]
+    fn word_at_position_identifier() {
+        let src = "var hello: Bool";
+        let word = SpeclLanguageServer::word_at_position(src, Position { line: 0, character: 5 });
+        assert_eq!(word, Some("hello".to_string()));
+    }
+
+    #[test]
+    fn word_at_position_at_boundary() {
+        let src = "var x: Bool";
+        let word = SpeclLanguageServer::word_at_position(src, Position { line: 0, character: 4 });
+        assert_eq!(word, Some("x".to_string()));
+    }
+
+    #[test]
+    fn word_at_position_whitespace() {
+        let src = "var x: Bool";
+        let word = SpeclLanguageServer::word_at_position(src, Position { line: 0, character: 3 });
+        assert_eq!(word, None);
+    }
+
+    #[test]
+    fn position_in_span_hit() {
+        let span = Span {
+            start: 0,
+            end: 5,
+            line: 3,
+            column: 5,
+        };
+        assert!(SpeclLanguageServer::position_in_span(3, 5, &span));
+        assert!(SpeclLanguageServer::position_in_span(3, 7, &span));
+    }
+
+    #[test]
+    fn position_in_span_miss() {
+        let span = Span {
+            start: 0,
+            end: 5,
+            line: 3,
+            column: 5,
+        };
+        assert!(!SpeclLanguageServer::position_in_span(2, 5, &span));
+        assert!(!SpeclLanguageServer::position_in_span(3, 4, &span));
+        assert!(!SpeclLanguageServer::position_in_span(3, 10, &span));
+    }
+
+    #[test]
+    fn span_to_range_conversion() {
+        let span = Span {
+            start: 10,
+            end: 15,
+            line: 3,
+            column: 5,
+        };
+        let range = SpeclLanguageServer::span_to_range(span);
+        assert_eq!(range.start.line, 2); // 1-indexed to 0-indexed
+        assert_eq!(range.start.character, 4);
+        assert_eq!(range.end.line, 2);
+        assert_eq!(range.end.character, 9); // 4 + 5
+    }
+
+    #[test]
+    fn decl_hover_text_var() {
+        let module = parse(SAMPLE_SPEC).unwrap();
+        let var_decl = module.decls.iter().find(|d| matches!(d, Decl::Var(v) if v.name.name == "x")).unwrap();
+        let text = decl_hover_text(var_decl).unwrap();
+        assert!(text.contains("**var**") && text.contains("x"), "got: {text}");
+    }
+
+    #[test]
+    fn decl_hover_text_action() {
+        let module = parse(SAMPLE_SPEC).unwrap();
+        let action_decl = module.decls.iter().find(|d| matches!(d, Decl::Action(a) if a.name.name == "Step")).unwrap();
+        let text = decl_hover_text(action_decl).unwrap();
+        assert!(text.contains("**action**") && text.contains("Step"), "got: {text}");
+    }
+
+    #[test]
+    fn decl_hover_text_func() {
+        let module = parse(SAMPLE_SPEC).unwrap();
+        let func_decl = module.decls.iter().find(|d| matches!(d, Decl::Func(f) if f.name.name == "Double")).unwrap();
+        let text = decl_hover_text(func_decl).unwrap();
+        assert!(text.contains("**func**") && text.contains("Double"), "got: {text}");
+    }
+
+    #[test]
+    fn decl_hover_text_invariant() {
+        let module = parse(SAMPLE_SPEC).unwrap();
+        let inv_decl = module.decls.iter().find(|d| matches!(d, Decl::Invariant(i) if i.name.name == "Safe")).unwrap();
+        let text = decl_hover_text(inv_decl).unwrap();
+        assert!(text.contains("**invariant**") && text.contains("Safe"), "got: {text}");
+    }
+
+    #[test]
+    fn document_symbols_complete() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let symbols = server.get_document_symbols(SAMPLE_SPEC);
+        let names: Vec<&str> = symbols.iter().map(|s| s.name.as_str()).collect();
+        assert!(names.contains(&"N"), "should contain const N");
+        assert!(names.contains(&"x"), "should contain var x");
+        assert!(names.contains(&"flag"), "should contain var flag");
+        assert!(names.contains(&"Step"), "should contain action Step");
+        assert!(names.contains(&"Toggle"), "should contain action Toggle");
+        assert!(names.contains(&"Double"), "should contain func Double");
+        assert!(names.contains(&"Safe"), "should contain invariant Safe");
+    }
+
+    #[test]
+    fn completions_include_keywords_and_symbols() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let items = server.get_completions(SAMPLE_SPEC, Position { line: 0, character: 0 });
+        let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
+        // Should include keywords
+        assert!(labels.contains(&"action"), "should contain keyword 'action'");
+        assert!(labels.contains(&"invariant"), "should contain keyword 'invariant'");
+        // Should include user-defined symbols
+        assert!(labels.contains(&"x"), "should contain var 'x'");
+        assert!(labels.contains(&"Step"), "should contain action 'Step'");
+        assert!(labels.contains(&"Double"), "should contain func 'Double'");
+    }
+
+    #[test]
+    fn signature_help_action() {
+        let src = r#"module Test
+var x: 0..10
+init { x = 0 }
+action Foo(a: 0..3, b: 0..5) { x = a + b }
+action Bar() { Foo(1, 2) }
+"#;
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        // Position inside the Foo(1, 2) call — on the '1' after 'Foo('
+        // Line 4 (0-indexed): "action Bar() { Foo(1, 2) }"
+        let help = server.get_signature_help(src, Position { line: 4, character: 19 });
+        assert!(help.is_some(), "should get signature help inside Foo() call");
+        let help = help.unwrap();
+        assert_eq!(help.signatures.len(), 1);
+        assert!(help.signatures[0].label.contains("Foo"));
+    }
+
+    #[test]
+    fn inlay_hints_show_param_names() {
+        // Use a func call inside an invariant (where func calls commonly appear)
+        let src = r#"module Test
+var x: 0..10
+init { x = 0 }
+func Add(a, b) { a + b }
+invariant Check { Add(1, 2) > 0 }
+"#;
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let hints = server.get_inlay_hints(src);
+        let labels: Vec<String> = hints
+            .iter()
+            .map(|h| match &h.label {
+                InlayHintLabel::String(s) => s.clone(),
+                InlayHintLabel::LabelParts(parts) => {
+                    parts.iter().map(|p| p.value.as_str()).collect()
+                }
+            })
+            .collect();
+        assert!(labels.contains(&"a: ".to_string()), "should hint 'a: ', got: {:?}", labels);
+        assert!(labels.contains(&"b: ".to_string()), "should hint 'b: ', got: {:?}", labels);
+    }
+
+    #[test]
+    fn folding_ranges_cover_declarations() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let ranges = server.get_folding_ranges(SAMPLE_SPEC);
+        // Should have folding ranges for init, Step, Toggle, Double, Safe
+        assert!(
+            ranges.len() >= 4,
+            "should have at least 4 folding ranges, got {}",
+            ranges.len()
+        );
+    }
+
+    #[test]
+    fn semantic_tokens_produced() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let tokens = server.get_semantic_tokens(SAMPLE_SPEC);
+        assert!(!tokens.is_empty(), "should produce semantic tokens");
+    }
+
+    #[test]
+    fn definition_finds_var() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        // Position on 'x' in "require x < 10" — line 13 (0-indexed), char ~12
+        let loc = server.get_definition(SAMPLE_SPEC, Position { line: 13, character: 12 }, &uri);
+        assert!(loc.is_some(), "should find definition of x");
+    }
+
+    #[test]
+    fn references_finds_uses() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        // Position on 'x' in "var x: 0..10" — line 4 (0-indexed), char 4
+        let refs = server.get_references(SAMPLE_SPEC, Position { line: 4, character: 4 }, &uri);
+        assert!(
+            refs.len() >= 3,
+            "x should be referenced at least 3 times, found {}",
+            refs.len()
+        );
+    }
+
+    #[test]
+    fn empty_source_no_panic() {
+        let diags = SpeclLanguageServer::get_diagnostics("");
+        assert!(!diags.is_empty(), "empty source should produce diagnostic");
+
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let symbols = server.get_document_symbols("");
+        assert!(symbols.is_empty());
+        let tokens = server.get_semantic_tokens("");
+        assert!(tokens.is_empty());
+        let hints = server.get_inlay_hints("");
+        assert!(hints.is_empty());
+        let ranges = server.get_folding_ranges("");
+        assert!(ranges.is_empty());
+    }
 }
