@@ -67,6 +67,9 @@ pub enum Op {
     Contains,
     /// Pop set, pop elem → push (elem not in set).
     NotContains,
+    /// Batch dict update: pop N (value, key) pairs then pop dict, apply all in one clone.
+    /// Stack: [dict, k1, v1, k2, v2, ..., kN, vN] (dict deepest).
+    DictUpdateN(u16),
     /// Nested 2-level dict update. Stack: [value, k2, k1, dict] (dict on top).
     /// Performs dict | {k1: (dict[k1] | {k2: value})} in a single pass.
     NestedDictUpdate2,
@@ -435,13 +438,13 @@ impl Compiler {
                         }
                     } else {
                         // Multi-key dict merge: base | {k1: v1, k2: v2, ...}
-                        // Compile as chained DictUpdates
+                        // Batch update: clone dict once, apply all updates
                         self.compile(left);
-                        for (key, value) in entries {
+                        for (key, value) in entries.iter() {
                             self.compile(key);
                             self.compile(value);
-                            self.emit(Op::DictUpdate);
                         }
+                        self.emit(Op::DictUpdateN(entries.len() as u16));
                     }
                 } else {
                     // General set union → fallback
@@ -910,6 +913,58 @@ pub fn vm_eval(
                     }
                     Value::Fn(mut map) => {
                         Value::fn_insert(Arc::make_mut(&mut map), key, value);
+                        stack.push(Value::Fn(map));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::DictUpdateN(n) => {
+                // Stack: [dict, k1, v1, k2, v2, ..., kN, vN] (dict deepest)
+                // Pop N (value, key) pairs in reverse order
+                let n = *n as usize;
+                let mut pairs = Vec::with_capacity(n);
+                for _ in 0..n {
+                    let value = stack.pop().unwrap();
+                    let key = stack.pop().unwrap();
+                    pairs.push((key, value));
+                }
+                pairs.reverse();
+                let base = stack.pop().unwrap();
+                match base {
+                    Value::IntMap(mut arr) => {
+                        // Check if all updates stay in IntMap form
+                        let all_int = pairs.iter().all(|(_, v)| matches!(v, Value::Int(_)));
+                        if all_int {
+                            let data = Arc::make_mut(&mut arr);
+                            for (key, value) in &pairs {
+                                let k = expect_int(key)? as usize;
+                                if let Value::Int(v) = value {
+                                    data[k] = *v;
+                                }
+                            }
+                            stack.push(Value::IntMap(arr));
+                        } else {
+                            let mut fn_vec: Vec<(Value, Value)> = arr
+                                .iter()
+                                .enumerate()
+                                .map(|(i, v)| (Value::Int(i as i64), Value::Int(*v)))
+                                .collect();
+                            for (key, value) in pairs {
+                                Value::fn_insert(&mut fn_vec, key, value);
+                            }
+                            stack.push(Value::Fn(Arc::new(fn_vec)));
+                        }
+                    }
+                    Value::Fn(mut map) => {
+                        let data = Arc::make_mut(&mut map);
+                        for (key, value) in pairs {
+                            Value::fn_insert(data, key, value);
+                        }
                         stack.push(Value::Fn(map));
                     }
                     _ => {

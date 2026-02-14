@@ -7,8 +7,8 @@
 - [x] 4. Collapse compression (per-variable interning)
 
 ## Medium Effort
-- [ ] 5. Incremental expression evaluation (skip invariants when deps unchanged)
-- [ ] 6. Batch dict updates (detect consecutive merges in bytecode)
+- [x] 5. Incremental expression evaluation (skip invariants when deps unchanged) — already maximally precise
+- [x] 6. Batch dict updates (detect consecutive merges in bytecode)
 - [ ] 7. COI improvements (per-invariant exploration, variable projection)
 - [ ] 8. K-induction strengthening (CTI learning loop)
 - [ ] 9. Delta state storage (store diffs from parent)
