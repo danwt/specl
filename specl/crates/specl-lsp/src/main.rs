@@ -960,6 +960,122 @@ impl SpeclLanguageServer {
 
         result
     }
+
+    fn get_code_actions(&self, source: &str, uri: &Url) -> Vec<CodeActionOrCommand> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        let mut actions = Vec::new();
+
+        // Find insertion point: after the last declaration
+        let last_line = source.lines().count() as u32;
+        let insert_pos = Position {
+            line: last_line,
+            character: 0,
+        };
+
+        // Offer "Add init block" if none exists
+        let has_init = module.decls.iter().any(|d| matches!(d, Decl::Init(_)));
+        if !has_init {
+            let has_vars = module.decls.iter().any(|d| matches!(d, Decl::Var(_)));
+            if has_vars {
+                // Build init template from declared variables
+                let var_names: Vec<&str> = module
+                    .decls
+                    .iter()
+                    .filter_map(|d| match d {
+                        Decl::Var(v) => Some(v.name.name.as_str()),
+                        _ => None,
+                    })
+                    .collect();
+                let init_body = var_names
+                    .iter()
+                    .enumerate()
+                    .map(|(i, name)| {
+                        let prefix = if i == 0 { "    " } else { "    and " };
+                        format!("{prefix}{name} = ???")
+                    })
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                let snippet = format!("\ninit {{\n{init_body}\n}}\n");
+
+                let mut changes = std::collections::HashMap::new();
+                changes.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: Range {
+                            start: insert_pos,
+                            end: insert_pos,
+                        },
+                        new_text: snippet,
+                    }],
+                );
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: "Add init block".to_string(),
+                    kind: Some(CodeActionKind::REFACTOR),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+        }
+
+        // Offer "Add invariant" template
+        {
+            let snippet = "\ninvariant Name {\n    true\n}\n".to_string();
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
+                    new_text: snippet,
+                }],
+            );
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Add invariant".to_string(),
+                kind: Some(CodeActionKind::REFACTOR),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+
+        // Offer "Add action" template
+        {
+            let snippet = "\naction Name() {\n    require true\n}\n".to_string();
+            let mut changes = std::collections::HashMap::new();
+            changes.insert(
+                uri.clone(),
+                vec![TextEdit {
+                    range: Range {
+                        start: insert_pos,
+                        end: insert_pos,
+                    },
+                    new_text: snippet,
+                }],
+            );
+            actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                title: "Add action".to_string(),
+                kind: Some(CodeActionKind::REFACTOR),
+                edit: Some(WorkspaceEdit {
+                    changes: Some(changes),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }));
+        }
+
+        actions
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1009,6 +1125,7 @@ impl LanguageServer for SpeclLanguageServer {
                         },
                     ),
                 ),
+                code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -1076,6 +1193,17 @@ impl LanguageServer for SpeclLanguageServer {
         let position = params.text_document_position_params.position;
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         Ok(self.get_signature_help(&content, position))
+    }
+
+    async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let actions = self.get_code_actions(&content, uri);
+        Ok(if actions.is_empty() {
+            None
+        } else {
+            Some(actions)
+        })
     }
 
     async fn goto_definition(
@@ -1500,5 +1628,43 @@ invariant Check { Add(1, 2) > 0 }
         assert!(hints.is_empty());
         let ranges = server.get_folding_ranges("");
         assert!(ranges.is_empty());
+    }
+
+    #[test]
+    fn code_actions_offer_init_when_missing() {
+        let src = r#"module Test
+var x: 0..10
+"#;
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        let actions = server.get_code_actions(src, &uri);
+        let titles: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(ca.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(titles.contains(&"Add init block"), "should offer 'Add init block'");
+        assert!(titles.contains(&"Add invariant"), "should offer 'Add invariant'");
+        assert!(titles.contains(&"Add action"), "should offer 'Add action'");
+    }
+
+    #[test]
+    fn code_actions_no_init_when_present() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        let actions = server.get_code_actions(SAMPLE_SPEC, &uri);
+        let titles: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(ca.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(!titles.contains(&"Add init block"), "should NOT offer init when present");
+        assert!(titles.contains(&"Add invariant"), "should still offer 'Add invariant'");
     }
 }
