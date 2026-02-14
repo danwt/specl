@@ -1770,6 +1770,17 @@ fn cmd_check_symbolic(
     } else {
         "smart"
     };
+    // Check for Seq variables and warn about seq-bound (#28)
+    let has_seq_vars = spec.vars.iter().any(|v| {
+        matches!(&v.ty, specl_types::Type::Seq(..))
+    });
+    if has_seq_vars && !json {
+        eprintln!(
+            "Note: Seq[T] variables bounded to length {}. Increase --seq-bound if sequences may be longer.",
+            seq_bound
+        );
+    }
+
     info!(mode = mode_str, "checking...");
     let start = Instant::now();
 
@@ -1841,16 +1852,22 @@ fn cmd_check_symbolic(
             SymbolicOutcome::InvariantViolation { invariant, trace } => {
                 println!();
                 if inductive {
-                    println!("Result: NOT INDUCTIVE");
+                    println!("Result: NOT INDUCTIVE (counterexample to induction)");
+                    println!("  Invariant: {}", invariant);
+                    println!("  CTI trace: {} steps", trace.len());
+                    println!("  Note: this is NOT a reachable violation. The invariant is not inductive,");
+                    println!("  meaning it cannot be proved by single-step induction alone.");
+                    println!("  Use --symbolic or --k-induction for a stronger proof attempt.");
+                    std::process::exit(2);
                 } else {
                     println!("Result: INVARIANT VIOLATION");
+                    println!("  Invariant: {}", invariant);
+                    println!(
+                        "  Trace: {} steps (use BFS for detailed trace — symbolic trace reconstruction is not yet reliable)",
+                        trace.len()
+                    );
+                    std::process::exit(1);
                 }
-                println!("  Invariant: {}", invariant);
-                println!(
-                    "  Trace: {} steps (use BFS for detailed trace — symbolic trace reconstruction is not yet reliable)",
-                    trace.len()
-                );
-                std::process::exit(1);
             }
             SymbolicOutcome::Unknown { reason } => {
                 println!();
@@ -2390,11 +2407,12 @@ fn store_to_dot(
     action_names: &[String],
     violation_fp: Option<&Fingerprint>,
 ) -> String {
-    let mut lines = Vec::new();
-    lines.push("digraph states {".to_string());
-    lines.push("    rankdir=TB;".to_string());
-    lines.push("    node [shape=box, fontname=\"monospace\", fontsize=10];".to_string());
-    lines.push("    edge [fontname=\"monospace\", fontsize=9];".to_string());
+    let mut lines = vec![
+        "digraph states {".to_string(),
+        "    rankdir=TB;".to_string(),
+        "    node [shape=box, fontname=\"monospace\", fontsize=10];".to_string(),
+        "    edge [fontname=\"monospace\", fontsize=9];".to_string(),
+    ];
 
     let raw_fps = store.seen_fingerprints();
 
