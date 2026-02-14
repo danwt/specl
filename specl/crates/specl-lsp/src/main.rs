@@ -2,7 +2,7 @@
 
 use dashmap::DashMap;
 use ropey::Rope;
-use specl_syntax::{parse, pretty_print, Decl, Span};
+use specl_syntax::{parse, pretty_print, Decl, Lexer, Span, TokenKind};
 use specl_types::check_module;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -513,6 +513,116 @@ impl SpeclLanguageServer {
     fn is_ident_char(b: u8) -> bool {
         b.is_ascii_alphanumeric() || b == b'_'
     }
+
+    /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
+    const TT_KEYWORD: u32 = 0;
+    const TT_TYPE: u32 = 1;
+    const TT_VARIABLE: u32 = 2;
+    const TT_FUNCTION: u32 = 3;
+    const TT_NUMBER: u32 = 4;
+    const TT_STRING: u32 = 5;
+    const TT_COMMENT: u32 = 6;
+    const TT_OPERATOR: u32 = 7;
+
+    /// Get semantic tokens for syntax highlighting.
+    fn get_semantic_tokens(&self, source: &str) -> Vec<SemanticToken> {
+        let tokens = Lexer::new(source).tokenize();
+
+        // Collect declaration names for distinguishing variables from other identifiers
+        let mut var_names = std::collections::HashSet::new();
+        let mut func_names = std::collections::HashSet::new();
+        if let Ok(module) = parse(source) {
+            for decl in &module.decls {
+                match decl {
+                    Decl::Var(d) => { var_names.insert(d.name.name.clone()); }
+                    Decl::Const(d) => { var_names.insert(d.name.name.clone()); }
+                    Decl::Action(d) => { func_names.insert(d.name.name.clone()); }
+                    Decl::Func(d) => { func_names.insert(d.name.name.clone()); }
+                    _ => {}
+                }
+            }
+        }
+
+        let mut result = Vec::new();
+        let mut prev_line: u32 = 0;
+        let mut prev_start: u32 = 0;
+
+        for token in &tokens {
+            let token_type = match &token.kind {
+                // Keywords
+                TokenKind::Module | TokenKind::Use | TokenKind::Const | TokenKind::Var
+                | TokenKind::Type | TokenKind::Init | TokenKind::Action | TokenKind::Invariant
+                | TokenKind::Property | TokenKind::Fairness | TokenKind::Func
+                | TokenKind::And | TokenKind::Or | TokenKind::Not | TokenKind::Implies
+                | TokenKind::Iff | TokenKind::All | TokenKind::Any | TokenKind::Choose
+                | TokenKind::In | TokenKind::For | TokenKind::If | TokenKind::Then
+                | TokenKind::Else | TokenKind::Let | TokenKind::With | TokenKind::Require
+                | TokenKind::Changes | TokenKind::Always | TokenKind::Eventually
+                | TokenKind::LeadsTo | TokenKind::Enabled | TokenKind::WeakFair
+                | TokenKind::StrongFair | TokenKind::True | TokenKind::False => Self::TT_KEYWORD,
+
+                // Built-in types
+                TokenKind::Nat | TokenKind::Int | TokenKind::Bool | TokenKind::String_
+                | TokenKind::Set | TokenKind::Seq | TokenKind::Dict | TokenKind::Option_
+                | TokenKind::Some_ | TokenKind::None_ => Self::TT_TYPE,
+
+                // Built-in functions (operators)
+                TokenKind::Union | TokenKind::Intersect | TokenKind::Diff
+                | TokenKind::SubsetOf | TokenKind::Head | TokenKind::Tail
+                | TokenKind::Len | TokenKind::Keys | TokenKind::Values
+                | TokenKind::Powerset | TokenKind::UnionAll => Self::TT_OPERATOR,
+
+                // Literals
+                TokenKind::Integer(_) => Self::TT_NUMBER,
+                TokenKind::StringLit(_) => Self::TT_STRING,
+
+                // Comments
+                TokenKind::Comment(_) | TokenKind::DocComment(_) => Self::TT_COMMENT,
+
+                // Identifiers — classify based on declaration context
+                TokenKind::Ident(name) => {
+                    if func_names.contains(name.as_str()) {
+                        Self::TT_FUNCTION
+                    } else if var_names.contains(name.as_str()) {
+                        Self::TT_VARIABLE
+                    } else {
+                        continue;
+                    }
+                }
+
+                // Skip punctuation, operators, EOF, errors
+                _ => continue,
+            };
+
+            let line = token.span.line.saturating_sub(1);
+            let start_char = token.span.column.saturating_sub(1);
+            let length = token.span.len() as u32;
+
+            if length == 0 {
+                continue;
+            }
+
+            let delta_line = line - prev_line;
+            let delta_start = if delta_line == 0 {
+                start_char - prev_start
+            } else {
+                start_char
+            };
+
+            result.push(SemanticToken {
+                delta_line,
+                delta_start,
+                length,
+                token_type,
+                token_modifiers_bitset: 0,
+            });
+
+            prev_line = line;
+            prev_start = start_char;
+        }
+
+        result
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -531,6 +641,28 @@ impl LanguageServer for SpeclLanguageServer {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                semantic_tokens_provider: Some(
+                    SemanticTokensServerCapabilities::SemanticTokensOptions(
+                        SemanticTokensOptions {
+                            legend: SemanticTokensLegend {
+                                token_types: vec![
+                                    SemanticTokenType::KEYWORD,    // 0
+                                    SemanticTokenType::TYPE,       // 1
+                                    SemanticTokenType::VARIABLE,   // 2
+                                    SemanticTokenType::FUNCTION,   // 3
+                                    SemanticTokenType::NUMBER,     // 4
+                                    SemanticTokenType::STRING,     // 5
+                                    SemanticTokenType::COMMENT,    // 6
+                                    SemanticTokenType::OPERATOR,   // 7
+                                ],
+                                token_modifiers: vec![],
+                            },
+                            full: Some(SemanticTokensFullOptions::Bool(true)),
+                            range: None,
+                            ..Default::default()
+                        },
+                    ),
+                ),
                 // Note: We use push-based diagnostics via publish_diagnostics
                 // rather than pull-based textDocument/diagnostic
                 ..Default::default()
@@ -657,6 +789,25 @@ impl LanguageServer for SpeclLanguageServer {
             },
             new_text: formatted,
         }]))
+    }
+
+    async fn semantic_tokens_full(
+        &self,
+        params: SemanticTokensParams,
+    ) -> Result<Option<SemanticTokensResult>> {
+        let uri = &params.text_document.uri;
+
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+
+        let content = doc.content.to_string();
+        let tokens = self.get_semantic_tokens(&content);
+
+        Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
+            result_id: None,
+            data: tokens,
+        })))
     }
 }
 
