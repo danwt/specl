@@ -503,11 +503,7 @@ fn eval_const_int(expr: &CompiledExpr, consts: &[Value]) -> Option<i64> {
     match expr {
         CompiledExpr::Int(n) => Some(*n),
         CompiledExpr::Const(idx) => {
-            if let Value::Int(n) = &consts[*idx] {
-                Some(*n)
-            } else {
-                None
-            }
+            consts[*idx].as_int()
         }
         _ => None,
     }
@@ -538,11 +534,7 @@ fn eval_ast_expr_int(
         ExprKind::Int(n) => Some(*n),
         ExprKind::Ident(name) => {
             let const_decl = spec.consts.iter().find(|c| c.name == *name)?;
-            if let Value::Int(n) = &consts[const_decl.index] {
-                Some(*n)
-            } else {
-                None
-            }
+            consts[const_decl.index].as_int()
         }
         _ => None,
     }

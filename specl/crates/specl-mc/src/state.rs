@@ -1,6 +1,7 @@
 //! State representation and fingerprinting for model checking.
 
 use specl_eval::Value;
+use specl_eval::VK;
 use specl_ir::SymmetryGroup;
 use std::fmt;
 use std::hash::{Hash, Hasher};
@@ -39,15 +40,15 @@ impl fmt::Display for Fingerprint {
 /// using splitmix64-style mixing. Falls back to AHash for composite types.
 #[inline]
 pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
-    match val {
-        Value::Int(n) => {
+    match val.kind() {
+        VK::Int(n) => {
             let h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(0x9e3779b97f4a7c15);
-            let h = (h ^ (*n as u64)).wrapping_mul(0x517cc1b727220a95);
+            let h = (h ^ (n as u64)).wrapping_mul(0x517cc1b727220a95);
             h ^ (h >> 32)
         }
-        Value::Bool(b) => {
+        VK::Bool(b) => {
             let h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(0x9e3779b97f4a7c15);
-            let h = (h ^ (*b as u64)).wrapping_mul(0x517cc1b727220a95);
+            let h = (h ^ (b as u64)).wrapping_mul(0x517cc1b727220a95);
             h ^ (h >> 32)
         }
         _ => {
@@ -123,7 +124,7 @@ impl State {
 
     /// Create an empty state with the given number of variables.
     pub fn empty(num_vars: usize) -> Self {
-        let vars = vec![Value::None; num_vars];
+        let vars = vec![Value::none(); num_vars];
         Self::new(vars)
     }
 
@@ -178,15 +179,15 @@ fn build_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<Vec<Vec<u8>>> 
             group
                 .variables
                 .iter()
-                .map(|&var_idx| match &vars[var_idx] {
-                    Value::IntMap(arr) => {
+                .map(|&var_idx| match vars[var_idx].kind() {
+                    VK::IntMap(arr) => {
                         if i < arr.len() {
-                            Value::Int(arr[i]).to_bytes()
+                            Value::int(arr[i]).to_bytes()
                         } else {
                             vec![]
                         }
                     }
-                    Value::Fn(map) => Value::fn_get(map, &Value::Int(i as i64))
+                    VK::Fn(map) => Value::fn_get(map, &Value::int(i as i64))
                         .map(|v| v.to_bytes())
                         .unwrap_or_default(),
                     _ => vec![],
@@ -244,29 +245,29 @@ pub fn orbit_representatives(vars: &[Value], group: &SymmetryGroup) -> Vec<usize
 /// Apply a permutation to the variables in a symmetry group.
 fn apply_permutation(vars: &mut [Value], group: &SymmetryGroup, perm: &[usize]) {
     for &var_idx in &group.variables {
-        match &vars[var_idx] {
-            Value::IntMap(arr) => {
+        match vars[var_idx].kind() {
+            VK::IntMap(arr) => {
                 let mut new_arr = vec![0i64; arr.len()];
                 for (old_idx, val) in arr.iter().enumerate() {
                     let new_idx = perm.get(old_idx).copied().unwrap_or(old_idx);
                     new_arr[new_idx] = *val;
                 }
-                vars[var_idx] = Value::IntMap(Arc::new(new_arr));
+                vars[var_idx] = Value::intmap(Arc::new(new_arr));
             }
-            Value::Fn(map) => {
+            VK::Fn(map) => {
                 let mut new_map: Vec<(Value, Value)> = map
                     .iter()
                     .map(|(key, value)| {
-                        if let Value::Int(k) = key {
-                            let new_key = perm.get(*k as usize).copied().unwrap_or(*k as usize);
-                            (Value::Int(new_key as i64), value.clone())
+                        if let Some(k) = key.as_int() {
+                            let new_key = perm.get(k as usize).copied().unwrap_or(k as usize);
+                            (Value::int(new_key as i64), value.clone())
                         } else {
                             (key.clone(), value.clone())
                         }
                     })
                     .collect();
                 new_map.sort_by(|a, b| a.0.cmp(&b.0));
-                vars[var_idx] = Value::Fn(Arc::new(new_map));
+                vars[var_idx] = Value::func(Arc::new(new_map));
             }
             _ => {}
         }
@@ -292,9 +293,9 @@ mod tests {
 
     #[test]
     fn test_state_fingerprint() {
-        let s1 = State::new(vec![Value::Int(1), Value::Int(2)]);
-        let s2 = State::new(vec![Value::Int(1), Value::Int(2)]);
-        let s3 = State::new(vec![Value::Int(1), Value::Int(3)]);
+        let s1 = State::new(vec![Value::int(1), Value::int(2)]);
+        let s2 = State::new(vec![Value::int(1), Value::int(2)]);
+        let s3 = State::new(vec![Value::int(1), Value::int(3)]);
 
         assert_eq!(s1.fingerprint(), s2.fingerprint());
         assert_ne!(s1.fingerprint(), s3.fingerprint());
@@ -302,43 +303,43 @@ mod tests {
 
     #[test]
     fn test_state_display() {
-        let s = State::new(vec![Value::Int(42), Value::Bool(true)]);
+        let s = State::new(vec![Value::int(42), Value::bool(true)]);
         assert_eq!(s.to_string(), "[42, true]");
     }
 
     #[test]
     fn test_incremental_fingerprint() {
         // Build state: [10, 20, 30]
-        let s = State::new(vec![Value::Int(10), Value::Int(20), Value::Int(30)]);
+        let s = State::new(vec![Value::int(10), Value::int(20), Value::int(30)]);
 
         // Change var[1] from 20 to 99
-        let new_fp = update_fingerprint(s.fingerprint(), 1, &Value::Int(20), &Value::Int(99));
-        let expected = State::new(vec![Value::Int(10), Value::Int(99), Value::Int(30)]);
+        let new_fp = update_fingerprint(s.fingerprint(), 1, &Value::int(20), &Value::int(99));
+        let expected = State::new(vec![Value::int(10), Value::int(99), Value::int(30)]);
 
         assert_eq!(new_fp, expected.fingerprint());
     }
 
     #[test]
     fn test_incremental_fingerprint_multiple_changes() {
-        let s = State::new(vec![Value::Int(1), Value::Int(2), Value::Int(3)]);
+        let s = State::new(vec![Value::int(1), Value::int(2), Value::int(3)]);
 
         // Change var[0] from 1 to 10, then var[2] from 3 to 30
-        let fp1 = update_fingerprint(s.fingerprint(), 0, &Value::Int(1), &Value::Int(10));
-        let fp2 = update_fingerprint(fp1, 2, &Value::Int(3), &Value::Int(30));
-        let expected = State::new(vec![Value::Int(10), Value::Int(2), Value::Int(30)]);
+        let fp1 = update_fingerprint(s.fingerprint(), 0, &Value::int(1), &Value::int(10));
+        let fp2 = update_fingerprint(fp1, 2, &Value::int(3), &Value::int(30));
+        let expected = State::new(vec![Value::int(10), Value::int(2), Value::int(30)]);
 
         assert_eq!(fp2, expected.fingerprint());
     }
 
     #[test]
     fn test_cached_fingerprint() {
-        let s = State::new(vec![Value::Int(42), Value::Bool(true)]);
+        let s = State::new(vec![Value::int(42), Value::bool(true)]);
         // Fingerprint should be consistent
         assert_eq!(s.fingerprint(), s.fingerprint());
 
         // with_fingerprint should use the provided fingerprint
         let fp = s.fingerprint();
-        let s2 = State::with_fingerprint(vec![Value::Int(42), Value::Bool(true)], fp);
+        let s2 = State::with_fingerprint(vec![Value::int(42), Value::bool(true)], fp);
         assert_eq!(s.fingerprint(), s2.fingerprint());
         assert_eq!(s, s2);
     }

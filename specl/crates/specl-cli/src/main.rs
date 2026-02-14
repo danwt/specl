@@ -8,7 +8,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
-use specl_eval::Value;
+use specl_eval::{Value, VK};
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer, Fingerprint, ProgressCounters, SimulateOutcome, State, StateStore};
@@ -2004,7 +2004,7 @@ fn cmd_simulate(
 }
 
 fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliResult<Vec<Value>> {
-    let mut values = vec![Value::None; spec.consts.len()];
+    let mut values = vec![Value::none(); spec.consts.len()];
 
     for constant in constants {
         let parts: Vec<&str> = constant.splitn(2, '=').collect();
@@ -2037,9 +2037,9 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
     // Check all constants are set - use default values for scalar constants
     let mut missing = Vec::new();
     for const_decl in &spec.consts {
-        if matches!(values[const_decl.index], Value::None) {
+        if values[const_decl.index].is_none() {
             if let Some(default_value) = const_decl.default_value {
-                values[const_decl.index] = Value::Int(default_value);
+                values[const_decl.index] = Value::int(default_value);
             } else {
                 missing.push(const_decl.name.clone());
             }
@@ -2079,20 +2079,20 @@ fn parse_constants_as_pairs(constants: &[String]) -> Vec<(String, i64)> {
 fn parse_value(s: &str) -> CliResult<Value> {
     // Try to parse as integer
     if let Ok(n) = s.parse::<i64>() {
-        return Ok(Value::Int(n));
+        return Ok(Value::int(n));
     }
 
     // Try to parse as boolean
     if s == "true" {
-        return Ok(Value::Bool(true));
+        return Ok(Value::bool(true));
     }
     if s == "false" {
-        return Ok(Value::Bool(false));
+        return Ok(Value::bool(false));
     }
 
     // Try to parse as string (quoted)
     if s.starts_with('"') && s.ends_with('"') {
-        return Ok(Value::String(s[1..s.len() - 1].to_string()));
+        return Ok(Value::string(s[1..s.len() - 1].to_string()));
     }
 
     Err(CliError::Other {
@@ -2125,20 +2125,20 @@ fn trace_to_json(trace: &[(State, Option<String>)], var_names: &[String]) -> Vec
 
 /// Convert a specl Value to a serde_json::Value.
 fn value_to_json(v: &Value) -> serde_json::Value {
-    match v {
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(n) => serde_json::json!(*n),
-        Value::String(s) => serde_json::Value::String(s.clone()),
-        Value::Set(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
-        Value::Seq(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
-        Value::Fn(pairs) => {
+    match v.kind() {
+        VK::Bool(b) => serde_json::Value::Bool(b),
+        VK::Int(n) => serde_json::json!(n),
+        VK::String(s) => serde_json::Value::String(s.to_string()),
+        VK::Set(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
+        VK::Seq(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
+        VK::Fn(pairs) => {
             let obj: serde_json::Map<String, serde_json::Value> = pairs
                 .iter()
                 .map(|(k, v)| (format!("{}", k), value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }
-        Value::IntMap(vals) => {
+        VK::IntMap(vals) => {
             let obj: serde_json::Map<String, serde_json::Value> = vals
                 .iter()
                 .enumerate()
@@ -2146,16 +2146,16 @@ fn value_to_json(v: &Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(obj)
         }
-        Value::Record(fields) => {
+        VK::Record(fields) => {
             let obj: serde_json::Map<String, serde_json::Value> = fields
                 .iter()
                 .map(|(k, v)| (k.clone(), value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }
-        Value::Tuple(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
-        Value::None => serde_json::Value::Null,
-        Value::Some(inner) => value_to_json(inner),
+        VK::Tuple(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
+        VK::None => serde_json::Value::Null,
+        VK::Some(inner) => value_to_json(inner),
     }
 }
 
@@ -2164,24 +2164,24 @@ fn value_to_json(v: &Value) -> serde_json::Value {
 ///   Int → {"#bigint": "42"}, Set → {"#set": [...]}, Map → {"#map": [[k,v],...]},
 ///   Tuple → {"#tup": [...]}, Seq → plain array, Record → plain object.
 fn value_to_itf(v: &Value) -> serde_json::Value {
-    match v {
-        Value::Bool(b) => serde_json::Value::Bool(*b),
-        Value::Int(n) => serde_json::json!({"#bigint": n.to_string()}),
-        Value::String(s) => serde_json::Value::String(s.clone()),
-        Value::Set(elems) => {
+    match v.kind() {
+        VK::Bool(b) => serde_json::Value::Bool(b),
+        VK::Int(n) => serde_json::json!({"#bigint": n.to_string()}),
+        VK::String(s) => serde_json::Value::String(s.to_string()),
+        VK::Set(elems) => {
             serde_json::json!({"#set": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
         }
-        Value::Seq(elems) => {
+        VK::Seq(elems) => {
             serde_json::Value::Array(elems.iter().map(value_to_itf).collect())
         }
-        Value::Fn(pairs) => {
+        VK::Fn(pairs) => {
             let entries: Vec<serde_json::Value> = pairs
                 .iter()
                 .map(|(k, v)| serde_json::json!([value_to_itf(k), value_to_itf(v)]))
                 .collect();
             serde_json::json!({"#map": entries})
         }
-        Value::IntMap(vals) => {
+        VK::IntMap(vals) => {
             let entries: Vec<serde_json::Value> = vals
                 .iter()
                 .enumerate()
@@ -2194,18 +2194,18 @@ fn value_to_itf(v: &Value) -> serde_json::Value {
                 .collect();
             serde_json::json!({"#map": entries})
         }
-        Value::Record(fields) => {
+        VK::Record(fields) => {
             let obj: serde_json::Map<String, serde_json::Value> = fields
                 .iter()
                 .map(|(k, v)| (k.clone(), value_to_itf(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }
-        Value::Tuple(elems) => {
+        VK::Tuple(elems) => {
             serde_json::json!({"#tup": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
         }
-        Value::None => serde_json::json!({"tag": "None", "value": serde_json::json!({})}),
-        Value::Some(inner) => {
+        VK::None => serde_json::json!({"tag": "None", "value": serde_json::json!({})}),
+        VK::Some(inner) => {
             serde_json::json!({"tag": "Some", "value": value_to_itf(inner)})
         }
     }
@@ -2409,42 +2409,42 @@ fn store_to_dot(
 
 /// Format a Value compactly for DOT node labels.
 fn format_value_compact(v: &Value) -> String {
-    match v {
-        Value::Int(n) => n.to_string(),
-        Value::Bool(b) => if *b { "T" } else { "F" }.to_string(),
-        Value::String(s) => format!("\"{}\"", s),
-        Value::Set(s) => {
+    match v.kind() {
+        VK::Int(n) => n.to_string(),
+        VK::Bool(b) => if b { "T" } else { "F" }.to_string(),
+        VK::String(s) => format!("\"{}\"", s),
+        VK::Set(s) => {
             let inner: Vec<String> = s.iter().map(format_value_compact).collect();
             format!("{{{}}}", inner.join(","))
         }
-        Value::Seq(s) => {
+        VK::Seq(s) => {
             let inner: Vec<String> = s.iter().map(format_value_compact).collect();
             format!("[{}]", inner.join(","))
         }
-        Value::Fn(f) => {
+        VK::Fn(f) => {
             let inner: Vec<String> = f
                 .iter()
                 .map(|(k, v)| format!("{}:{}", format_value_compact(k), format_value_compact(v)))
                 .collect();
             format!("{{{}}}", inner.join(","))
         }
-        Value::IntMap(m) => {
+        VK::IntMap(m) => {
             let inner: Vec<String> = m.iter().enumerate().map(|(i, v)| format!("{}:{}", i, v)).collect();
             format!("{{{}}}", inner.join(","))
         }
-        Value::Record(r) => {
+        VK::Record(r) => {
             let inner: Vec<String> = r
                 .iter()
                 .map(|(k, v)| format!("{}:{}", k, format_value_compact(v)))
                 .collect();
             format!("{{{}}}", inner.join(","))
         }
-        Value::Tuple(t) => {
+        VK::Tuple(t) => {
             let inner: Vec<String> = t.iter().map(format_value_compact).collect();
             format!("({})", inner.join(","))
         }
-        Value::None => "None".to_string(),
-        Value::Some(v) => format!("Some({})", format_value_compact(v)),
+        VK::None => "None".to_string(),
+        VK::Some(v) => format!("Some({})", format_value_compact(v)),
     }
 }
 
@@ -3318,14 +3318,14 @@ fn cmd_test(dir: Option<&PathBuf>, override_max_states: usize, max_time_per_spec
         };
 
         // Resolve constants (default unspecified ones to 1)
-        let mut const_values = vec![Value::None; spec.consts.len()];
+        let mut const_values = vec![Value::none(); spec.consts.len()];
         for const_decl in &spec.consts {
             let mut found = false;
             for c in &constants {
                 if let Some((name, val)) = c.split_once('=') {
                     if name == const_decl.name {
                         if let Ok(v) = val.parse::<i64>() {
-                            const_values[const_decl.index] = Value::Int(v);
+                            const_values[const_decl.index] = Value::int(v);
                             found = true;
                             break;
                         }
@@ -3333,7 +3333,7 @@ fn cmd_test(dir: Option<&PathBuf>, override_max_states: usize, max_time_per_spec
                 }
             }
             if !found {
-                const_values[const_decl.index] = Value::Int(1);
+                const_values[const_decl.index] = Value::int(1);
             }
         }
         let consts = const_values;

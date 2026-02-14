@@ -133,7 +133,7 @@ fn try_eval_value(
 ) -> Option<Value> {
     let vars: Vec<Value> = partial_assignments
         .iter()
-        .map(|a| a.clone().unwrap_or(Value::None))
+        .map(|a| a.clone().unwrap_or(Value::none()))
         .collect();
     let mut ctx = EvalContext::new(&vars, &vars, consts, &[]);
     eval(expr, &mut ctx).ok()
@@ -149,7 +149,7 @@ pub fn generate_initial_states_direct(
     match extract_init_assignments(&spec.init, consts, num_vars) {
         AssignmentResult::Direct(assignments) => {
             // Build the initial state directly
-            let mut vars = vec![Value::None; num_vars];
+            let mut vars = vec![Value::none(); num_vars];
             for (idx, value) in assignments {
                 vars[idx] = value;
             }
@@ -265,12 +265,14 @@ pub fn apply_effects_bytecode(
 
     if needs_reverify {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
-        match eval(effect, &mut ctx)? {
-            Value::Bool(true) => Ok(Some(State::with_fingerprint(
+        let result = eval(effect, &mut ctx)?;
+        if result.as_bool() == Some(true) {
+            Ok(Some(State::with_fingerprint(
                 std::mem::take(next_vars_buf),
                 fp,
-            ))),
-            _ => Ok(None),
+            )))
+        } else {
+            Ok(None)
         }
     } else {
         Ok(Some(State::with_fingerprint(
@@ -314,12 +316,14 @@ pub fn apply_action_direct_cached(
     // Only re-verify if there are current-state constraints in the effect
     if needs_reverify {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
-        match eval(&action.effect, &mut ctx)? {
-            Value::Bool(true) => Ok(Some(State::with_fingerprint(
+        let result = eval(&action.effect, &mut ctx)?;
+        if result.as_bool() == Some(true) {
+            Ok(Some(State::with_fingerprint(
                 std::mem::take(next_vars_buf),
                 fp,
-            ))),
-            _ => Ok(None),
+            )))
+        } else {
+            Ok(None)
         }
     } else {
         Ok(Some(State::with_fingerprint(
@@ -373,7 +377,7 @@ mod tests {
         let result = extract_from_expr(&expr, &[], &mut assignments);
 
         assert!(result);
-        assert_eq!(assignments[0], Some(Value::Int(0)));
+        assert_eq!(assignments[0], Some(Value::int(0)));
     }
 
     #[test]
@@ -397,7 +401,7 @@ mod tests {
         let result = extract_from_expr(&expr, &[], &mut assignments);
 
         assert!(result);
-        assert_eq!(assignments[0], Some(Value::Int(0)));
-        assert_eq!(assignments[1], Some(Value::Int(1)));
+        assert_eq!(assignments[0], Some(Value::int(0)));
+        assert_eq!(assignments[1], Some(Value::int(1)));
     }
 }

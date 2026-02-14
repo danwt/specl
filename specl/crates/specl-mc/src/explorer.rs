@@ -133,16 +133,14 @@ enum AmpleResult {
 fn params_to_i64s(params: &[Value]) -> Vec<i64> {
     params
         .iter()
-        .map(|v| match v {
-            Value::Int(n) => *n,
-            Value::Bool(b) => {
-                if *b {
-                    1
-                } else {
-                    0
-                }
+        .map(|v| {
+            if let Some(n) = v.as_int() {
+                n
+            } else if let Some(b) = v.as_bool() {
+                if b { 1 } else { 0 }
+            } else {
+                0
             }
-            _ => 0,
         })
         .collect()
 }
@@ -2562,11 +2560,11 @@ impl Explorer {
         self.enumerate_states(
             &domains,
             0,
-            vec![Value::None; self.spec.vars.len()],
+            vec![Value::none(); self.spec.vars.len()],
             &mut |state: State| {
                 let mut ctx = EvalContext::new(&state.vars, &state.vars, &self.consts, &[]);
                 match eval(&self.spec.init, &mut ctx) {
-                    Ok(Value::Bool(true)) => {
+                    Ok(ref v) if v.as_bool() == Some(true) => {
                         states.push(state);
                     }
                     Ok(_) => {}
@@ -2614,14 +2612,14 @@ impl Explorer {
     /// Get the domain of a type.
     fn type_domain(&self, ty: &specl_types::Type) -> Vec<Value> {
         match ty {
-            specl_types::Type::Bool => vec![Value::Bool(false), Value::Bool(true)],
+            specl_types::Type::Bool => vec![Value::bool(false), Value::bool(true)],
             specl_types::Type::Nat | specl_types::Type::Int => {
                 unreachable!(
                     "unbounded type {:?} in explicit-state checking — should be caught by CLI before exploration",
                     ty
                 )
             }
-            specl_types::Type::Range(lo, hi) => (*lo..=*hi).map(Value::Int).collect(),
+            specl_types::Type::Range(lo, hi) => (*lo..=*hi).map(Value::int).collect(),
             specl_types::Type::Set(elem_ty) => {
                 // Generate power set of element domain (limited)
                 let elem_domain = self.type_domain(elem_ty);
@@ -2645,7 +2643,7 @@ impl Explorer {
             }
             _ => {
                 // Default domain
-                vec![Value::None]
+                vec![Value::none()]
             }
         }
     }
@@ -2666,7 +2664,7 @@ impl Explorer {
             .collect();
 
         if field_domains.is_empty() {
-            return vec![Value::Record(BTreeMap::new())];
+            return vec![Value::record(BTreeMap::new())];
         }
 
         // Compute cartesian product
@@ -2677,7 +2675,7 @@ impl Explorer {
             0,
             BTreeMap::new(),
             &mut |record| {
-                result.push(Value::Record(record));
+                result.push(Value::record(record));
             },
         );
         result
@@ -2711,12 +2709,12 @@ impl Explorer {
             elem_types.iter().map(|ty| self.type_domain(ty)).collect();
 
         if elem_domains.is_empty() {
-            return vec![Value::Tuple(vec![])];
+            return vec![Value::tuple(vec![])];
         }
 
         let mut result = vec![];
         self.enumerate_tuple_elements(&elem_domains, 0, vec![], &mut |tuple| {
-            result.push(Value::Tuple(tuple));
+            result.push(Value::tuple(tuple));
         });
         result
     }
@@ -2748,7 +2746,7 @@ impl Explorer {
         let val_domain = self.type_domain(val_ty);
 
         if key_domain.is_empty() {
-            return vec![Value::Fn(std::sync::Arc::new(Vec::new()))];
+            return vec![Value::func(std::sync::Arc::new(Vec::new()))];
         }
 
         // Bail early for large key domains (e.g. Dict[Seq[Int], T])
@@ -2774,7 +2772,7 @@ impl Explorer {
 
         let mut result = vec![];
         self.enumerate_fn_values(&key_domain, &val_domain, 0, Vec::new(), &mut |map| {
-            result.push(Value::Fn(std::sync::Arc::new(map)));
+            result.push(Value::func(std::sync::Arc::new(map)));
         });
         result
     }
@@ -2818,15 +2816,15 @@ impl Explorer {
                 max_len,
                 total
             );
-            return vec![Value::Seq(vec![])];
+            return vec![Value::seq(vec![])];
         }
 
-        let mut result = vec![Value::Seq(vec![])]; // Empty sequence
+        let mut result = vec![Value::seq(vec![])]; // Empty sequence
 
         // Generate sequences of length 1, 2, ..., max_len
         for len in 1..=max_len {
             self.enumerate_seqs(&elem_domain, len, vec![], &mut |seq| {
-                result.push(Value::Seq(seq));
+                result.push(Value::seq(seq));
             });
         }
 
@@ -2862,10 +2860,10 @@ impl Explorer {
         for elem in domain.iter().take(max_elems) {
             let mut new_sets = Vec::new();
             for set in &result {
-                if let Value::Set(s) = set {
-                    let mut new_set: Vec<Value> = (**s).clone();
+                if let Some(s) = set.as_set() {
+                    let mut new_set: Vec<Value> = s.to_vec();
                     Value::set_insert(&mut new_set, elem.clone());
-                    new_sets.push(Value::Set(std::sync::Arc::new(new_set)));
+                    new_sets.push(Value::set(std::sync::Arc::new(new_set)));
                 }
             }
             result.extend(new_sets);
@@ -3020,7 +3018,7 @@ impl Explorer {
                     return Ok(false);
                 }
             }
-            let mut params_buf = vec![Value::None; param_domains.len()];
+            let mut params_buf = vec![Value::none(); param_domains.len()];
             enumerate_params_indexed(
                 param_domains,
                 guard_index,
@@ -3145,7 +3143,7 @@ impl Explorer {
                     return Ok(instances);
                 }
             }
-            let mut params_buf = vec![Value::None; param_domains.len()];
+            let mut params_buf = vec![Value::none(); param_domains.len()];
             enumerate_params_indexed(
                 param_domains,
                 guard_index,
@@ -3282,7 +3280,7 @@ impl Explorer {
             .iter()
             .map(|ks| match ks {
                 KeySource::Param(idx) => params[*idx].clone(),
-                KeySource::Literal(k) => Value::Int(*k),
+                KeySource::Literal(k) => Value::int(*k),
             })
             .collect()
     }
@@ -3494,7 +3492,7 @@ impl Explorer {
                 }
             }
 
-            let mut params_buf = vec![Value::None; param_domains.len()];
+            let mut params_buf = vec![Value::none(); param_domains.len()];
             enumerate_params_indexed(
                 param_domains,
                 guard_index,
@@ -3685,8 +3683,8 @@ impl Explorer {
                 .enumerate()
                 .map(|(i, static_domain)| {
                     if let Some(var_idx) = deps[i] {
-                        match &state.vars[var_idx] {
-                            Value::Set(elems) => (**elems).clone(),
+                        match state.vars[var_idx].as_set() {
+                            Some(elems) => elems.to_vec(),
                             _ => {
                                 // Non-Set runtime value: fall back to full type domain
                                 // (static_domain is empty placeholder for state-dep params)
@@ -3708,7 +3706,7 @@ impl Explorer {
             TypeExpr::Range(lo, hi, _) => {
                 let lo_val = self.eval_const_expr(lo)?;
                 let hi_val = self.eval_const_expr(hi)?;
-                Some((lo_val..=hi_val).map(Value::Int).collect())
+                Some((lo_val..=hi_val).map(Value::int).collect())
             }
             _ => None, // Other types fall through to type_domain
         }
@@ -3722,13 +3720,7 @@ impl Explorer {
                 // Look up constant by name
                 for (i, c) in self.spec.consts.iter().enumerate() {
                     if c.name == *name {
-                        return self.consts.get(i).and_then(|v| {
-                            if let Value::Int(n) = v {
-                                Some(*n)
-                            } else {
-                                None
-                            }
-                        });
+                        return self.consts.get(i).and_then(|v| v.as_int());
                     }
                 }
                 None
@@ -3782,7 +3774,7 @@ impl Explorer {
             (*state.vars).clone(),
             &mut |next_vars: Vec<Value>| {
                 let mut ctx = EvalContext::new(&state.vars, &next_vars, &self.consts, params);
-                if let Ok(Value::Bool(true)) = eval(&action.effect, &mut ctx) {
+                if eval(&action.effect, &mut ctx).ok().and_then(|v| v.as_bool()) == Some(true) {
                     next_states.push(State::new(next_vars));
                 }
             },
@@ -3982,7 +3974,7 @@ invariant Bounded { count <= MAX }
             check_deadlock: false,
             ..Default::default()
         };
-        let result = check_spec_with_config(source, vec![Value::Int(3)], config);
+        let result = check_spec_with_config(source, vec![Value::int(3)], config);
         match result {
             Ok(CheckOutcome::Ok {
                 states_explored, ..
@@ -4008,7 +4000,7 @@ action Inc() {
 "#;
 
         // With deadlock checking, should report deadlock when count reaches MAX
-        let result = check_spec(source, vec![Value::Int(2)]);
+        let result = check_spec(source, vec![Value::int(2)]);
         match result {
             Ok(CheckOutcome::Deadlock { trace }) => {
                 // Should deadlock after reaching count == 2
@@ -4031,7 +4023,7 @@ action Inc() {
 invariant TooHigh { count <= 3 }
 "#;
 
-        let result = check_spec(source, vec![Value::Int(5)]).unwrap();
+        let result = check_spec(source, vec![Value::int(5)]).unwrap();
         match result {
             CheckOutcome::InvariantViolation { invariant, trace } => {
                 assert_eq!(invariant, "TooHigh");
@@ -4831,7 +4823,7 @@ action Transfer(from: 0..N, to: 0..N) {
             ..Default::default()
         };
         let result_no_por =
-            check_spec_with_config(source, vec![Value::Int(1)], config_no_por).unwrap();
+            check_spec_with_config(source, vec![Value::int(1)], config_no_por).unwrap();
         let states_no_por = match result_no_por {
             CheckOutcome::Ok {
                 states_explored, ..
@@ -4846,7 +4838,7 @@ action Transfer(from: 0..N, to: 0..N) {
             parallel: false,
             ..Default::default()
         };
-        let result_por = check_spec_with_config(source, vec![Value::Int(1)], config_por).unwrap();
+        let result_por = check_spec_with_config(source, vec![Value::int(1)], config_por).unwrap();
         let states_por = match result_por {
             CheckOutcome::Ok {
                 states_explored, ..
@@ -4886,7 +4878,7 @@ action Transfer(from: 0..N, to: 0..N) {
             ..Default::default()
         };
         let result_no_por =
-            check_spec_with_config(source, vec![Value::Int(2)], config_no_por).unwrap();
+            check_spec_with_config(source, vec![Value::int(2)], config_no_por).unwrap();
         let states_no_por = match result_no_por {
             CheckOutcome::Ok {
                 states_explored, ..
@@ -4901,7 +4893,7 @@ action Transfer(from: 0..N, to: 0..N) {
             parallel: false,
             ..Default::default()
         };
-        let result_por = check_spec_with_config(source, vec![Value::Int(2)], config_por).unwrap();
+        let result_por = check_spec_with_config(source, vec![Value::int(2)], config_por).unwrap();
         let states_por = match result_por {
             CheckOutcome::Ok {
                 states_explored, ..

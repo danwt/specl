@@ -277,11 +277,12 @@ impl<'a> EncoderCtx<'a> {
     }
 
     fn encode_const(&self, const_idx: usize) -> SymbolicResult<Dynamic> {
+        use specl_eval::VK;
         let val = &self.consts[const_idx];
-        match val {
-            Value::Bool(b) => Ok(Dynamic::from_ast(&Bool::from_bool(*b))),
-            Value::Int(n) => Ok(Dynamic::from_ast(&Int::from_i64(*n))),
-            Value::String(s) => {
+        match val.kind() {
+            VK::Bool(b) => Ok(Dynamic::from_ast(&Bool::from_bool(b))),
+            VK::Int(n) => Ok(Dynamic::from_ast(&Int::from_i64(n))),
+            VK::String(s) => {
                 let id = self.layout.string_id(s).ok_or_else(|| {
                     SymbolicError::Encoding(format!("string constant not in table: {:?}", s))
                 })?;
@@ -1800,13 +1801,7 @@ impl<'a> EncoderCtx<'a> {
     fn try_concrete_int(&self, expr: &CompiledExpr) -> Option<i64> {
         match expr {
             CompiledExpr::Int(n) => Some(*n),
-            CompiledExpr::Const(idx) => {
-                if let Value::Int(n) = &self.consts[*idx] {
-                    Some(*n)
-                } else {
-                    None
-                }
-            }
+            CompiledExpr::Const(idx) => self.consts[*idx].as_int(),
             CompiledExpr::Local(idx) => {
                 let depth = self.locals.len();
                 if *idx < depth {
@@ -1848,13 +1843,9 @@ impl<'a> EncoderCtx<'a> {
     fn extract_concrete_int(&self, expr: &CompiledExpr) -> SymbolicResult<i64> {
         match expr {
             CompiledExpr::Int(n) => Ok(*n),
-            CompiledExpr::Const(idx) => {
-                if let Value::Int(n) = &self.consts[*idx] {
-                    Ok(*n)
-                } else {
-                    Err(SymbolicError::Encoding("expected integer constant".into()))
-                }
-            }
+            CompiledExpr::Const(idx) => self.consts[*idx]
+                .as_int()
+                .ok_or_else(|| SymbolicError::Encoding("expected integer constant".into())),
             _ => Err(SymbolicError::Encoding(format!(
                 "expected concrete integer, got {:?}",
                 std::mem::discriminant(expr)

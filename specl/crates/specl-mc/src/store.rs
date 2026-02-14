@@ -500,8 +500,8 @@ mod tests {
     #[test]
     fn test_store_insert() {
         let store = StateStore::new();
-        let s1 = State::new(vec![Value::Int(1)]);
-        let s2 = State::new(vec![Value::Int(2)]);
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
 
         assert!(store.insert(s1.clone(), None, None, None, 0));
         assert!(!store.insert(s1.clone(), None, None, None, 0)); // duplicate
@@ -514,9 +514,9 @@ mod tests {
     fn test_trace_reconstruction() {
         let store = StateStore::new();
 
-        let s0 = State::new(vec![Value::Int(0)]);
-        let s1 = State::new(vec![Value::Int(1)]);
-        let s2 = State::new(vec![Value::Int(2)]);
+        let s0 = State::new(vec![Value::int(0)]);
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
 
         let fp0 = s0.fingerprint();
         let fp1 = s1.fingerprint();
@@ -529,16 +529,16 @@ mod tests {
         let action_names = vec!["init".to_string(), "step1".to_string(), "step2".to_string()];
         let trace = store.trace_to(&fp2, &action_names);
         assert_eq!(trace.len(), 3);
-        assert_eq!(*trace[0].0.vars, vec![Value::Int(0)]);
-        assert_eq!(*trace[1].0.vars, vec![Value::Int(1)]);
-        assert_eq!(*trace[2].0.vars, vec![Value::Int(2)]);
+        assert_eq!(*trace[0].0.vars, vec![Value::int(0)]);
+        assert_eq!(*trace[1].0.vars, vec![Value::int(1)]);
+        assert_eq!(*trace[2].0.vars, vec![Value::int(2)]);
     }
 
     #[test]
     fn test_fingerprint_only_mode() {
         let store = StateStore::with_tracking(false);
-        let s1 = State::new(vec![Value::Int(1)]);
-        let s2 = State::new(vec![Value::Int(2)]);
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
 
         // Should still track uniqueness
         assert!(store.insert(s1.clone(), None, None, None, 0));
@@ -547,7 +547,7 @@ mod tests {
         assert_eq!(store.len(), 2);
 
         // But shouldn't be able to get state info
-        let fp1 = State::new(vec![Value::Int(1)]).fingerprint();
+        let fp1 = State::new(vec![Value::int(1)]).fingerprint();
         assert!(store.get(&fp1).is_none());
 
         // Trace should be empty
@@ -557,8 +557,8 @@ mod tests {
     #[test]
     fn test_bloom_mode() {
         let store = StateStore::with_bloom(20, 3); // 1M bits
-        let s1 = State::new(vec![Value::Int(1)]);
-        let s2 = State::new(vec![Value::Int(2)]);
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
 
         assert!(store.insert(s1.clone(), None, None, None, 0));
         // Bloom filter: second insert should return false (probably seen)
@@ -569,7 +569,7 @@ mod tests {
         assert!(!store.has_full_tracking());
 
         // Trace not supported
-        let fp1 = State::new(vec![Value::Int(1)]).fingerprint();
+        let fp1 = State::new(vec![Value::int(1)]).fingerprint();
         assert!(store.trace_to(&fp1, &[]).is_empty());
     }
 
@@ -587,7 +587,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 for i in 0..100 {
                     let value = (t * 1000 + i) as i64;
-                    let state = State::new(vec![Value::Int(value)]);
+                    let state = State::new(vec![Value::int(value)]);
                     store.insert(state, None, None, None, 0);
                 }
             }));
@@ -604,8 +604,8 @@ mod tests {
     #[test]
     fn test_collapse_insert_and_dedup() {
         let store = StateStore::with_collapse(2);
-        let s1 = State::new(vec![Value::Int(1), Value::Bool(true)]);
-        let s2 = State::new(vec![Value::Int(2), Value::Bool(false)]);
+        let s1 = State::new(vec![Value::int(1), Value::bool(true)]);
+        let s2 = State::new(vec![Value::int(2), Value::bool(false)]);
 
         assert!(store.insert(s1.clone(), None, None, None, 0));
         assert!(!store.insert(s1.clone(), None, None, None, 0)); // duplicate
@@ -618,9 +618,9 @@ mod tests {
     fn test_collapse_trace_reconstruction() {
         let store = StateStore::with_collapse(1);
 
-        let s0 = State::new(vec![Value::Int(0)]);
-        let s1 = State::new(vec![Value::Int(1)]);
-        let s2 = State::new(vec![Value::Int(2)]);
+        let s0 = State::new(vec![Value::int(0)]);
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
 
         let fp0 = s0.fingerprint();
         let fp1 = s1.fingerprint();
@@ -633,9 +633,9 @@ mod tests {
         let action_names = vec!["init".to_string(), "step1".to_string(), "step2".to_string()];
         let trace = store.trace_to(&fp2, &action_names);
         assert_eq!(trace.len(), 3);
-        assert_eq!(*trace[0].0.vars, vec![Value::Int(0)]);
-        assert_eq!(*trace[1].0.vars, vec![Value::Int(1)]);
-        assert_eq!(*trace[2].0.vars, vec![Value::Int(2)]);
+        assert_eq!(*trace[0].0.vars, vec![Value::int(0)]);
+        assert_eq!(*trace[1].0.vars, vec![Value::int(1)]);
+        assert_eq!(*trace[2].0.vars, vec![Value::int(2)]);
     }
 
     #[test]
@@ -644,7 +644,7 @@ mod tests {
 
         // Insert many states that share values at position 1
         for i in 0..100 {
-            let state = State::new(vec![Value::Int(i), Value::Bool(i % 2 == 0)]);
+            let state = State::new(vec![Value::int(i), Value::bool(i % 2 == 0)]);
             store.insert(state, None, None, None, 0);
         }
         assert_eq!(store.len(), 100);
@@ -674,7 +674,7 @@ mod tests {
             handles.push(thread::spawn(move || {
                 for i in 0..100 {
                     let value = (t * 1000 + i) as i64;
-                    let state = State::new(vec![Value::Int(value)]);
+                    let state = State::new(vec![Value::int(value)]);
                     store.insert(state, None, None, None, 0);
                 }
             }));
