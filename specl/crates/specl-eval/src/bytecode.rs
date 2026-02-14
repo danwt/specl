@@ -121,6 +121,14 @@ pub enum Op {
         end_pc: u32,
     },
 
+    // === Superinstructions (fused sequences) ===
+    /// Fused Var(i) + DictGet: var is the key, base dict is on stack.
+    VarDictGet(u16),
+    /// Fused Var(i) + Int(k) + IntEq: compare var to constant.
+    VarIntEq(u16, i64),
+    /// Fused Var(i) + Param(j) + DictGet: dict[param] from var.
+    VarParamDictGet(u16, u16),
+
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
     Fallback(u16),
@@ -691,11 +699,145 @@ fn is_int_expr(expr: &CompiledExpr) -> bool {
     )
 }
 
-/// Compile a CompiledExpr to bytecode.
+/// Compile a CompiledExpr to bytecode with peephole optimization.
 pub fn compile_expr(expr: &CompiledExpr) -> Bytecode {
     let mut compiler = Compiler::new();
     compiler.compile(expr);
-    compiler.finish()
+    let mut bc = compiler.finish();
+    peephole_optimize(&mut bc.ops);
+    bc
+}
+
+/// Peephole optimization: fuse common instruction sequences into superinstructions.
+/// Only fuses sequences that don't contain jump targets (safe for straight-line code).
+fn peephole_optimize(ops: &mut Vec<Op>) {
+    // Collect all jump targets so we don't fuse across them
+    let mut jump_targets = vec![false; ops.len() + 1];
+    for op in ops.iter() {
+        match op {
+            Op::JumpIfFalse(t) | Op::JumpIfTrue(t) | Op::Jump(t) => {
+                let target = *t as usize;
+                if target < jump_targets.len() {
+                    jump_targets[target] = true;
+                }
+            }
+            Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
+            | Op::FnLitRangeInit(t) => {
+                let target = *t as usize;
+                if target < jump_targets.len() {
+                    jump_targets[target] = true;
+                }
+            }
+            Op::ForallRangeStep { body_pc, end_pc }
+            | Op::ExistsRangeStep { body_pc, end_pc }
+            | Op::CountRangeStep { body_pc, end_pc }
+            | Op::FnLitRangeStep { body_pc, end_pc } => {
+                let b = *body_pc as usize;
+                let e = *end_pc as usize;
+                if b < jump_targets.len() {
+                    jump_targets[b] = true;
+                }
+                if e < jump_targets.len() {
+                    jump_targets[e] = true;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut i = 0;
+    while i + 1 < ops.len() {
+        // Don't fuse if the second instruction is a jump target
+        if jump_targets.get(i + 1).copied().unwrap_or(false) {
+            i += 1;
+            continue;
+        }
+
+        // Pattern: Var(i), DictGet → VarDictGet(i)
+        if let (Op::Var(var_idx), Op::DictGet) = (&ops[i], &ops[i + 1]) {
+            let var_idx = *var_idx;
+            ops[i] = Op::VarDictGet(var_idx);
+            ops.remove(i + 1);
+            // Patch jump targets after removal
+            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+            continue;
+        }
+
+        // Pattern: Var(i), Param(j), DictGet → VarParamDictGet(i, j) (3 → 1)
+        if i + 2 < ops.len()
+            && !jump_targets.get(i + 2).copied().unwrap_or(false)
+        {
+            if let (Op::Var(var_idx), Op::Param(param_idx), Op::DictGet) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                ops[i] = Op::VarParamDictGet(var_idx, param_idx);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: Var(i), Int(k), IntEq → VarIntEq(i, k) (3 → 1)
+        if i + 2 < ops.len()
+            && !jump_targets.get(i + 2).copied().unwrap_or(false)
+        {
+            if let (Op::Var(var_idx), Op::Int(k), Op::IntEq) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let k = *k;
+                ops[i] = Op::VarIntEq(var_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        i += 1;
+    }
+}
+
+/// After removing an instruction at position `removed_pos`, patch all jump targets
+/// that pointed at or after that position.
+fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &mut Vec<bool>) {
+    // Shift jump_targets array
+    if removed_pos < jump_targets.len() {
+        jump_targets.remove(removed_pos);
+    }
+    // Patch jump targets in ops
+    for op in ops.iter_mut() {
+        match op {
+            Op::JumpIfFalse(t) | Op::JumpIfTrue(t) | Op::Jump(t) => {
+                if (*t as usize) > removed_pos {
+                    *t -= 1;
+                }
+            }
+            Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
+            | Op::FnLitRangeInit(t) => {
+                if (*t as usize) > removed_pos {
+                    *t -= 1;
+                }
+            }
+            Op::ForallRangeStep { body_pc, end_pc }
+            | Op::ExistsRangeStep { body_pc, end_pc }
+            | Op::CountRangeStep { body_pc, end_pc }
+            | Op::FnLitRangeStep { body_pc, end_pc } => {
+                if (*body_pc as usize) > removed_pos {
+                    *body_pc -= 1;
+                }
+                if (*end_pc as usize) > removed_pos {
+                    *end_pc -= 1;
+                }
+            }
+            _ => {}
+        }
+    }
 }
 
 // ============================================================================
@@ -856,6 +998,76 @@ pub fn vm_eval(
             }
             Op::Pop => {
                 stack.pop();
+            }
+
+            // === Superinstructions ===
+            Op::VarDictGet(var_idx) => {
+                // Fused: Var(i) + DictGet — Var(i) is the KEY (last pushed),
+                // base dict is already on stack below.
+                let key = &vars[*var_idx as usize];
+                let base = stack.pop().unwrap();
+                match &base {
+                    Value::IntMap(arr) => {
+                        let k = expect_int(key)? as usize;
+                        stack.push(Value::Int(arr[k]));
+                    }
+                    Value::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(val);
+                    }
+                    Value::Seq(seq) => {
+                        let idx = expect_int(key)?;
+                        if idx < 0 || idx as usize >= seq.len() {
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: idx,
+                                length: seq.len(),
+                            });
+                        }
+                        stack.push(seq[idx as usize].clone());
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or Seq".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarIntEq(var_idx, k) => {
+                // Fused: Var(i) + Int(k) + IntEq — compare var to constant
+                if let Value::Int(v) = &vars[*var_idx as usize] {
+                    stack.push(Value::Bool(*v == *k));
+                } else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Int".to_string(),
+                        actual: vars[*var_idx as usize].type_name().to_string(),
+                    });
+                }
+            }
+            Op::VarParamDictGet(var_idx, param_idx) => {
+                // Fused: Var(i) + Param(j) + DictGet — dict[param] from var
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base {
+                    Value::IntMap(arr) => {
+                        let k = expect_int(key)? as usize;
+                        stack.push(Value::Int(arr[k]));
+                    }
+                    Value::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(val);
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or Seq".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
             }
 
             // Dict/collection ops

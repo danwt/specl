@@ -1,7 +1,7 @@
 # MC Improvements Progress
 
 ## Quick Wins
-- [ ] 1. FPSet tuning (prefetch, better probing)
+- [x] 1. FPSet tuning (prefetch, better probing)
 - [x] 2. Portfolio symbolic (parallel threads for BMC/k-ind/IC3)
 - [x] 3. Spacer tuning (parameter profiles for IC3)
 - [x] 4. Collapse compression (per-variable interning)
@@ -16,7 +16,7 @@
 ## Large Effort
 - [ ] 10. Instance-level DPOR
 - [ ] 11. SPORE (symmetry + POR combo)
-- [ ] 12. Superinstructions (fused bytecode ops)
+- [x] 12. Superinstructions (fused bytecode ops)
 - [ ] 13. Tree compression (LTSmin-style)
 - [ ] 14. Arena allocation for temporaries
 - [ ] 15. NaN-boxing / value representation
