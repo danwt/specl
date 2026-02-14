@@ -2,7 +2,7 @@
 
 use dashmap::DashMap;
 use ropey::Rope;
-use specl_syntax::{parse, pretty_print, Decl, Lexer, Span, TokenKind};
+use specl_syntax::{parse, pretty_print, Decl, Expr, ExprKind, Lexer, Span, TokenKind};
 use specl_types::check_module;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -572,6 +572,201 @@ impl SpeclLanguageServer {
         None
     }
 
+    /// Get inlay hints for parameter names at action/func call sites.
+    fn get_inlay_hints(&self, source: &str) -> Vec<InlayHint> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        // Build lookup: name -> param names
+        let mut param_names: std::collections::HashMap<String, Vec<String>> =
+            std::collections::HashMap::new();
+        for decl in &module.decls {
+            match decl {
+                Decl::Action(d) => {
+                    param_names.insert(
+                        d.name.name.clone(),
+                        d.params.iter().map(|p| p.name.name.clone()).collect(),
+                    );
+                }
+                Decl::Func(d) => {
+                    param_names.insert(
+                        d.name.name.clone(),
+                        d.params.iter().map(|p| p.name.name.clone()).collect(),
+                    );
+                }
+                _ => {}
+            }
+        }
+
+        if param_names.is_empty() {
+            return vec![];
+        }
+
+        let mut hints = Vec::new();
+        // Walk all expressions in all declarations
+        for decl in &module.decls {
+            match decl {
+                Decl::Action(d) => {
+                    for req in &d.body.requires {
+                        Self::collect_call_hints(req, &param_names, &mut hints);
+                    }
+                    if let Some(eff) = &d.body.effect {
+                        Self::collect_call_hints(eff, &param_names, &mut hints);
+                    }
+                }
+                Decl::Func(d) => {
+                    Self::collect_call_hints(&d.body, &param_names, &mut hints);
+                }
+                Decl::Invariant(d) => {
+                    Self::collect_call_hints(&d.body, &param_names, &mut hints);
+                }
+                Decl::Init(d) => {
+                    Self::collect_call_hints(&d.body, &param_names, &mut hints);
+                }
+                Decl::Property(d) => {
+                    Self::collect_call_hints(&d.body, &param_names, &mut hints);
+                }
+                _ => {}
+            }
+        }
+
+        hints
+    }
+
+    /// Recursively walk an expression tree and collect inlay hints for call sites.
+    fn collect_call_hints(
+        expr: &Expr,
+        param_names: &std::collections::HashMap<String, Vec<String>>,
+        hints: &mut Vec<InlayHint>,
+    ) {
+        match &expr.kind {
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Ident(name) = &func.kind {
+                    if let Some(names) = param_names.get(name.as_str()) {
+                        for (arg, pname) in args.iter().zip(names.iter()) {
+                            hints.push(InlayHint {
+                                position: Position {
+                                    line: arg.span.line.saturating_sub(1),
+                                    character: arg.span.column.saturating_sub(1),
+                                },
+                                label: InlayHintLabel::String(format!("{pname}: ")),
+                                kind: Some(InlayHintKind::PARAMETER),
+                                text_edits: None,
+                                tooltip: None,
+                                padding_left: None,
+                                padding_right: None,
+                                data: None,
+                            });
+                        }
+                    }
+                }
+                // Also recurse into func expr and args
+                Self::collect_call_hints(func, param_names, hints);
+                for arg in args {
+                    Self::collect_call_hints(arg, param_names, hints);
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                Self::collect_call_hints(left, param_names, hints);
+                Self::collect_call_hints(right, param_names, hints);
+            }
+            ExprKind::Unary { operand, .. } => {
+                Self::collect_call_hints(operand, param_names, hints);
+            }
+            ExprKind::Index { base, index } => {
+                Self::collect_call_hints(base, param_names, hints);
+                Self::collect_call_hints(index, param_names, hints);
+            }
+            ExprKind::Slice { base, lo, hi } => {
+                Self::collect_call_hints(base, param_names, hints);
+                Self::collect_call_hints(lo, param_names, hints);
+                Self::collect_call_hints(hi, param_names, hints);
+            }
+            ExprKind::Field { base, .. } => {
+                Self::collect_call_hints(base, param_names, hints);
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                Self::collect_call_hints(cond, param_names, hints);
+                Self::collect_call_hints(then_branch, param_names, hints);
+                Self::collect_call_hints(else_branch, param_names, hints);
+            }
+            ExprKind::Let { value, body, .. } => {
+                Self::collect_call_hints(value, param_names, hints);
+                Self::collect_call_hints(body, param_names, hints);
+            }
+            ExprKind::Quantifier { body, bindings, .. } => {
+                for b in bindings {
+                    Self::collect_call_hints(&b.domain, param_names, hints);
+                }
+                Self::collect_call_hints(body, param_names, hints);
+            }
+            ExprKind::Choose { domain, predicate, .. } => {
+                Self::collect_call_hints(domain, param_names, hints);
+                Self::collect_call_hints(predicate, param_names, hints);
+            }
+            ExprKind::SetComprehension { element, domain, filter, .. } => {
+                Self::collect_call_hints(element, param_names, hints);
+                Self::collect_call_hints(domain, param_names, hints);
+                if let Some(f) = filter {
+                    Self::collect_call_hints(f, param_names, hints);
+                }
+            }
+            ExprKind::Require(e)
+            | ExprKind::SeqHead(e)
+            | ExprKind::SeqTail(e)
+            | ExprKind::Len(e)
+            | ExprKind::Keys(e)
+            | ExprKind::Values(e)
+            | ExprKind::BigUnion(e)
+            | ExprKind::Powerset(e)
+            | ExprKind::Always(e)
+            | ExprKind::Eventually(e)
+            | ExprKind::Paren(e) => {
+                Self::collect_call_hints(e, param_names, hints);
+            }
+            ExprKind::LeadsTo { left, right } | ExprKind::Range { lo: left, hi: right } => {
+                Self::collect_call_hints(left, param_names, hints);
+                Self::collect_call_hints(right, param_names, hints);
+            }
+            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) | ExprKind::TupleLit(exprs) => {
+                for e in exprs {
+                    Self::collect_call_hints(e, param_names, hints);
+                }
+            }
+            ExprKind::DictLit(pairs) => {
+                for (k, v) in pairs {
+                    Self::collect_call_hints(k, param_names, hints);
+                    Self::collect_call_hints(v, param_names, hints);
+                }
+            }
+            ExprKind::RecordUpdate { base, updates } => {
+                Self::collect_call_hints(base, param_names, hints);
+                for u in updates {
+                    match u {
+                        specl_syntax::RecordFieldUpdate::Field { value, .. } => {
+                            Self::collect_call_hints(value, param_names, hints);
+                        }
+                        specl_syntax::RecordFieldUpdate::Dynamic { key, value } => {
+                            Self::collect_call_hints(key, param_names, hints);
+                            Self::collect_call_hints(value, param_names, hints);
+                        }
+                    }
+                }
+            }
+            ExprKind::FnLit { domain, body, .. } => {
+                Self::collect_call_hints(domain, param_names, hints);
+                Self::collect_call_hints(body, param_names, hints);
+            }
+            ExprKind::Fix { predicate, .. } => {
+                Self::collect_call_hints(predicate, param_names, hints);
+            }
+            // Leaf nodes: no children to recurse into
+            _ => {}
+        }
+    }
+
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
     const TT_KEYWORD: u32 = 0;
     const TT_TYPE: u32 = 1;
@@ -696,6 +891,7 @@ impl LanguageServer for SpeclLanguageServer {
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
+                inlay_hint_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -842,6 +1038,13 @@ impl LanguageServer for SpeclLanguageServer {
             changes: Some(changes),
             ..Default::default()
         }))
+    }
+
+    async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let hints = self.get_inlay_hints(&content);
+        Ok(if hints.is_empty() { None } else { Some(hints) })
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
