@@ -205,6 +205,8 @@ pub struct CheckConfig {
     pub directed: bool,
     /// Maximum time in seconds (0 = unlimited).
     pub max_time_secs: u64,
+    /// Only check these invariants (empty = check all).
+    pub check_only_invariants: Vec<String>,
 }
 
 impl Default for CheckConfig {
@@ -226,6 +228,7 @@ impl Default for CheckConfig {
             bloom_bits: 30,
             directed: false,
             max_time_secs: 0,
+            check_only_invariants: Vec::new(),
         }
     }
 }
@@ -249,6 +252,7 @@ impl Clone for CheckConfig {
             bloom_bits: self.bloom_bits,
             directed: self.directed,
             max_time_secs: self.max_time_secs,
+            check_only_invariants: self.check_only_invariants.clone(),
         }
     }
 }
@@ -272,6 +276,7 @@ impl std::fmt::Debug for CheckConfig {
             .field("bloom_bits", &self.bloom_bits)
             .field("directed", &self.directed)
             .field("max_time_secs", &self.max_time_secs)
+            .field("check_only_invariants", &self.check_only_invariants)
             .finish()
     }
 }
@@ -340,6 +345,8 @@ pub struct Explorer {
     profile_data: Option<ProfileData>,
     /// Deadline for time-limited checking (None = unlimited).
     deadline: Option<Instant>,
+    /// Which invariants are active (true = check, false = skip). Empty config = all active.
+    active_invariants: Vec<bool>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -1029,6 +1036,16 @@ impl Explorer {
             None
         };
 
+        // Compute which invariants are active (empty check_only = all active)
+        let active_invariants: Vec<bool> = if config.check_only_invariants.is_empty() {
+            vec![true; spec.invariants.len()]
+        } else {
+            spec.invariants
+                .iter()
+                .map(|inv| config.check_only_invariants.contains(&inv.name))
+                .collect()
+        };
+
         let mut explorer = Self {
             spec,
             consts,
@@ -1052,6 +1069,7 @@ impl Explorer {
             action_has_refinable,
             profile_data: None,
             deadline,
+            active_invariants,
         };
 
         // Precompute action names for trace reconstruction
@@ -1721,6 +1739,9 @@ impl Explorer {
 
             // Check invariants
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if !self.active_invariants[inv_idx] {
+                    continue;
+                }
                 if !self.check_invariant_bc(inv_idx, &state)? {
                     let trace = self.store.trace_to(&fp, &self.action_names);
                     return Ok(CheckOutcome::InvariantViolation {
@@ -1897,6 +1918,9 @@ impl Explorer {
 
             // Check invariants (skip if no relevant variables changed)
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if !self.active_invariants[inv_idx] {
+                    continue;
+                }
                 if change_mask & self.inv_dep_masks[inv_idx] == 0 {
                     continue;
                 }
@@ -2142,6 +2166,9 @@ impl Explorer {
             // --- Phase 1: Check invariants ---
             let t0 = if profiling { Instant::now() } else { Instant::now() };
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                if !self.active_invariants[inv_idx] {
+                    continue;
+                }
                 if change_mask & self.inv_dep_masks[inv_idx] == 0 {
                     continue;
                 }
@@ -2345,6 +2372,9 @@ impl Explorer {
 
                     // Check invariants (skip if no relevant variables changed)
                     for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
+                        if !self.active_invariants[inv_idx] {
+                            continue;
+                        }
                         if change_mask & self.inv_dep_masks[inv_idx] == 0 {
                             continue;
                         }

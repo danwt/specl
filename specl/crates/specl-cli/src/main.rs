@@ -284,6 +284,10 @@ enum Commands {
         /// Show profiling breakdown (per-action firing counts, phase timing)
         #[arg(long, help_heading = "Explicit-State")]
         profile: bool,
+
+        /// Only check specific invariants (repeatable, by name)
+        #[arg(long = "check-only", value_name = "INVARIANT", help_heading = "Explicit-State")]
+        check_only: Vec<String>,
     },
 
     /// Format a Specl file
@@ -454,6 +458,7 @@ fn main() {
             no_auto,
             output,
             profile,
+            check_only,
         } => {
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
@@ -468,7 +473,8 @@ fn main() {
                 || max_states > 0
                 || max_depth > 0
                 || memory_limit > 0
-                || max_time > 0;
+                || max_time > 0
+                || !check_only.is_empty();
 
             let use_symbolic = symbolic || specific_symbolic;
             let use_bfs = bfs || specific_explicit;
@@ -531,6 +537,7 @@ fn main() {
                     output,
                     swarm,
                     profile,
+                    check_only.clone(),
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
@@ -565,6 +572,7 @@ fn main() {
                         output,
                         swarm,
                         profile,
+                        check_only,
                     )
                 }
             };
@@ -873,6 +881,7 @@ fn cmd_check(
     output_format: OutputFormat,
     swarm: Option<usize>,
     profile: bool,
+    check_only_invariants: Vec<String>,
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     let filename = file.display().to_string();
@@ -1043,6 +1052,7 @@ fn cmd_check(
         bloom_bits,
         directed,
         max_time_secs,
+        check_only_invariants,
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -1351,6 +1361,7 @@ fn cmd_check_swarm(
                     bloom_bits: 30,
                     directed: false,
                     max_time_secs: 0,
+                    check_only_invariants: Vec::new(),
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1419,6 +1430,7 @@ fn cmd_check_swarm(
                     bloom_bits: 30,
                     directed: false,
                     max_time_secs: 0,
+                    check_only_invariants: Vec::new(),
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {
