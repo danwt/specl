@@ -1,0 +1,81 @@
+module RCU
+
+// Read-Copy-Update (RCU) synchronization as used in Linux kernel.
+// N+1 readers, one writer. Readers enter/exit read-side critical sections
+// using a generation counter. The writer publishes a new version and
+// waits for a grace period (all active readers from the old generation
+// have exited) before reclaiming old data.
+//
+// Use: specl check rcu.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (1.6K states, 0.0s)
+
+const N: 0..3
+
+// Current published version
+var version: 0..4
+
+// Per-reader state: 0=idle, 1=in_rcs (read-side critical section)
+var reader_pc: Dict[0..N, 0..1]
+
+// Version each reader observed when entering RCS
+var reader_ver: Dict[0..N, 0..4]
+
+// Writer state: 0=idle, 1=published (waiting for grace period), 2=reclaimed
+var writer_pc: 0..2
+
+// Version being reclaimed (old version before publish)
+var reclaim_ver: 0..4
+
+init {
+    version = 0
+    and reader_pc = {r: 0 for r in 0..N}
+    and reader_ver = {r: 0 for r in 0..N}
+    and writer_pc = 0
+    and reclaim_ver = 0
+}
+
+// Reader r enters read-side critical section
+action ReaderEnter(r: 0..N) {
+    require reader_pc[r] == 0
+    reader_pc = reader_pc | {r: 1}
+    and reader_ver = reader_ver | {r: version}
+}
+
+// Reader r exits read-side critical section
+action ReaderExit(r: 0..N) {
+    require reader_pc[r] == 1
+    reader_pc = reader_pc | {r: 0}
+}
+
+// Writer publishes new version (copy-on-write)
+action WriterPublish() {
+    require writer_pc == 0
+    require version < 4
+    reclaim_ver = version
+    and version = version + 1
+    and writer_pc = 1
+}
+
+// Writer reclaims old version after grace period
+// (all readers that were in RCS when version changed have exited)
+action WriterReclaim() {
+    require writer_pc == 1
+    // Grace period: no reader is in RCS with the old version
+    require all r in 0..N:
+        reader_pc[r] == 0 or reader_ver[r] != reclaim_ver
+    writer_pc = 2
+}
+
+// Writer goes back to idle (ready for next update)
+action WriterReset() {
+    require writer_pc == 2
+    writer_pc = 0
+}
+
+// Safety: writer never reclaims while a reader holds the old version
+// (this is enforced by the WriterReclaim guard, but we verify it)
+invariant NoUseAfterFree {
+    writer_pc == 2 implies
+        all r in 0..N:
+            reader_pc[r] == 0 or reader_ver[r] != reclaim_ver
+}
