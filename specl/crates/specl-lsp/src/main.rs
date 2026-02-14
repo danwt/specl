@@ -577,6 +577,7 @@ impl LanguageServer for SpeclLanguageServer {
                 }),
                 definition_provider: Some(OneOf::Left(true)),
                 references_provider: Some(OneOf::Left(true)),
+                rename_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
@@ -691,6 +692,32 @@ impl LanguageServer for SpeclLanguageServer {
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         let symbols = self.get_document_symbols(&content);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
+    }
+
+    async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+
+        let refs = self.get_references(&content, position, uri);
+        if refs.is_empty() {
+            return Ok(None);
+        }
+
+        let edits: Vec<TextEdit> = refs
+            .into_iter()
+            .map(|loc| TextEdit {
+                range: loc.range,
+                new_text: params.new_name.clone(),
+            })
+            .collect();
+
+        let mut changes = std::collections::HashMap::new();
+        changes.insert(uri.clone(), edits);
+        Ok(Some(WorkspaceEdit {
+            changes: Some(changes),
+            ..Default::default()
+        }))
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
