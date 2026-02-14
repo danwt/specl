@@ -37,7 +37,8 @@ impl fmt::Display for Fingerprint {
 
 /// Hash a single variable at a given position.
 /// Specialized fast path for Int/Bool (dominant types in protocol specs)
-/// using splitmix64-style mixing. Falls back to AHash for composite types.
+/// using splitmix64-style mixing. Falls back to AHash for composite types
+/// (3-5x faster than SipHash on modern CPUs with AES-NI).
 #[inline]
 pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
     match val.kind() {
@@ -52,10 +53,7 @@ pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
             h ^ (h >> 32)
         }
         _ => {
-            // Fixed seed for deterministic fingerprinting across runs
-            // (required for incremental checking cache to work).
-            use std::collections::hash_map::DefaultHasher;
-            let mut hasher = DefaultHasher::new();
+            let mut hasher = ahash::AHasher::default();
             idx.hash(&mut hasher);
             val.hash(&mut hasher);
             hasher.finish()
@@ -63,35 +61,30 @@ pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
     }
 }
 
-/// Compute a decomposable fingerprint from variable values.
-/// fp = XOR of hash_var(i, var[i]) for all i.
-fn compute_fingerprint(vars: &[Value]) -> Fingerprint {
-    let mut h: u64 = 0;
+/// Compute per-variable hashes and the decomposable fingerprint.
+/// Returns (var_hashes, fingerprint).
+fn compute_var_hashes_and_fingerprint(vars: &[Value]) -> (Vec<u64>, Fingerprint) {
+    let mut hashes = Vec::with_capacity(vars.len());
+    let mut fp: u64 = 0;
     for (i, var) in vars.iter().enumerate() {
-        h ^= hash_var(i, var);
+        let h = hash_var(i, var);
+        hashes.push(h);
+        fp ^= h;
     }
-    Fingerprint(h)
-}
-
-/// Update a fingerprint after changing a single variable.
-#[inline]
-pub fn update_fingerprint(
-    fp: Fingerprint,
-    idx: usize,
-    old_val: &Value,
-    new_val: &Value,
-) -> Fingerprint {
-    Fingerprint(fp.0 ^ hash_var(idx, old_val) ^ hash_var(idx, new_val))
+    (hashes, Fingerprint(fp))
 }
 
 /// A state in the model, represented as a vector of variable values.
 /// Uses Arc for cheap cloning — State::clone() is an atomic increment,
 /// not a deep copy of the entire variable tree.
-/// Fingerprint is cached at construction time.
+/// Fingerprint and per-variable hashes are cached at construction time.
 #[derive(Debug, Clone)]
 pub struct State {
     /// Variable values indexed by variable index.
     pub vars: Arc<Vec<Value>>,
+    /// Cached per-variable hashes: var_hashes[i] = hash_var(i, vars[i]).
+    /// Enables O(1) fingerprint updates and O(1) xor_hash_vars lookups.
+    pub var_hashes: Arc<Vec<u64>>,
     /// Cached fingerprint (XOR-based decomposable hash).
     fp: Fingerprint,
 }
@@ -107,17 +100,38 @@ impl Eq for State {}
 impl State {
     /// Create a new state from variable values.
     pub fn new(vars: Vec<Value>) -> Self {
-        let fp = compute_fingerprint(&vars);
+        let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars);
         Self {
             vars: Arc::new(vars),
+            var_hashes: Arc::new(hashes),
+            fp,
+        }
+    }
+
+    /// Create a state with pre-computed fingerprint and var_hashes (for incremental construction).
+    pub fn with_fingerprint_and_hashes(
+        vars: Vec<Value>,
+        fp: Fingerprint,
+        var_hashes: Vec<u64>,
+    ) -> Self {
+        Self {
+            vars: Arc::new(vars),
+            var_hashes: Arc::new(var_hashes),
             fp,
         }
     }
 
     /// Create a state with a pre-computed fingerprint (for incremental construction).
+    /// Recomputes var_hashes from scratch.
     pub fn with_fingerprint(vars: Vec<Value>, fp: Fingerprint) -> Self {
+        let hashes: Vec<u64> = vars
+            .iter()
+            .enumerate()
+            .map(|(i, v)| hash_var(i, v))
+            .collect();
         Self {
             vars: Arc::new(vars),
+            var_hashes: Arc::new(hashes),
             fp,
         }
     }
@@ -137,6 +151,12 @@ impl State {
     /// Get the number of variables.
     pub fn num_vars(&self) -> usize {
         self.vars.len()
+    }
+
+    /// Get the cached hash for a specific variable.
+    #[inline]
+    pub fn var_hash(&self, idx: usize) -> u64 {
+        self.var_hashes[idx]
     }
 
     /// Compute the canonical form of this state under the given symmetry groups.
@@ -291,6 +311,13 @@ impl fmt::Display for State {
 mod tests {
     use super::*;
 
+    /// Test helper: update fingerprint using cached var_hashes (same logic as direct_eval).
+    fn update_fp(state: &State, idx: usize, new_val: &Value) -> Fingerprint {
+        let old_hash = state.var_hashes[idx];
+        let new_hash = hash_var(idx, new_val);
+        Fingerprint(state.fingerprint().as_u64() ^ old_hash ^ new_hash)
+    }
+
     #[test]
     fn test_state_fingerprint() {
         let s1 = State::new(vec![Value::int(1), Value::int(2)]);
@@ -309,11 +336,9 @@ mod tests {
 
     #[test]
     fn test_incremental_fingerprint() {
-        // Build state: [10, 20, 30]
         let s = State::new(vec![Value::int(10), Value::int(20), Value::int(30)]);
 
-        // Change var[1] from 20 to 99
-        let new_fp = update_fingerprint(s.fingerprint(), 1, &Value::int(20), &Value::int(99));
+        let new_fp = update_fp(&s, 1, &Value::int(99));
         let expected = State::new(vec![Value::int(10), Value::int(99), Value::int(30)]);
 
         assert_eq!(new_fp, expected.fingerprint());
@@ -323,9 +348,14 @@ mod tests {
     fn test_incremental_fingerprint_multiple_changes() {
         let s = State::new(vec![Value::int(1), Value::int(2), Value::int(3)]);
 
-        // Change var[0] from 1 to 10, then var[2] from 3 to 30
-        let fp1 = update_fingerprint(s.fingerprint(), 0, &Value::int(1), &Value::int(10));
-        let fp2 = update_fingerprint(fp1, 2, &Value::int(3), &Value::int(30));
+        // Change var[0] from 1 to 10
+        let fp1 = update_fp(&s, 0, &Value::int(10));
+        // Build intermediate state to get updated var_hashes for second change
+        let s1 = State::new(vec![Value::int(10), Value::int(2), Value::int(3)]);
+        assert_eq!(fp1, s1.fingerprint());
+
+        // Change var[2] from 3 to 30
+        let fp2 = update_fp(&s1, 2, &Value::int(30));
         let expected = State::new(vec![Value::int(10), Value::int(2), Value::int(30)]);
 
         assert_eq!(fp2, expected.fingerprint());
@@ -334,13 +364,32 @@ mod tests {
     #[test]
     fn test_cached_fingerprint() {
         let s = State::new(vec![Value::int(42), Value::bool(true)]);
-        // Fingerprint should be consistent
         assert_eq!(s.fingerprint(), s.fingerprint());
 
-        // with_fingerprint should use the provided fingerprint
         let fp = s.fingerprint();
         let s2 = State::with_fingerprint(vec![Value::int(42), Value::bool(true)], fp);
         assert_eq!(s.fingerprint(), s2.fingerprint());
         assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn test_var_hashes_cached() {
+        let s = State::new(vec![Value::int(42), Value::bool(true)]);
+        assert_eq!(s.var_hashes.len(), 2);
+        assert_eq!(s.var_hash(0), hash_var(0, &Value::int(42)));
+        assert_eq!(s.var_hash(1), hash_var(1, &Value::bool(true)));
+    }
+
+    #[test]
+    fn test_with_fingerprint_and_hashes() {
+        let s1 = State::new(vec![Value::int(1), Value::int(2)]);
+        let s2 = State::with_fingerprint_and_hashes(
+            vec![Value::int(1), Value::int(2)],
+            s1.fingerprint(),
+            (*s1.var_hashes).clone(),
+        );
+        assert_eq!(s1.fingerprint(), s2.fingerprint());
+        assert_eq!(s1.var_hashes, s2.var_hashes);
+        assert_eq!(s1, s2);
     }
 }

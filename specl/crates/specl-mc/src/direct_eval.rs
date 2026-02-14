@@ -12,7 +12,7 @@ use specl_eval::{eval, eval_bool, EvalContext, EvalError, Value};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec};
 use tracing::debug;
 
-use crate::state::{update_fingerprint, State};
+use crate::state::{hash_var, State};
 
 /// Result of extracting assignments from an expression.
 #[derive(Debug, Clone)]
@@ -243,6 +243,7 @@ fn extract_effect_from_expr(
 }
 
 /// Apply effects using bytecode-compiled assignments (guard already checked).
+/// Uses cached var_hashes from the parent state to avoid rehashing old values.
 pub fn apply_effects_bytecode(
     state: &State,
     params: &[Value],
@@ -254,35 +255,42 @@ pub fn apply_effects_bytecode(
 ) -> Result<Option<State>, EvalError> {
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
-    let mut fp = state.fingerprint();
+    let mut fp = state.fingerprint().as_u64();
+    let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
     for (var_idx, bc) in compiled_assignments {
         let value = vm_eval(bc, &state.vars, next_vars_buf, consts, params)?;
-        let old_val = &next_vars_buf[*var_idx];
-        fp = update_fingerprint(fp, *var_idx, old_val, &value);
+        let old_hash = var_hashes[*var_idx];
+        let new_hash = hash_var(*var_idx, &value);
+        fp ^= old_hash ^ new_hash;
+        var_hashes[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }
 
+    let fp = crate::state::Fingerprint::from_u64(fp);
     if needs_reverify {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
         let result = eval(effect, &mut ctx)?;
         if result.as_bool() == Some(true) {
-            Ok(Some(State::with_fingerprint(
+            Ok(Some(State::with_fingerprint_and_hashes(
                 std::mem::take(next_vars_buf),
                 fp,
+                var_hashes,
             )))
         } else {
             Ok(None)
         }
     } else {
-        Ok(Some(State::with_fingerprint(
+        Ok(Some(State::with_fingerprint_and_hashes(
             std::mem::take(next_vars_buf),
             fp,
+            var_hashes,
         )))
     }
 }
 
 /// Apply effects using bytecode-compiled assignments with reusable VM buffers.
+/// Uses cached var_hashes from the parent state to avoid rehashing old values.
 pub fn apply_effects_bytecode_reuse(
     state: &State,
     params: &[Value],
@@ -295,36 +303,43 @@ pub fn apply_effects_bytecode_reuse(
 ) -> Result<Option<State>, EvalError> {
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
-    let mut fp = state.fingerprint();
+    let mut fp = state.fingerprint().as_u64();
+    let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
     for (var_idx, bc) in compiled_assignments {
         let value = vm_eval_reuse(bc, &state.vars, next_vars_buf, consts, params, vm_bufs)?;
-        let old_val = &next_vars_buf[*var_idx];
-        fp = update_fingerprint(fp, *var_idx, old_val, &value);
+        let old_hash = var_hashes[*var_idx];
+        let new_hash = hash_var(*var_idx, &value);
+        fp ^= old_hash ^ new_hash;
+        var_hashes[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }
 
+    let fp = crate::state::Fingerprint::from_u64(fp);
     if needs_reverify {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
         let result = eval(effect, &mut ctx)?;
         if result.as_bool() == Some(true) {
-            Ok(Some(State::with_fingerprint(
+            Ok(Some(State::with_fingerprint_and_hashes(
                 std::mem::take(next_vars_buf),
                 fp,
+                var_hashes,
             )))
         } else {
             Ok(None)
         }
     } else {
-        Ok(Some(State::with_fingerprint(
+        Ok(Some(State::with_fingerprint_and_hashes(
             std::mem::take(next_vars_buf),
             fp,
+            var_hashes,
         )))
     }
 }
 
 /// Apply an action to a state using precomputed effect assignments.
 /// Uses `next_vars_buf` as a reusable buffer to avoid repeated allocation.
+/// Uses cached var_hashes from the parent state to avoid rehashing old values.
 pub fn apply_action_direct_cached(
     state: &State,
     action: &CompiledAction,
@@ -334,42 +349,44 @@ pub fn apply_action_direct_cached(
     needs_reverify: bool,
     next_vars_buf: &mut Vec<Value>,
 ) -> Result<Option<State>, EvalError> {
-    // First check the guard
     let mut ctx = EvalContext::new(&state.vars, &state.vars, consts, params);
     if !eval_bool(&action.guard, &mut ctx)? {
         return Ok(None);
     }
 
-    // Build next state by cloning into reusable buffer, tracking fingerprint incrementally.
-    // With Arc-CoW, this clone only bumps refcounts for Set/Fn values.
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
-    let mut fp = state.fingerprint();
+    let mut fp = state.fingerprint().as_u64();
+    let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
     for (var_idx, expr) in assignments {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
         let value = eval(expr, &mut ctx)?;
-        let old_val = &next_vars_buf[*var_idx];
-        fp = update_fingerprint(fp, *var_idx, old_val, &value);
+        let old_hash = var_hashes[*var_idx];
+        let new_hash = hash_var(*var_idx, &value);
+        fp ^= old_hash ^ new_hash;
+        var_hashes[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }
 
-    // Only re-verify if there are current-state constraints in the effect
+    let fp = crate::state::Fingerprint::from_u64(fp);
     if needs_reverify {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
         let result = eval(&action.effect, &mut ctx)?;
         if result.as_bool() == Some(true) {
-            Ok(Some(State::with_fingerprint(
+            Ok(Some(State::with_fingerprint_and_hashes(
                 std::mem::take(next_vars_buf),
                 fp,
+                var_hashes,
             )))
         } else {
             Ok(None)
         }
     } else {
-        Ok(Some(State::with_fingerprint(
+        Ok(Some(State::with_fingerprint_and_hashes(
             std::mem::take(next_vars_buf),
             fp,
+            var_hashes,
         )))
     }
 }

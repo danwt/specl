@@ -4,7 +4,7 @@ use crate::direct_eval::{
     apply_action_direct, apply_effects_bytecode, extract_effect_assignments,
     generate_initial_states_direct,
 };
-use crate::state::{hash_var, Fingerprint, State};
+use crate::state::{Fingerprint, State};
 use crate::store::StateStore;
 use memory_stats::memory_stats;
 use rayon::prelude::*;
@@ -476,12 +476,13 @@ fn op_cache_key(params: &[Value], read_xor: u64) -> u64 {
     }
 }
 
-/// Compute XOR of hash_var for a subset of variables (used for cache delta).
+/// Compute XOR of cached var hashes for a subset of variables (used for cache delta).
+/// Uses pre-computed hashes from State::var_hashes, avoiding rehashing entirely.
 #[inline]
-fn xor_hash_vars(vars: &[Value], indices: &[usize]) -> u64 {
+fn xor_hash_vars(var_hashes: &[u64], indices: &[usize]) -> u64 {
     indices
         .iter()
-        .fold(0u64, |acc, &i| acc ^ hash_var(i, &vars[i]))
+        .fold(0u64, |acc, &i| acc ^ var_hashes[i])
 }
 
 /// Decompose a guard expression into top-level AND-conjuncts.
@@ -3487,8 +3488,8 @@ impl Explorer {
         // Precompute per-(state, action) hashes only when cache is active.
         let (write_old_hash, read_xor, parent_fp) = if use_cache {
             (
-                xor_hash_vars(&state.vars, changes),
-                xor_hash_vars(&state.vars, reads),
+                xor_hash_vars(&state.var_hashes, changes),
+                xor_hash_vars(&state.var_hashes, reads),
                 state.fingerprint().as_u64(),
             )
         } else {
@@ -3541,7 +3542,7 @@ impl Explorer {
                                 &action.effect,
                             ) {
                                 if let Some(next_state) = result {
-                                    cache.store(key, xor_hash_vars(&next_state.vars, changes));
+                                    cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
                                     buf.push((next_state, action_idx, params_to_i64s(params)));
                                 } else {
                                     cache.store(key, OP_NO_SUCCESSOR);
@@ -3613,7 +3614,7 @@ impl Explorer {
                             &action.effect,
                         ) {
                             if let Some(next_state) = result {
-                                cache.store(key, xor_hash_vars(&next_state.vars, changes));
+                                cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
                                 buf.push((next_state, action_idx, params_to_i64s(params)));
                             } else {
                                 cache.store(key, OP_NO_SUCCESSOR);
