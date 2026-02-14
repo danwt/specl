@@ -1,0 +1,68 @@
+module LogReplication
+
+// Raft-Style Log Replication (Ongaro & Ousterhout, 2014).
+// A single leader replicates log entries to N followers.
+// An entry is committed once a quorum (majority) has it.
+// Followers may lag behind the leader.
+//
+// Simplified: single term, no leader election, no log compaction.
+// Focus on the safety property: committed entries are durable
+// (present on a majority of replicas).
+//
+// Use: specl check log-replication.specl -c N=2 -c MaxLen=3 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxLen=3 -> OK (80 states, 0.0s)
+
+const N: 1..4
+const MaxLen: 2..5
+
+// Leader's log length
+var leader_len: 0..MaxLen
+
+// Per-follower: how many entries replicated (match index)
+var match_idx: Dict[1..N, 0..MaxLen]
+
+// Committed index (highest index replicated on majority)
+var commit_idx: 0..MaxLen
+
+init {
+    leader_len = 0
+    and match_idx = {f: 0 for f in 1..N}
+    and commit_idx = 0
+}
+
+// Leader appends a new entry
+action Append() {
+    require leader_len < MaxLen
+    leader_len = leader_len + 1
+}
+
+// Leader replicates next entry to follower f
+action Replicate(f: 1..N) {
+    require match_idx[f] < leader_len
+    match_idx = match_idx | {f: match_idx[f] + 1}
+}
+
+// Leader advances commit index once a majority has the entry
+action AdvanceCommit() {
+    require commit_idx < leader_len
+    // Majority: leader (1) + followers with match_idx > commit_idx
+    // Need (N+1)/2 + 1 total (including leader)
+    require len({f in 1..N if match_idx[f] > commit_idx}) + 1 > (N + 1) / 2
+    commit_idx = commit_idx + 1
+}
+
+// Committed entries are on a majority of replicas
+invariant CommittedOnMajority {
+    len({f in 1..N if match_idx[f] >= commit_idx}) + 1 > (N + 1) / 2
+    or commit_idx == 0
+}
+
+// Commit index never exceeds leader's log
+invariant CommitBounded {
+    commit_idx <= leader_len
+}
+
+// Match index never exceeds leader's log
+invariant MatchBounded {
+    all f in 1..N: match_idx[f] <= leader_len
+}
