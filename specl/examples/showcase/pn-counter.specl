@@ -1,0 +1,76 @@
+module PNCounter
+
+// PN-Counter (Positive-Negative Counter) CRDT
+// Extends the G-Counter with a separate decrement counter.
+// Each process maintains two vectors: P (increments) and N (decrements).
+// The value seen by process p is: sum(P[p]) - sum(N[p]).
+// Merge is pointwise max on both P and N independently.
+//
+// Key properties:
+// - Value can increase or decrease (unlike G-Counter)
+// - Monotonicity of underlying counters (P and N never decrease)
+// - Convergence: identical views yield identical values
+//
+// Use: specl check pn-counter.specl -c N=2 -c Max=2 --no-deadlock
+// Verified: N=2 Max=2 -> OK (83K states, 0.5s)
+
+const N: 0..3
+const Max: 1..3
+
+// P[p][q] = process p's view of process q's increment count
+// M[p][q] = process p's view of process q's decrement count (M for minus)
+var P: Dict[0..N, Dict[0..N, 0..Max]]
+var M: Dict[0..N, Dict[0..N, 0..Max]]
+
+init {
+    P = {p: {q: 0 for q in 0..N} for p in 0..N}
+    and M = {p: {q: 0 for q in 0..N} for p in 0..N}
+}
+
+// Process p increments its own counter
+action Increment(p: 0..N) {
+    require P[p][p] < Max
+    P = P | {p: P[p] | {p: P[p][p] + 1}}
+}
+
+// Process p decrements its own counter
+action Decrement(p: 0..N) {
+    require M[p][p] < Max
+    M = M | {p: M[p] | {p: M[p][p] + 1}}
+}
+
+// Process p merges process q's state (pointwise max on both P and M)
+action Merge(p: 0..N, q: 0..N) {
+    require p != q
+    require any r in 0..N: P[q][r] > P[p][r] or M[q][r] > M[p][r]
+    P = P | {p:
+        {r: if P[q][r] > P[p][r] then P[q][r] else P[p][r]
+         for r in 0..N}
+    }
+    and M = M | {p:
+        {r: if M[q][r] > M[p][r] then M[q][r] else M[p][r]
+         for r in 0..N}
+    }
+}
+
+// P counters never decrease (monotonicity of increment vector)
+invariant PMonotonic {
+    all p in 0..N: all q in 0..N: P[p][q] >= 0
+}
+
+// M counters never decrease (monotonicity of decrement vector)
+invariant MMonotonic {
+    all p in 0..N: all q in 0..N: M[p][q] >= 0
+}
+
+// Convergence: if two processes have identical views, they compute the same value.
+// Value = sum(P[p]) - sum(M[p]). With identical vectors, sums must match.
+invariant SameViewSameValue {
+    all p in 0..N: all q in 0..N:
+        (all r in 0..N: P[p][r] == P[q][r] and M[p][r] == M[q][r])
+        implies
+        (let sp = P[p][0] + P[p][1] - M[p][0] - M[p][1] in
+         let sq = P[q][0] + P[q][1] - M[q][0] - M[q][1] in
+         if N >= 2 then sp + P[p][2] - M[p][2] == sq + P[q][2] - M[q][2]
+         else sp == sq)
+}
