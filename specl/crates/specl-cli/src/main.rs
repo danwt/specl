@@ -331,6 +331,10 @@ enum Commands {
         #[arg(long, help_heading = "Symbolic (Z3)")]
         portfolio: bool,
 
+        /// Golem CHC solver (external, complements Z3 Spacer)
+        #[arg(long, help_heading = "Symbolic (Z3)")]
+        golem: bool,
+
         /// Max sequence length for symbolic Seq[T] encoding
         #[arg(long, default_value = "5", help_heading = "Symbolic (Z3)")]
         seq_bound: usize,
@@ -550,6 +554,7 @@ fn main() {
             k_induction,
             ic3,
             portfolio,
+            golem,
             seq_bound,
             spacer_profile,
             verbose,
@@ -563,7 +568,7 @@ fn main() {
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
 
-            let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3 || portfolio;
+            let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3 || portfolio || golem;
             let specific_explicit = por
                 || symmetry
                 || fast
@@ -608,6 +613,7 @@ fn main() {
                     k_induction,
                     ic3,
                     portfolio,
+                    golem,
                     seq_bound,
                     sp,
                     json,
@@ -648,8 +654,8 @@ fn main() {
                         println!("Auto-selected: symbolic checking (unbounded types detected)");
                     }
                     cmd_check_symbolic(
-                        &file, &constant, bmc_depth, false, false, None, false, false, seq_bound,
-                        sp, json,
+                        &file, &constant, bmc_depth, false, false, None, false, false, false,
+                        seq_bound, sp, json,
                     )
                 } else {
                     cmd_check(
@@ -1627,6 +1633,7 @@ fn cmd_check_symbolic(
     k_induction: Option<usize>,
     ic3: bool,
     portfolio: bool,
+    golem: bool,
     seq_bound: usize,
     spacer_profile: SpacerProfile,
     json: bool,
@@ -1654,6 +1661,8 @@ fn cmd_check_symbolic(
     let config = SymbolicConfig {
         mode: if portfolio {
             SymbolicMode::Portfolio
+        } else if golem {
+            SymbolicMode::Golem
         } else if ic3 {
             SymbolicMode::Ic3
         } else if let Some(k) = k_induction {
@@ -1672,6 +1681,8 @@ fn cmd_check_symbolic(
 
     let mode_str = if portfolio {
         "portfolio"
+    } else if golem {
+        "Golem"
     } else if ic3 {
         "IC3"
     } else if k_induction.is_some() {

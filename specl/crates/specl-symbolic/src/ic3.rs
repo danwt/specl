@@ -14,6 +14,110 @@ use tracing::info;
 use z3::ast::{Ast, Dynamic};
 use z3::{Context, Solver};
 
+/// Built CHC system ready for querying (used by IC3 and Golem backends).
+pub struct ChcSystem {
+    pub fp: Fixedpoint,
+    pub err_app: z3_sys::Z3_ast,
+}
+
+/// Build a CHC system encoding the spec as Horn clauses with invariant error rules.
+/// Returns the fixedpoint engine and the Error query app.
+pub fn build_chc_system(
+    spec: &CompiledSpec,
+    consts: &[Value],
+    layout: &VarLayout,
+) -> SymbolicResult<ChcSystem> {
+    let ctx = Context::thread_local().get_z3_context();
+    let fp = Fixedpoint::new();
+
+    // Collect sorts for all flattened state variables
+    let sorts = collect_sorts(layout, ctx);
+    let num_vars = sorts.len();
+
+    // Declare Reach relation
+    let reach_name =
+        unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"Reach".as_ptr()) }.unwrap();
+    let bool_sort = unsafe { z3_sys::Z3_mk_bool_sort(ctx) }.unwrap();
+    let reach_decl = unsafe {
+        z3_sys::Z3_mk_func_decl(ctx, reach_name, num_vars as u32, sorts.as_ptr(), bool_sort)
+    }
+    .unwrap();
+    fp.register_relation(reach_decl);
+
+    // Create step vars for step 0 and step 1
+    let step0_vars = create_step_vars(layout, 0);
+    let step1_vars = create_step_vars(layout, 1);
+    let all_step_vars = vec![step0_vars, step1_vars];
+
+    // Collect all Z3 constants (as Z3_app) for quantification
+    let flat0 = flatten_step_vars(&all_step_vars[0]);
+    let flat1 = flatten_step_vars(&all_step_vars[1]);
+    let apps0 = to_apps(ctx, &flat0);
+    let apps1 = to_apps(ctx, &flat1);
+    let all_apps: Vec<z3_sys::Z3_app> = apps0.iter().chain(apps1.iter()).copied().collect();
+
+    let reach_0 = mk_app(ctx, reach_decl, &flat0);
+    let reach_1 = mk_app(ctx, reach_decl, &flat1);
+
+    // === Init rule: forall vars0. init(vars0) => Reach(vars0) ===
+    let init_solver = Solver::new();
+    assert_range_constraints(&init_solver, layout, &all_step_vars, 0);
+    encode_init(&init_solver, spec, consts, layout, &all_step_vars)?;
+    let init_formula = solver_conjunction_raw(ctx, &init_solver);
+    let init_body = mk_implies(ctx, init_formula, reach_0);
+    let init_rule = mk_forall(ctx, &apps0, init_body);
+    fp.add_rule(init_rule);
+
+    // === Transition rule: forall vars0,vars1. Reach(vars0) ∧ range(vars1) ∧ trans => Reach(vars1) ===
+    let trans = encode_transition(spec, consts, layout, &all_step_vars, 0)?;
+    let trans_raw = trans.get_z3_ast();
+    inc_ref(ctx, trans_raw);
+
+    let range_solver = Solver::new();
+    assert_range_constraints(&range_solver, layout, &all_step_vars, 1);
+    let range_formula = solver_conjunction_raw(ctx, &range_solver);
+
+    let trans_body = mk_and3(ctx, reach_0, range_formula, trans_raw);
+    let trans_impl = mk_implies(ctx, trans_body, reach_1);
+    let trans_rule = mk_forall(ctx, &all_apps, trans_impl);
+    fp.add_rule(trans_rule);
+
+    // === Error relation for invariant queries ===
+    let err_name =
+        unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"Error".as_ptr()) }.unwrap();
+    let err_decl =
+        unsafe { z3_sys::Z3_mk_func_decl(ctx, err_name, 0, std::ptr::null(), bool_sort) }.unwrap();
+    fp.register_relation(err_decl);
+    let err_app = mk_app(ctx, err_decl, &[]);
+
+    // Add error rules for each invariant: Reach(vars) ∧ ¬I(vars) => Error
+    for inv in &spec.invariants {
+        let mut enc = EncoderCtx {
+            layout,
+            consts,
+            step_vars: &all_step_vars,
+            current_step: 0,
+            next_step: 0,
+            params: &[],
+            locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
+            whole_var_locals: Vec::new(),
+        };
+        let inv_encoded = enc.encode_bool(&inv.body)?;
+        let inv_raw = inv_encoded.get_z3_ast();
+        inc_ref(ctx, inv_raw);
+        let neg_inv_raw = mk_not(ctx, inv_raw);
+
+        let err_body = mk_and2(ctx, reach_0, neg_inv_raw);
+        let err_impl = mk_implies(ctx, err_body, err_app);
+        let err_rule = mk_forall(ctx, &apps0, err_impl);
+        fp.add_rule(err_rule);
+    }
+
+    Ok(ChcSystem { fp, err_app })
+}
+
 /// Run IC3/CHC verification using Z3's Spacer engine.
 pub fn check_ic3(
     spec: &CompiledSpec,
@@ -80,7 +184,6 @@ pub fn check_ic3(
     fp.add_rule(trans_rule);
 
     // === Query each invariant ===
-    // Use Error relation pattern: Reach(vars) ∧ ¬inv(vars) => Error
     let err_name =
         unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"Error".as_ptr()) }.unwrap();
     let err_decl =
@@ -121,8 +224,6 @@ pub fn check_ic3(
                     invariant = inv.name,
                     "IC3 found violation, reconstructing trace via BMC"
                 );
-                // IC3 confirms a violation exists but can't produce a trace directly.
-                // Use BMC with increasing depth to find the shortest counterexample.
                 let mut trace = Vec::new();
                 for depth in [1, 2, 4, 8, 16, 32] {
                     match crate::bmc::check_bmc(spec, consts, depth, seq_bound) {

@@ -94,6 +94,25 @@ impl Fixedpoint {
         unsafe { z3_sys::Z3_fixedpoint_query(self.ctx, self.fp, query) }
     }
 
+    /// Export the CHC system as SMT-LIB2 string, including the given queries.
+    pub fn to_smt2(&self, queries: &[z3_sys::Z3_ast]) -> String {
+        let s = unsafe {
+            z3_sys::Z3_fixedpoint_to_string(
+                self.ctx,
+                self.fp,
+                queries.len() as u32,
+                queries.as_ptr() as *mut z3_sys::Z3_ast,
+            )
+        };
+        if s.is_null() {
+            return String::new();
+        }
+        unsafe { std::ffi::CStr::from_ptr(s) }
+            .to_str()
+            .unwrap_or("")
+            .to_string()
+    }
+
     /// Get the reason for an unknown result.
     pub fn get_reason_unknown(&self) -> String {
         let s = unsafe { z3_sys::Z3_fixedpoint_get_reason_unknown(self.ctx, self.fp) };

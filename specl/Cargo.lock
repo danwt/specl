@@ -2336,6 +2336,7 @@ dependencies = [
  "specl-ir",
  "specl-syntax",
  "specl-types",
+ "tempfile",
  "thiserror 1.0.69",
  "tracing",
  "z3",

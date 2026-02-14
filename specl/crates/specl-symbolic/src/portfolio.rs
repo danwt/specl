@@ -46,6 +46,10 @@ pub fn check_portfolio(
     let consts_ic3 = consts.to_vec();
     let done_ic3 = Arc::clone(&done);
 
+    let spec_golem = spec.clone();
+    let consts_golem = consts.to_vec();
+    let done_golem = Arc::clone(&done);
+
     // Thread 1: BMC (good at finding bugs quickly)
     let bmc_handle = thread::spawn(move || {
         if done_bmc.load(Ordering::Relaxed) {
@@ -123,6 +127,29 @@ pub fn check_portfolio(
         }
     });
 
+    // Thread 4: Golem CHC solver (external, different algorithms from Spacer)
+    let golem_handle = thread::spawn(move || {
+        if done_golem.load(Ordering::Relaxed) {
+            return StrategyResult::Inconclusive("cancelled".into());
+        }
+        match crate::golem::check_golem(&spec_golem, &consts_golem, seq_bound) {
+            Ok(SymbolicOutcome::Ok { .. }) => {
+                done_golem.store(true, Ordering::Relaxed);
+                StrategyResult::Done(SymbolicOutcome::Ok {
+                    method: "portfolio(Golem)",
+                })
+            }
+            Ok(SymbolicOutcome::InvariantViolation { invariant, trace }) => {
+                done_golem.store(true, Ordering::Relaxed);
+                StrategyResult::Done(SymbolicOutcome::InvariantViolation { invariant, trace })
+            }
+            Ok(SymbolicOutcome::Unknown { reason }) => {
+                StrategyResult::Inconclusive(format!("Golem: {reason}"))
+            }
+            Err(e) => StrategyResult::Inconclusive(format!("Golem error: {e}")),
+        }
+    });
+
     // Collect results: first definitive result wins
     let results = [
         bmc_handle.join().unwrap_or(StrategyResult::Inconclusive("BMC thread panic".into())),
@@ -132,6 +159,9 @@ pub fn check_portfolio(
         ic3_handle
             .join()
             .unwrap_or(StrategyResult::Inconclusive("IC3 thread panic".into())),
+        golem_handle
+            .join()
+            .unwrap_or(StrategyResult::Inconclusive("Golem thread panic".into())),
     ];
 
     // Return first definitive result, preferring violations (real bugs) over Ok (proofs)

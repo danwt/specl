@@ -6,6 +6,7 @@
 pub mod bmc;
 pub mod encoder;
 pub mod fixedpoint;
+pub mod golem;
 pub mod ic3;
 pub mod inductive;
 pub mod k_induction;
@@ -34,6 +35,9 @@ pub enum SymbolicError {
 
     #[error("constant '{name}' not provided")]
     MissingConstant { name: String },
+
+    #[error("internal error: {0}")]
+    Internal(String),
 }
 
 pub type SymbolicResult<T> = Result<T, SymbolicError>;
@@ -83,6 +87,8 @@ pub enum SymbolicMode {
     KInduction(usize),
     /// IC3/CHC via Z3's Spacer engine (unbounded verification).
     Ic3,
+    /// Golem CHC solver (external process, complements Spacer).
+    Golem,
     /// Smart mode: automatic strategy cascade (sequential).
     Smart,
     /// Portfolio mode: run BMC, k-induction, and IC3 in parallel threads.
@@ -101,6 +107,7 @@ pub fn check(
         SymbolicMode::Inductive => inductive::check_inductive(spec, consts, sb),
         SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k, sb),
         SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb, config.spacer_profile),
+        SymbolicMode::Golem => golem::check_golem(spec, consts, sb),
         SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile),
         SymbolicMode::Portfolio => portfolio::check_portfolio(spec, consts, config.depth, sb, config.spacer_profile),
     }

@@ -23,7 +23,7 @@
 - [x] 16. Queue state elimination — SKIP: State uses Arc (shared with store), only saves 16 bytes/entry
 - [x] 17. Incremental checking (cache to disk, --incremental flag, deterministic fingerprinting)
 - [ ] 18. Copy-and-patch JIT — extremely complex custom JIT, deferred
-- [ ] 19. Golem CHC backend
+- [x] 19. Golem CHC backend (--golem flag, SMT-LIB2 export, portfolio integration)
 
 ## Notes / Decisions
 - Faster primitive hashing: ALREADY DONE (splitmix64 in state.rs hash_var)
