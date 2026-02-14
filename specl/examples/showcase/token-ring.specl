@@ -14,37 +14,37 @@ var pc: Dict[0..N, 0..2]
 var token: 0..N  // which process holds the token
 
 init {
-    pc = {p: 0 for p in 0..N}
-    and token = 0
+    pc = {p: 0 for p in 0..N};
+    token = 0;
 }
 
 // Token holder enters critical section
 action Enter(p: 0..N) {
-    require pc[p] == 0
-    require token == p
-    pc = pc | {p: 1}
+    require pc[p] == 0;
+    require token == p;
+    pc = pc | {p: 1};
 }
 
 // Token holder exits critical section
 action Exit(p: 0..N) {
-    require pc[p] == 1
-    require token == p
-    pc = pc | {p: 2}
+    require pc[p] == 1;
+    require token == p;
+    pc = pc | {p: 2};
 }
 
 // Pass token to next process in the ring
 action PassToken(p: 0..N) {
-    require pc[p] == 2
-    require token == p
-    token = (p + 1) % (N + 1)
-    and pc = pc | {p: 0}
+    require pc[p] == 2;
+    require token == p;
+    token = (p + 1) % (N + 1);
+    pc = pc | {p: 0};
 }
 
 // Token holder may skip critical section and pass directly
 action Skip(p: 0..N) {
-    require pc[p] == 0
-    require token == p
-    token = (p + 1) % (N + 1)
+    require pc[p] == 0;
+    require token == p;
+    token = (p + 1) % (N + 1);
 }
 
 // Mutual exclusion: at most one process in critical section

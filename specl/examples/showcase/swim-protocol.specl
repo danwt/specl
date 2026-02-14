@@ -25,56 +25,56 @@ var view: Dict[0..N, Dict[0..N, 0..2]]
 var reachable: Dict[0..N, Bool]
 
 init {
-    status = {n: 0 for n in 0..N}
-    and view = {n: {m: 0 for m in 0..N} for n in 0..N}
-    and reachable = {n: true for n in 0..N}
+    status = {n: 0 for n in 0..N};
+    view = {n: {m: 0 for m in 0..N} for n in 0..N};
+    reachable = {n: true for n in 0..N};
 }
 
 // Node becomes unreachable (network partition or crash)
 action BecomeUnreachable(n: 0..N) {
-    require reachable[n] == true
-    reachable = reachable | {n: false}
+    require reachable[n] == true;
+    reachable = reachable | {n: false};
 }
 
 // Node becomes reachable again
 action BecomeReachable(n: 0..N) {
-    require reachable[n] == false
-    reachable = reachable | {n: true}
+    require reachable[n] == false;
+    reachable = reachable | {n: true};
 }
 
 // Node i pings node j directly: j responds if reachable
 action DirectPing(i: 0..N, j: 0..N) {
-    require i != j
-    require reachable[i] == true
-    require view[i][j] != 2  // don't ping dead nodes
+    require i != j;
+    require reachable[i] == true;
+    require view[i][j] != 2;  // don't ping dead nodes
     // If j is reachable, mark as alive
-    require reachable[j] == true
-    view = view | {i: view[i] | {j: 0}}
+    require reachable[j] == true;
+    view = view | {i: view[i] | {j: 0}};
 }
 
 // Node i pings node j but j is unreachable: mark suspect
 action PingFail(i: 0..N, j: 0..N) {
-    require i != j
-    require reachable[i] == true
-    require reachable[j] == false
-    require view[i][j] == 0  // was alive, now suspect
-    view = view | {i: view[i] | {j: 1}}
+    require i != j;
+    require reachable[i] == true;
+    require reachable[j] == false;
+    require view[i][j] == 0;  // was alive, now suspect
+    view = view | {i: view[i] | {j: 1}};
 }
 
 // Suspect times out: mark as dead
 action SuspectTimeout(i: 0..N, j: 0..N) {
-    require i != j
-    require view[i][j] == 1
-    require reachable[j] == false  // still unreachable
-    view = view | {i: view[i] | {j: 2}}
+    require i != j;
+    require view[i][j] == 1;
+    require reachable[j] == false;  // still unreachable
+    view = view | {i: view[i] | {j: 2}};
 }
 
 // Gossip: node i tells node k that j is suspect/dead
 action Gossip(i: 0..N, k: 0..N, j: 0..N) {
-    require i != k and i != j and k != j
-    require reachable[i] == true and reachable[k] == true
-    require view[i][j] > view[k][j]  // i has worse news
-    view = view | {k: view[k] | {j: view[i][j]}}
+    require i != k and i != j and k != j;
+    require reachable[i] == true and reachable[k] == true;
+    require view[i][j] > view[k][j];  // i has worse news
+    view = view | {k: view[k] | {j: view[i][j]}};
 }
 
 // Reachable nodes are never marked dead by a correct observer

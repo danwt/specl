@@ -29,28 +29,28 @@ var side: Dict[0..N, 0..1]
 var active: Dict[0..N, Bool]
 
 init {
-    phase = 0
-    and side = {n: 0 for n in 0..N}
-    and active = {n: true for n in 0..N}
+    phase = 0;
+    side = {n: 0 for n in 0..N};
+    active = {n: true for n in 0..N};
 }
 
 // Partition: split nodes into two groups
 action Partition(boundary: 0..N) {
-    require phase == 0
-    require boundary > 0  // at least one node on each side
-    require boundary <= N
-    side = {n: if n < boundary then 0 else 1 for n in 0..N}
-    and phase = 1
+    require phase == 0;
+    require boundary > 0;  // at least one node on each side
+    require boundary <= N;
+    side = {n: if n < boundary then 0 else 1 for n in 0..N};
+    phase = 1;
 }
 
 // Resolve: keep majority, shutdown minority
 action Resolve() {
-    require phase == 1
+    require phase == 1;
     active = {n:
         if len({m in 0..N if side[m] == side[n]}) * 2 > N + 1 then true
         else false
-    for n in 0..N}
-    and phase = 2
+    for n in 0..N};
+    phase = 2;
 }
 
 // At most one partition stays active

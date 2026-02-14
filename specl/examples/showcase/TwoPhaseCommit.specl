@@ -17,59 +17,59 @@ var commitSent: Bool
 var abortSent: Bool
 
 init {
-    rmState = {r: 0 for r in 0..MAX_RM}
-    and tmState = 0
-    and tmPrepared = {}
-    and preparedMsgs = {}
-    and commitSent = false
-    and abortSent = false
+    rmState = {r: 0 for r in 0..MAX_RM};
+    tmState = 0;
+    tmPrepared = {};
+    preparedMsgs = {};
+    commitSent = false;
+    abortSent = false;
 }
 
 // RM prepares
 action RMPrepare(r: 0..MAX_RM) {
-    require rmState[r] == 0
-    rmState = rmState | { r: 1 }
-    and preparedMsgs = preparedMsgs union { r }
+    require rmState[r] == 0;
+    rmState = rmState | { r: 1 };
+    preparedMsgs = preparedMsgs union { r };
 }
 
 // RM aborts before preparing
 action RMChooseToAbort(r: 0..MAX_RM) {
-    require rmState[r] == 0
-    rmState = rmState | { r: 3 }
+    require rmState[r] == 0;
+    rmState = rmState | { r: 3 };
 }
 
 // RM receives Commit
 action RMRcvCommitMsg(r: 0..MAX_RM) {
-    require commitSent == true
-    rmState = rmState | { r: 2 }
+    require commitSent == true;
+    rmState = rmState | { r: 2 };
 }
 
 // RM receives Abort
 action RMRcvAbortMsg(r: 0..MAX_RM) {
-    require abortSent == true
-    rmState = rmState | { r: 3 }
+    require abortSent == true;
+    rmState = rmState | { r: 3 };
 }
 
 // TM receives Prepared
 action TMRcvPrepared(r: 0..MAX_RM) {
-    require tmState == 0
-    require r in preparedMsgs
-    tmPrepared = tmPrepared union { r }
+    require tmState == 0;
+    require r in preparedMsgs;
+    tmPrepared = tmPrepared union { r };
 }
 
 // TM commits
 action TMCommit() {
-    require tmState == 0
-    require tmPrepared == { r in 0..MAX_RM if true }
-    tmState = 1
-    and commitSent = true
+    require tmState == 0;
+    require tmPrepared == { r in 0..MAX_RM if true };
+    tmState = 1;
+    commitSent = true;
 }
 
 // TM aborts
 action TMAbort() {
-    require tmState == 0
-    tmState = 2
-    and abortSent = true
+    require tmState == 0;
+    tmState = 2;
+    abortSent = true;
 }
 
 // Safety: No RM commits while another aborts

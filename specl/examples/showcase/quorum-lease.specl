@@ -21,31 +21,31 @@ var lease: Dict[1..N, Bool]
 var writes: 0..MaxWrites
 
 init {
-    val = 0
-    and cached = {f: 0 for f in 1..N}
-    and lease = {f: false for f in 1..N}
-    and writes = 0
+    val = 0;
+    cached = {f: 0 for f in 1..N};
+    lease = {f: false for f in 1..N};
+    writes = 0;
 }
 
 // Leader grants lease to a follower (syncs value)
 action GrantLease(f: 1..N) {
-    require lease[f] == false
-    lease = lease | {f: true}
-    and cached = cached | {f: val}
+    require lease[f] == false;
+    lease = lease | {f: true};
+    cached = cached | {f: val};
 }
 
 // Leader writes a new value — invalidates all leases
 action Write() {
-    require writes < MaxWrites
-    val = val + 1
-    and writes = writes + 1
-    and lease = {f: false for f in 1..N}
+    require writes < MaxWrites;
+    val = val + 1;
+    writes = writes + 1;
+    lease = {f: false for f in 1..N};
 }
 
 // Follower with valid lease refreshes (re-syncs value)
 action RefreshLease(f: 1..N) {
-    require lease[f] == true
-    cached = cached | {f: val}
+    require lease[f] == true;
+    cached = cached | {f: val};
 }
 
 // Lease holders serve consistent reads: their cached value matches leader

@@ -41,93 +41,93 @@ var helpersAsked: Dict[Int, Int]
 var askedHelper: Dict[Int, Dict[Int, Bool]]
 
 init {
-    alive = {i: true for i in 0..N}
-    and view = {i: {j: 0 for j in 0..N} for i in 0..N}
-    and round = 0
-    and prober = {r: -1 for r in 0..MaxRound}
-    and target = {r: -1 for r in 0..MaxRound}
-    and directResult = {r: 0 for r in 0..MaxRound}
-    and indirectResult = {r: 0 for r in 0..MaxRound}
-    and helpersAsked = {r: 0 for r in 0..MaxRound}
-    and askedHelper = {r: {i: false for i in 0..N} for r in 0..MaxRound}
+    alive = {i: true for i in 0..N};
+    view = {i: {j: 0 for j in 0..N} for i in 0..N};
+    round = 0;
+    prober = {r: -1 for r in 0..MaxRound};
+    target = {r: -1 for r in 0..MaxRound};
+    directResult = {r: 0 for r in 0..MaxRound};
+    indirectResult = {r: 0 for r in 0..MaxRound};
+    helpersAsked = {r: 0 for r in 0..MaxRound};
+    askedHelper = {r: {i: false for i in 0..N} for r in 0..MaxRound};
 }
 
 // --- Crashes ---
 
 // Node i crashes (node 0 never crashes, ensures at least one correct node)
 action Crash(i: 0..N) {
-    require alive[i]
-    require i != 0
-    alive = alive | {i: false}
+    require alive[i];
+    require i != 0;
+    alive = alive | {i: false};
 }
 
 // --- Probing ---
 
 // Alive node i starts probing node j in the current round
 action StartProbe(i: 0..N, j: 0..N) {
-    require round <= MaxRound
-    require prober[round] == -1
-    require i != j
-    require alive[i]
-    require view[i][j] != 2
-    prober = prober | {round: i}
-    and target = target | {round: j}
+    require round <= MaxRound;
+    require prober[round] == -1;
+    require i != j;
+    require alive[i];
+    require view[i][j] != 2;
+    prober = prober | {round: i};
+    target = target | {round: j};
 }
 
 // Direct ping succeeds (target is alive and reachable)
 action DirectAck() {
-    require prober[round] != -1
-    require directResult[round] == 0
-    require alive[target[round]]
-    directResult = directResult | {round: 1}
+    require prober[round] != -1;
+    require directResult[round] == 0;
+    require alive[target[round]];
+    directResult = directResult | {round: 1};
 }
 
 // Direct ping times out (target crashed OR non-deterministic network delay)
 action DirectTimeout() {
-    require prober[round] != -1
-    require directResult[round] == 0
-    directResult = directResult | {round: 2}
+    require prober[round] != -1;
+    require directResult[round] == 0;
+    directResult = directResult | {round: 2};
 }
 
 // --- Indirect probing ---
 
 // Ask helper h to probe the target (each helper asked at most once)
 action IndirectPing(h: 0..N) {
-    require directResult[round] == 2
-    require indirectResult[round] == 0
-    require helpersAsked[round] < K
-    require h != prober[round]
-    require h != target[round]
-    require alive[h]
-    require not askedHelper[round][h]
-    helpersAsked = helpersAsked | {round: helpersAsked[round] + 1}
-    and askedHelper = askedHelper | {round: (askedHelper[round] | {h: true})}
+    require directResult[round] == 2;
+    require indirectResult[round] == 0;
+    require helpersAsked[round] < K;
+    require h != prober[round];
+    require h != target[round];
+    require alive[h];
+    require not askedHelper[round][h];
+    helpersAsked = helpersAsked | {round: helpersAsked[round] + 1};
+    askedHelper = askedHelper | {round: (askedHelper[round] | {h: true})};
 }
 
 // Indirect ping succeeds (a helper got an ack from the target)
 action IndirectAck() {
-    require directResult[round] == 2
-    require indirectResult[round] == 0
-    require helpersAsked[round] > 0
-    require alive[target[round]]
-    indirectResult = indirectResult | {round: 1}
+    require directResult[round] == 2;
+    require indirectResult[round] == 0;
+    require helpersAsked[round] > 0;
+    require alive[target[round]];
+    indirectResult = indirectResult | {round: 1};
 }
 
 // Indirect ping times out (all helpers asked, none got an ack)
 action IndirectTimeout() {
-    require directResult[round] == 2
-    require indirectResult[round] == 0
-    require helpersAsked[round] >= K
-    indirectResult = indirectResult | {round: 2}
+    require directResult[round] == 2;
+    require indirectResult[round] == 0;
+    require helpersAsked[round] >= K;
+    indirectResult = indirectResult | {round: 2};
 }
 
 // --- View updates ---
 
 // Prober marks target as suspected (both probes failed)
 action Suspect() {
-    require directResult[round] == 2
-    require indirectResult[round] == 2
-    require view[prober[round]][target[round]] == 0
+    require directResult[round] == 2;
+    require indirectResult[round] == 2;
+    require view[prober[round]][target[round]] == 0;
     view = view | {prober[round]:
         (view[prober[round]] | {target[round]: 1})}
 }
@@ -136,39 +136,39 @@ action Suspect() {
 action ConfirmAlive() {
     require directResult[round] == 1
         or indirectResult[round] == 1
-    require view[prober[round]][target[round]] != 2
+    require view[prober[round]][target[round]] != 2;
     view = view | {prober[round]:
         (view[prober[round]] | {target[round]: 0})}
 }
 
 // Suspected node promoted to Failed
 action DeclareFailed(i: 0..N, j: 0..N) {
-    require i != j
-    require alive[i]
-    require view[i][j] == 1
-    view = view | {i: (view[i] | {j: 2})}
+    require i != j;
+    require alive[i];
+    require view[i][j] == 1;
+    view = view | {i: (view[i] | {j: 2})};
 }
 
 // --- Round management ---
 
 // Advance to next round (current round must be complete)
 action AdvanceRound() {
-    require round < MaxRound
-    require prober[round] != -1
-    require directResult[round] != 0
-    require directResult[round] == 1 or indirectResult[round] != 0
-    round = round + 1
+    require round < MaxRound;
+    require prober[round] != -1;
+    require directResult[round] != 0;
+    require directResult[round] == 1 or indirectResult[round] != 0;
+    round = round + 1;
 }
 
 // --- Gossip dissemination ---
 
 // Node i learns from node j about node k's higher suspicion status
 action Gossip(i: 0..N, j: 0..N, k: 0..N) {
-    require alive[i] and alive[j]
-    require i != j
-    require i != k
-    require view[j][k] > view[i][k]
-    view = view | {i: (view[i] | {k: view[j][k]})}
+    require alive[i] and alive[j];
+    require i != j;
+    require i != k;
+    require view[j][k] > view[i][k];
+    view = view | {i: (view[i] | {k: view[j][k]})};
 }
 
 // --- Invariants ---

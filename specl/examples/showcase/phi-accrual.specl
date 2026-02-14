@@ -31,18 +31,18 @@ var last_hb: Dict[0..N, Dict[0..N, 0..MaxTime]]
 var phi: Dict[0..N, Dict[0..N, 0..2]]
 
 init {
-    time = 0
-    and alive = {p: true for p in 0..N}
-    and last_hb = {p: {q: 0 for q in 0..N} for p in 0..N}
-    and phi = {p: {q: 0 for q in 0..N} for p in 0..N}
+    time = 0;
+    alive = {p: true for p in 0..N};
+    last_hb = {p: {q: 0 for q in 0..N} for p in 0..N};
+    phi = {p: {q: 0 for q in 0..N} for p in 0..N};
 }
 
 // Time advances
 action Tick() {
-    require time < MaxTime
-    time = time + 1
+    require time < MaxTime;
+    time = time + 1;
     // Update phi based on time since last heartbeat
-    and phi = {p: {q:
+    phi = {p: {q:
         if p == q then 0
         else if time + 1 - last_hb[p][q] <= 1 then 0
         else if time + 1 - last_hb[p][q] <= 2 then 1
@@ -52,16 +52,16 @@ action Tick() {
 
 // Process q sends heartbeat to process p
 action Heartbeat(q: 0..N, p: 0..N) {
-    require p != q
-    require alive[q] == true
-    last_hb = last_hb | {p: last_hb[p] | {q: time}}
-    and phi = phi | {p: phi[p] | {q: 0}}
+    require p != q;
+    require alive[q] == true;
+    last_hb = last_hb | {p: last_hb[p] | {q: time}};
+    phi = phi | {p: phi[p] | {q: 0}};
 }
 
 // Process p crashes
 action Crash(p: 0..N) {
-    require alive[p] == true
-    alive = alive | {p: false}
+    require alive[p] == true;
+    alive = alive | {p: false};
 }
 
 // Alive processes that recently sent heartbeats have low phi

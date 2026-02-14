@@ -89,39 +89,39 @@ var count: 0..100
 init {
     threads = {i: 0 for i in 0..N} and
     mutex = 1 and
-    count = 0
+    count = 0;
 }
 
 // === Thread actions ===
 
 action Thread_Wait(i: 0..N) {
-    require threads[i] == 0
-    require mutex == 1
+    require threads[i] == 0;
+    require mutex == 1;
     threads = threads | {i: 1} and
-    mutex = 0
+    mutex = 0;
 }
 
 action Thread_EnterCritical(i: 0..N) {
-    require threads[i] == 1
-    threads = threads | {i: 2}
+    require threads[i] == 1;
+    threads = threads | {i: 2};
 }
 
 action Thread_Increment(i: 0..N) {
-    require threads[i] == 2
+    require threads[i] == 2;
     count = count + 1 and
-    threads = threads | {i: 3}
+    threads = threads | {i: 3};
 }
 
 action Thread_ExitCritical(i: 0..N) {
-    require threads[i] == 3
-    threads = threads | {i: 4}
+    require threads[i] == 3;
+    threads = threads | {i: 4};
 }
 
 action Thread_Signal(i: 0..N) {
-    require threads[i] == 4
-    require mutex == 0
+    require threads[i] == 4;
+    require mutex == 0;
     mutex = 1 and
-    threads = threads | {i: 5}
+    threads = threads | {i: 5};
 }
 
 // === Safety invariants ===

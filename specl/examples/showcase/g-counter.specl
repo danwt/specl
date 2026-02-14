@@ -29,24 +29,24 @@ func GlobalSum() {
 }
 
 init {
-    counter = {p: {q: 0 for q in 0..N} for p in 0..N}
-    and prev_sum = 0
+    counter = {p: {q: 0 for q in 0..N} for p in 0..N};
+    prev_sum = 0;
 }
 
 // Process p increments its own counter
 action Increment(p: 0..N) {
-    require counter[p][p] < Max
-    prev_sum = GlobalSum()
-    and counter = counter | {p: counter[p] | {p: counter[p][p] + 1}}
+    require counter[p][p] < Max;
+    prev_sum = GlobalSum();
+    counter = counter | {p: counter[p] | {p: counter[p][p] + 1}};
 }
 
 // Process p merges process q's state (pointwise max)
 action Merge(p: 0..N, q: 0..N) {
-    require p != q
+    require p != q;
     // Only merge if q has something p doesn't know about
-    require any r in 0..N: counter[q][r] > counter[p][r]
-    prev_sum = GlobalSum()
-    and counter = counter | {p:
+    require any r in 0..N: counter[q][r] > counter[p][r];
+    prev_sum = GlobalSum();
+    counter = counter | {p:
         {r: if counter[q][r] > counter[p][r] then counter[q][r] else counter[p][r]
          for r in 0..N}
     }

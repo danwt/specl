@@ -24,63 +24,63 @@ var vote: Dict[0..N, 0..1]  // 0=no vote yet/no, 1=yes
 var voted: Dict[0..N, Bool]
 
 init {
-    coord_pc = 0
-    and part_pc = {p: 0 for p in 0..N}
-    and vote = {p: 0 for p in 0..N}
-    and voted = {p: false for p in 0..N}
+    coord_pc = 0;
+    part_pc = {p: 0 for p in 0..N};
+    vote = {p: 0 for p in 0..N};
+    voted = {p: false for p in 0..N};
 }
 
 // Coordinator sends prepare (transitions to waiting)
 action Prepare() {
-    require coord_pc == 0
-    coord_pc = 1
+    require coord_pc == 0;
+    coord_pc = 1;
 }
 
 // Participant votes yes
 action VoteYes(p: 0..N) {
-    require coord_pc == 1
-    require part_pc[p] == 0
-    part_pc = part_pc | {p: 1}
-    and vote = vote | {p: 1}
-    and voted = voted | {p: true}
+    require coord_pc == 1;
+    require part_pc[p] == 0;
+    part_pc = part_pc | {p: 1};
+    vote = vote | {p: 1};
+    voted = voted | {p: true};
 }
 
 // Participant votes no
 action VoteNo(p: 0..N) {
-    require coord_pc == 1
-    require part_pc[p] == 0
-    part_pc = part_pc | {p: 2}
-    and vote = vote | {p: 0}
-    and voted = voted | {p: true}
+    require coord_pc == 1;
+    require part_pc[p] == 0;
+    part_pc = part_pc | {p: 2};
+    vote = vote | {p: 0};
+    voted = voted | {p: true};
 }
 
 // Coordinator decides commit (all voted yes)
 action DecideCommit() {
-    require coord_pc == 1
-    require all p in 0..N: voted[p] == true
-    require all p in 0..N: vote[p] == 1
-    coord_pc = 2
+    require coord_pc == 1;
+    require all p in 0..N: voted[p] == true;
+    require all p in 0..N: vote[p] == 1;
+    coord_pc = 2;
 }
 
 // Coordinator decides abort (at least one voted no)
 action DecideAbort() {
-    require coord_pc == 1
-    require any p in 0..N: voted[p] == true and vote[p] == 0
-    coord_pc = 3
+    require coord_pc == 1;
+    require any p in 0..N: voted[p] == true and vote[p] == 0;
+    coord_pc = 3;
 }
 
 // Participant applies commit decision
 action ParticipantCommit(p: 0..N) {
-    require coord_pc == 2
-    require part_pc[p] == 1
-    part_pc = part_pc | {p: 3}
+    require coord_pc == 2;
+    require part_pc[p] == 1;
+    part_pc = part_pc | {p: 3};
 }
 
 // Participant applies abort decision
 action ParticipantAbort(p: 0..N) {
-    require coord_pc == 3
-    require part_pc[p] == 1 or part_pc[p] == 2
-    part_pc = part_pc | {p: 4}
+    require coord_pc == 3;
+    require part_pc[p] == 1 or part_pc[p] == 2;
+    part_pc = part_pc | {p: 4};
 }
 
 // Agreement: no participant commits while another aborts

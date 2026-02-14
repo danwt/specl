@@ -79,47 +79,47 @@ init {
     leaders = {i: 0 for i in 0..NUM_LEADERS} and
     followers = {i: 0 for i in 0..NUM_FOLLOWERS} and
     leaderQueue = 0 and
-    followerQueue = 0
+    followerQueue = 0;
 }
 
 // === Leader actions ===
 
 action Leader_Arrive(i: 0..NUM_LEADERS) {
-    require leaders[i] == 0
+    require leaders[i] == 0;
     leaders = leaders | {i: 1} and
-    followerQueue = followerQueue + 1
+    followerQueue = followerQueue + 1;
 }
 
 action Leader_Wait(i: 0..NUM_LEADERS) {
-    require leaders[i] == 1
-    require leaderQueue > 0
+    require leaders[i] == 1;
+    require leaderQueue > 0;
     leaders = leaders | {i: 2} and
-    leaderQueue = leaderQueue - 1
+    leaderQueue = leaderQueue - 1;
 }
 
 action Leader_Dance(i: 0..NUM_LEADERS) {
-    require leaders[i] == 2
-    leaders = leaders | {i: 3}
+    require leaders[i] == 2;
+    leaders = leaders | {i: 3};
 }
 
 // === Follower actions ===
 
 action Follower_Arrive(i: 0..NUM_FOLLOWERS) {
-    require followers[i] == 0
+    require followers[i] == 0;
     followers = followers | {i: 1} and
-    leaderQueue = leaderQueue + 1
+    leaderQueue = leaderQueue + 1;
 }
 
 action Follower_Wait(i: 0..NUM_FOLLOWERS) {
-    require followers[i] == 1
-    require followerQueue > 0
+    require followers[i] == 1;
+    require followerQueue > 0;
     followers = followers | {i: 2} and
-    followerQueue = followerQueue - 1
+    followerQueue = followerQueue - 1;
 }
 
 action Follower_Dance(i: 0..NUM_FOLLOWERS) {
-    require followers[i] == 2
-    followers = followers | {i: 3}
+    require followers[i] == 2;
+    followers = followers | {i: 3};
 }
 
 // === Safety invariants ===

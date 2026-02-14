@@ -17,33 +17,33 @@ const N: 0..4
 var state: Dict[0..N, 0..2]
 
 init {
-    state = {p: 0 for p in 0..N}
+    state = {p: 0 for p in 0..N};
 }
 
 // Process p starts reading (only if no writer)
 action StartRead(p: 0..N) {
-    require state[p] == 0
-    require all q in 0..N: state[q] != 2
-    state = state | {p: 1}
+    require state[p] == 0;
+    require all q in 0..N: state[q] != 2;
+    state = state | {p: 1};
 }
 
 // Process p stops reading
 action StopRead(p: 0..N) {
-    require state[p] == 1
-    state = state | {p: 0}
+    require state[p] == 1;
+    state = state | {p: 0};
 }
 
 // Process p starts writing (only if no readers and no other writers)
 action StartWrite(p: 0..N) {
-    require state[p] == 0
-    require all q in 0..N: state[q] == 0 or q == p
-    state = state | {p: 2}
+    require state[p] == 0;
+    require all q in 0..N: state[q] == 0 or q == p;
+    state = state | {p: 2};
 }
 
 // Process p stops writing
 action StopWrite(p: 0..N) {
-    require state[p] == 2
-    state = state | {p: 0}
+    require state[p] == 2;
+    state = state | {p: 0};
 }
 
 // No writer while any reader is active

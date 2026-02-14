@@ -7,17 +7,17 @@ const MAX: 0..10
 var count: 0..10
 
 init {
-    count = 0
+    count = 0;
 }
 
 action Inc() {
-    require count < MAX
-    count = count + 1
+    require count < MAX;
+    count = count + 1;
 }
 
 action Dec() {
-    require count > 0
-    count = count - 1
+    require count > 0;
+    count = count - 1;
 }
 
 invariant Bounded {

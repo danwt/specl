@@ -32,60 +32,60 @@ var tx_write: Dict[0..N, 0..1]
 var tx_has_write: Dict[0..N, Bool]
 
 init {
-    version = 0
-    and value = 0
-    and tx_pc = {t: 0 for t in 0..N}
-    and tx_read_ver = {t: 0 for t in 0..N}
-    and tx_write = {t: 0 for t in 0..N}
-    and tx_has_write = {t: false for t in 0..N}
+    version = 0;
+    value = 0;
+    tx_pc = {t: 0 for t in 0..N};
+    tx_read_ver = {t: 0 for t in 0..N};
+    tx_write = {t: 0 for t in 0..N};
+    tx_has_write = {t: false for t in 0..N};
 }
 
 // Transaction begins and reads current version
 action Begin(t: 0..N) {
-    require tx_pc[t] == 0
-    tx_pc = tx_pc | {t: 1}
-    and tx_read_ver = tx_read_ver | {t: version}
+    require tx_pc[t] == 0;
+    tx_pc = tx_pc | {t: 1};
+    tx_read_ver = tx_read_ver | {t: version};
 }
 
 // Transaction buffers a write
 action Write(t: 0..N, v: 0..1) {
-    require tx_pc[t] == 1
-    tx_write = tx_write | {t: v}
-    and tx_has_write = tx_has_write | {t: true}
+    require tx_pc[t] == 1;
+    tx_write = tx_write | {t: v};
+    tx_has_write = tx_has_write | {t: true};
 }
 
 // Transaction tries to commit: validate read version unchanged
 action TryCommit(t: 0..N) {
-    require tx_pc[t] == 1
-    require tx_has_write[t] == true
-    require tx_read_ver[t] == version
-    require version < MaxVer
+    require tx_pc[t] == 1;
+    require tx_has_write[t] == true;
+    require tx_read_ver[t] == version;
+    require version < MaxVer;
     // Validation passes: apply write atomically
-    version = version + 1
-    and value = tx_write[t]
-    and tx_pc = tx_pc | {t: 3}
+    version = version + 1;
+    value = tx_write[t];
+    tx_pc = tx_pc | {t: 3};
 }
 
 // Validation fails: version changed since read
 action Abort(t: 0..N) {
-    require tx_pc[t] == 1
-    require tx_has_write[t] == true
-    require tx_read_ver[t] != version
-    tx_pc = tx_pc | {t: 4}
+    require tx_pc[t] == 1;
+    require tx_has_write[t] == true;
+    require tx_read_ver[t] != version;
+    tx_pc = tx_pc | {t: 4};
 }
 
 // Read-only transaction commits (always valid)
 action CommitReadOnly(t: 0..N) {
-    require tx_pc[t] == 1
-    require tx_has_write[t] == false
-    tx_pc = tx_pc | {t: 3}
+    require tx_pc[t] == 1;
+    require tx_has_write[t] == false;
+    tx_pc = tx_pc | {t: 3};
 }
 
 // Aborted transaction retries
 action Retry(t: 0..N) {
-    require tx_pc[t] == 4
-    tx_pc = tx_pc | {t: 0}
-    and tx_has_write = tx_has_write | {t: false}
+    require tx_pc[t] == 4;
+    tx_pc = tx_pc | {t: 0};
+    tx_has_write = tx_has_write | {t: false};
 }
 
 // Serializable: committed writing transactions got distinct versions

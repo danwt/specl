@@ -23,60 +23,60 @@ var status: Dict[0..2, 0..2]
 var next_op: 0..MaxOp
 
 init {
-    op_num = {r: 0 for r in 0..2}
-    and view_num = {r: 0 for r in 0..2}
-    and status = {r: 0 for r in 0..2}
-    and next_op = 0
+    op_num = {r: 0 for r in 0..2};
+    view_num = {r: 0 for r in 0..2};
+    status = {r: 0 for r in 0..2};
+    next_op = 0;
 }
 
 // Primary accepts a client request
 action ClientRequest(primary: 0..2) {
-    require status[primary] == 0
-    require view_num[primary] % 3 == primary
-    require next_op < MaxOp
-    op_num = op_num | {primary: next_op + 1}
-    and next_op = next_op + 1
+    require status[primary] == 0;
+    require view_num[primary] % 3 == primary;
+    require next_op < MaxOp;
+    op_num = op_num | {primary: next_op + 1};
+    next_op = next_op + 1;
 }
 
 // Backup receives operation from primary
 action PrepareOk(backup: 0..2, primary: 0..2) {
-    require status[backup] == 0
-    require backup != primary
-    require view_num[backup] == view_num[primary]
-    require view_num[primary] % 3 == primary
-    require op_num[primary] > op_num[backup]
-    op_num = op_num | {backup: op_num[primary]}
+    require status[backup] == 0;
+    require backup != primary;
+    require view_num[backup] == view_num[primary];
+    require view_num[primary] % 3 == primary;
+    require op_num[primary] > op_num[backup];
+    op_num = op_num | {backup: op_num[primary]};
 }
 
 // Replica crashes
 action Crash(r: 0..2) {
-    require status[r] == 0
-    status = status | {r: 2}
+    require status[r] == 0;
+    status = status | {r: 2};
 }
 
 // Initiate view change (when primary seems dead)
 action StartViewChange(r: 0..2, new_view: 1..MaxView) {
-    require status[r] == 0
-    require new_view > view_num[r]
-    require status[view_num[r] % 3] == 2
-    status = status | {r: 1}
-    and view_num = view_num | {r: new_view}
+    require status[r] == 0;
+    require new_view > view_num[r];
+    require status[view_num[r] % 3] == 2;
+    status = status | {r: 1};
+    view_num = view_num | {r: new_view};
 }
 
 // Complete view change: new primary takes over
 action DoViewChange(new_primary: 0..2) {
-    require status[new_primary] == 1
-    require view_num[new_primary] % 3 == new_primary
-    require len({r in 0..2 if view_num[r] == view_num[new_primary] and status[r] != 2}) >= 2
-    status = status | {new_primary: 0}
+    require status[new_primary] == 1;
+    require view_num[new_primary] % 3 == new_primary;
+    require len({r in 0..2 if view_num[r] == view_num[new_primary] and status[r] != 2}) >= 2;
+    status = status | {new_primary: 0};
 }
 
 // Backup joins new view
 action JoinView(r: 0..2, v: 1..MaxView) {
-    require status[r] == 1
-    require v == view_num[r]
-    require any p in 0..2: status[p] == 0 and view_num[p] == v
-    status = status | {r: 0}
+    require status[r] == 1;
+    require v == view_num[r];
+    require any p in 0..2: status[p] == 0 and view_num[p] == v;
+    status = status | {r: 0};
 }
 
 // Safety: operations are ordered consistently across replicas

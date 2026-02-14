@@ -9,13 +9,13 @@ var msgs: Seq[0..2]
 init { msgs = [] }
 
 action Send(v: 0..2) {
-    require len(msgs) < 3
-    msgs = msgs ++ [v]
+    require len(msgs) < 3;
+    msgs = msgs ++ [v];
 }
 
 action Recv() {
-    require len(msgs) > 0
-    msgs = tail(msgs)
+    require len(msgs) > 0;
+    msgs = tail(msgs);
 }
 
 // Safety: sequence never exceeds 3 elements

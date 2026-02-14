@@ -8,8 +8,8 @@ var x: 0..99999
 init { x == 0 }
 
 action Inc() {
-    require x < 99999
-    x = x + 1
+    require x < 99999;
+    x = x + 1;
 }
 
 invariant Bound { x <= 99999 }

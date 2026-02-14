@@ -72,357 +72,357 @@ func Committed() {
 }
 
 init {
-    recordStatus = 0
-    and recordEpoch = 0
-    and recordTs = 0
-    and intentEpoch = {k: 0 for k in 0..K}
-    and intentTs = {k: 0 for k in 0..K}
-    and intentResolved = {k: false for k in 0..K}
-    and tscache = {k: 0 for k in 0..K}
-    and commitAck = false
-    and cPc = 0
-    and attempt = 1
-    and txnEpoch = 0
-    and txnTs = 0
+    recordStatus = 0;
+    recordEpoch = 0;
+    recordTs = 0;
+    intentEpoch = {k: 0 for k in 0..K};
+    intentTs = {k: 0 for k in 0..K};
+    intentResolved = {k: false for k in 0..K};
+    tscache = {k: 0 for k in 0..K};
+    commitAck = false;
+    cPc = 0;
+    attempt = 1;
+    txnEpoch = 0;
+    txnTs = 0;
     // Key 0 is pipelined, keys 1..K are parallel
-    and toWrite = {k: false for k in 0..K}
-    and toCheck = {k: false for k in 0..K}
-    and haveStagingRecord = false
-    and pPc = {p: 0 for p in 0..P}
-    and preventEpoch = {p: 0 for p in 0..P}
-    and preventTs = {p: 0 for p in 0..P}
-    and foundWrites = {p: {k: false for k in 0..K} for p in 0..P}
-    and toResolve = {p: {k: true for k in 0..K} for p in 0..P}
+    toWrite = {k: false for k in 0..K};
+    toCheck = {k: false for k in 0..K};
+    haveStagingRecord = false;
+    pPc = {p: 0 for p in 0..P};
+    preventEpoch = {p: 0 for p in 0..P};
+    preventTs = {p: 0 for p in 0..P};
+    foundWrites = {p: {k: false for k in 0..K} for p in 0..P};
+    toResolve = {p: {k: true for k in 0..K} for p in 0..P};
 }
 
 // === COMMITTER ACTIONS ===
 
 action BeginTxnEpoch() {
-    require cPc == 0
-    txnEpoch = txnEpoch + 1
-    and txnTs = txnTs + 1
+    require cPc == 0;
+    txnEpoch = txnEpoch + 1;
+    txnTs = txnTs + 1;
     // pipelined keys = {0}, set toWrite = {0: true, rest: false}
-    and toWrite = toWrite | {0: true}
-    and cPc = (if attempt > MaxAttempts then 10 else 1)
+    toWrite = toWrite | {0: true};
+    cPc = (if attempt > MaxAttempts then 10 else 1);
 }
 
 // Pipeline a single pipelined key write (key chosen by parameter)
 action PipelineWriteKey(k: 0..K) {
-    require cPc == 1
-    require toWrite[k]
-    toWrite = toWrite | {k: false}
-    and cPc = (if all j in 0..K: (j == k or not toWrite[j]) then 2 else 1)
+    require cPc == 1;
+    require toWrite[k];
+    toWrite = toWrite | {k: false};
+    cPc = (if all j in 0..K: (j == k or not toWrite[j]) then 2 else 1);
     // Nondeterministic: either async consensus succeeds or fails (skip)
     // We model success via PipelineWriteKeySucc, failure stays as-is
 }
 
 // Pipeline write succeeds (async consensus)
 action PipelineWriteKeySucc(k: 0..K) {
-    require cPc == 1
-    require toWrite[k]
-    require not intentResolved[k]
-    require tscache[k] < txnTs
-    toWrite = toWrite | {k: false}
-    and intentEpoch = intentEpoch | {k: txnEpoch}
-    and intentTs = intentTs | {k: txnTs}
-    and intentResolved = intentResolved | {k: false}
-    and cPc = (if all j in 0..K: (j == k or not toWrite[j]) then 2 else 1)
+    require cPc == 1;
+    require toWrite[k];
+    require not intentResolved[k];
+    require tscache[k] < txnTs;
+    toWrite = toWrite | {k: false};
+    intentEpoch = intentEpoch | {k: txnEpoch};
+    intentTs = intentTs | {k: txnTs};
+    intentResolved = intentResolved | {k: false};
+    cPc = (if all j in 0..K: (j == k or not toWrite[j]) then 2 else 1);
 }
 
 action StageWritesAndRecord() {
-    require cPc == 2
+    require cPc == 2;
     // parallel keys = 1..K
-    toWrite = {k: (k >= 1) for k in 0..K}
+    toWrite = {k: (k >= 1) for k in 0..K};
     // pipelined keys = {0}
-    and toCheck = {k: (k == 0) for k in 0..K}
-    and haveStagingRecord = false
-    and cPc = (if attempt > MaxAttempts then 10 else 3)
+    toCheck = {k: (k == 0) for k in 0..K};
+    haveStagingRecord = false;
+    cPc = (if attempt > MaxAttempts then 10 else 3);
 }
 
 action StageWritesAndRecordLoop() {
-    require cPc == 3
+    require cPc == 3;
     // If nothing left to do, proceed to AckClient
-    require not (AnyInSet(toCheck)) and not (AnyInSet(toWrite)) and haveStagingRecord
-    cPc = 7
+    require not (AnyInSet(toCheck)) and not (AnyInSet(toWrite)) and haveStagingRecord;
+    cPc = 7;
 }
 
 // Dispatch to QueryPipelinedWrite
 action DispatchQuery() {
-    require cPc == 3
-    require AnyInSet(toCheck)
-    cPc = 4
+    require cPc == 3;
+    require AnyInSet(toCheck);
+    cPc = 4;
 }
 
 // Dispatch to ParallelWrite
 action DispatchParallelWrite() {
-    require cPc == 3
-    require AnyInSet(toWrite)
-    cPc = 5
+    require cPc == 3;
+    require AnyInSet(toWrite);
+    cPc = 5;
 }
 
 // Dispatch to StageRecord
 action DispatchStageRecord() {
-    require cPc == 3
-    require not haveStagingRecord
-    cPc = 6
+    require cPc == 3;
+    require not haveStagingRecord;
+    cPc = 6;
 }
 
 action QueryPipelinedWrite(k: 0..K) {
-    require cPc == 4
-    require toCheck[k]
+    require cPc == 4;
+    require toCheck[k];
     // Intent found - pipelined write succeeded
-    require QueryIntent(k, txnEpoch, txnTs)
-    toCheck = toCheck | {k: false}
-    and cPc = 3
+    require QueryIntent(k, txnEpoch, txnTs);
+    toCheck = toCheck | {k: false};
+    cPc = 3;
 }
 
 // Query finds intent missing, record still pending/staging -> restart
 action QueryPipelinedWriteRestartEpoch(k: 0..K) {
-    require cPc == 4
-    require toCheck[k]
-    require not QueryIntent(k, txnEpoch, txnTs)
-    require recordStatus == 0 or recordStatus == 1
-    attempt = attempt + 1
-    and cPc = 0
+    require cPc == 4;
+    require toCheck[k];
+    require not QueryIntent(k, txnEpoch, txnTs);
+    require recordStatus == 0 or recordStatus == 1;
+    attempt = attempt + 1;
+    cPc = 0;
 }
 
 // Query finds intent missing, record aborted -> end
 action QueryPipelinedWriteAborted(k: 0..K) {
-    require cPc == 4
-    require toCheck[k]
-    require not QueryIntent(k, txnEpoch, txnTs)
-    require recordStatus == 3
-    cPc = 10
+    require cPc == 4;
+    require toCheck[k];
+    require not QueryIntent(k, txnEpoch, txnTs);
+    require recordStatus == 3;
+    cPc = 10;
 }
 
 // Query finds intent missing, record committed -> ack
 action QueryPipelinedWriteCommitted(k: 0..K) {
-    require cPc == 4
-    require toCheck[k]
-    require not QueryIntent(k, txnEpoch, txnTs)
-    require recordStatus == 2
-    cPc = 7
+    require cPc == 4;
+    require toCheck[k];
+    require not QueryIntent(k, txnEpoch, txnTs);
+    require recordStatus == 2;
+    cPc = 7;
 }
 
 // Parallel write: intent already at this epoch (idempotent)
 action ParallelWriteIdem(k: 0..K) {
-    require cPc == 5
-    require toWrite[k]
-    require intentEpoch[k] == txnEpoch
-    toWrite = toWrite | {k: false}
-    and cPc = 3
+    require cPc == 5;
+    require toWrite[k];
+    require intentEpoch[k] == txnEpoch;
+    toWrite = toWrite | {k: false};
+    cPc = 3;
 }
 
 // Parallel write: prevented (tscache or resolved), refresh succeeds
 action ParallelWriteRefresh(k: 0..K) {
-    require cPc == 5
-    require toWrite[k]
-    require intentEpoch[k] != txnEpoch
-    require tscache[k] >= txnTs or intentResolved[k]
-    txnTs = txnTs + 1
-    and attempt = attempt + 1
-    and cPc = 2
+    require cPc == 5;
+    require toWrite[k];
+    require intentEpoch[k] != txnEpoch;
+    require tscache[k] >= txnTs or intentResolved[k];
+    txnTs = txnTs + 1;
+    attempt = attempt + 1;
+    cPc = 2;
 }
 
 // Parallel write: prevented, refresh fails -> restart epoch
 action ParallelWriteRestartEpoch(k: 0..K) {
-    require cPc == 5
-    require toWrite[k]
-    require intentEpoch[k] != txnEpoch
-    require tscache[k] >= txnTs or intentResolved[k]
-    attempt = attempt + 1
-    and cPc = 0
+    require cPc == 5;
+    require toWrite[k];
+    require intentEpoch[k] != txnEpoch;
+    require tscache[k] >= txnTs or intentResolved[k];
+    attempt = attempt + 1;
+    cPc = 0;
 }
 
 // Parallel write succeeds
 action ParallelWriteSucc(k: 0..K) {
-    require cPc == 5
-    require toWrite[k]
-    require intentEpoch[k] != txnEpoch
-    require tscache[k] < txnTs
-    require not intentResolved[k]
-    toWrite = toWrite | {k: false}
-    and intentEpoch = intentEpoch | {k: txnEpoch}
-    and intentTs = intentTs | {k: txnTs}
-    and intentResolved = intentResolved | {k: false}
-    and cPc = 3
+    require cPc == 5;
+    require toWrite[k];
+    require intentEpoch[k] != txnEpoch;
+    require tscache[k] < txnTs;
+    require not intentResolved[k];
+    toWrite = toWrite | {k: false};
+    intentEpoch = intentEpoch | {k: txnEpoch};
+    intentTs = intentTs | {k: txnTs};
+    intentResolved = intentResolved | {k: false};
+    cPc = 3;
 }
 
 action StageRecord() {
-    require cPc == 6
-    require recordStatus == 0 or recordStatus == 1
-    haveStagingRecord = true
-    and recordStatus = 1
-    and recordEpoch = txnEpoch
-    and recordTs = txnTs
-    and cPc = 3
+    require cPc == 6;
+    require recordStatus == 0 or recordStatus == 1;
+    haveStagingRecord = true;
+    recordStatus = 1;
+    recordEpoch = txnEpoch;
+    recordTs = txnTs;
+    cPc = 3;
 }
 
 action StageRecordAborted() {
-    require cPc == 6
-    require recordStatus == 3
-    cPc = 10
+    require cPc == 6;
+    require recordStatus == 3;
+    cPc = 10;
 }
 
 action AckClient() {
-    require cPc == 7
-    commitAck = true
-    and cPc = 8
+    require cPc == 7;
+    commitAck = true;
+    cPc = 8;
 }
 
 action AsyncExplicitlyCommitted() {
-    require cPc == 8
-    require recordStatus == 1 or recordStatus == 2
-    recordStatus = 2
-    and toWrite = {k: true for k in 0..K}
-    and cPc = 9
+    require cPc == 8;
+    require recordStatus == 1 or recordStatus == 2;
+    recordStatus = 2;
+    toWrite = {k: true for k in 0..K};
+    cPc = 9;
 }
 
 action AsyncResolveIntent(k: 0..K) {
-    require cPc == 9
-    require toWrite[k]
-    toWrite = toWrite | {k: false}
-    and intentResolved = intentResolved | {k: true}
-    and cPc = (if all j in 0..K: (j == k or not toWrite[j]) then 10 else 9)
+    require cPc == 9;
+    require toWrite[k];
+    toWrite = toWrite | {k: false};
+    intentResolved = intentResolved | {k: true};
+    cPc = (if all j in 0..K: (j == k or not toWrite[j]) then 10 else 9);
 }
 
 action AsyncResolveIntentDone() {
-    require cPc == 9
-    require not (AnyInSet(toWrite))
-    cPc = 10
+    require cPc == 9;
+    require not (AnyInSet(toWrite));
+    cPc = 10;
 }
 
 action EndCommitter() {
-    require cPc == 10
-    cPc = 11
+    require cPc == 10;
+    cPc = 11;
 }
 
 // === PREVENTER ACTIONS ===
 
 action PreventLoop(p: 0..P) {
-    require pPc[p] == 0
-    foundWrites = foundWrites | {p: {k: false for k in 0..K}}
-    and pPc = pPc | {p: 1}
+    require pPc[p] == 0;
+    foundWrites = foundWrites | {p: {k: false for k in 0..K}};
+    pPc = pPc | {p: 1};
 }
 
 // Push record: pending -> abort
 action PushRecordAbort(p: 0..P) {
-    require pPc[p] == 1
-    require recordStatus == 0
-    recordStatus = 3
-    and pPc = pPc | {p: 4}
+    require pPc[p] == 1;
+    require recordStatus == 0;
+    recordStatus = 3;
+    pPc = pPc | {p: 4};
 }
 
 // Push record: staging -> start recovery
 action PushRecordStaging(p: 0..P) {
-    require pPc[p] == 1
-    require recordStatus == 1
-    preventEpoch = preventEpoch | {p: recordEpoch}
-    and preventTs = preventTs | {p: recordTs}
-    and pPc = pPc | {p: 2}
+    require pPc[p] == 1;
+    require recordStatus == 1;
+    preventEpoch = preventEpoch | {p: recordEpoch};
+    preventTs = preventTs | {p: recordTs};
+    pPc = pPc | {p: 2};
 }
 
 // Push record: already finalized -> resolve intents
 action PushRecordFinalized(p: 0..P) {
-    require pPc[p] == 1
-    require recordStatus == 2 or recordStatus == 3
-    pPc = pPc | {p: 4}
+    require pPc[p] == 1;
+    require recordStatus == 2 or recordStatus == 3;
+    pPc = pPc | {p: 4};
 }
 
 // Prevent writes: intent found (could not prevent)
 action PreventWriteFound(p: 0..P, k: 0..K) {
-    require pPc[p] == 2
-    require not (all j in 0..K: foundWrites[p][j])
-    require not foundWrites[p][k]
-    require QueryIntent(k, preventEpoch[p], preventTs[p])
-    foundWrites = foundWrites | {p: (foundWrites[p] | {k: true})}
-    and pPc = pPc | {p: (if all j in 0..K: (j == k or foundWrites[p][j]) then 3 else 2)}
+    require pPc[p] == 2;
+    require not (all j in 0..K: foundWrites[p][j]);
+    require not foundWrites[p][k];
+    require QueryIntent(k, preventEpoch[p], preventTs[p]);
+    foundWrites = foundWrites | {p: (foundWrites[p] | {k: true})};
+    pPc = pPc | {p: (if all j in 0..K: (j == k or foundWrites[p][j]) then 3 else 2)};
 }
 
 // Prevent writes: intent missing -> prevent via tscache and recover
 action PreventWriteMissing(p: 0..P, k: 0..K) {
-    require pPc[p] == 2
-    require not (all j in 0..K: foundWrites[p][j])
-    require not foundWrites[p][k]
-    require not QueryIntent(k, preventEpoch[p], preventTs[p])
-    tscache = tscache | {k: (if tscache[k] < preventTs[p] then preventTs[p] else tscache[k])}
-    and pPc = pPc | {p: 3}
+    require pPc[p] == 2;
+    require not (all j in 0..K: foundWrites[p][j]);
+    require not foundWrites[p][k];
+    require not QueryIntent(k, preventEpoch[p], preventTs[p]);
+    tscache = tscache | {k: (if tscache[k] < preventTs[p] then preventTs[p] else tscache[k])};
+    pPc = pPc | {p: 3};
 }
 
 // Prevent writes: all found -> go to recover
 action PreventWriteAllFound(p: 0..P) {
-    require pPc[p] == 2
-    require all j in 0..K: foundWrites[p][j]
-    pPc = pPc | {p: 3}
+    require pPc[p] == 2;
+    require all j in 0..K: foundWrites[p][j];
+    pPc = pPc | {p: 3};
 }
 
 // Recover: prevented and record aborted -> done
 action RecoverPreventedAborted(p: 0..P) {
-    require pPc[p] == 3
-    require not (all j in 0..K: foundWrites[p][j])
-    require recordStatus == 3
-    pPc = pPc | {p: 4}
+    require pPc[p] == 3;
+    require not (all j in 0..K: foundWrites[p][j]);
+    require recordStatus == 3;
+    pPc = pPc | {p: 4};
 }
 
 // Recover: prevented and record committed -> done
 action RecoverPreventedCommitted(p: 0..P) {
-    require pPc[p] == 3
-    require not (all j in 0..K: foundWrites[p][j])
-    require recordStatus == 2
-    pPc = pPc | {p: 4}
+    require pPc[p] == 3;
+    require not (all j in 0..K: foundWrites[p][j]);
+    require recordStatus == 2;
+    pPc = pPc | {p: 4};
 }
 
 // Recover: prevented, staging, legal change -> retry prevention at higher epoch
 action RecoverPreventedRetry(p: 0..P) {
-    require pPc[p] == 3
-    require not (all j in 0..K: foundWrites[p][j])
-    require recordStatus == 1
-    require recordEpoch >= preventEpoch[p] and recordTs > preventTs[p]
-    pPc = pPc | {p: 0}
+    require pPc[p] == 3;
+    require not (all j in 0..K: foundWrites[p][j]);
+    require recordStatus == 1;
+    require recordEpoch >= preventEpoch[p] and recordTs > preventTs[p];
+    pPc = pPc | {p: 0};
 }
 
 // Recover: prevented, staging, can abort
 action RecoverPreventedAbort(p: 0..P) {
-    require pPc[p] == 3
-    require not (all j in 0..K: foundWrites[p][j])
-    require recordStatus == 1
-    require not (recordEpoch >= preventEpoch[p] and recordTs > preventTs[p])
-    recordStatus = 3
-    and pPc = pPc | {p: 4}
+    require pPc[p] == 3;
+    require not (all j in 0..K: foundWrites[p][j]);
+    require recordStatus == 1;
+    require not (recordEpoch >= preventEpoch[p] and recordTs > preventTs[p]);
+    recordStatus = 3;
+    pPc = pPc | {p: 4};
 }
 
 // Recover: not prevented (all writes found), staging -> commit
 action RecoverNotPreventedCommit(p: 0..P) {
-    require pPc[p] == 3
-    require all j in 0..K: foundWrites[p][j]
-    require recordStatus == 1
-    require recordEpoch == preventEpoch[p] and recordTs == preventTs[p]
-    recordStatus = 2
-    and pPc = pPc | {p: 4}
+    require pPc[p] == 3;
+    require all j in 0..K: foundWrites[p][j];
+    require recordStatus == 1;
+    require recordEpoch == preventEpoch[p] and recordTs == preventTs[p];
+    recordStatus = 2;
+    pPc = pPc | {p: 4};
 }
 
 // Recover: not prevented, already committed -> done
 action RecoverNotPreventedDone(p: 0..P) {
-    require pPc[p] == 3
-    require all j in 0..K: foundWrites[p][j]
-    require recordStatus == 2
-    require recordEpoch == preventEpoch[p] and recordTs == preventTs[p]
-    pPc = pPc | {p: 4}
+    require pPc[p] == 3;
+    require all j in 0..K: foundWrites[p][j];
+    require recordStatus == 2;
+    require recordEpoch == preventEpoch[p] and recordTs == preventTs[p];
+    pPc = pPc | {p: 4};
 }
 
 // Resolve intents (preventer)
 action PResolveIntent(p: 0..P, k: 0..K) {
-    require pPc[p] == 4
-    require toResolve[p][k]
-    toResolve = toResolve | {p: (toResolve[p] | {k: false})}
-    and intentResolved = intentResolved | {k: true}
-    and pPc = pPc | {p: (if all j in 0..K: (j == k or not toResolve[p][j]) then 5 else 4)}
+    require pPc[p] == 4;
+    require toResolve[p][k];
+    toResolve = toResolve | {p: (toResolve[p] | {k: false})};
+    intentResolved = intentResolved | {k: true};
+    pPc = pPc | {p: (if all j in 0..K: (j == k or not toResolve[p][j]) then 5 else 4)};
 }
 
 action PResolveIntentDone(p: 0..P) {
-    require pPc[p] == 4
-    require not (any j in 0..K: toResolve[p][j])
-    pPc = pPc | {p: 5}
+    require pPc[p] == 4;
+    require not (any j in 0..K: toResolve[p][j]);
+    pPc = pPc | {p: 5};
 }
 
 // If commit was acked, transaction must be committed

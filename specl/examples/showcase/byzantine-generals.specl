@@ -32,56 +32,56 @@ var decided: Dict[0..N, Bool]
 var decision: Dict[0..N, 0..1]
 
 init {
-    byzantine = {g: false for g in 0..N}
-    and byz_count = 0
-    and order_sent = false
-    and order = 0
-    and msg = {g: 0 for g in 0..N}
-    and has_msg = {g: false for g in 0..N}
-    and decided = {g: false for g in 0..N}
-    and decision = {g: 0 for g in 0..N}
+    byzantine = {g: false for g in 0..N};
+    byz_count = 0;
+    order_sent = false;
+    order = 0;
+    msg = {g: 0 for g in 0..N};
+    has_msg = {g: false for g in 0..N};
+    decided = {g: false for g in 0..N};
+    decision = {g: 0 for g in 0..N};
 }
 
 // Mark a lieutenant as Byzantine (commander 0 is always honest)
 action MakeByzantine(g: 1..N) {
-    require byzantine[g] == false
-    require byz_count < F
-    byzantine = byzantine | {g: true}
-    and byz_count = byz_count + 1
+    require byzantine[g] == false;
+    require byz_count < F;
+    byzantine = byzantine | {g: true};
+    byz_count = byz_count + 1;
 }
 
 // Honest commander sends order
 action CommanderSend(v: 0..1) {
-    require order_sent == false
-    require byzantine[0] == false
-    order_sent = true
-    and order = v
+    require order_sent == false;
+    require byzantine[0] == false;
+    order_sent = true;
+    order = v;
 }
 
 // Honest lieutenant receives commander's true message
 action HonestReceive(g: 1..N) {
-    require order_sent == true
-    require has_msg[g] == false
-    require byzantine[0] == false
-    msg = msg | {g: order}
-    and has_msg = has_msg | {g: true}
+    require order_sent == true;
+    require has_msg[g] == false;
+    require byzantine[0] == false;
+    msg = msg | {g: order};
+    has_msg = has_msg | {g: true};
 }
 
 // Byzantine commander sends arbitrary message to lieutenant
 action ByzantineSend(g: 1..N, v: 0..1) {
-    require byzantine[0] == true
-    require has_msg[g] == false
-    msg = msg | {g: v}
-    and has_msg = has_msg | {g: true}
+    require byzantine[0] == true;
+    require has_msg[g] == false;
+    msg = msg | {g: v};
+    has_msg = has_msg | {g: true};
 }
 
 // Lieutenant decides based on received message
 action Decide(g: 1..N) {
-    require has_msg[g] == true
-    require decided[g] == false
-    require byzantine[g] == false
-    decision = decision | {g: msg[g]}
-    and decided = decided | {g: true}
+    require has_msg[g] == true;
+    require decided[g] == false;
+    require byzantine[g] == false;
+    decision = decision | {g: msg[g]};
+    decided = decided | {g: true};
 }
 
 // Agreement: all loyal decided lieutenants agree

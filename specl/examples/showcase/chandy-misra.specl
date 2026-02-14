@@ -32,68 +32,68 @@ func Right(i) {
 
 init {
     // Lower-numbered philosopher holds each fork, initially dirty
-    holder = {i: i for i in 0..N}
-    and dirty = {i: true for i in 0..N}
-    and req = {i: false for i in 0..N}
-    and state = {i: 0 for i in 0..N}
+    holder = {i: i for i in 0..N};
+    dirty = {i: true for i in 0..N};
+    req = {i: false for i in 0..N};
+    state = {i: 0 for i in 0..N};
 }
 
 // Philosopher p becomes hungry
 action BecomeHungry(p: 0..N) {
-    require state[p] == 0
-    state = state | {p: 1}
+    require state[p] == 0;
+    state = state | {p: 1};
 }
 
 // Philosopher p requests their left fork (fork p)
 // Only if they don't hold it and haven't already requested
 action RequestLeft(p: 0..N) {
-    require state[p] == 1
-    require holder[p] != p
-    require req[p] == false
-    req = req | {p: true}
+    require state[p] == 1;
+    require holder[p] != p;
+    require req[p] == false;
+    req = req | {p: true};
 }
 
 // Philosopher p requests their right fork (fork Right(p))
 // The right fork of p is fork Right(p), held by the right neighbor
 action RequestRight(p: 0..N, r: 0..N) {
-    require state[p] == 1
-    require (p == 0 and r == N) or (p > 0 and r == p - 1)
-    require holder[r] != p
-    require req[r] == false
-    req = req | {r: true}
+    require state[p] == 1;
+    require (p == 0 and r == N) or (p > 0 and r == p - 1);
+    require holder[r] != p;
+    require req[r] == false;
+    req = req | {r: true};
 }
 
 // Philosopher p gives up fork f (they hold it, it's dirty, someone requested)
 action GiveFork(p: 0..N, f: 0..N) {
-    require state[p] != 2
-    require holder[f] == p
-    require dirty[f] == true
-    require req[f] == true
+    require state[p] != 2;
+    require holder[f] == p;
+    require dirty[f] == true;
+    require req[f] == true;
     // The other philosopher adjacent to fork f gets it (clean)
     // Fork f is between philosopher f and Right(f)
     // So the "other" is the one who isn't p
-    require (f == p) or ((p == 0 and f == N) or (p > 0 and f == p - 1))
-    holder = holder | {f: (if f == p then (if p < N then p + 1 else 0) else f)}
-    and dirty = dirty | {f: false}
-    and req = req | {f: false}
+    require (f == p) or ((p == 0 and f == N) or (p > 0 and f == p - 1));
+    holder = holder | {f: (if f == p then (if p < N then p + 1 else 0) else f)};
+    dirty = dirty | {f: false};
+    req = req | {f: false};
 }
 
 // Philosopher p eats (holds both adjacent forks)
 action Eat(p: 0..N, r: 0..N) {
-    require state[p] == 1
-    require (p == 0 and r == N) or (p > 0 and r == p - 1)
+    require state[p] == 1;
+    require (p == 0 and r == N) or (p > 0 and r == p - 1);
     // Holds left fork (fork p) and right fork (fork Right(p) = fork r)
-    require holder[p] == p
-    require holder[r] == p
-    state = state | {p: 2}
+    require holder[p] == p;
+    require holder[r] == p;
+    state = state | {p: 2};
 }
 
 // Philosopher p finishes eating (forks become dirty)
 action StopEating(p: 0..N, r: 0..N) {
-    require state[p] == 2
-    require (p == 0 and r == N) or (p > 0 and r == p - 1)
-    dirty = dirty | {p: true, r: true}
-    and state = state | {p: 0}
+    require state[p] == 2;
+    require (p == 0 and r == N) or (p > 0 and r == p - 1);
+    dirty = dirty | {p: true, r: true};
+    state = state | {p: 0};
 }
 
 // Mutual exclusion: no two adjacent philosophers eat simultaneously

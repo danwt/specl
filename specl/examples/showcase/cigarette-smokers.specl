@@ -19,56 +19,56 @@ var table: 0..3
 var smoking: Dict[0..2, 0..1]
 
 init {
-    table = 0
-    and smoking = {s: 0 for s in 0..2}
+    table = 0;
+    smoking = {s: 0 for s in 0..2};
 }
 
 // Agent places paper+matches (smoker 0 needs these)
 action PlacePaperMatches() {
-    require table == 0
-    require all s in 0..2: smoking[s] == 0
-    table = 1
+    require table == 0;
+    require all s in 0..2: smoking[s] == 0;
+    table = 1;
 }
 
 // Agent places tobacco+matches (smoker 1 needs these)
 action PlaceTobaccoMatches() {
-    require table == 0
-    require all s in 0..2: smoking[s] == 0
-    table = 2
+    require table == 0;
+    require all s in 0..2: smoking[s] == 0;
+    table = 2;
 }
 
 // Agent places tobacco+paper (smoker 2 needs these)
 action PlaceTobaccoPaper() {
-    require table == 0
-    require all s in 0..2: smoking[s] == 0
-    table = 3
+    require table == 0;
+    require all s in 0..2: smoking[s] == 0;
+    table = 3;
 }
 
 // Smoker 0 (has tobacco) picks up paper+matches
 action Smoke0() {
-    require table == 1
-    table = 0
-    and smoking = smoking | {0: 1}
+    require table == 1;
+    table = 0;
+    smoking = smoking | {0: 1};
 }
 
 // Smoker 1 (has paper) picks up tobacco+matches
 action Smoke1() {
-    require table == 2
-    table = 0
-    and smoking = smoking | {1: 1}
+    require table == 2;
+    table = 0;
+    smoking = smoking | {1: 1};
 }
 
 // Smoker 2 (has matches) picks up tobacco+paper
 action Smoke2() {
-    require table == 3
-    table = 0
-    and smoking = smoking | {2: 1}
+    require table == 3;
+    table = 0;
+    smoking = smoking | {2: 1};
 }
 
 // Smoker finishes
 action Finish(s: 0..2) {
-    require smoking[s] == 1
-    smoking = smoking | {s: 0}
+    require smoking[s] == 1;
+    smoking = smoking | {s: 0};
 }
 
 // At most one smoker at a time

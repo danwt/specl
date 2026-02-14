@@ -4,7 +4,7 @@ module TCommit
 var rmState: Dict[Int, String]
 
 init {
-    rmState = {rm: "working" for rm in 1..5}
+    rmState = {rm: "working" for rm in 1..5};
 }
 
 invariant TypeOK {
@@ -16,22 +16,22 @@ invariant Consistent {
 }
 
 action Prepare(rm: 1..5) {
-    require rmState[rm] == "working"
-    rmState = rmState | { rm: "prepared" }
+    require rmState[rm] == "working";
+    rmState = rmState | { rm: "prepared" };
 }
 
 action DecideCommit(rm: 1..5) {
-    require rmState[rm] == "prepared"
-    require all r in 1..5: (rmState[r] in {"prepared", "committed"})
-    rmState = rmState | { rm: "committed" }
+    require rmState[rm] == "prepared";
+    require all r in 1..5: (rmState[r] in {"prepared", "committed"});
+    rmState = rmState | { rm: "committed" };
 }
 
 action DecideAbort(rm: 1..5) {
-    require rmState[rm] in {"working", "prepared"}
-    require all r in 1..5: rmState[r] != "committed"
-    rmState = rmState | { rm: "aborted" }
+    require rmState[rm] in {"working", "prepared"};
+    require all r in 1..5: rmState[r] != "committed";
+    rmState = rmState | { rm: "aborted" };
 }
 
 action Stutter() {
-    require all rm in 1..5: (rmState[rm] in {"committed", "aborted"})
+    require all rm in 1..5: (rmState[rm] in {"committed", "aborted"});
 }

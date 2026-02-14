@@ -27,49 +27,49 @@ var writer_pc: 0..2
 var reclaim_ver: 0..4
 
 init {
-    version = 0
-    and reader_pc = {r: 0 for r in 0..N}
-    and reader_ver = {r: 0 for r in 0..N}
-    and writer_pc = 0
-    and reclaim_ver = 0
+    version = 0;
+    reader_pc = {r: 0 for r in 0..N};
+    reader_ver = {r: 0 for r in 0..N};
+    writer_pc = 0;
+    reclaim_ver = 0;
 }
 
 // Reader r enters read-side critical section
 action ReaderEnter(r: 0..N) {
-    require reader_pc[r] == 0
-    reader_pc = reader_pc | {r: 1}
-    and reader_ver = reader_ver | {r: version}
+    require reader_pc[r] == 0;
+    reader_pc = reader_pc | {r: 1};
+    reader_ver = reader_ver | {r: version};
 }
 
 // Reader r exits read-side critical section
 action ReaderExit(r: 0..N) {
-    require reader_pc[r] == 1
-    reader_pc = reader_pc | {r: 0}
+    require reader_pc[r] == 1;
+    reader_pc = reader_pc | {r: 0};
 }
 
 // Writer publishes new version (copy-on-write)
 action WriterPublish() {
-    require writer_pc == 0
-    require version < 4
-    reclaim_ver = version
-    and version = version + 1
-    and writer_pc = 1
+    require writer_pc == 0;
+    require version < 4;
+    reclaim_ver = version;
+    version = version + 1;
+    writer_pc = 1;
 }
 
 // Writer reclaims old version after grace period
 // (all readers that were in RCS when version changed have exited)
 action WriterReclaim() {
-    require writer_pc == 1
+    require writer_pc == 1;
     // Grace period: no reader is in RCS with the old version
     require all r in 0..N:
         reader_pc[r] == 0 or reader_ver[r] != reclaim_ver
-    writer_pc = 2
+    writer_pc = 2;
 }
 
 // Writer goes back to idle (ready for next update)
 action WriterReset() {
-    require writer_pc == 2
-    writer_pc = 0
+    require writer_pc == 2;
+    writer_pc = 0;
 }
 
 // Safety: writer never reclaims while a reader holds the old version

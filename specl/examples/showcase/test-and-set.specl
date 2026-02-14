@@ -18,29 +18,29 @@ var lock: Bool
 var pc: Dict[0..N, 0..2]
 
 init {
-    lock = false
-    and pc = {p: 0 for p in 0..N}
+    lock = false;
+    pc = {p: 0 for p in 0..N};
 }
 
 // Process starts trying
 action Try(p: 0..N) {
-    require pc[p] == 0
-    pc = pc | {p: 1}
+    require pc[p] == 0;
+    pc = pc | {p: 1};
 }
 
 // Test-and-set succeeds: lock was false, now true
 action Acquire(p: 0..N) {
-    require pc[p] == 1
-    require lock == false
-    lock = true
-    and pc = pc | {p: 2}
+    require pc[p] == 1;
+    require lock == false;
+    lock = true;
+    pc = pc | {p: 2};
 }
 
 // Release
 action Release(p: 0..N) {
-    require pc[p] == 2
-    lock = false
-    and pc = pc | {p: 0}
+    require pc[p] == 2;
+    lock = false;
+    pc = pc | {p: 0};
 }
 
 invariant MutualExclusion {

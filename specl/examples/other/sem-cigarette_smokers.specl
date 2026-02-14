@@ -164,191 +164,191 @@ init {
     match_sem = 0 and
     agent_sem = 1 and
     mutex = 1 and
-    rounds = 0
+    rounds = 0;
 }
 
 // === Agent actions ===
 
 action Agent_WaitToStart() {
-    require agent_state == 0
-    require agent_sem > 0
-    require rounds < NUM_ROUNDS
+    require agent_state == 0;
+    require agent_sem > 0;
+    require rounds < NUM_ROUNDS;
     agent_sem = agent_sem - 1 and
-    agent_state = 1
+    agent_state = 1;
 }
 
 action Agent_ChoosePaperAndMatch() {
-    require agent_state == 1
+    require agent_state == 1;
     paper = paper + 1 and
     matches = matches + 1 and
     agent_state = 2 and
-    rounds = rounds + 1
+    rounds = rounds + 1;
 }
 
 action Agent_ChooseTobaccoAndMatch() {
-    require agent_state == 1
+    require agent_state == 1;
     tobacco = tobacco + 1 and
     matches = matches + 1 and
     agent_state = 2 and
-    rounds = rounds + 1
+    rounds = rounds + 1;
 }
 
 action Agent_ChooseTobaccoAndPaper() {
-    require agent_state == 1
+    require agent_state == 1;
     tobacco = tobacco + 1 and
     paper = paper + 1 and
     agent_state = 2 and
-    rounds = rounds + 1
+    rounds = rounds + 1;
 }
 
 action Agent_Reset() {
-    require agent_state == 2
-    agent_state = 0
+    require agent_state == 2;
+    agent_state = 0;
 }
 
 // === Pusher actions ===
 
 action Pusher_Tobacco_Wait() {
-    require pusher_tobacco == 0
-    require tobacco > 0
+    require pusher_tobacco == 0;
+    require tobacco > 0;
     tobacco = tobacco - 1 and
-    pusher_tobacco = 1
+    pusher_tobacco = 1;
 }
 
 action Pusher_Tobacco_CheckPaper() {
-    require pusher_tobacco == 1
-    require mutex > 0
-    require is_paper == true
+    require pusher_tobacco == 1;
+    require mutex > 0;
+    require is_paper == true;
     is_paper = false and
     match_sem = match_sem + 1 and
-    pusher_tobacco = 0
+    pusher_tobacco = 0;
 }
 
 action Pusher_Tobacco_CheckMatch() {
-    require pusher_tobacco == 1
-    require mutex > 0
-    require is_match == true
+    require pusher_tobacco == 1;
+    require mutex > 0;
+    require is_match == true;
     is_match = false and
     paper_sem = paper_sem + 1 and
-    pusher_tobacco = 0
+    pusher_tobacco = 0;
 }
 
 action Pusher_Tobacco_SetFlag() {
-    require pusher_tobacco == 1
-    require mutex > 0
-    require is_paper == false
-    require is_match == false
+    require pusher_tobacco == 1;
+    require mutex > 0;
+    require is_paper == false;
+    require is_match == false;
     is_tobacco = true and
-    pusher_tobacco = 0
+    pusher_tobacco = 0;
 }
 
 action Pusher_Paper_Wait() {
-    require pusher_paper == 0
-    require paper > 0
+    require pusher_paper == 0;
+    require paper > 0;
     paper = paper - 1 and
-    pusher_paper = 1
+    pusher_paper = 1;
 }
 
 action Pusher_Paper_CheckTobacco() {
-    require pusher_paper == 1
-    require mutex > 0
-    require is_tobacco == true
+    require pusher_paper == 1;
+    require mutex > 0;
+    require is_tobacco == true;
     is_tobacco = false and
     match_sem = match_sem + 1 and
-    pusher_paper = 0
+    pusher_paper = 0;
 }
 
 action Pusher_Paper_CheckMatch() {
-    require pusher_paper == 1
-    require mutex > 0
-    require is_match == true
+    require pusher_paper == 1;
+    require mutex > 0;
+    require is_match == true;
     is_match = false and
     tobacco_sem = tobacco_sem + 1 and
-    pusher_paper = 0
+    pusher_paper = 0;
 }
 
 action Pusher_Paper_SetFlag() {
-    require pusher_paper == 1
-    require mutex > 0
-    require is_tobacco == false
-    require is_match == false
+    require pusher_paper == 1;
+    require mutex > 0;
+    require is_tobacco == false;
+    require is_match == false;
     is_paper = true and
-    pusher_paper = 0
+    pusher_paper = 0;
 }
 
 action Pusher_Match_Wait() {
-    require pusher_match == 0
-    require matches > 0
+    require pusher_match == 0;
+    require matches > 0;
     matches = matches - 1 and
-    pusher_match = 1
+    pusher_match = 1;
 }
 
 action Pusher_Match_CheckTobacco() {
-    require pusher_match == 1
-    require mutex > 0
-    require is_tobacco == true
+    require pusher_match == 1;
+    require mutex > 0;
+    require is_tobacco == true;
     is_tobacco = false and
     paper_sem = paper_sem + 1 and
-    pusher_match = 0
+    pusher_match = 0;
 }
 
 action Pusher_Match_CheckPaper() {
-    require pusher_match == 1
-    require mutex > 0
-    require is_paper == true
+    require pusher_match == 1;
+    require mutex > 0;
+    require is_paper == true;
     is_paper = false and
     tobacco_sem = tobacco_sem + 1 and
-    pusher_match = 0
+    pusher_match = 0;
 }
 
 action Pusher_Match_SetFlag() {
-    require pusher_match == 1
-    require mutex > 0
-    require is_tobacco == false
-    require is_paper == false
+    require pusher_match == 1;
+    require mutex > 0;
+    require is_tobacco == false;
+    require is_paper == false;
     is_match = true and
-    pusher_match = 0
+    pusher_match = 0;
 }
 
 // === Smoker actions ===
 
 action Smoker_Tobacco_Wake() {
-    require smoker_tobacco == 0
-    require tobacco_sem > 0
+    require smoker_tobacco == 0;
+    require tobacco_sem > 0;
     tobacco_sem = tobacco_sem - 1 and
-    smoker_tobacco = 1
+    smoker_tobacco = 1;
 }
 
 action Smoker_Tobacco_Smoke() {
-    require smoker_tobacco == 1
+    require smoker_tobacco == 1;
     agent_sem = agent_sem + 1 and
-    smoker_tobacco = 0
+    smoker_tobacco = 0;
 }
 
 action Smoker_Paper_Wake() {
-    require smoker_paper == 0
-    require paper_sem > 0
+    require smoker_paper == 0;
+    require paper_sem > 0;
     paper_sem = paper_sem - 1 and
-    smoker_paper = 1
+    smoker_paper = 1;
 }
 
 action Smoker_Paper_Smoke() {
-    require smoker_paper == 1
+    require smoker_paper == 1;
     agent_sem = agent_sem + 1 and
-    smoker_paper = 0
+    smoker_paper = 0;
 }
 
 action Smoker_Match_Wake() {
-    require smoker_match == 0
-    require match_sem > 0
+    require smoker_match == 0;
+    require match_sem > 0;
     match_sem = match_sem - 1 and
-    smoker_match = 1
+    smoker_match = 1;
 }
 
 action Smoker_Match_Smoke() {
-    require smoker_match == 1
+    require smoker_match == 1;
     agent_sem = agent_sem + 1 and
-    smoker_match = 0
+    smoker_match = 0;
 }
 
 // === Safety invariants ===

@@ -28,79 +28,79 @@ var vote_val: Dict[0..N, 0..1]  // 0=no, 1=yes
 var precommit_ack: Dict[0..N, Bool]
 
 init {
-    coord = 0
-    and part = {p: 0 for p in 0..N}
-    and voted = {p: false for p in 0..N}
-    and vote_val = {p: 0 for p in 0..N}
-    and precommit_ack = {p: false for p in 0..N}
+    coord = 0;
+    part = {p: 0 for p in 0..N};
+    voted = {p: false for p in 0..N};
+    vote_val = {p: 0 for p in 0..N};
+    precommit_ack = {p: false for p in 0..N};
 }
 
 // Phase 1: Coordinator sends prepare
 action Prepare() {
-    require coord == 0
-    coord = 1
+    require coord == 0;
+    coord = 1;
 }
 
 // Participant votes yes
 action VoteYes(p: 0..N) {
-    require coord == 1
-    require part[p] == 0
-    part = part | {p: 1}
-    and vote_val = vote_val | {p: 1}
-    and voted = voted | {p: true}
+    require coord == 1;
+    require part[p] == 0;
+    part = part | {p: 1};
+    vote_val = vote_val | {p: 1};
+    voted = voted | {p: true};
 }
 
 // Participant votes no
 action VoteNo(p: 0..N) {
-    require coord == 1
-    require part[p] == 0
-    part = part | {p: 2}
-    and vote_val = vote_val | {p: 0}
-    and voted = voted | {p: true}
+    require coord == 1;
+    require part[p] == 0;
+    part = part | {p: 2};
+    vote_val = vote_val | {p: 0};
+    voted = voted | {p: true};
 }
 
 // Phase 2: Coordinator sends pre-commit (all voted yes)
 action PreCommit() {
-    require coord == 1
-    require all p in 0..N: voted[p] == true
-    require all p in 0..N: vote_val[p] == 1
-    coord = 2
+    require coord == 1;
+    require all p in 0..N: voted[p] == true;
+    require all p in 0..N: vote_val[p] == 1;
+    coord = 2;
 }
 
 // Coordinator aborts (at least one voted no)
 action CoordAbort() {
-    require coord == 1
-    require any p in 0..N: voted[p] == true and vote_val[p] == 0
-    coord = 4
+    require coord == 1;
+    require any p in 0..N: voted[p] == true and vote_val[p] == 0;
+    coord = 4;
 }
 
 // Participant acknowledges pre-commit
 action AckPreCommit(p: 0..N) {
-    require coord == 2
-    require part[p] == 1
-    part = part | {p: 3}
-    and precommit_ack = precommit_ack | {p: true}
+    require coord == 2;
+    require part[p] == 1;
+    part = part | {p: 3};
+    precommit_ack = precommit_ack | {p: true};
 }
 
 // Phase 3: Coordinator commits (all acknowledged)
 action Commit() {
-    require coord == 2
-    require all p in 0..N: precommit_ack[p] == true
-    coord = 3
+    require coord == 2;
+    require all p in 0..N: precommit_ack[p] == true;
+    coord = 3;
 }
 
 // Participant applies commit
 action PartCommit(p: 0..N) {
-    require coord == 3
-    require part[p] == 3
-    part = part | {p: 4}
+    require coord == 3;
+    require part[p] == 3;
+    part = part | {p: 4};
 }
 
 // Participant applies abort
 action PartAbort(p: 0..N) {
-    require coord == 4
-    require part[p] == 1 or part[p] == 2
-    part = part | {p: 5}
+    require coord == 4;
+    require part[p] == 1 or part[p] == 2;
+    part = part | {p: 5};
 }
 
 // Agreement: no participant commits while another aborts

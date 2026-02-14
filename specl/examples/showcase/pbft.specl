@@ -40,78 +40,78 @@ var decided: Dict[0..N, Bool]
 var decision: Dict[0..N, 0..MaxVal]
 
 init {
-    byzantine = {r: false for r in 0..N}
-    and byz_count = 0
-    and prepared_val = {r: 0 for r in 0..N}
-    and has_prepared = {r: false for r in 0..N}
-    and committed_val = {r: 0 for r in 0..N}
-    and has_committed = {r: false for r in 0..N}
-    and proposed = false
-    and proposal = 0
-    and decided = {r: false for r in 0..N}
-    and decision = {r: 0 for r in 0..N}
+    byzantine = {r: false for r in 0..N};
+    byz_count = 0;
+    prepared_val = {r: 0 for r in 0..N};
+    has_prepared = {r: false for r in 0..N};
+    committed_val = {r: 0 for r in 0..N};
+    has_committed = {r: false for r in 0..N};
+    proposed = false;
+    proposal = 0;
+    decided = {r: false for r in 0..N};
+    decision = {r: 0 for r in 0..N};
 }
 
 // Designate replica r as Byzantine (up to F total)
 action MakeByzantine(r: 0..N) {
-    require byzantine[r] == false
-    require byz_count < F
-    byzantine = byzantine | {r: true}
-    and byz_count = byz_count + 1
+    require byzantine[r] == false;
+    require byz_count < F;
+    byzantine = byzantine | {r: true};
+    byz_count = byz_count + 1;
 }
 
 // Primary (replica 0) proposes a value
 action Propose(v: 0..MaxVal) {
-    require proposed == false
-    require byzantine[0] == false
-    proposed = true
-    and proposal = v
+    require proposed == false;
+    require byzantine[0] == false;
+    proposed = true;
+    proposal = v;
 }
 
 // Honest replica r prepares the proposed value
 action HonestPrepare(r: 0..N) {
-    require proposed == true
-    require byzantine[r] == false
-    require has_prepared[r] == false
-    prepared_val = prepared_val | {r: proposal}
-    and has_prepared = has_prepared | {r: true}
+    require proposed == true;
+    require byzantine[r] == false;
+    require has_prepared[r] == false;
+    prepared_val = prepared_val | {r: proposal};
+    has_prepared = has_prepared | {r: true};
 }
 
 // Byzantine replica r prepares any value
 action ByzantinePrepare(r: 0..N, v: 0..MaxVal) {
-    require byzantine[r] == true
-    require has_prepared[r] == false
-    prepared_val = prepared_val | {r: v}
-    and has_prepared = has_prepared | {r: true}
+    require byzantine[r] == true;
+    require has_prepared[r] == false;
+    prepared_val = prepared_val | {r: v};
+    has_prepared = has_prepared | {r: true};
 }
 
 // Honest replica r commits after seeing 2f+1 matching prepares
 action HonestCommit(r: 0..N) {
-    require byzantine[r] == false
-    require has_prepared[r] == true
-    require has_committed[r] == false
+    require byzantine[r] == false;
+    require has_prepared[r] == true;
+    require has_committed[r] == false;
     // Need 2f+1 prepares for the same value as r's prepare
-    require len({q in 0..N if has_prepared[q] and prepared_val[q] == prepared_val[r]}) * 1 >= 2 * F + 1
-    committed_val = committed_val | {r: prepared_val[r]}
-    and has_committed = has_committed | {r: true}
+    require len({q in 0..N if has_prepared[q] and prepared_val[q] == prepared_val[r]}) * 1 >= 2 * F + 1;
+    committed_val = committed_val | {r: prepared_val[r]};
+    has_committed = has_committed | {r: true};
 }
 
 // Byzantine replica r commits any value
 action ByzantineCommit(r: 0..N, v: 0..MaxVal) {
-    require byzantine[r] == true
-    require has_committed[r] == false
-    committed_val = committed_val | {r: v}
-    and has_committed = has_committed | {r: true}
+    require byzantine[r] == true;
+    require has_committed[r] == false;
+    committed_val = committed_val | {r: v};
+    has_committed = has_committed | {r: true};
 }
 
 // Honest replica r decides after seeing 2f+1 matching commits
 action Decide(r: 0..N) {
-    require byzantine[r] == false
-    require has_committed[r] == true
-    require decided[r] == false
-    require len({q in 0..N if has_committed[q] and committed_val[q] == committed_val[r]}) * 1 >= 2 * F + 1
-    decided = decided | {r: true}
-    and decision = decision | {r: committed_val[r]}
+    require byzantine[r] == false;
+    require has_committed[r] == true;
+    require decided[r] == false;
+    require len({q in 0..N if has_committed[q] and committed_val[q] == committed_val[r]}) * 1 >= 2 * F + 1;
+    decided = decided | {r: true};
+    decision = decision | {r: committed_val[r]};
 }
 
 // Agreement: all honest decided replicas agree

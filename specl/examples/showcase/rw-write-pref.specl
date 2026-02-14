@@ -16,41 +16,41 @@ const N: 0..3
 var state: Dict[0..N, 0..3]
 
 init {
-    state = {t: 0 for t in 0..N}
+    state = {t: 0 for t in 0..N};
 }
 
 // Reader starts reading (no writer active AND no writer waiting)
 action StartRead(t: 0..N) {
-    require state[t] == 0
-    require all w in 0..N: state[w] != 3
-    require all w in 0..N: state[w] != 2
-    state = state | {t: 1}
+    require state[t] == 0;
+    require all w in 0..N: state[w] != 3;
+    require all w in 0..N: state[w] != 2;
+    state = state | {t: 1};
 }
 
 // Reader finishes reading
 action EndRead(t: 0..N) {
-    require state[t] == 1
-    state = state | {t: 0}
+    require state[t] == 1;
+    state = state | {t: 0};
 }
 
 // Writer requests write access (enters waiting state)
 action RequestWrite(t: 0..N) {
-    require state[t] == 0
-    state = state | {t: 2}
+    require state[t] == 0;
+    state = state | {t: 2};
 }
 
 // Writer starts writing (no other reader or writer active)
 action StartWrite(t: 0..N) {
-    require state[t] == 2
-    require all r in 0..N: r == t or state[r] != 1
-    require all w in 0..N: w == t or state[w] != 3
-    state = state | {t: 3}
+    require state[t] == 2;
+    require all r in 0..N: r == t or state[r] != 1;
+    require all w in 0..N: w == t or state[w] != 3;
+    state = state | {t: 3};
 }
 
 // Writer finishes writing
 action EndWrite(t: 0..N) {
-    require state[t] == 3
-    state = state | {t: 0}
+    require state[t] == 3;
+    state = state | {t: 0};
 }
 
 // Mutual exclusion: no reader and writer simultaneously

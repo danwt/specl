@@ -12,34 +12,34 @@ var state: Dict[0..MAX_PROC, 0..2]
 var tokenHolder: 0..MAX_PROC
 
 init {
-    state = {p: 0 for p in 0..MAX_PROC}
-    and tokenHolder = 0
+    state = {p: 0 for p in 0..MAX_PROC};
+    tokenHolder = 0;
 }
 
 // Process wants to enter critical section
 action Request(p: 0..MAX_PROC) {
-    require state[p] == 0
-    state = state | { p: 1 }
+    require state[p] == 0;
+    state = state | { p: 1 };
 }
 
 // Process with token enters critical section
 action EnterCS(p: 0..MAX_PROC) {
-    require state[p] == 1
-    require tokenHolder == p
-    state = state | { p: 2 }
+    require state[p] == 1;
+    require tokenHolder == p;
+    state = state | { p: 2 };
 }
 
 // Process exits critical section
 action ExitCS(p: 0..MAX_PROC) {
-    require state[p] == 2
-    state = state | { p: 0 }
+    require state[p] == 2;
+    state = state | { p: 0 };
 }
 
 // Process passes token to successor in ring
 action PassToken(p: 0..MAX_PROC) {
-    require tokenHolder == p
-    require state[p] != 2
-    tokenHolder = (p + 1) % (MAX_PROC + 1)
+    require tokenHolder == p;
+    require state[p] != 2;
+    tokenHolder = (p + 1) % (MAX_PROC + 1);
 }
 
 // Safety: Mutual exclusion

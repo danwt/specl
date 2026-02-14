@@ -21,31 +21,31 @@ var cook: 0..1
 var eaten: Dict[0..N, 0..M]
 
 init {
-    pot = M
-    and cook = 0
-    and eaten = {s: 0 for s in 0..N}
+    pot = M;
+    cook = 0;
+    eaten = {s: 0 for s in 0..N};
 }
 
 // Savage takes a serving (pot not empty)
 action Eat(s: 0..N) {
-    require pot > 0
-    require eaten[s] < M
-    pot = pot - 1
-    and eaten = eaten | {s: eaten[s] + 1}
+    require pot > 0;
+    require eaten[s] < M;
+    pot = pot - 1;
+    eaten = eaten | {s: eaten[s] + 1};
 }
 
 // Savage finds pot empty, wakes the cook
 action WakeCook() {
-    require pot == 0
-    require cook == 0
-    cook = 1
+    require pot == 0;
+    require cook == 0;
+    cook = 1;
 }
 
 // Cook refills the pot and goes back to sleep
 action Refill() {
-    require cook == 1
-    pot = M
-    and cook = 0
+    require cook == 1;
+    pot = M;
+    cook = 0;
 }
 
 // Pot never has negative servings

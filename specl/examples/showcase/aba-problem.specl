@@ -33,54 +33,54 @@ var t1_pc: 0..2
 var writes_since_snap: 0..4
 
 init {
-    ptr = 0
-    and ver = 0
-    and t0_pc = 0
-    and t0_snap_ptr = 0
-    and t0_snap_ver = 0
-    and t1_pc = 0
-    and writes_since_snap = 0
+    ptr = 0;
+    ver = 0;
+    t0_pc = 0;
+    t0_snap_ptr = 0;
+    t0_snap_ver = 0;
+    t1_pc = 0;
+    writes_since_snap = 0;
 }
 
 // Thread 0 reads the shared pointer
 action T0Read() {
-    require t0_pc == 0
-    t0_pc = 1
-    and t0_snap_ptr = ptr
-    and t0_snap_ver = ver
-    and writes_since_snap = 0
+    require t0_pc == 0;
+    t0_pc = 1;
+    t0_snap_ptr = ptr;
+    t0_snap_ver = ver;
+    writes_since_snap = 0;
 }
 
 // Thread 0 performs CAS
 action T0CAS() {
-    require t0_pc == 1
+    require t0_pc == 1;
     // Naive CAS: only compares ptr
     // Fixed CAS: also compares version
-    require ptr == t0_snap_ptr
-    require UseFix == 0 or ver == t0_snap_ver
-    t0_pc = 2
-    and ptr = 2
-    and ver = ver + 1
+    require ptr == t0_snap_ptr;
+    require UseFix == 0 or ver == t0_snap_ver;
+    t0_pc = 2;
+    ptr = 2;
+    ver = ver + 1;
 }
 
 // Thread 1 changes ptr: A -> B
 action T1ChangeToB() {
-    require t1_pc == 0
-    require ptr == 0
-    t1_pc = 1
-    and ptr = 1
-    and ver = ver + 1
-    and writes_since_snap = writes_since_snap + 1
+    require t1_pc == 0;
+    require ptr == 0;
+    t1_pc = 1;
+    ptr = 1;
+    ver = ver + 1;
+    writes_since_snap = writes_since_snap + 1;
 }
 
 // Thread 1 changes ptr: B -> A (completing ABA)
 action T1ChangeBackToA() {
-    require t1_pc == 1
-    require ptr == 1
-    t1_pc = 2
-    and ptr = 0
-    and ver = ver + 1
-    and writes_since_snap = writes_since_snap + 1
+    require t1_pc == 1;
+    require ptr == 1;
+    t1_pc = 2;
+    ptr = 0;
+    ver = ver + 1;
+    writes_since_snap = writes_since_snap + 1;
 }
 
 // If T0's CAS succeeded, no writes should have happened since its snapshot

@@ -18,64 +18,64 @@ var tmPrepared: Set[Int]
 var tmCrashed: Bool
 
 init {
-    rmState = {r: 0 for r in 0..N}
-    and tmState = 0
-    and tmPrepared = {}
-    and tmCrashed = false
+    rmState = {r: 0 for r in 0..N};
+    tmState = 0;
+    tmPrepared = {};
+    tmCrashed = false;
 }
 
 // RM r votes YES by moving to Prepared
 action RMPrepare(r: 0..N) {
-    require rmState[r] == 0
-    rmState = rmState | {r: 1}
+    require rmState[r] == 0;
+    rmState = rmState | {r: 1};
 }
 
 // RM r unilaterally aborts (only from Working state)
 action RMChooseToAbort(r: 0..N) {
-    require rmState[r] == 0
-    rmState = rmState | {r: 3}
+    require rmState[r] == 0;
+    rmState = rmState | {r: 3};
 }
 
 // TM receives prepared message from RM r
 action TMRcvPrepared(r: 0..N) {
-    require not tmCrashed
-    require tmState == 0
-    require rmState[r] == 1
-    tmPrepared = tmPrepared union {r}
+    require not tmCrashed;
+    require tmState == 0;
+    require rmState[r] == 1;
+    tmPrepared = tmPrepared union {r};
 }
 
 // TM commits: all RMs have prepared
 action TMCommit() {
-    require not tmCrashed
-    require tmState == 0
-    require all r in 0..N: (r in tmPrepared)
-    tmState = 1
+    require not tmCrashed;
+    require tmState == 0;
+    require all r in 0..N: (r in tmPrepared);
+    tmState = 1;
 }
 
 // TM aborts
 action TMAbort() {
-    require not tmCrashed
-    require tmState == 0
-    tmState = 2
+    require not tmCrashed;
+    require tmState == 0;
+    tmState = 2;
 }
 
 // RM r learns the commit decision
 action RMRcvCommit(r: 0..N) {
-    require tmState == 1
-    rmState = rmState | {r: 2}
+    require tmState == 1;
+    rmState = rmState | {r: 2};
 }
 
 // RM r learns the abort decision
 action RMRcvAbort(r: 0..N) {
-    require tmState == 2
-    rmState = rmState | {r: 3}
+    require tmState == 2;
+    rmState = rmState | {r: 3};
 }
 
 // Coordinator crashes (can happen while TM is in Init)
 action CoordinatorCrash() {
-    require not tmCrashed
-    require tmState == 0
-    tmCrashed = true
+    require not tmCrashed;
+    require tmState == 0;
+    tmCrashed = true;
 }
 
 // Agreement: no RM committed while another aborted

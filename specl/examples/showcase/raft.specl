@@ -78,23 +78,23 @@ func Max(a, b) {
 }
 
 init {
-    currentTerm = {i: 1 for i in 0..N}
-    and state = {i: 0 for i in 0..N}
-    and votedFor = {i: -1 for i in 0..N}
-    and logTerm = {i: [] for i in 0..N}
-    and logValue = {i: [] for i in 0..N}
-    and commitIndex = {i: 0 for i in 0..N}
-    and votesGranted = {i: {j: false for j in 0..N} for i in 0..N}
-    and nextIndex = {i: {j: 1 for j in 0..N} for i in 0..N}
-    and matchIndex = {i: {j: 0 for j in 0..N} for i in 0..N}
-    and pendingResponse = {i: {j: false for j in 0..N} for i in 0..N}
-    and acked = {v: -1 for v in 0..MaxVal}
-    and electionCtr = 0
-    and restartCtr = 0
-    and reqVoteReqs = {}
-    and reqVoteResps = {}
-    and aeReqs = {}
-    and aeResps = {}
+    currentTerm = {i: 1 for i in 0..N};
+    state = {i: 0 for i in 0..N};
+    votedFor = {i: -1 for i in 0..N};
+    logTerm = {i: [] for i in 0..N};
+    logValue = {i: [] for i in 0..N};
+    commitIndex = {i: 0 for i in 0..N};
+    votesGranted = {i: {j: false for j in 0..N} for i in 0..N};
+    nextIndex = {i: {j: 1 for j in 0..N} for i in 0..N};
+    matchIndex = {i: {j: 0 for j in 0..N} for i in 0..N};
+    pendingResponse = {i: {j: false for j in 0..N} for i in 0..N};
+    acked = {v: -1 for v in 0..MaxVal};
+    electionCtr = 0;
+    restartCtr = 0;
+    reqVoteReqs = {};
+    reqVoteResps = {};
+    aeReqs = {};
+    aeResps = {};
 }
 
 // ============================================================================
@@ -103,28 +103,28 @@ init {
 
 // Server i restarts from stable storage (loses volatile state)
 action Restart(i: 0..N) {
-    require restartCtr < MaxRestarts
+    require restartCtr < MaxRestarts;
 
-    state = state | {i: 0}
-    and votesGranted = votesGranted | {i: {j: false for j in 0..N}}
-    and nextIndex = nextIndex | {i: {j: 1 for j in 0..N}}
-    and matchIndex = matchIndex | {i: {j: 0 for j in 0..N}}
-    and pendingResponse = pendingResponse | {i: {j: false for j in 0..N}}
-    and commitIndex = commitIndex | {i: 0}
-    and restartCtr = restartCtr + 1
+    state = state | {i: 0};
+    votesGranted = votesGranted | {i: {j: false for j in 0..N}};
+    nextIndex = nextIndex | {i: {j: 1 for j in 0..N}};
+    matchIndex = matchIndex | {i: {j: 0 for j in 0..N}};
+    pendingResponse = pendingResponse | {i: {j: false for j in 0..N}};
+    commitIndex = commitIndex | {i: 0};
+    restartCtr = restartCtr + 1;
 }
 
 // Combined Timeout + RequestVote: server i starts election
 action RequestVote(i: 0..N) {
-    require electionCtr < MaxElections
-    require state[i] == 0 or state[i] == 1
+    require electionCtr < MaxElections;
+    require state[i] == 0 or state[i] == 1;
 
-    state = state | {i: 1}
-    and currentTerm = currentTerm | {i: currentTerm[i] + 1}
-    and votedFor = votedFor | {i: i}
-    and votesGranted = votesGranted | {i: {j: j == i for j in 0..N}}
-    and electionCtr = electionCtr + 1
-    and reqVoteReqs = reqVoteReqs union {
+    state = state | {i: 1};
+    currentTerm = currentTerm | {i: currentTerm[i] + 1};
+    votedFor = votedFor | {i: i};
+    votesGranted = votesGranted | {i: {j: j == i for j in 0..N}};
+    electionCtr = electionCtr + 1;
+    reqVoteReqs = reqVoteReqs union {
         [currentTerm[i] + 1, i, j, LastTerm(logTerm[i]), len(logTerm[i])]
         for j in 0..N if j != i
     }
@@ -132,33 +132,33 @@ action RequestVote(i: 0..N) {
 
 // Candidate i becomes leader with quorum
 action BecomeLeader(i: 0..N) {
-    require state[i] == 1
-    require len({k in 0..N if votesGranted[i][k]}) * 2 > N + 1
+    require state[i] == 1;
+    require len({k in 0..N if votesGranted[i][k]}) * 2 > N + 1;
 
-    state = state | {i: 2}
-    and nextIndex = nextIndex | {i: {j: len(logTerm[i]) + 1 for j in 0..N}}
-    and matchIndex = matchIndex | {i: {j: 0 for j in 0..N}}
-    and pendingResponse = pendingResponse | {i: {j: false for j in 0..N}}
+    state = state | {i: 2};
+    nextIndex = nextIndex | {i: {j: len(logTerm[i]) + 1 for j in 0..N}};
+    matchIndex = matchIndex | {i: {j: 0 for j in 0..N}};
+    pendingResponse = pendingResponse | {i: {j: false for j in 0..N}};
 }
 
 // Leader i receives client request to add value v
 action ClientRequest(i: 0..N, v: 0..MaxVal) {
-    require state[i] == 2
-    require acked[v] == -1
+    require state[i] == 2;
+    require acked[v] == -1;
 
-    logTerm = logTerm | {i: logTerm[i] ++ [currentTerm[i]]}
-    and logValue = logValue | {i: logValue[i] ++ [v]}
-    and acked = acked | {v: 0}
+    logTerm = logTerm | {i: logTerm[i] ++ [currentTerm[i]]};
+    logValue = logValue | {i: logValue[i] ++ [v]};
+    acked = acked | {v: 0};
 }
 
 // Leader i sends AppendEntries to follower j
 action AppendEntries(i: 0..N, j: 0..N) {
-    require i != j
-    require state[i] == 2
-    require pendingResponse[i][j] == false
+    require i != j;
+    require state[i] == 2;
+    require pendingResponse[i][j] == false;
 
-    pendingResponse = pendingResponse | {i: pendingResponse[i] | {j: true}}
-    and aeReqs = aeReqs union {[
+    pendingResponse = pendingResponse | {i: pendingResponse[i] | {j: true}};
+    aeReqs = aeReqs union {[
         currentTerm[i],
         i,
         j,
@@ -173,19 +173,19 @@ action AppendEntries(i: 0..N, j: 0..N) {
 
 // Leader i advances commitIndex
 action AdvanceCommitIndex(i: 0..N, k: 1..MaxLogLen) {
-    require state[i] == 2
-    require k <= len(logTerm[i])
-    require k > commitIndex[i]
-    require logTerm[i][k - 1] == currentTerm[i]
-    require len({j in 0..N if matchIndex[i][j] >= k or j == i}) * 2 > N + 1
+    require state[i] == 2;
+    require k <= len(logTerm[i]);
+    require k > commitIndex[i];
+    require logTerm[i][k - 1] == currentTerm[i];
+    require len({j in 0..N if matchIndex[i][j] >= k or j == i}) * 2 > N + 1;
     // k must be maximum valid index
     require all k2 in 1..MaxLogLen:
         (k2 > k and k2 <= len(logTerm[i]) and logTerm[i][k2 - 1] == currentTerm[i]
          and len({j in 0..N if matchIndex[i][j] >= k2 or j == i}) * 2 > N + 1)
         implies false
 
-    commitIndex = commitIndex | {i: k}
-    and acked = {v:
+    commitIndex = commitIndex | {i: k};
+    acked = {v:
         if acked[v] == 0
            and len({idx in 0..k if idx >= commitIndex[i] and idx < k
                      and idx < len(logValue[i]) and logValue[i][idx] == v}) > 0
@@ -200,35 +200,35 @@ action AdvanceCommitIndex(i: 0..N, k: 1..MaxLogLen) {
 // ============================================================================
 
 action UpdateTermReqVoteReq(msg: Seq[Int]) {
-    require msg in reqVoteReqs
-    require msg[0] > currentTerm[msg[2]]
-    currentTerm = currentTerm | {msg[2]: msg[0]}
-    and state = state | {msg[2]: 0}
-    and votedFor = votedFor | {msg[2]: -1}
+    require msg in reqVoteReqs;
+    require msg[0] > currentTerm[msg[2]];
+    currentTerm = currentTerm | {msg[2]: msg[0]};
+    state = state | {msg[2]: 0};
+    votedFor = votedFor | {msg[2]: -1};
 }
 
 action UpdateTermReqVoteResp(msg: Seq[Int]) {
-    require msg in reqVoteResps
-    require msg[0] > currentTerm[msg[2]]
-    currentTerm = currentTerm | {msg[2]: msg[0]}
-    and state = state | {msg[2]: 0}
-    and votedFor = votedFor | {msg[2]: -1}
+    require msg in reqVoteResps;
+    require msg[0] > currentTerm[msg[2]];
+    currentTerm = currentTerm | {msg[2]: msg[0]};
+    state = state | {msg[2]: 0};
+    votedFor = votedFor | {msg[2]: -1};
 }
 
 action UpdateTermAEReq(msg: Seq[Int]) {
-    require msg in aeReqs
-    require msg[0] > currentTerm[msg[2]]
-    currentTerm = currentTerm | {msg[2]: msg[0]}
-    and state = state | {msg[2]: 0}
-    and votedFor = votedFor | {msg[2]: -1}
+    require msg in aeReqs;
+    require msg[0] > currentTerm[msg[2]];
+    currentTerm = currentTerm | {msg[2]: msg[0]};
+    state = state | {msg[2]: 0};
+    votedFor = votedFor | {msg[2]: -1};
 }
 
 action UpdateTermAEResp(msg: Seq[Int]) {
-    require msg in aeResps
-    require msg[0] > currentTerm[msg[2]]
-    currentTerm = currentTerm | {msg[2]: msg[0]}
-    and state = state | {msg[2]: 0}
-    and votedFor = votedFor | {msg[2]: -1}
+    require msg in aeResps;
+    require msg[0] > currentTerm[msg[2]];
+    currentTerm = currentTerm | {msg[2]: msg[0]};
+    state = state | {msg[2]: 0};
+    votedFor = votedFor | {msg[2]: -1};
 }
 
 // ============================================================================
@@ -236,8 +236,8 @@ action UpdateTermAEResp(msg: Seq[Int]) {
 // ============================================================================
 
 action HandleRequestVoteRequest(msg: Seq[Int]) {
-    require msg in reqVoteReqs
-    require msg[0] <= currentTerm[msg[2]]
+    require msg in reqVoteReqs;
+    require msg[0] <= currentTerm[msg[2]];
 
     votedFor = votedFor | {msg[2]:
         if msg[0] == currentTerm[msg[2]]
@@ -247,9 +247,9 @@ action HandleRequestVoteRequest(msg: Seq[Int]) {
            and (votedFor[msg[2]] == -1 or votedFor[msg[2]] == msg[1])
         then msg[1]
         else votedFor[msg[2]]
-    }
-    and reqVoteReqs = reqVoteReqs diff {msg}
-    and reqVoteResps = reqVoteResps union {[
+    };
+    reqVoteReqs = reqVoteReqs diff {msg};
+    reqVoteResps = reqVoteResps union {[
         currentTerm[msg[2]],
         msg[2],
         msg[1],
@@ -267,15 +267,15 @@ action HandleRequestVoteRequest(msg: Seq[Int]) {
 // ============================================================================
 
 action HandleRequestVoteResponse(msg: Seq[Int]) {
-    require msg in reqVoteResps
-    require msg[0] == currentTerm[msg[2]]
+    require msg in reqVoteResps;
+    require msg[0] == currentTerm[msg[2]];
 
     votesGranted = votesGranted | {msg[2]:
         if msg[3] == 1
         then votesGranted[msg[2]] | {msg[1]: true}
         else votesGranted[msg[2]]
-    }
-    and reqVoteResps = reqVoteResps diff {msg}
+    };
+    reqVoteResps = reqVoteResps diff {msg};
 }
 
 // ============================================================================
@@ -283,8 +283,8 @@ action HandleRequestVoteResponse(msg: Seq[Int]) {
 // ============================================================================
 
 action RejectAppendEntriesRequest(msg: Seq[Int]) {
-    require msg in aeReqs
-    require msg[0] <= currentTerm[msg[2]]
+    require msg in aeReqs;
+    require msg[0] <= currentTerm[msg[2]];
     // Reject if: stale term, OR equal term + follower + log mismatch
     require msg[0] < currentTerm[msg[2]]
          or (msg[0] == currentTerm[msg[2]]
@@ -293,8 +293,8 @@ action RejectAppendEntriesRequest(msg: Seq[Int]) {
              and (msg[3] > len(logTerm[msg[2]])
                   or logTerm[msg[2]][msg[3] - 1] != msg[4]))
 
-    aeReqs = aeReqs diff {msg}
-    and aeResps = aeResps union {[
+    aeReqs = aeReqs diff {msg};
+    aeResps = aeResps union {[
         currentTerm[msg[2]], msg[2], msg[1], 0, 0
     ]}
 }
@@ -304,34 +304,34 @@ action RejectAppendEntriesRequest(msg: Seq[Int]) {
 // ============================================================================
 
 action AcceptAppendEntriesRequest(msg: Seq[Int]) {
-    require msg in aeReqs
-    require msg[0] == currentTerm[msg[2]]
-    require state[msg[2]] == 0 or state[msg[2]] == 1
+    require msg in aeReqs;
+    require msg[0] == currentTerm[msg[2]];
+    require state[msg[2]] == 0 or state[msg[2]] == 1;
     // logOk
     require msg[3] == 0
          or (msg[3] > 0 and msg[3] <= len(logTerm[msg[2]])
              and logTerm[msg[2]][msg[3] - 1] == msg[4])
 
-    state = state | {msg[2]: 0}
-    and logTerm = logTerm | {msg[2]:
+    state = state | {msg[2]: 0};
+    logTerm = logTerm | {msg[2]:
         if msg[5] == 1 then
             logTerm[msg[2]][0..msg[3]] ++ [msg[6]]
         else if len(logTerm[msg[2]]) > msg[3] then
             logTerm[msg[2]][0..msg[3]]
         else
             logTerm[msg[2]]
-    }
-    and logValue = logValue | {msg[2]:
+    };
+    logValue = logValue | {msg[2]:
         if msg[5] == 1 then
             logValue[msg[2]][0..msg[3]] ++ [msg[7]]
         else if len(logValue[msg[2]]) > msg[3] then
             logValue[msg[2]][0..msg[3]]
         else
             logValue[msg[2]]
-    }
-    and commitIndex = commitIndex | {msg[2]: msg[8]}
-    and aeReqs = aeReqs diff {msg}
-    and aeResps = aeResps union {[
+    };
+    commitIndex = commitIndex | {msg[2]: msg[8]};
+    aeReqs = aeReqs diff {msg};
+    aeResps = aeResps union {[
         currentTerm[msg[2]], msg[2], msg[1], 1, msg[3] + msg[5]
     ]}
 }
@@ -341,21 +341,21 @@ action AcceptAppendEntriesRequest(msg: Seq[Int]) {
 // ============================================================================
 
 action HandleAppendEntriesResponse(msg: Seq[Int]) {
-    require msg in aeResps
-    require msg[0] == currentTerm[msg[2]]
+    require msg in aeResps;
+    require msg[0] == currentTerm[msg[2]];
 
     nextIndex = nextIndex | {msg[2]:
         if msg[3] == 1
         then nextIndex[msg[2]] | {msg[1]: msg[4] + 1}
         else nextIndex[msg[2]] | {msg[1]: Max(nextIndex[msg[2]][msg[1]] - 1, 1)}
-    }
-    and matchIndex = matchIndex | {msg[2]:
+    };
+    matchIndex = matchIndex | {msg[2]:
         if msg[3] == 1
         then matchIndex[msg[2]] | {msg[1]: msg[4]}
         else matchIndex[msg[2]]
-    }
-    and pendingResponse = pendingResponse | {msg[2]: pendingResponse[msg[2]] | {msg[1]: false}}
-    and aeResps = aeResps diff {msg}
+    };
+    pendingResponse = pendingResponse | {msg[2]: pendingResponse[msg[2]] | {msg[1]: false}};
+    aeResps = aeResps diff {msg};
 }
 
 // ============================================================================

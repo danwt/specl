@@ -25,18 +25,18 @@ var tag_val: Dict[0..N, Dict[0..MaxTag, 0..MaxVal]]
 var tag_active: Dict[0..N, Dict[0..MaxTag, Bool]]
 
 init {
-    counter = {r: 0 for r in 0..N}
-    and tag_val = {r: {t: 0 for t in 0..MaxTag} for r in 0..N}
-    and tag_active = {r: {t: false for t in 0..MaxTag} for r in 0..N}
+    counter = {r: 0 for r in 0..N};
+    tag_val = {r: {t: 0 for t in 0..MaxTag} for r in 0..N};
+    tag_active = {r: {t: false for t in 0..MaxTag} for r in 0..N};
 }
 
 // Replica r adds element v: assign fresh tag
 action Add(r: 0..N, v: 0..MaxVal) {
-    require counter[r] < MaxTag
+    require counter[r] < MaxTag;
     // Use counter[r] as the tag index (unique per replica)
-    tag_val = tag_val | {r: tag_val[r] | {counter[r]: v}}
-    and tag_active = tag_active | {r: tag_active[r] | {counter[r]: true}}
-    and counter = counter | {r: counter[r] + 1}
+    tag_val = tag_val | {r: tag_val[r] | {counter[r]: v}};
+    tag_active = tag_active | {r: tag_active[r] | {counter[r]: true}};
+    counter = counter | {r: counter[r] + 1};
 }
 
 // Replica r removes element v: deactivate all tags with that value
@@ -52,15 +52,15 @@ action Remove(r: 0..N, v: 0..MaxVal) {
 
 // Merge: replica dst incorporates replica src's state (union of tags)
 action Merge(src: 0..N, dst: 0..N) {
-    require src != dst
+    require src != dst;
     // For each tag, if src has it active and dst doesn't, add it
     tag_val = tag_val | {dst:
         {t: (if tag_active[src][t] and not tag_active[dst][t]
              then tag_val[src][t]
              else tag_val[dst][t])
          for t in 0..MaxTag}
-    }
-    and tag_active = tag_active | {dst:
+    };
+    tag_active = tag_active | {dst:
         {t: (tag_active[dst][t] or tag_active[src][t])
          for t in 0..MaxTag}
     }

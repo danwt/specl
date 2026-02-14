@@ -34,64 +34,64 @@ var reclaimed: Bool
 var holds_ref: Dict[0..N, Bool]
 
 init {
-    global_epoch = 0
-    and active = {t: false for t in 0..N}
-    and local_epoch = {t: 0 for t in 0..N}
-    and retired = false
-    and retired_epoch = 0
-    and reclaimed = false
-    and holds_ref = {t: false for t in 0..N}
+    global_epoch = 0;
+    active = {t: false for t in 0..N};
+    local_epoch = {t: 0 for t in 0..N};
+    retired = false;
+    retired_epoch = 0;
+    reclaimed = false;
+    holds_ref = {t: false for t in 0..N};
 }
 
 // Thread enters critical section
 action Enter(t: 0..N) {
-    require active[t] == false
-    active = active | {t: true}
-    and local_epoch = local_epoch | {t: global_epoch}
+    require active[t] == false;
+    active = active | {t: true};
+    local_epoch = local_epoch | {t: global_epoch};
 }
 
 // Thread acquires a reference (only while in CS, before retirement)
 action AcquireRef(t: 0..N) {
-    require active[t] == true
-    require holds_ref[t] == false
-    require retired == false
-    holds_ref = holds_ref | {t: true}
+    require active[t] == true;
+    require holds_ref[t] == false;
+    require retired == false;
+    holds_ref = holds_ref | {t: true};
 }
 
 // Thread releases reference
 action ReleaseRef(t: 0..N) {
-    require holds_ref[t] == true
-    holds_ref = holds_ref | {t: false}
+    require holds_ref[t] == true;
+    holds_ref = holds_ref | {t: false};
 }
 
 // Thread exits critical section (must release ref first)
 action Exit(t: 0..N) {
-    require active[t] == true
-    require holds_ref[t] == false
-    active = active | {t: false}
+    require active[t] == true;
+    require holds_ref[t] == false;
+    active = active | {t: false};
 }
 
 // Retire the object (remove from data structure)
 action Retire() {
-    require retired == false
-    retired = true
-    and retired_epoch = global_epoch
+    require retired == false;
+    retired = true;
+    retired_epoch = global_epoch;
 }
 
 // Advance global epoch (all active threads must be current)
 action AdvanceEpoch() {
-    require global_epoch < MaxEpoch
+    require global_epoch < MaxEpoch;
     require all t in 0..N:
         active[t] == false or local_epoch[t] == global_epoch
-    global_epoch = global_epoch + 1
+    global_epoch = global_epoch + 1;
 }
 
 // Reclaim: safe after two full epoch advances since retirement
 action Reclaim() {
-    require retired == true
-    require reclaimed == false
-    require global_epoch >= retired_epoch + 2
-    reclaimed = true
+    require retired == true;
+    require reclaimed == false;
+    require global_epoch >= retired_epoch + 2;
+    reclaimed = true;
 }
 
 // Safety: no thread holds a reference to a reclaimed object

@@ -156,74 +156,74 @@ init {
     buffer_count = 0 and
     mutex = 1 and
     items = 0 and
-    spaces = BUFFER_SIZE
+    spaces = BUFFER_SIZE;
 }
 
 // === Producer actions ===
 
 action Producer_Start(i: 0..NUM_PRODUCERS) {
-    require producers[i] == 0
-    producers = producers | {i: 1}
+    require producers[i] == 0;
+    producers = producers | {i: 1};
 }
 
 action Producer_WaitSpace(i: 0..NUM_PRODUCERS) {
-    require producers[i] == 1
-    require spaces > 0
+    require producers[i] == 1;
+    require spaces > 0;
     spaces = spaces - 1 and
-    producers = producers | {i: 2}
+    producers = producers | {i: 2};
 }
 
 action Producer_GetMutex(i: 0..NUM_PRODUCERS) {
-    require producers[i] == 2
-    require mutex == 1
+    require producers[i] == 2;
+    require mutex == 1;
     mutex = 0 and
-    producers = producers | {i: 3}
+    producers = producers | {i: 3};
 }
 
 action Producer_Add(i: 0..NUM_PRODUCERS) {
-    require producers[i] == 3
-    require buffer_count < BUFFER_SIZE
+    require producers[i] == 3;
+    require buffer_count < BUFFER_SIZE;
     buffer_count = buffer_count + 1 and
     items = items + 1 and
-    producers = producers | {i: 4}
+    producers = producers | {i: 4};
 }
 
 action Producer_ReleaseMutex(i: 0..NUM_PRODUCERS) {
-    require producers[i] == 4
-    require mutex == 0
+    require producers[i] == 4;
+    require mutex == 0;
     mutex = 1 and
-    producers = producers | {i: 5}
+    producers = producers | {i: 5};
 }
 
 // === Consumer actions ===
 
 action Consumer_WaitItem(i: 0..NUM_CONSUMERS) {
-    require consumers[i] == 0
-    require items > 0
+    require consumers[i] == 0;
+    require items > 0;
     items = items - 1 and
-    consumers = consumers | {i: 1}
+    consumers = consumers | {i: 1};
 }
 
 action Consumer_GetMutex(i: 0..NUM_CONSUMERS) {
-    require consumers[i] == 1
-    require mutex == 1
+    require consumers[i] == 1;
+    require mutex == 1;
     mutex = 0 and
-    consumers = consumers | {i: 2}
+    consumers = consumers | {i: 2};
 }
 
 action Consumer_Get(i: 0..NUM_CONSUMERS) {
-    require consumers[i] == 2
-    require buffer_count > 0
+    require consumers[i] == 2;
+    require buffer_count > 0;
     buffer_count = buffer_count - 1 and
     spaces = spaces + 1 and
-    consumers = consumers | {i: 3}
+    consumers = consumers | {i: 3};
 }
 
 action Consumer_ReleaseMutex(i: 0..NUM_CONSUMERS) {
-    require consumers[i] == 3
-    require mutex == 0
+    require consumers[i] == 3;
+    require mutex == 0;
     mutex = 1 and
-    consumers = consumers | {i: 4}
+    consumers = consumers | {i: 4};
 }
 
 // === Safety invariants ===

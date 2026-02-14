@@ -13,17 +13,17 @@ const MAX: 0..20
 var counters: Dict[0..N, 0..MAX]
 
 init {
-    counters = {i: 0 for i in 0..N}
+    counters = {i: 0 for i in 0..N};
 }
 
 action Increment(i: 0..N) {
-    require counters[i] < MAX
-    counters = counters | { i: counters[i] + 1 }
+    require counters[i] < MAX;
+    counters = counters | { i: counters[i] + 1 };
 }
 
 action Reset(i: 0..N) {
-    require counters[i] > 0
-    counters = counters | { i: 0 }
+    require counters[i] > 0;
+    counters = counters | { i: 0 };
 }
 
 invariant AllInRange {

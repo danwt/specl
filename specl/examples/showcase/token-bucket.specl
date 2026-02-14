@@ -18,35 +18,35 @@ var tokens: 0..Capacity
 var client: Dict[0..N, 0..2]
 
 init {
-    tokens = Capacity
-    and client = {c: 0 for c in 0..N}
+    tokens = Capacity;
+    client = {c: 0 for c in 0..N};
 }
 
 // Client makes a request (token available)
 action Request(c: 0..N) {
-    require client[c] == 0
-    require tokens > 0
-    tokens = tokens - 1
-    and client = client | {c: 1}
+    require client[c] == 0;
+    require tokens > 0;
+    tokens = tokens - 1;
+    client = client | {c: 1};
 }
 
 // Client request rejected (no tokens)
 action Reject(c: 0..N) {
-    require client[c] == 0
-    require tokens == 0
-    client = client | {c: 2}
+    require client[c] == 0;
+    require tokens == 0;
+    client = client | {c: 2};
 }
 
 // Client returns to idle
 action Reset(c: 0..N) {
-    require client[c] != 0
-    client = client | {c: 0}
+    require client[c] != 0;
+    client = client | {c: 0};
 }
 
 // Refill one token
 action Refill() {
-    require tokens < Capacity
-    tokens = tokens + 1
+    require tokens < Capacity;
+    tokens = tokens + 1;
 }
 
 // Tokens never exceed capacity

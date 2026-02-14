@@ -88,40 +88,40 @@ init {
     threads = {i: 0 for i in 0..N} and
     count = 0 and
     mutex = 1 and
-    barrier = 0
+    barrier = 0;
 }
 
 // === Thread actions ===
 
 action Thread_Rendezvous(i: 0..N) {
-    require threads[i] == 0
-    threads = threads | {i: 1}
+    require threads[i] == 0;
+    threads = threads | {i: 1};
 }
 
 action Thread_IncrementCount(i: 0..N) {
-    require threads[i] == 1
-    require mutex == 1
+    require threads[i] == 1;
+    require mutex == 1;
     threads = threads | {i: 2} and
     count = count + 1 and
-    mutex = 0
+    mutex = 0;
 }
 
 action Thread_OpenBarrier(i: 0..N) {
-    require threads[i] == 2
-    require count == N
-    barrier = barrier + 1
+    require threads[i] == 2;
+    require count == N;
+    barrier = barrier + 1;
 }
 
 action Thread_WaitAndSignal(i: 0..N) {
-    require threads[i] == 2
-    require barrier > 0
+    require threads[i] == 2;
+    require barrier > 0;
     threads = threads | {i: 3} and
-    barrier = barrier  // Wait consumes one, signal adds one (net: same)
+    barrier = barrier;  // Wait consumes one, signal adds one (net: same)
 }
 
 action Thread_Critical(i: 0..N) {
-    require threads[i] == 3
-    threads = threads | {i: 4}
+    require threads[i] == 3;
+    threads = threads | {i: 4};
 }
 
 // === Safety invariants ===

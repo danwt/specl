@@ -137,150 +137,150 @@ init {
     elf_sems = {0: 0, 1: 0, 2: 0} and
     mutex = 1 and
     rounds = 0 and
-    sleigh_prepared = 0
+    sleigh_prepared = 0;
 }
 
 // === Santa actions ===
 
 action Santa_Sleep() {
-    require santa == 0
-    require santa_sem > 0
+    require santa == 0;
+    require santa_sem > 0;
     santa_sem = santa_sem - 1 and
-    santa = 1
+    santa = 1;
 }
 
 action Santa_CheckReindeer() {
-    require santa == 1
-    require mutex > 0
-    require reindeer_count >= 9
+    require santa == 1;
+    require mutex > 0;
+    require reindeer_count >= 9;
     mutex = mutex - 1 and
-    santa = 2
+    santa = 2;
 }
 
 action Santa_PrepareSleigh() {
-    require santa == 2
+    require santa == 2;
     reindeer_sem = reindeer_sem + 9 and
     reindeer_count = 0 and
     mutex = mutex + 1 and
     sleigh_prepared = sleigh_prepared + 1 and
     santa = 0 and
-    rounds = rounds + 1
+    rounds = rounds + 1;
 }
 
 action Santa_CheckElves() {
-    require santa == 1
-    require mutex > 0
-    require reindeer_count < 9  // Reindeer have priority
-    require elf_count == 3
+    require santa == 1;
+    require mutex > 0;
+    require reindeer_count < 9;  // Reindeer have priority
+    require elf_count == 3;
     mutex = mutex - 1 and
-    santa = 3
+    santa = 3;
 }
 
 action Santa_HelpElves() {
-    require santa == 3
+    require santa == 3;
     elf_sems = elf_sems | {0: 1, 1: 1, 2: 1} and
     mutex = mutex + 1 and
-    santa = 0
+    santa = 0;
 }
 
 // === Reindeer actions ===
 
 action Reindeer_Arrive(i: 0..NUM_REINDEER) {
-    require reindeer_state[i] == 0
-    require mutex > 0
+    require reindeer_state[i] == 0;
+    require mutex > 0;
     mutex = mutex - 1 and
     reindeer_count = reindeer_count + 1 and
-    reindeer_state = reindeer_state | {i: 1}
+    reindeer_state = reindeer_state | {i: 1};
 }
 
 action Reindeer_WakeSanta(i: 0..NUM_REINDEER) {
-    require reindeer_state[i] == 1
-    require reindeer_count == 9
+    require reindeer_state[i] == 1;
+    require reindeer_count == 9;
     santa_sem = santa_sem + 1 and
     mutex = mutex + 1 and
-    reindeer_state = reindeer_state | {i: 2}
+    reindeer_state = reindeer_state | {i: 2};
 }
 
 action Reindeer_ReleaseMutexNotNinth(i: 0..NUM_REINDEER) {
-    require reindeer_state[i] == 1
-    require reindeer_count < 9
+    require reindeer_state[i] == 1;
+    require reindeer_count < 9;
     mutex = mutex + 1 and
-    reindeer_state = reindeer_state | {i: 2}
+    reindeer_state = reindeer_state | {i: 2};
 }
 
 action Reindeer_GetHarnessed(i: 0..NUM_REINDEER) {
-    require reindeer_state[i] == 2
-    require reindeer_sem > 0
+    require reindeer_state[i] == 2;
+    require reindeer_sem > 0;
     reindeer_sem = reindeer_sem - 1 and
-    reindeer_state = reindeer_state | {i: 3}
+    reindeer_state = reindeer_state | {i: 3};
 }
 
 action Reindeer_LeaveForTropics(i: 0..NUM_REINDEER) {
-    require reindeer_state[i] == 3
-    require rounds < MAX_ROUNDS
-    reindeer_state = reindeer_state | {i: 0}
+    require reindeer_state[i] == 3;
+    require rounds < MAX_ROUNDS;
+    reindeer_state = reindeer_state | {i: 0};
 }
 
 // === Elf actions ===
 
 action Elf_AcquireTex(i: 0..NUM_ELVES) {
-    require elf_state[i] == 0
-    require elf_tex > 0
+    require elf_state[i] == 0;
+    require elf_tex > 0;
     elf_tex = elf_tex - 1 and
-    elf_state = elf_state | {i: 1}
+    elf_state = elf_state | {i: 1};
 }
 
 action Elf_IncrementCount(i: 0..NUM_ELVES) {
-    require elf_state[i] == 1
-    require mutex > 0
+    require elf_state[i] == 1;
+    require mutex > 0;
     mutex = mutex - 1 and
     elf_count = elf_count + 1 and
-    elf_state = elf_state | {i: 2}
+    elf_state = elf_state | {i: 2};
 }
 
 action Elf_WakeSantaAsThird(i: 0..NUM_ELVES) {
-    require elf_state[i] == 2
-    require elf_count == 3
+    require elf_state[i] == 2;
+    require elf_count == 3;
     santa_sem = santa_sem + 1 and
     mutex = mutex + 1 and
-    elf_state = elf_state | {i: 3}
+    elf_state = elf_state | {i: 3};
 }
 
 action Elf_ReleaseTex(i: 0..NUM_ELVES) {
-    require elf_state[i] == 2
-    require elf_count < 3
+    require elf_state[i] == 2;
+    require elf_count < 3;
     elf_tex = elf_tex + 1 and
     mutex = mutex + 1 and
-    elf_state = elf_state | {i: 3}
+    elf_state = elf_state | {i: 3};
 }
 
 action Elf_WaitForHelp(i: 0..NUM_ELVES, slot: 0..2) {
-    require elf_state[i] == 3
-    require elf_sems[slot] > 0
+    require elf_state[i] == 3;
+    require elf_sems[slot] > 0;
     elf_sems = elf_sems | {slot: 0} and
-    elf_state = elf_state | {i: 4}
+    elf_state = elf_state | {i: 4};
 }
 
 action Elf_DecrementCount(i: 0..NUM_ELVES) {
-    require elf_state[i] == 4
-    require mutex > 0
+    require elf_state[i] == 4;
+    require mutex > 0;
     mutex = mutex - 1 and
     elf_count = elf_count - 1 and
-    elf_state = elf_state | {i: 0}
+    elf_state = elf_state | {i: 0};
 }
 
 action Elf_ReleaseTex_LastElf(i: 0..NUM_ELVES) {
-    require elf_state[i] == 0
-    require elf_count == 0
-    require elf_tex == 0
+    require elf_state[i] == 0;
+    require elf_count == 0;
+    require elf_tex == 0;
     elf_tex = elf_tex + 1 and
-    mutex = mutex + 1
+    mutex = mutex + 1;
 }
 
 action Elf_ReleaseMutex_NotLast(i: 0..NUM_ELVES) {
-    require elf_state[i] == 0
-    require elf_count > 0
-    mutex = mutex + 1
+    require elf_state[i] == 0;
+    require elf_count > 0;
+    mutex = mutex + 1;
 }
 
 // === Safety invariants ===

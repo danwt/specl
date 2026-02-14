@@ -12,29 +12,29 @@ var state: Dict[0..MAX_PROC, 0..2]
 var turn: 0..MAX_PROC
 
 init {
-    state = {p: 0 for p in 0..MAX_PROC}
-    and turn = 0
+    state = {p: 0 for p in 0..MAX_PROC};
+    turn = 0;
 }
 
 // Process wants to enter critical section
 action Want(p: 0..MAX_PROC) {
-    require state[p] == 0
-    state = state | { p: 1 }
+    require state[p] == 0;
+    state = state | { p: 1 };
 }
 
 // Process enters critical section when it's their turn and no one else is in
 action Enter(p: 0..MAX_PROC) {
-    require state[p] == 1
-    require turn == p
-    require all q in 0..MAX_PROC: q == p or state[q] != 2
-    state = state | { p: 2 }
+    require state[p] == 1;
+    require turn == p;
+    require all q in 0..MAX_PROC: q == p or state[q] != 2;
+    state = state | { p: 2 };
 }
 
 // Process exits critical section
 action Exit(p: 0..MAX_PROC) {
-    require state[p] == 2
-    state = state | { p: 0 }
-    and turn = (p + 1) % (MAX_PROC + 1)
+    require state[p] == 2;
+    state = state | { p: 0 };
+    turn = (p + 1) % (MAX_PROC + 1);
 }
 
 // Safety: At most one process in critical section

@@ -108,83 +108,83 @@ init {
     readers_count = 0 and
     mutex = 1 and
     roomEmpty = 1 and
-    turnstile = 1
+    turnstile = 1;
 }
 
 // === Reader actions ===
 
 // Turnstile: pass through (atomic wait+signal)
 action Reader_PassTurnstile(i: 0..NUM_READERS) {
-    require readers[i] == 0
-    require turnstile > 0
-    readers = readers | {i: 1}
+    require readers[i] == 0;
+    require turnstile > 0;
+    readers = readers | {i: 1};
 }
 
 // Lightswitch lock (first reader): acquire room
 action Reader_EnterFirst(i: 0..NUM_READERS) {
-    require readers[i] == 1
-    require mutex > 0
-    require readers_count == 0
-    require roomEmpty > 0
+    require readers[i] == 1;
+    require mutex > 0;
+    require readers_count == 0;
+    require roomEmpty > 0;
     readers_count = 1 and
     roomEmpty = roomEmpty - 1 and
-    readers = readers | {i: 2}
+    readers = readers | {i: 2};
 }
 
 // Lightswitch lock (not first reader)
 action Reader_EnterNotFirst(i: 0..NUM_READERS) {
-    require readers[i] == 1
-    require mutex > 0
-    require readers_count > 0
+    require readers[i] == 1;
+    require mutex > 0;
+    require readers_count > 0;
     readers_count = readers_count + 1 and
-    readers = readers | {i: 2}
+    readers = readers | {i: 2};
 }
 
 // Lightswitch unlock (last reader): release room
 action Reader_ExitLast(i: 0..NUM_READERS) {
-    require readers[i] == 2
-    require mutex > 0
-    require readers_count == 1
+    require readers[i] == 2;
+    require mutex > 0;
+    require readers_count == 1;
     readers_count = 0 and
     roomEmpty = roomEmpty + 1 and
-    readers = readers | {i: 0}
+    readers = readers | {i: 0};
 }
 
 // Lightswitch unlock (not last reader)
 action Reader_ExitNotLast(i: 0..NUM_READERS) {
-    require readers[i] == 2
-    require mutex > 0
-    require readers_count > 1
+    require readers[i] == 2;
+    require mutex > 0;
+    require readers_count > 1;
     readers_count = readers_count - 1 and
-    readers = readers | {i: 0}
+    readers = readers | {i: 0};
 }
 
 // === Writer actions ===
 
 action Writer_AcquireTurnstile(i: 0..NUM_WRITERS) {
-    require writers[i] == 0
-    require turnstile > 0
+    require writers[i] == 0;
+    require turnstile > 0;
     turnstile = turnstile - 1 and
-    writers = writers | {i: 1}
+    writers = writers | {i: 1};
 }
 
 action Writer_AcquireRoom(i: 0..NUM_WRITERS) {
-    require writers[i] == 1
-    require roomEmpty > 0
+    require writers[i] == 1;
+    require roomEmpty > 0;
     roomEmpty = roomEmpty - 1 and
-    writers = writers | {i: 2}
+    writers = writers | {i: 2};
 }
 
 action Writer_Write(i: 0..NUM_WRITERS) {
-    require writers[i] == 2
-    writers = writers | {i: 3}
+    require writers[i] == 2;
+    writers = writers | {i: 3};
 }
 
 action Writer_Release(i: 0..NUM_WRITERS) {
-    require writers[i] == 3
+    require writers[i] == 3;
     turnstile = turnstile + 1 and
     roomEmpty = roomEmpty + 1 and
-    writers = writers | {i: 0}
+    writers = writers | {i: 0};
 }
 
 // === Safety invariants ===

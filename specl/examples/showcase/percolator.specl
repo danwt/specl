@@ -54,141 +54,141 @@ func CanLockKey(k, ts) {
 }
 
 init {
-    nextTs = 0
-    and clientState = {c: 0 for c in 0..C}
-    and clientStartTs = {c: 0 for c in 0..C}
-    and clientCommitTs = {c: 0 for c in 0..C}
-    and clientPending = {c: {k: true for k in 0..K} for c in 0..C}
-    and keyData = {k: {ts: false for ts in 1..MaxTs} for k in 0..K}
-    and keyLockTs = {k: -1 for k in 0..K}
-    and keyLockPrimary = {k: -1 for k in 0..K}
-    and keyWriteCts = {k: [] for k in 0..K}
-    and keyWriteSts = {k: [] for k in 0..K}
-    and keyLastReadTs = {k: 0 for k in 0..K}
-    and keySi = {k: true for k in 0..K}
+    nextTs = 0;
+    clientState = {c: 0 for c in 0..C};
+    clientStartTs = {c: 0 for c in 0..C};
+    clientCommitTs = {c: 0 for c in 0..C};
+    clientPending = {c: {k: true for k in 0..K} for c in 0..C};
+    keyData = {k: {ts: false for ts in 1..MaxTs} for k in 0..K};
+    keyLockTs = {k: -1 for k in 0..K};
+    keyLockPrimary = {k: -1 for k in 0..K};
+    keyWriteCts = {k: [] for k in 0..K};
+    keyWriteSts = {k: [] for k in 0..K};
+    keyLastReadTs = {k: 0 for k in 0..K};
+    keySi = {k: true for k in 0..K};
 }
 
 // Assign start_ts to a new transaction
 action Start(c: 0..C) {
-    require clientState[c] == 0
-    nextTs = nextTs + 1
-    and clientState = clientState | {c: 1}
-    and clientStartTs = clientStartTs | {c: nextTs + 1}
+    require clientState[c] == 0;
+    nextTs = nextTs + 1;
+    clientState = clientState | {c: 1};
+    clientStartTs = clientStartTs | {c: nextTs + 1};
 }
 
 // Client advances from working to prewriting phase
 action GetAdvance(c: 0..C) {
-    require clientState[c] == 1
-    clientState = clientState | {c: 2}
+    require clientState[c] == 1;
+    clientState = clientState | {c: 2};
 }
 
 // Read a key (updates last-read timestamp for SI tracking)
 action GetRead(c: 0..C, k: 0..K) {
-    require clientState[c] == 1
-    require keyLockTs[k] == -1 or keyLockTs[k] > clientStartTs[c]
-    require keyLastReadTs[k] < clientStartTs[c]
-    keyLastReadTs = keyLastReadTs | {k: clientStartTs[c]}
+    require clientState[c] == 1;
+    require keyLockTs[k] == -1 or keyLockTs[k] > clientStartTs[c];
+    require keyLastReadTs[k] < clientStartTs[c];
+    keyLastReadTs = keyLastReadTs | {k: clientStartTs[c]};
 }
 
 // Cleanup stale primary lock: always rollback
 action CleanupPrimaryLock(c: 0..C, k: 0..K) {
-    require clientState[c] == 1
-    require HasLockLE(k, clientStartTs[c])
-    require keyLockPrimary[k] == k
-    keyData = keyData | {k: (keyData[k] | {keyLockTs[k]: false})}
-    and keyLockTs = keyLockTs | {k: -1}
-    and keyLockPrimary = keyLockPrimary | {k: -1}
+    require clientState[c] == 1;
+    require HasLockLE(k, clientStartTs[c]);
+    require keyLockPrimary[k] == k;
+    keyData = keyData | {k: (keyData[k] | {keyLockTs[k]: false})};
+    keyLockTs = keyLockTs | {k: -1};
+    keyLockPrimary = keyLockPrimary | {k: -1};
 }
 
 // Cleanup stale secondary lock: primary not committed, primary still locked -> rollback primary
 action CleanupSecRollbackPri(c: 0..C, k: 0..K) {
-    require clientState[c] == 1
-    require HasLockLE(k, clientStartTs[c])
-    require keyLockPrimary[k] != k
-    require not HasWriteWithStartTs(keyLockPrimary[k], keyLockTs[k])
-    require HasLockEQ(keyLockPrimary[k], keyLockTs[k])
-    keyData = keyData | {keyLockPrimary[k]: (keyData[keyLockPrimary[k]] | {keyLockTs[k]: false})}
-    and keyLockTs = keyLockTs | {keyLockPrimary[k]: -1}
-    and keyLockPrimary = keyLockPrimary | {keyLockPrimary[k]: -1}
+    require clientState[c] == 1;
+    require HasLockLE(k, clientStartTs[c]);
+    require keyLockPrimary[k] != k;
+    require not HasWriteWithStartTs(keyLockPrimary[k], keyLockTs[k]);
+    require HasLockEQ(keyLockPrimary[k], keyLockTs[k]);
+    keyData = keyData | {keyLockPrimary[k]: (keyData[keyLockPrimary[k]] | {keyLockTs[k]: false})};
+    keyLockTs = keyLockTs | {keyLockPrimary[k]: -1};
+    keyLockPrimary = keyLockPrimary | {keyLockPrimary[k]: -1};
 }
 
 // Cleanup stale secondary lock: primary not committed, primary unlocked -> rollback secondary
 action CleanupSecRollbackSec(c: 0..C, k: 0..K) {
-    require clientState[c] == 1
-    require HasLockLE(k, clientStartTs[c])
-    require keyLockPrimary[k] != k
-    require not HasWriteWithStartTs(keyLockPrimary[k], keyLockTs[k])
-    require not HasLockEQ(keyLockPrimary[k], keyLockTs[k])
-    keyData = keyData | {k: (keyData[k] | {keyLockTs[k]: false})}
-    and keyLockTs = keyLockTs | {k: -1}
-    and keyLockPrimary = keyLockPrimary | {k: -1}
+    require clientState[c] == 1;
+    require HasLockLE(k, clientStartTs[c]);
+    require keyLockPrimary[k] != k;
+    require not HasWriteWithStartTs(keyLockPrimary[k], keyLockTs[k]);
+    require not HasLockEQ(keyLockPrimary[k], keyLockTs[k]);
+    keyData = keyData | {k: (keyData[k] | {keyLockTs[k]: false})};
+    keyLockTs = keyLockTs | {k: -1};
+    keyLockPrimary = keyLockPrimary | {k: -1};
 }
 
 // Cleanup stale secondary lock: primary committed -> commit secondary
 // wi indexes into primary's write log to find matching write
 action CleanupSecCommit(c: 0..C, k: 0..K, wi: 0..C) {
-    require clientState[c] == 1
-    require HasLockLE(k, clientStartTs[c])
-    require keyLockPrimary[k] != k
-    require wi < len(keyWriteSts[keyLockPrimary[k]])
-    require keyWriteSts[keyLockPrimary[k]][wi] == keyLockTs[k]
-    keyLockTs = keyLockTs | {k: -1}
-    and keyLockPrimary = keyLockPrimary | {k: -1}
-    and keyWriteCts = keyWriteCts | {k: keyWriteCts[k] ++ [keyWriteCts[keyLockPrimary[k]][wi]]}
-    and keyWriteSts = keyWriteSts | {k: keyWriteSts[k] ++ [keyLockTs[k]]}
-    and keySi = keySi | {k: (if keyLastReadTs[k] >= keyWriteCts[keyLockPrimary[k]][wi] then false else keySi[k])}
+    require clientState[c] == 1;
+    require HasLockLE(k, clientStartTs[c]);
+    require keyLockPrimary[k] != k;
+    require wi < len(keyWriteSts[keyLockPrimary[k]]);
+    require keyWriteSts[keyLockPrimary[k]][wi] == keyLockTs[k];
+    keyLockTs = keyLockTs | {k: -1};
+    keyLockPrimary = keyLockPrimary | {k: -1};
+    keyWriteCts = keyWriteCts | {k: keyWriteCts[k] ++ [keyWriteCts[keyLockPrimary[k]][wi]]};
+    keyWriteSts = keyWriteSts | {k: keyWriteSts[k] ++ [keyLockTs[k]]};
+    keySi = keySi | {k: (if keyLastReadTs[k] >= keyWriteCts[keyLockPrimary[k]][wi] then false else keySi[k])};
 }
 
 // All keys locked, advance to committing phase
 action PrewriteAdvance(c: 0..C) {
-    require clientState[c] == 2
-    require all k in 0..K: not clientPending[c][k]
-    nextTs = nextTs + 1
-    and clientState = clientState | {c: 3}
-    and clientCommitTs = clientCommitTs | {c: nextTs + 1}
+    require clientState[c] == 2;
+    require all k in 0..K: not clientPending[c][k];
+    nextTs = nextTs + 1;
+    clientState = clientState | {c: 3};
+    clientCommitTs = clientCommitTs | {c: nextTs + 1};
 }
 
 // Lock primary key (must be locked before secondaries)
 action PrewritePrimary(c: 0..C) {
-    require clientState[c] == 2
-    require clientPending[c][c]
-    require CanLockKey(c, clientStartTs[c])
-    keyLockTs = keyLockTs | {c: clientStartTs[c]}
-    and keyLockPrimary = keyLockPrimary | {c: c}
-    and keyData = keyData | {c: (keyData[c] | {clientStartTs[c]: true})}
-    and clientPending = clientPending | {c: (clientPending[c] | {c: false})}
+    require clientState[c] == 2;
+    require clientPending[c][c];
+    require CanLockKey(c, clientStartTs[c]);
+    keyLockTs = keyLockTs | {c: clientStartTs[c]};
+    keyLockPrimary = keyLockPrimary | {c: c};
+    keyData = keyData | {c: (keyData[c] | {clientStartTs[c]: true})};
+    clientPending = clientPending | {c: (clientPending[c] | {c: false})};
 }
 
 // Lock a secondary key (primary must already be locked)
 action PrewriteSecondary(c: 0..C, k: 0..K) {
-    require clientState[c] == 2
-    require k != c
-    require clientPending[c][k]
-    require not clientPending[c][c]
-    require CanLockKey(k, clientStartTs[c])
-    keyLockTs = keyLockTs | {k: clientStartTs[c]}
-    and keyLockPrimary = keyLockPrimary | {k: c}
-    and keyData = keyData | {k: (keyData[k] | {clientStartTs[c]: true})}
-    and clientPending = clientPending | {c: (clientPending[c] | {k: false})}
+    require clientState[c] == 2;
+    require k != c;
+    require clientPending[c][k];
+    require not clientPending[c][c];
+    require CanLockKey(k, clientStartTs[c]);
+    keyLockTs = keyLockTs | {k: clientStartTs[c]};
+    keyLockPrimary = keyLockPrimary | {k: c};
+    keyData = keyData | {k: (keyData[k] | {clientStartTs[c]: true})};
+    clientPending = clientPending | {c: (clientPending[c] | {k: false})};
 }
 
 // Commit primary key
 action Commit(c: 0..C) {
-    require clientState[c] == 3
-    require HasLockEQ(c, clientStartTs[c])
-    keyWriteCts = keyWriteCts | {c: keyWriteCts[c] ++ [clientCommitTs[c]]}
-    and keyWriteSts = keyWriteSts | {c: keyWriteSts[c] ++ [clientStartTs[c]]}
-    and keyLockTs = keyLockTs | {c: -1}
-    and keyLockPrimary = keyLockPrimary | {c: -1}
-    and clientState = clientState | {c: 4}
-    and keySi = keySi | {c: (if keyLastReadTs[c] >= clientCommitTs[c] then false else keySi[c])}
+    require clientState[c] == 3;
+    require HasLockEQ(c, clientStartTs[c]);
+    keyWriteCts = keyWriteCts | {c: keyWriteCts[c] ++ [clientCommitTs[c]]};
+    keyWriteSts = keyWriteSts | {c: keyWriteSts[c] ++ [clientStartTs[c]]};
+    keyLockTs = keyLockTs | {c: -1};
+    keyLockPrimary = keyLockPrimary | {c: -1};
+    clientState = clientState | {c: 4};
+    keySi = keySi | {c: (if keyLastReadTs[c] >= clientCommitTs[c] then false else keySi[c])};
 }
 
 // Abort (from any state except committed)
 action Abort(c: 0..C) {
-    require clientState[c] != 4
-    require clientState[c] != 5
-    clientState = clientState | {c: 5}
+    require clientState[c] != 4;
+    require clientState[c] != 5;
+    clientState = clientState | {c: 5};
 }
 
 // Write ordering: each write's commit_ts > start_ts, no overlap between consecutive writes

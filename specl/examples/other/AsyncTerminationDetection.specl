@@ -7,9 +7,9 @@ var pending: Dict[Int, Int]
 var terminationDetected: Bool
 
 init {
-    active = {n: true for n in 0..4}
-    and pending = {n: 0 for n in 0..4}
-    and terminationDetected = false
+    active = {n: true for n in 0..4};
+    pending = {n: 0 for n in 0..4};
+    terminationDetected = false;
 }
 
 // Correctness: if termination detected, all nodes must be terminated
@@ -18,23 +18,23 @@ invariant Stable {
 }
 
 action Terminate(i: 0..4) {
-    require active[i]
-    active = active | { i: false }
+    require active[i];
+    active = active | { i: false };
 }
 
 action SendMsg(i: 0..4, j: 0..4) {
-    require active[i]
-    require pending[j] < 2  // Bound pending messages
-    pending = pending | { j: pending[j] + 1 }
+    require active[i];
+    require pending[j] < 2;  // Bound pending messages
+    pending = pending | { j: pending[j] + 1 };
 }
 
 action Wakeup(i: 0..4) {
-    require pending[i] > 0
-    active = active | { i: true }
-    and pending = pending | { i: pending[i] - 1 }
+    require pending[i] > 0;
+    active = active | { i: true };
+    pending = pending | { i: pending[i] - 1 };
 }
 
 action DetectTermination() {
-    require all n in 0..4: not active[n] and pending[n] == 0
-    terminationDetected = true
+    require all n in 0..4: not active[n] and pending[n] == 0;
+    terminationDetected = true;
 }

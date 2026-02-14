@@ -22,29 +22,29 @@ var seen: Dict[0..N, Bool]
 var processed: Dict[0..N, 0..1]
 
 init {
-    send_count = {s: 0 for s in 0..N}
-    and seen = {s: false for s in 0..N}
-    and processed = {s: 0 for s in 0..N}
+    send_count = {s: 0 for s in 0..N};
+    seen = {s: false for s in 0..N};
+    processed = {s: 0 for s in 0..N};
 }
 
 // Sender sends (or retries) a message
 action Send(s: 0..N) {
-    require send_count[s] < MaxRetries
-    send_count = send_count | {s: send_count[s] + 1}
+    require send_count[s] < MaxRetries;
+    send_count = send_count | {s: send_count[s] + 1};
 }
 
 // Receiver processes a message (first time — not yet seen)
 action Process(s: 0..N) {
-    require send_count[s] > 0
-    require seen[s] == false
-    seen = seen | {s: true}
-    and processed = processed | {s: 1}
+    require send_count[s] > 0;
+    require seen[s] == false;
+    seen = seen | {s: true};
+    processed = processed | {s: 1};
 }
 
 // Receiver receives duplicate (already seen — ignores)
 action IgnoreDuplicate(s: 0..N) {
-    require send_count[s] > 0
-    require seen[s] == true
+    require send_count[s] > 0;
+    require seen[s] == true;
 }
 
 // Each message processed at most once

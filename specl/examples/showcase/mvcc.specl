@@ -31,65 +31,65 @@ var committed_ts: 0..MaxTs
 var committed_val: 0..1
 
 init {
-    ts = 0
-    and tx_state = {t: 0 for t in 0..N}
-    and tx_start = {t: 0 for t in 0..N}
-    and tx_write_val = {t: 0 for t in 0..N}
-    and tx_has_write = {t: false for t in 0..N}
-    and committed_ts = 0
-    and committed_val = 0
+    ts = 0;
+    tx_state = {t: 0 for t in 0..N};
+    tx_start = {t: 0 for t in 0..N};
+    tx_write_val = {t: 0 for t in 0..N};
+    tx_has_write = {t: false for t in 0..N};
+    committed_ts = 0;
+    committed_val = 0;
 }
 
 // Transaction begins: takes a snapshot timestamp
 action Begin(t: 0..N) {
-    require tx_state[t] == 0
-    require ts < MaxTs
-    ts = ts + 1
-    and tx_state = tx_state | {t: 1}
-    and tx_start = tx_start | {t: ts + 1}
+    require tx_state[t] == 0;
+    require ts < MaxTs;
+    ts = ts + 1;
+    tx_state = tx_state | {t: 1};
+    tx_start = tx_start | {t: ts + 1};
 }
 
 // Transaction buffers a write
 action Write(t: 0..N, v: 0..1) {
-    require tx_state[t] == 1
-    tx_write_val = tx_write_val | {t: v}
-    and tx_has_write = tx_has_write | {t: true}
+    require tx_state[t] == 1;
+    tx_write_val = tx_write_val | {t: v};
+    tx_has_write = tx_has_write | {t: true};
 }
 
 // Transaction commits: check for write-write conflicts
 action Commit(t: 0..N) {
-    require tx_state[t] == 1
-    require tx_has_write[t] == true
-    require ts < MaxTs
+    require tx_state[t] == 1;
+    require tx_has_write[t] == true;
+    require ts < MaxTs;
     // No concurrent committed write since our start time
-    require committed_ts < tx_start[t]
-    ts = ts + 1
-    and committed_ts = ts + 1
-    and committed_val = tx_write_val[t]
-    and tx_state = tx_state | {t: 2}
+    require committed_ts < tx_start[t];
+    ts = ts + 1;
+    committed_ts = ts + 1;
+    committed_val = tx_write_val[t];
+    tx_state = tx_state | {t: 2};
 }
 
 // Transaction aborts due to write-write conflict
 action Abort(t: 0..N) {
-    require tx_state[t] == 1
-    require tx_has_write[t] == true
+    require tx_state[t] == 1;
+    require tx_has_write[t] == true;
     // Someone committed after our start
-    require committed_ts >= tx_start[t]
-    tx_state = tx_state | {t: 3}
+    require committed_ts >= tx_start[t];
+    tx_state = tx_state | {t: 3};
 }
 
 // Read-only commit (always succeeds)
 action CommitReadOnly(t: 0..N) {
-    require tx_state[t] == 1
-    require tx_has_write[t] == false
-    tx_state = tx_state | {t: 2}
+    require tx_state[t] == 1;
+    require tx_has_write[t] == false;
+    tx_state = tx_state | {t: 2};
 }
 
 // Aborted transaction retries
 action Retry(t: 0..N) {
-    require tx_state[t] == 3
-    tx_state = tx_state | {t: 0}
-    and tx_has_write = tx_has_write | {t: false}
+    require tx_state[t] == 3;
+    tx_state = tx_state | {t: 0};
+    tx_has_write = tx_has_write | {t: false};
 }
 
 // Serializable: no two writing transactions commit with overlapping lifetimes

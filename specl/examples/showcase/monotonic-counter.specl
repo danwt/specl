@@ -14,18 +14,18 @@ const MaxVal: 1..4
 var counter: Dict[0..N, Dict[0..N, 0..MaxVal]]
 
 init {
-    counter = {r: {s: 0 for s in 0..N} for r in 0..N}
+    counter = {r: {s: 0 for s in 0..N} for r in 0..N};
 }
 
 // Replica r increments its own slot
 action Increment(r: 0..N) {
-    require counter[r][r] < MaxVal
-    counter = counter | {r: counter[r] | {r: counter[r][r] + 1}}
+    require counter[r][r] < MaxVal;
+    counter = counter | {r: counter[r] | {r: counter[r][r] + 1}};
 }
 
 // Replica dst syncs from replica src: take max per slot
 action Sync(src: 0..N, dst: 0..N) {
-    require src != dst
+    require src != dst;
     counter = counter | {dst: {s:
         if counter[src][s] > counter[dst][s] then counter[src][s]
         else counter[dst][s]

@@ -68,55 +68,55 @@ init {
     threadA = 0 and
     threadB = 0 and
     aArrived = 0 and
-    bArrived = 0
+    bArrived = 0;
 }
 
 // === Thread A actions ===
 
 action ThreadA_a1() {
-    require threadA == 0
-    threadA = 1
+    require threadA == 0;
+    threadA = 1;
 }
 
 action ThreadA_signal() {
-    require threadA == 1
+    require threadA == 1;
     threadA = 2 and
-    aArrived = 1
+    aArrived = 1;
 }
 
 action ThreadA_wait() {
-    require threadA == 2 and bArrived == 1
+    require threadA == 2 and bArrived == 1;
     threadA = 3 and
-    bArrived = 0
+    bArrived = 0;
 }
 
 action ThreadA_a2() {
-    require threadA == 3
-    threadA = 4
+    require threadA == 3;
+    threadA = 4;
 }
 
 // === Thread B actions ===
 
 action ThreadB_b1() {
-    require threadB == 0
-    threadB = 1
+    require threadB == 0;
+    threadB = 1;
 }
 
 action ThreadB_signal() {
-    require threadB == 1
+    require threadB == 1;
     threadB = 2 and
-    bArrived = 1
+    bArrived = 1;
 }
 
 action ThreadB_wait() {
-    require threadB == 2 and aArrived == 1
+    require threadB == 2 and aArrived == 1;
     threadB = 3 and
-    aArrived = 0
+    aArrived = 0;
 }
 
 action ThreadB_b2() {
-    require threadB == 3
-    threadB = 4
+    require threadB == 3;
+    threadB = 4;
 }
 
 // === Safety properties ===

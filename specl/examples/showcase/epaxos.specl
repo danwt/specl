@@ -31,65 +31,65 @@ var next_bal: 1..NB
 var initial_val: 0..1 // command leader's original proposal
 
 init {
-    status = {r: 0 for r in 0..2}
-    and bal = {r: 0 for r in 0..2}
-    and vbal = {r: 0 for r in 0..2}
-    and val = {r: 0 for r in 0..2}
-    and next_bal = 1
-    and initial_val = 0
+    status = {r: 0 for r in 0..2};
+    bal = {r: 0 for r in 0..2};
+    vbal = {r: 0 for r in 0..2};
+    val = {r: 0 for r in 0..2};
+    next_bal = 1;
+    initial_val = 0;
 }
 
 // Command leader (r0) initiates pre-accept with value v.
 action LeaderPreAccept(v: 0..1) {
-    require status[0] == 0
-    require bal[0] == 0
-    status = status | {0: 1}
-    and val = val | {0: v}
-    and initial_val = v
+    require status[0] == 0;
+    require bal[0] == 0;
+    status = status | {0: 1};
+    val = val | {0: v};
+    initial_val = v;
 }
 
 // Fast quorum member (r1) responds to pre-accept.
 // May reply with different deps due to local conflicts.
 action FastQuorumPreAccept(v: 0..1) {
-    require status[0] >= 1
-    require status[1] == 0
-    require bal[1] == 0
-    status = status | {1: 1}
-    and val = val | {1: v}
+    require status[0] >= 1;
+    require status[1] == 0;
+    require bal[1] == 0;
+    status = status | {1: 1};
+    val = val | {1: v};
 }
 
 // Fast-path commit: fast quorum {0, 1} agrees at ballot 0.
 action FastCommit(r: 0..2) {
-    require r <= 1
-    require status[r] >= 1
-    require status[r] != 3
-    require bal[r] == 0
-    require status[0] >= 1 and status[1] >= 1
-    require val[0] == val[1]
-    require bal[0] == 0 and bal[1] == 0
-    status = status | {r: 3}
+    require r <= 1;
+    require status[r] >= 1;
+    require status[r] != 3;
+    require bal[r] == 0;
+    require status[0] >= 1 and status[1] >= 1;
+    require val[0] == val[1];
+    require bal[0] == 0 and bal[1] == 0;
+    status = status | {r: 3};
 }
 
 // Process a Prepare from some recovery attempt.
 // Inflates bal without changing vbal, status, or value.
 action ReceivePrepare(r: 0..2) {
-    require next_bal <= MaxBal
-    require next_bal > bal[r]
-    require status[r] != 3
-    bal = bal | {r: next_bal}
-    and next_bal = next_bal + 1
+    require next_bal <= MaxBal;
+    require next_bal > bal[r];
+    require status[r] != 3;
+    bal = bal | {r: next_bal};
+    next_bal = next_bal + 1;
 }
 
 // Recovery: leader collects state from quorum {leader, other} and decides.
 // Includes fast-path detection for the pre-accept case.
 // BUG/FIX: "both accepted" comparison uses bal (UseFix=0) or vbal (UseFix=1).
 action Recovery(leader: 0..2, other: 0..2, pick: 0..1) {
-    require leader != other
-    require next_bal <= MaxBal
-    require next_bal > bal[leader]
-    require next_bal > bal[other]
-    require status[leader] != 3
-    require status[leader] >= 1 or status[other] >= 1
+    require leader != other;
+    require next_bal <= MaxBal;
+    require next_bal > bal[leader];
+    require next_bal > bal[other];
+    require status[leader] != 3;
+    require status[leader] >= 1 or status[other] >= 1;
 
     val = val | {leader:
         // Committed: adopt
@@ -118,33 +118,33 @@ action Recovery(leader: 0..2, other: 0..2, pick: 0..1) {
         else if status[leader] == 1 then val[leader]
         else if status[other] == 1 then val[other]
         else pick
-    }
-    and status = status | {leader: 2}
-    and bal = bal | {leader: next_bal, other: next_bal}
-    and vbal = vbal | {leader: next_bal}
-    and next_bal = next_bal + 1
+    };
+    status = status | {leader: 2};
+    bal = bal | {leader: next_bal, other: next_bal};
+    vbal = vbal | {leader: next_bal};
+    next_bal = next_bal + 1;
 }
 
 // Phase 2: propagate accepted value to another replica.
 action Accept(src: 0..2, dst: 0..2) {
-    require src != dst
-    require status[src] == 2
-    require status[dst] != 3
-    require vbal[src] == bal[src] // source hasn't joined a higher ballot since accepting
-    require bal[src] >= bal[dst]
-    status = status | {dst: 2}
-    and bal = bal | {dst: bal[src]}
-    and vbal = vbal | {dst: vbal[src]}
-    and val = val | {dst: val[src]}
+    require src != dst;
+    require status[src] == 2;
+    require status[dst] != 3;
+    require vbal[src] == bal[src] // source hasn't joined a higher ballot since accepting;
+    require bal[src] >= bal[dst];
+    status = status | {dst: 2};
+    bal = bal | {dst: bal[src]};
+    vbal = vbal | {dst: vbal[src]};
+    val = val | {dst: val[src]};
 }
 
 // Slow-path commit: quorum of 2 accepted replicas agree.
 action SlowCommit(r: 0..2) {
-    require status[r] == 2
-    require vbal[r] == bal[r]
+    require status[r] == 2;
+    require vbal[r] == bal[r];
     require any r2 in 0..2:
         r2 != r and status[r2] >= 2 and vbal[r2] == vbal[r] and val[r2] == val[r]
-    status = status | {r: 3}
+    status = status | {r: 3};
 }
 
 invariant Agreement {

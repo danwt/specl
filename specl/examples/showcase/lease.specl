@@ -22,40 +22,40 @@ var held: Bool
 var expiry: 0..MaxTime
 
 init {
-    clock = 0
-    and holder = 0
-    and held = false
-    and expiry = 0
+    clock = 0;
+    holder = 0;
+    held = false;
+    expiry = 0;
 }
 
 // Time advances
 action Tick() {
-    require clock < MaxTime
-    clock = clock + 1
+    require clock < MaxTime;
+    clock = clock + 1;
 }
 
 // Node acquires lease (no current holder or expired)
 action Acquire(n: 0..N) {
-    require held == false or clock >= expiry
-    require clock < MaxTime
-    holder = n
-    and held = true
-    and expiry = clock + 1
+    require held == false or clock >= expiry;
+    require clock < MaxTime;
+    holder = n;
+    held = true;
+    expiry = clock + 1;
 }
 
 // Holder renews the lease
 action Renew() {
-    require held == true
-    require clock < expiry
-    require expiry < MaxTime
-    expiry = expiry + 1
+    require held == true;
+    require clock < expiry;
+    require expiry < MaxTime;
+    expiry = expiry + 1;
 }
 
 // Lease expires
 action Expire() {
-    require held == true
-    require clock >= expiry
-    held = false
+    require held == true;
+    require clock >= expiry;
+    held = false;
 }
 
 // At most one active lease holder at any time

@@ -21,20 +21,20 @@ var owner: Dict[0..K, 0..N]
 // Higher score wins; tie-break by higher node ID.
 
 init {
-    alive = {n: true for n in 0..N}
+    alive = {n: true for n in 0..N};
     // Initially, each key goes to the highest-scoring alive node
     // Simplified: key k -> node k % (N+1)
-    and owner = {k: k % (N + 1) for k in 0..K}
+    owner = {k: k % (N + 1) for k in 0..K};
 }
 
 // Node n goes down: reassign its keys to highest-scoring remaining node
 action NodeDown(n: 0..N, replacement: 0..N) {
-    require alive[n] == true
-    require alive[replacement] == true
-    require replacement != n
+    require alive[n] == true;
+    require alive[replacement] == true;
+    require replacement != n;
     // Must have at least one other alive node
-    alive = alive | {n: false}
-    and owner = {k:
+    alive = alive | {n: false};
+    owner = {k:
         if owner[k] == n then replacement
         else owner[k]
     for k in 0..K}
@@ -42,9 +42,9 @@ action NodeDown(n: 0..N, replacement: 0..N) {
 
 // Node n comes back: reclaim keys that naturally hash to it
 action NodeUp(n: 0..N) {
-    require alive[n] == false
-    alive = alive | {n: true}
-    and owner = {k:
+    require alive[n] == false;
+    alive = alive | {n: true};
+    owner = {k:
         if k % (N + 1) == n then n
         else owner[k]
     for k in 0..K}

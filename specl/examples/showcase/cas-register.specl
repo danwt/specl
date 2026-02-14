@@ -20,24 +20,24 @@ var reg: 0..N
 var state: Dict[0..N, 0..1]
 
 init {
-    reg = 0
-    and state = {i: 0 for i in 0..N}
+    reg = 0;
+    state = {i: 0 for i in 0..N};
 }
 
 // Client i acquires lock via CAS(0, i)
 action Acquire(i: 1..N) {
-    require state[i] == 0
-    require reg == 0
-    reg = i
-    and state = state | {i: 1}
+    require state[i] == 0;
+    require reg == 0;
+    reg = i;
+    state = state | {i: 1};
 }
 
 // Client i releases lock via CAS(i, 0)
 action Release(i: 1..N) {
-    require state[i] == 1
-    require reg == i
-    reg = 0
-    and state = state | {i: 0}
+    require state[i] == 1;
+    require reg == i;
+    reg = 0;
+    state = state | {i: 0};
 }
 
 // Mutual exclusion: at most one client holds the lock

@@ -14,28 +14,28 @@ init {
 }
 
 action IncA() {
-    require a < 10
-    a = a + 1
+    require a < 10;
+    a = a + 1;
 }
 
 action IncB() {
-    require b < 10
-    b = b + 1
+    require b < 10;
+    b = b + 1;
 }
 
 action IncC() {
-    require c < 10
-    c = c + 1
+    require c < 10;
+    c = c + 1;
 }
 
 action IncD() {
-    require d < 10
-    d = d + 1
+    require d < 10;
+    d = d + 1;
 }
 
 action IncE() {
-    require e < 10
-    e = e + 1
+    require e < 10;
+    e = e + 1;
 }
 
 invariant Bound { a <= 10 and b <= 10 and c <= 10 and d <= 10 and e <= 10 }

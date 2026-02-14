@@ -30,52 +30,52 @@ var target: 0..6
 var adjusted: Dict[0..N, Bool]
 
 init {
-    clock = {n: n for n in 0..N}
-    and coord_pc = 0
-    and collected = {n: 0 for n in 0..N}
-    and has_collected = {n: false for n in 0..N}
-    and target = 0
-    and adjusted = {n: false for n in 0..N}
+    clock = {n: n for n in 0..N};
+    coord_pc = 0;
+    collected = {n: 0 for n in 0..N};
+    has_collected = {n: false for n in 0..N};
+    target = 0;
+    adjusted = {n: false for n in 0..N};
 }
 
 // Coordinator starts collection
 action StartCollect() {
-    require coord_pc == 0
-    coord_pc = 1
+    require coord_pc == 0;
+    coord_pc = 1;
 }
 
 // Coordinator collects clock from node n
 action Collect(n: 0..N) {
-    require coord_pc == 1
-    require has_collected[n] == false
-    collected = collected | {n: clock[n]}
-    and has_collected = has_collected | {n: true}
+    require coord_pc == 1;
+    require has_collected[n] == false;
+    collected = collected | {n: clock[n]};
+    has_collected = has_collected | {n: true};
 }
 
 // Coordinator computes average and moves to adjusting
 action ComputeAverage() {
-    require coord_pc == 1
-    require all n in 0..N: has_collected[n] == true
+    require coord_pc == 1;
+    require all n in 0..N: has_collected[n] == true;
     // Average approximated: for N=2, (c0 + c1 + c2) / 3
     // Simplified: use coordinator's collected value as target
     // (real algorithm computes average; here we approximate)
-    target = collected[0]
-    and coord_pc = 2
+    target = collected[0];
+    coord_pc = 2;
 }
 
 // Node adjusts its clock to target
 action Adjust(n: 0..N) {
-    require coord_pc == 2
-    require adjusted[n] == false
-    clock = clock | {n: target}
-    and adjusted = adjusted | {n: true}
+    require coord_pc == 2;
+    require adjusted[n] == false;
+    clock = clock | {n: target};
+    adjusted = adjusted | {n: true};
 }
 
 // Coordinator finishes
 action Finish() {
-    require coord_pc == 2
-    require all n in 0..N: adjusted[n] == true
-    coord_pc = 3
+    require coord_pc == 2;
+    require all n in 0..N: adjusted[n] == true;
+    coord_pc = 3;
 }
 
 // After synchronization, all clocks agree

@@ -20,25 +20,25 @@ var ver: Dict[0..N, Dict[0..K, 0..MaxVer]]
 var global_ver: 0..MaxVer
 
 init {
-    data = {r: {k: 0 for k in 0..K} for r in 0..N}
-    and ver = {r: {k: 0 for k in 0..K} for r in 0..N}
-    and global_ver = 0
+    data = {r: {k: 0 for k in 0..K} for r in 0..N};
+    ver = {r: {k: 0 for k in 0..K} for r in 0..N};
+    global_ver = 0;
 }
 
 // Write key k with value v at replica r
 action Write(r: 0..N, k: 0..K, v: 0..1) {
-    require global_ver < MaxVer
-    global_ver = global_ver + 1
-    and data = data | {r: data[r] | {k: v}}
-    and ver = ver | {r: ver[r] | {k: global_ver + 1}}
+    require global_ver < MaxVer;
+    global_ver = global_ver + 1;
+    data = data | {r: data[r] | {k: v}};
+    ver = ver | {r: ver[r] | {k: global_ver + 1}};
 }
 
 // Anti-entropy: replica dst pulls key k from replica src (if src has newer)
 action Sync(src: 0..N, dst: 0..N, k: 0..K) {
-    require src != dst
-    require ver[src][k] > ver[dst][k]
-    data = data | {dst: data[dst] | {k: data[src][k]}}
-    and ver = ver | {dst: ver[dst] | {k: ver[src][k]}}
+    require src != dst;
+    require ver[src][k] > ver[dst][k];
+    data = data | {dst: data[dst] | {k: data[src][k]}};
+    ver = ver | {dst: ver[dst] | {k: ver[src][k]}};
 }
 
 // After all keys have been synced (all versions equal), data matches

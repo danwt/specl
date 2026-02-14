@@ -10,7 +10,7 @@ module Bunny1Compact
 var pos: Dict[0..2, 0..4]
 
 init {
-    pos = {a: (if a == 0 then 0 else if a == 1 then 1 else 2) for a in 0..2}
+    pos = {a: (if a == 0 then 0 else if a == 1 then 1 else 2) for a in 0..2};
 }
 
 invariant NotSolved {
@@ -18,7 +18,7 @@ invariant NotSolved {
 }
 
 action Move(animal: 0..2, from: 0..4, to: 0..4) {
-    require pos[animal] == from
+    require pos[animal] == from;
     require from != to
 
     // Edge check and guard satisfied
@@ -38,5 +38,5 @@ action Move(animal: 0..2, from: 0..4, to: 0..4) {
         or (((from == 1 and to == 3) or (from == 3 and to == 1))
             and (any a in 0..2: pos[a] == 0))
 
-    pos = pos | { animal: to }
+    pos = pos | { animal: to };
 }

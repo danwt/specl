@@ -11,7 +11,7 @@ init { x = 0 and y = 0 }
 action Tick() {
     require x < 99 or y < 99
     // Multiple arithmetic ops in guard and expression
-    (x = (x + 1) % 100) and (y = (y + (x / 10)) % 100)
+    (x = (x + 1) % 100) and (y = (y + (x / 10)) % 100);
 }
 
 invariant Bound { x < 100 and y < 100 }

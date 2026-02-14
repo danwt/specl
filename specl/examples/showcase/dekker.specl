@@ -16,64 +16,64 @@ var flag: Dict[0..1, Bool]
 var turn: 0..1
 
 init {
-    pc = {p: 0 for p in 0..1}
-    and flag = {p: false for p in 0..1}
-    and turn = 0
+    pc = {p: 0 for p in 0..1};
+    flag = {p: false for p in 0..1};
+    turn = 0;
 }
 
 // Process p raises its flag
 action SetFlag(p: 0..1) {
-    require pc[p] == 0
-    flag = flag | {p: true}
-    and pc = pc | {p: 1}
+    require pc[p] == 0;
+    flag = flag | {p: true};
+    pc = pc | {p: 1};
 }
 
 // Check if the other's flag is clear — if so, enter critical section
 action EnterIfClear(p: 0..1, other: 0..1) {
-    require pc[p] == 1
-    require other != p
-    require flag[other] == false
-    pc = pc | {p: 4}
+    require pc[p] == 1;
+    require other != p;
+    require flag[other] == false;
+    pc = pc | {p: 4};
 }
 
 // Other's flag is set — check turn to decide whether to wait or backoff
 action ContentionCheck(p: 0..1, other: 0..1) {
-    require pc[p] == 1
-    require other != p
-    require flag[other] == true
-    pc = pc | {p: 2}
+    require pc[p] == 1;
+    require other != p;
+    require flag[other] == true;
+    pc = pc | {p: 2};
 }
 
 // Turn is ours: go back to checking other's flag (busy-wait)
 action TurnIsOurs(p: 0..1) {
-    require pc[p] == 2
-    require turn == p
-    pc = pc | {p: 1}
+    require pc[p] == 2;
+    require turn == p;
+    pc = pc | {p: 1};
 }
 
 // Turn is theirs: backoff (clear flag)
 action TurnIsTheirs(p: 0..1) {
-    require pc[p] == 2
-    require turn != p
-    flag = flag | {p: false}
-    and pc = pc | {p: 3}
+    require pc[p] == 2;
+    require turn != p;
+    flag = flag | {p: false};
+    pc = pc | {p: 3};
 }
 
 // Wait during backoff until it's our turn, then re-raise flag
 action WaitAndReraise(p: 0..1) {
-    require pc[p] == 3
-    require turn == p
-    flag = flag | {p: true}
-    and pc = pc | {p: 1}
+    require pc[p] == 3;
+    require turn == p;
+    flag = flag | {p: true};
+    pc = pc | {p: 1};
 }
 
 // Exit critical section: give turn to other, clear flag
 action ExitCritical(p: 0..1, other: 0..1) {
-    require pc[p] == 4
-    require other != p
-    turn = other
-    and flag = flag | {p: false}
-    and pc = pc | {p: 0}
+    require pc[p] == 4;
+    require other != p;
+    turn = other;
+    flag = flag | {p: false};
+    pc = pc | {p: 0};
 }
 
 // Mutual exclusion: at most one process in critical section

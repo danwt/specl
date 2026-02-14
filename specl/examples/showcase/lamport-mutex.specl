@@ -32,56 +32,56 @@ var has_req: Dict[0..N, Bool]
 var reply: Dict[0..N, Dict[0..N, Bool]]
 
 init {
-    pc = {i: 0 for i in 0..N}
-    and clock = {i: 0 for i in 0..N}
-    and req_ts = {i: 0 for i in 0..N}
-    and has_req = {i: false for i in 0..N}
-    and reply = {i: {j: false for j in 0..N} for i in 0..N}
+    pc = {i: 0 for i in 0..N};
+    clock = {i: 0 for i in 0..N};
+    req_ts = {i: 0 for i in 0..N};
+    has_req = {i: false for i in 0..N};
+    reply = {i: {j: false for j in 0..N} for i in 0..N};
 }
 
 // Process p requests the critical section
 action Request(p: 0..N) {
-    require pc[p] == 0
-    require clock[p] < 10
-    pc = pc | {p: 1}
-    and clock = clock | {p: clock[p] + 1}
-    and req_ts = req_ts | {p: clock[p] + 1}
-    and has_req = has_req | {p: true}
+    require pc[p] == 0;
+    require clock[p] < 10;
+    pc = pc | {p: 1};
+    clock = clock | {p: clock[p] + 1};
+    req_ts = req_ts | {p: clock[p] + 1};
+    has_req = has_req | {p: true};
     // Self-reply is implicit (you always reply to yourself)
-    and reply = reply | {p: {j: (if j == p then true else false) for j in 0..N}}
+    reply = reply | {p: {j: (if j == p then true else false) for j in 0..N}};
 }
 
 // Process q sends reply to process p's request
 // q replies if: q is not requesting, or q's request has higher (ts, pid)
 action Reply(p: 0..N, q: 0..N) {
-    require p != q
-    require has_req[p] == true
-    require reply[p][q] == false
+    require p != q;
+    require has_req[p] == true;
+    require reply[p][q] == false;
     // q replies if it's idle, or if p's request has priority (lower ts, or same ts + lower pid)
     require pc[q] == 0
         or (pc[q] != 0 and req_ts[p] < req_ts[q])
         or (pc[q] != 0 and req_ts[p] == req_ts[q] and p < q)
     // Update q's clock to be at least as large as p's request timestamp
-    clock = clock | {q: (if req_ts[p] > clock[q] then req_ts[p] else clock[q])}
-    and reply = reply | {p: reply[p] | {q: true}}
+    clock = clock | {q: (if req_ts[p] > clock[q] then req_ts[p] else clock[q])};
+    reply = reply | {p: reply[p] | {q: true}};
 }
 
 // Process p enters CS: has all replies and its request is earliest
 action EnterCS(p: 0..N) {
-    require pc[p] == 1
-    require has_req[p] == true
+    require pc[p] == 1;
+    require has_req[p] == true;
     // Must have reply from every other process
-    require all q in 0..N: reply[p][q] == true
-    pc = pc | {p: 2}
+    require all q in 0..N: reply[p][q] == true;
+    pc = pc | {p: 2};
 }
 
 // Process p releases the CS
 action Release(p: 0..N) {
-    require pc[p] == 2
-    pc = pc | {p: 0}
-    and has_req = has_req | {p: false}
+    require pc[p] == 2;
+    pc = pc | {p: 0};
+    has_req = has_req | {p: false};
     // Clear replies for next request
-    and reply = reply | {p: {j: false for j in 0..N}}
+    reply = reply | {p: {j: false for j in 0..N}};
 }
 
 // Mutual exclusion: no two processes in CS simultaneously

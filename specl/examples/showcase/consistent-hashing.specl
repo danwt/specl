@@ -18,17 +18,17 @@ var alive: Dict[0..N, Bool]
 var owner: Dict[0..K, 0..N]
 
 init {
-    alive = {n: true for n in 0..N}
-    and owner = {k: k % (N + 1) for k in 0..K}
+    alive = {n: true for n in 0..N};
+    owner = {k: k % (N + 1) for k in 0..K};
 }
 
 // Node n leaves, handing its keys to alive successor s
 action NodeLeave(n: 0..N, s: 0..N) {
-    require alive[n] == true
-    require alive[s] == true
-    require s != n
-    alive = alive | {n: false}
-    and owner = {k:
+    require alive[n] == true;
+    require alive[s] == true;
+    require s != n;
+    alive = alive | {n: false};
+    owner = {k:
         if owner[k] == n then s
         else owner[k]
     for k in 0..K}
@@ -36,9 +36,9 @@ action NodeLeave(n: 0..N, s: 0..N) {
 
 // Node n rejoins: reclaim natural keys from whoever has them
 action NodeJoin(n: 0..N) {
-    require alive[n] == false
-    alive = alive | {n: true}
-    and owner = {k:
+    require alive[n] == false;
+    alive = alive | {n: true};
+    owner = {k:
         if k % (N + 1) == n then n
         else owner[k]
     for k in 0..K}

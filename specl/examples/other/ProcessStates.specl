@@ -8,17 +8,17 @@ module ProcessStates
 var state: Dict[0..1, 0..1]
 
 init {
-    state = {p: 0 for p in 0..1}
+    state = {p: 0 for p in 0..1};
 }
 
 action Start(p: 0..1) {
-    require state[p] == 0
-    state = state | { p: 1 }
+    require state[p] == 0;
+    state = state | { p: 1 };
 }
 
 action Stop(p: 0..1) {
-    require state[p] == 1
-    state = state | { p: 0 }
+    require state[p] == 1;
+    state = state | { p: 0 };
 }
 
 // Safety: both can be working at the same time

@@ -23,34 +23,34 @@ var handling: 0..N
 var handler_active: Bool
 
 init {
-    pending = {fd: false for fd in 0..N}
-    and reactor = 0
-    and handling = 0
-    and handler_active = false
+    pending = {fd: false for fd in 0..N};
+    reactor = 0;
+    handling = 0;
+    handler_active = false;
 }
 
 // External event arrives on an fd
 action EventArrive(fd: 0..N) {
-    require pending[fd] == false
-    pending = pending | {fd: true}
+    require pending[fd] == false;
+    pending = pending | {fd: true};
 }
 
 // Reactor picks up a pending event
 action Dispatch(fd: 0..N) {
-    require reactor == 0
-    require handler_active == false
-    require pending[fd] == true
-    reactor = 1
-    and handling = fd
-    and handler_active = true
-    and pending = pending | {fd: false}
+    require reactor == 0;
+    require handler_active == false;
+    require pending[fd] == true;
+    reactor = 1;
+    handling = fd;
+    handler_active = true;
+    pending = pending | {fd: false};
 }
 
 // Handler completes
 action HandlerDone() {
-    require handler_active == true
-    handler_active = false
-    and reactor = 0
+    require handler_active == true;
+    handler_active = false;
+    reactor = 0;
 }
 
 // At most one handler at a time (single-threaded reactor)

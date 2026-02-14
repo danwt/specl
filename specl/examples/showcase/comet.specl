@@ -57,154 +57,154 @@ func AnyPrecommitCount(r) {
 func Quorum() { 2 * F + 1 }
 
 init {
-    step = {i: 0 for i in 0..N}
-    and round = {i: 0 for i in 0..N}
-    and lockedValue = {i: -1 for i in 0..N}
-    and lockedRound = {i: -1 for i in 0..N}
-    and validValue = {i: -1 for i in 0..N}
-    and validRound = {i: -1 for i in 0..N}
-    and prevotes = {r: {i: -2 for i in 0..N} for r in 0..MaxRound}
-    and precommits = {r: {i: -2 for i in 0..N} for r in 0..MaxRound}
-    and proposal = {r: -1 for r in 0..MaxRound}
-    and decision = {i: -1 for i in 0..N}
-    and faulty = {i: false for i in 0..N}
+    step = {i: 0 for i in 0..N};
+    round = {i: 0 for i in 0..N};
+    lockedValue = {i: -1 for i in 0..N};
+    lockedRound = {i: -1 for i in 0..N};
+    validValue = {i: -1 for i in 0..N};
+    validRound = {i: -1 for i in 0..N};
+    prevotes = {r: {i: -2 for i in 0..N} for r in 0..MaxRound};
+    precommits = {r: {i: -2 for i in 0..N} for r in 0..MaxRound};
+    proposal = {r: -1 for r in 0..MaxRound};
+    decision = {i: -1 for i in 0..N};
+    faulty = {i: false for i in 0..N};
 }
 
 // A validator goes Byzantine (at most F can)
 action GoFaulty(i: 0..N) {
-    require not faulty[i]
-    require len({j in 0..N if faulty[j]}) < F
-    faulty = faulty | {i: true}
+    require not faulty[i];
+    require len({j in 0..N if faulty[j]}) < F;
+    faulty = faulty | {i: true};
 }
 
 // Byzantine validator prevotes for a value (skips all protocol rules)
 action ByzantinePrevote(i: 0..N, r: 0..MaxRound, v: 0..V) {
-    require faulty[i]
-    require prevotes[r][i] == -2
-    prevotes = prevotes | {r: (prevotes[r] | {i: v})}
+    require faulty[i];
+    require prevotes[r][i] == -2;
+    prevotes = prevotes | {r: (prevotes[r] | {i: v})};
 }
 
 // Byzantine validator prevotes nil
 action ByzantinePrevoteNil(i: 0..N, r: 0..MaxRound) {
-    require faulty[i]
-    require prevotes[r][i] == -2
-    prevotes = prevotes | {r: (prevotes[r] | {i: -1})}
+    require faulty[i];
+    require prevotes[r][i] == -2;
+    prevotes = prevotes | {r: (prevotes[r] | {i: -1})};
 }
 
 // Byzantine validator precommits for a value (skips all protocol rules)
 action ByzantinePrecommit(i: 0..N, r: 0..MaxRound, v: 0..V) {
-    require faulty[i]
-    require precommits[r][i] == -2
-    precommits = precommits | {r: (precommits[r] | {i: v})}
+    require faulty[i];
+    require precommits[r][i] == -2;
+    precommits = precommits | {r: (precommits[r] | {i: v})};
 }
 
 // Byzantine validator precommits nil
 action ByzantinePrecommitNil(i: 0..N, r: 0..MaxRound) {
-    require faulty[i]
-    require precommits[r][i] == -2
-    precommits = precommits | {r: (precommits[r] | {i: -1})}
+    require faulty[i];
+    require precommits[r][i] == -2;
+    precommits = precommits | {r: (precommits[r] | {i: -1})};
 }
 
 // Proposer for round r proposes value v (honest only)
 // If proposer has validValue, must re-propose it; otherwise any value
 action Propose(r: 0..MaxRound, v: 0..V) {
-    require not faulty[Proposer(r)]
-    require proposal[r] == -1
-    require round[Proposer(r)] == r
-    require step[Proposer(r)] == 0
-    require validValue[Proposer(r)] == -1 or validValue[Proposer(r)] == v
-    proposal = proposal | {r: v}
+    require not faulty[Proposer(r)];
+    require proposal[r] == -1;
+    require round[Proposer(r)] == r;
+    require step[Proposer(r)] == 0;
+    require validValue[Proposer(r)] == -1 or validValue[Proposer(r)] == v;
+    proposal = proposal | {r: v};
 }
 
 // Byzantine proposer can propose any value without following protocol rules
 action ByzantinePropose(r: 0..MaxRound, v: 0..V) {
-    require faulty[Proposer(r)]
-    require proposal[r] == -1
-    proposal = proposal | {r: v}
+    require faulty[Proposer(r)];
+    require proposal[r] == -1;
+    proposal = proposal | {r: v};
 }
 
 // Validator i prevotes for value v in round r (honest only)
 action PrevoteBlock(i: 0..N, r: 0..MaxRound) {
-    require not faulty[i]
-    require round[i] == r
-    require step[i] == 0
-    require prevotes[r][i] == -2
-    require proposal[r] != -1
+    require not faulty[i];
+    require round[i] == r;
+    require step[i] == 0;
+    require prevotes[r][i] == -2;
+    require proposal[r] != -1;
     require lockedRound[i] == -1
         or lockedValue[i] == proposal[r]
         or (any vr in 0..MaxRound:
             vr < r
             and PrevoteCount(vr, proposal[r]) >= Quorum()
             and lockedRound[i] <= vr)
-    prevotes = prevotes | {r: (prevotes[r] | {i: proposal[r]})}
-    and step = step | {i: 1}
+    prevotes = prevotes | {r: (prevotes[r] | {i: proposal[r]})};
+    step = step | {i: 1};
 }
 
 // Validator i prevotes nil in round r (honest only)
 action PrevoteNil(i: 0..N, r: 0..MaxRound) {
-    require not faulty[i]
-    require round[i] == r
-    require step[i] == 0
-    require prevotes[r][i] == -2
-    prevotes = prevotes | {r: (prevotes[r] | {i: -1})}
-    and step = step | {i: 1}
+    require not faulty[i];
+    require round[i] == r;
+    require step[i] == 0;
+    require prevotes[r][i] == -2;
+    prevotes = prevotes | {r: (prevotes[r] | {i: -1})};
+    step = step | {i: 1};
 }
 
 // Validator i precommits for value v after seeing 2F+1 prevotes (honest only)
 action PrecommitBlock(i: 0..N, r: 0..MaxRound, v: 0..V) {
-    require not faulty[i]
-    require round[i] == r
-    require step[i] == 1
-    require precommits[r][i] == -2
-    require PrevoteCount(r, v) >= Quorum()
-    require proposal[r] == v
-    precommits = precommits | {r: (precommits[r] | {i: v})}
-    and step = step | {i: 2}
-    and lockedValue = lockedValue | {i: v}
-    and lockedRound = lockedRound | {i: r}
-    and validValue = validValue | {i: v}
-    and validRound = validRound | {i: r}
+    require not faulty[i];
+    require round[i] == r;
+    require step[i] == 1;
+    require precommits[r][i] == -2;
+    require PrevoteCount(r, v) >= Quorum();
+    require proposal[r] == v;
+    precommits = precommits | {r: (precommits[r] | {i: v})};
+    step = step | {i: 2};
+    lockedValue = lockedValue | {i: v};
+    lockedRound = lockedRound | {i: r};
+    validValue = validValue | {i: v};
+    validRound = validRound | {i: r};
 }
 
 // Validator i precommits nil after 2F+1 nil prevotes (honest only)
 action PrecommitNil(i: 0..N, r: 0..MaxRound) {
-    require not faulty[i]
-    require round[i] == r
-    require step[i] == 1
-    require precommits[r][i] == -2
-    require PrevoteCount(r, -1) >= Quorum()
-    precommits = precommits | {r: (precommits[r] | {i: -1})}
-    and step = step | {i: 2}
+    require not faulty[i];
+    require round[i] == r;
+    require step[i] == 1;
+    require precommits[r][i] == -2;
+    require PrevoteCount(r, -1) >= Quorum();
+    precommits = precommits | {r: (precommits[r] | {i: -1})};
+    step = step | {i: 2};
 }
 
 // Validator i precommits nil on prevote timeout (honest only)
 action PrecommitTimeout(i: 0..N, r: 0..MaxRound) {
-    require not faulty[i]
-    require round[i] == r
-    require step[i] == 1
-    require precommits[r][i] == -2
-    require AnyPrevoteCount(r) >= Quorum()
-    precommits = precommits | {r: (precommits[r] | {i: -1})}
-    and step = step | {i: 2}
+    require not faulty[i];
+    require round[i] == r;
+    require step[i] == 1;
+    require precommits[r][i] == -2;
+    require AnyPrevoteCount(r) >= Quorum();
+    precommits = precommits | {r: (precommits[r] | {i: -1})};
+    step = step | {i: 2};
 }
 
 // Validator i decides value v (any validator, including faulty, can observe precommits)
 action Decide(i: 0..N, r: 0..MaxRound, v: 0..V) {
-    require decision[i] == -1
-    require PrecommitCount(r, v) >= Quorum()
-    require proposal[r] == v
-    decision = decision | {i: v}
+    require decision[i] == -1;
+    require PrecommitCount(r, v) >= Quorum();
+    require proposal[r] == v;
+    decision = decision | {i: v};
 }
 
 // Validator i moves to next round (honest only)
 action NextRound(i: 0..N, r: 0..MaxRound) {
-    require not faulty[i]
-    require round[i] == r
-    require step[i] == 2
-    require r < MaxRound
-    require AnyPrecommitCount(r) >= Quorum()
-    round = round | {i: r + 1}
-    and step = step | {i: 0}
+    require not faulty[i];
+    require round[i] == r;
+    require step[i] == 2;
+    require r < MaxRound;
+    require AnyPrecommitCount(r) >= Quorum();
+    round = round | {i: r + 1};
+    step = step | {i: 0};
 }
 
 // Agreement: no two honest validators decide different values

@@ -95,89 +95,89 @@ init {
     customers_waiting = 0 and
     customer_sem = 0 and
     barber_sem = 0 and
-    mutex = 1
+    mutex = 1;
 }
 
 // === Barber actions ===
 
 action Barber_WaitCustomer() {
-    require barber == 0
-    require customer_sem > 0
+    require barber == 0;
+    require customer_sem > 0;
     customer_sem = customer_sem - 1 and
-    barber = 1
+    barber = 1;
 }
 
 action Barber_AcquireMutex() {
-    require barber == 1
-    require mutex > 0
+    require barber == 1;
+    require mutex > 0;
     mutex = mutex - 1 and
-    barber = 2
+    barber = 2;
 }
 
 action Barber_DecrementCounter() {
-    require barber == 2
-    require customers_waiting > 0
+    require barber == 2;
+    require customers_waiting > 0;
     customers_waiting = customers_waiting - 1 and
-    barber = 3
+    barber = 3;
 }
 
 action Barber_SignalReady() {
-    require barber == 3
+    require barber == 3;
     barber_sem = barber_sem + 1 and
     mutex = mutex + 1 and
-    barber = 4
+    barber = 4;
 }
 
 action Barber_CutHair() {
-    require barber == 4
-    barber = 0
+    require barber == 4;
+    barber = 0;
 }
 
 // === Customer actions ===
 
 action Customer_Enter(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 0
-    require mutex > 0
+    require customers_state[i] == 0;
+    require mutex > 0;
     mutex = mutex - 1 and
-    customers_state = customers_state | {i: 1}
+    customers_state = customers_state | {i: 1};
 }
 
 action Customer_Sit(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 1
-    require customers_waiting < NUM_CHAIRS
+    require customers_state[i] == 1;
+    require customers_waiting < NUM_CHAIRS;
     customers_waiting = customers_waiting + 1 and
     customer_sem = customer_sem + 1 and
     mutex = mutex + 1 and
-    customers_state = customers_state | {i: 2}
+    customers_state = customers_state | {i: 2};
 }
 
 action Customer_WaitBarber(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 2
-    require barber_sem > 0
+    require customers_state[i] == 2;
+    require barber_sem > 0;
     barber_sem = barber_sem - 1 and
-    customers_state = customers_state | {i: 3}
+    customers_state = customers_state | {i: 3};
 }
 
 action Customer_GetHaircut(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 3
-    customers_state = customers_state | {i: 4}
+    require customers_state[i] == 3;
+    customers_state = customers_state | {i: 4};
 }
 
 action Customer_Leave(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 4
-    customers_state = customers_state | {i: 0}
+    require customers_state[i] == 4;
+    customers_state = customers_state | {i: 0};
 }
 
 action Customer_Balk(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 1
-    require customers_waiting >= NUM_CHAIRS
+    require customers_state[i] == 1;
+    require customers_waiting >= NUM_CHAIRS;
     mutex = mutex + 1 and
-    customers_state = customers_state | {i: 5}
+    customers_state = customers_state | {i: 5};
 }
 
 action Customer_LeaveBalk(i: 0..NUM_CUSTOMERS) {
-    require customers_state[i] == 5
-    customers_state = customers_state | {i: 0}
+    require customers_state[i] == 5;
+    customers_state = customers_state | {i: 0};
 }
 
 // === Safety invariants ===

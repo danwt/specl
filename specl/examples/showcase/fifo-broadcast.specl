@@ -17,22 +17,22 @@ var sent: Dict[0..N, 0..3]
 var delivered: Dict[0..N, Dict[0..N, 0..3]]
 
 init {
-    sent = {p: 0 for p in 0..N}
-    and delivered = {p: {q: 0 for q in 0..N} for p in 0..N}
+    sent = {p: 0 for p in 0..N};
+    delivered = {p: {q: 0 for q in 0..N} for p in 0..N};
 }
 
 // Process p broadcasts a message
 action Broadcast(p: 0..N) {
-    require sent[p] < 3
-    sent = sent | {p: sent[p] + 1}
+    require sent[p] < 3;
+    sent = sent | {p: sent[p] + 1};
 }
 
 // Process q delivers the next message from sender p (FIFO order)
 action Deliver(p: 0..N, q: 0..N) {
-    require p != q
+    require p != q;
     // Must deliver messages in order: next one to deliver
-    require delivered[q][p] < sent[p]
-    delivered = delivered | {q: delivered[q] | {p: delivered[q][p] + 1}}
+    require delivered[q][p] < sent[p];
+    delivered = delivered | {q: delivered[q] | {p: delivered[q][p] + 1}};
 }
 
 // FIFO: delivered count never exceeds sent count

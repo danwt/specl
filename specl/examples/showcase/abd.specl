@@ -36,100 +36,100 @@ var last_read_val: 0..MaxVal
 var read_complete: Bool
 
 init {
-    val = {i: 0 for i in 0..N}
-    and ts = {i: 0 for i in 0..N}
-    and wstate = 0
-    and wval = 0
-    and wts = 0
-    and wacks = {}
-    and rstate = 0
-    and rval = 0
-    and rts = 0
-    and rresps = {}
-    and racks = {}
-    and last_written_val = 0
-    and last_written_ts = 0
-    and last_read_val = 0
-    and read_complete = false
+    val = {i: 0 for i in 0..N};
+    ts = {i: 0 for i in 0..N};
+    wstate = 0;
+    wval = 0;
+    wts = 0;
+    wacks = {};
+    rstate = 0;
+    rval = 0;
+    rts = 0;
+    rresps = {};
+    racks = {};
+    last_written_val = 0;
+    last_written_ts = 0;
+    last_read_val = 0;
+    read_complete = false;
 }
 
 // Writer picks value v and timestamp t, starts write phase
 action WriteStart(v: 0..MaxVal, t: 1..MaxTs) {
-    require wstate == 0
-    require rstate == 0
-    require t > wts
-    wstate = 1
-    and wval = v
-    and wts = t
-    and wacks = {}
-    and read_complete = false
+    require wstate == 0;
+    require rstate == 0;
+    require t > wts;
+    wstate = 1;
+    wval = v;
+    wts = t;
+    wacks = {};
+    read_complete = false;
 }
 
 // Replica i accepts the write (if timestamp is higher)
 action WriteAccept(i: 0..N) {
-    require wstate == 1
-    require not (i in wacks)
-    require wts >= ts[i]
-    val = val | {i: wval}
-    and ts = ts | {i: wts}
-    and wacks = wacks union {i}
+    require wstate == 1;
+    require not (i in wacks);
+    require wts >= ts[i];
+    val = val | {i: wval};
+    ts = ts | {i: wts};
+    wacks = wacks union {i};
 }
 
 // Writer completes after quorum of acks
 action WriteDone() {
-    require wstate == 1
-    require len(wacks) * 2 > N + 1
-    wstate = 0
-    and last_written_val = wval
-    and last_written_ts = wts
+    require wstate == 1;
+    require len(wacks) * 2 > N + 1;
+    wstate = 0;
+    last_written_val = wval;
+    last_written_ts = wts;
 }
 
 // Reader starts by collecting values from replicas
 action ReadStart() {
-    require rstate == 0
-    require wstate == 0
-    rstate = 1
-    and rresps = {}
-    and rval = 0
-    and rts = 0
-    and read_complete = false
+    require rstate == 0;
+    require wstate == 0;
+    rstate = 1;
+    rresps = {};
+    rval = 0;
+    rts = 0;
+    read_complete = false;
 }
 
 // Replica i responds to reader with its (val, ts)
 action ReadResp(i: 0..N) {
-    require rstate == 1
-    require not (i in rresps)
+    require rstate == 1;
+    require not (i in rresps);
     // Reader takes the value with highest timestamp
-    rval = (if ts[i] > rts then val[i] else rval)
-    and rts = (if ts[i] > rts then ts[i] else rts)
-    and rresps = rresps union {i}
+    rval = (if ts[i] > rts then val[i] else rval);
+    rts = (if ts[i] > rts then ts[i] else rts);
+    rresps = rresps union {i};
 }
 
 // Reader got a quorum of responses, starts write-back phase
 action ReadWriteBack() {
-    require rstate == 1
-    require len(rresps) * 2 > N + 1
-    rstate = 2
-    and racks = {}
+    require rstate == 1;
+    require len(rresps) * 2 > N + 1;
+    rstate = 2;
+    racks = {};
 }
 
 // Replica i accepts the write-back
 action WriteBackAccept(i: 0..N) {
-    require rstate == 2
-    require not (i in racks)
-    require rts >= ts[i]
-    val = val | {i: rval}
-    and ts = ts | {i: rts}
-    and racks = racks union {i}
+    require rstate == 2;
+    require not (i in racks);
+    require rts >= ts[i];
+    val = val | {i: rval};
+    ts = ts | {i: rts};
+    racks = racks union {i};
 }
 
 // Reader completes after quorum of write-back acks
 action ReadDone() {
-    require rstate == 2
-    require len(racks) * 2 > N + 1
-    rstate = 0
-    and last_read_val = rval
-    and read_complete = true
+    require rstate == 2;
+    require len(racks) * 2 > N + 1;
+    rstate = 0;
+    last_read_val = rval;
+    read_complete = true;
 }
 
 // A completed read must return the last written value

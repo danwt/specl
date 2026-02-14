@@ -32,53 +32,53 @@ var pc: Dict[0..N, 0..2]
 var applied: Dict[0..N, Bool]
 
 init {
-    counter = 0
-    and lock = 0
-    and holder = 0
-    and pc = {t: 0 for t in 0..N}
-    and applied = {t: false for t in 0..N}
+    counter = 0;
+    lock = 0;
+    holder = 0;
+    pc = {t: 0 for t in 0..N};
+    applied = {t: false for t in 0..N};
 }
 
 // Thread t posts an operation to the publication list
 action Post(t: 0..N) {
-    require pc[t] == 0
-    require counter < 6
-    pc = pc | {t: 1}
-    and applied = applied | {t: false}
+    require pc[t] == 0;
+    require counter < 6;
+    pc = pc | {t: 1};
+    applied = applied | {t: false};
 }
 
 // Thread t acquires the lock (becomes combiner)
 action AcquireLock(t: 0..N) {
-    require lock == 0
-    require pc[t] == 1
-    lock = 1
-    and holder = t
+    require lock == 0;
+    require pc[t] == 1;
+    lock = 1;
+    holder = t;
 }
 
 // Combiner applies a pending operation for thread t
 action Combine(t: 0..N) {
-    require lock == 1
-    require pc[t] == 1
-    require applied[t] == false
-    require counter < 6
-    counter = counter + 1
-    and applied = applied | {t: true}
+    require lock == 1;
+    require pc[t] == 1;
+    require applied[t] == false;
+    require counter < 6;
+    counter = counter + 1;
+    applied = applied | {t: true};
 }
 
 // Combiner releases lock; all applied threads get results
 action ReleaseLock() {
-    require lock == 1
+    require lock == 1;
     // Combiner's own operation must be applied
-    require applied[holder] == true
-    lock = 0
+    require applied[holder] == true;
+    lock = 0;
 }
 
 // Thread t sees its result is ready
 action CollectResult(t: 0..N) {
-    require pc[t] == 1
-    require applied[t] == true
-    require lock == 0
-    pc = pc | {t: 2}
+    require pc[t] == 1;
+    require applied[t] == true;
+    require lock == 0;
+    pc = pc | {t: 2};
 }
 
 // Consistency: applied threads' operations are reflected in counter

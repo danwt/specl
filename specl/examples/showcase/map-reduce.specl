@@ -23,49 +23,49 @@ var map_state: Dict[0..M, 0..2]
 var reduce_state: Dict[0..R, 0..2]
 
 init {
-    phase = 0
-    and map_state = {m: 0 for m in 0..M}
-    and reduce_state = {r: 0 for r in 0..R}
+    phase = 0;
+    map_state = {m: 0 for m in 0..M};
+    reduce_state = {r: 0 for r in 0..R};
 }
 
 // Start a map task
 action StartMap(m: 0..M) {
-    require phase == 0
-    require map_state[m] == 0
-    map_state = map_state | {m: 1}
+    require phase == 0;
+    require map_state[m] == 0;
+    map_state = map_state | {m: 1};
 }
 
 // Complete a map task
 action CompleteMap(m: 0..M) {
-    require map_state[m] == 1
-    map_state = map_state | {m: 2}
+    require map_state[m] == 1;
+    map_state = map_state | {m: 2};
 }
 
 // Transition to reduce phase (all maps complete)
 action BeginReduce() {
-    require phase == 0
-    require all m in 0..M: map_state[m] == 2
-    phase = 1
+    require phase == 0;
+    require all m in 0..M: map_state[m] == 2;
+    phase = 1;
 }
 
 // Start a reduce task
 action StartReduce(r: 0..R) {
-    require phase == 1
-    require reduce_state[r] == 0
-    reduce_state = reduce_state | {r: 1}
+    require phase == 1;
+    require reduce_state[r] == 0;
+    reduce_state = reduce_state | {r: 1};
 }
 
 // Complete a reduce task
 action CompleteReduce(r: 0..R) {
-    require reduce_state[r] == 1
-    reduce_state = reduce_state | {r: 2}
+    require reduce_state[r] == 1;
+    reduce_state = reduce_state | {r: 2};
 }
 
 // Mark job as done (all reduces complete)
 action Done() {
-    require phase == 1
-    require all r in 0..R: reduce_state[r] == 2
-    phase = 2
+    require phase == 1;
+    require all r in 0..R: reduce_state[r] == 2;
+    phase = 2;
 }
 
 // Reduce never starts before all maps finish

@@ -31,39 +31,39 @@ var writing: Bool
 var committed: 0..MaxVal
 
 init {
-    store = {r: 0 for r in 0..N}
-    and applied = {r: 0 for r in 0..N}
-    and prop = 0
-    and writing = false
-    and committed = 0
+    store = {r: 0 for r in 0..N};
+    applied = {r: 0 for r in 0..N};
+    prop = 0;
+    writing = false;
+    committed = 0;
 }
 
 // Client sends write to head (replica 0)
 action ClientWrite(v: 1..MaxVal) {
-    require writing == false
-    require applied[0] < MaxVal
-    store = store | {0: v}
-    and applied = applied | {0: applied[0] + 1}
-    and prop = 0
-    and writing = true
+    require writing == false;
+    require applied[0] < MaxVal;
+    store = store | {0: v};
+    applied = applied | {0: applied[0] + 1};
+    prop = 0;
+    writing = true;
 }
 
 // Write propagates from replica r to replica r+1
 action Propagate(r: 0..N) {
-    require writing == true
-    require prop == r
-    require r < N
-    store = store | {r + 1: store[r]}
-    and applied = applied | {r + 1: applied[r + 1] + 1}
-    and prop = r + 1
+    require writing == true;
+    require prop == r;
+    require r < N;
+    store = store | {r + 1: store[r]};
+    applied = applied | {r + 1: applied[r + 1] + 1};
+    prop = r + 1;
 }
 
 // Write reaches tail — commit
 action CommitAtTail() {
-    require writing == true
-    require prop == N
-    committed = store[N]
-    and writing = false
+    require writing == true;
+    require prop == N;
+    committed = store[N];
+    writing = false;
 }
 
 // Tail value always matches committed value

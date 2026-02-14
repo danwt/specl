@@ -20,31 +20,31 @@ var add_set: Dict[0..N, Dict[0..K, Bool]]
 var rem_set: Dict[0..N, Dict[0..K, Bool]]
 
 init {
-    add_set = {r: {e: false for e in 0..K} for r in 0..N}
-    and rem_set = {r: {e: false for e in 0..K} for r in 0..N}
+    add_set = {r: {e: false for e in 0..K} for r in 0..N};
+    rem_set = {r: {e: false for e in 0..K} for r in 0..N};
 }
 
 // Add element e at replica r
 action Add(r: 0..N, e: 0..K) {
-    require add_set[r][e] == false
-    require rem_set[r][e] == false
-    add_set = add_set | {r: add_set[r] | {e: true}}
+    require add_set[r][e] == false;
+    require rem_set[r][e] == false;
+    add_set = add_set | {r: add_set[r] | {e: true}};
 }
 
 // Remove element e at replica r (must have been added)
 action Remove(r: 0..N, e: 0..K) {
-    require add_set[r][e] == true
-    require rem_set[r][e] == false
-    rem_set = rem_set | {r: rem_set[r] | {e: true}}
+    require add_set[r][e] == true;
+    require rem_set[r][e] == false;
+    rem_set = rem_set | {r: rem_set[r] | {e: true}};
 }
 
 // Merge: replica dst merges from replica src
 action Merge(src: 0..N, dst: 0..N) {
-    require src != dst
+    require src != dst;
     add_set = add_set | {dst: {e:
         add_set[src][e] or add_set[dst][e]
-    for e in 0..K}}
-    and rem_set = rem_set | {dst: {e:
+    for e in 0..K}};
+    rem_set = rem_set | {dst: {e:
         rem_set[src][e] or rem_set[dst][e]
     for e in 0..K}}
 }

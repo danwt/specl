@@ -29,54 +29,54 @@ var tx_write: Dict[0..N, 0..3]
 var tx_has_write: Dict[0..N, Bool]
 
 init {
-    committed_val = 0
-    and committed_ver = 0
-    and tx_pc = {t: 0 for t in 0..N}
-    and tx_snap = {t: 0 for t in 0..N}
-    and tx_write = {t: 0 for t in 0..N}
-    and tx_has_write = {t: false for t in 0..N}
+    committed_val = 0;
+    committed_ver = 0;
+    tx_pc = {t: 0 for t in 0..N};
+    tx_snap = {t: 0 for t in 0..N};
+    tx_write = {t: 0 for t in 0..N};
+    tx_has_write = {t: false for t in 0..N};
 }
 
 // Transaction t begins: takes a snapshot of current committed version
 action Begin(t: 0..N) {
-    require tx_pc[t] == 0
-    tx_pc = tx_pc | {t: 1}
-    and tx_snap = tx_snap | {t: committed_ver}
+    require tx_pc[t] == 0;
+    tx_pc = tx_pc | {t: 1};
+    tx_snap = tx_snap | {t: committed_ver};
 }
 
 // Transaction t performs a local write
 action Write(t: 0..N, v: 0..3) {
-    require tx_pc[t] == 1
-    tx_write = tx_write | {t: v}
-    and tx_has_write = tx_has_write | {t: true}
+    require tx_pc[t] == 1;
+    tx_write = tx_write | {t: v};
+    tx_has_write = tx_has_write | {t: true};
 }
 
 // Transaction t commits: check for write-write conflicts
 action Commit(t: 0..N) {
-    require tx_pc[t] == 1
-    require tx_has_write[t] == true
+    require tx_pc[t] == 1;
+    require tx_has_write[t] == true;
     // First-committer-wins: no other transaction committed since our snapshot
-    require committed_ver == tx_snap[t]
-    require committed_ver < 3
-    tx_pc = tx_pc | {t: 2}
-    and committed_val = tx_write[t]
-    and committed_ver = committed_ver + 1
+    require committed_ver == tx_snap[t];
+    require committed_ver < 3;
+    tx_pc = tx_pc | {t: 2};
+    committed_val = tx_write[t];
+    committed_ver = committed_ver + 1;
 }
 
 // Transaction t aborts due to conflict
 action Abort(t: 0..N) {
-    require tx_pc[t] == 1
-    require tx_has_write[t] == true
+    require tx_pc[t] == 1;
+    require tx_has_write[t] == true;
     // Conflict: someone else committed since our snapshot
-    require committed_ver != tx_snap[t]
-    tx_pc = tx_pc | {t: 3}
+    require committed_ver != tx_snap[t];
+    tx_pc = tx_pc | {t: 3};
 }
 
 // Read-only transaction commits (no conflict possible)
 action CommitReadOnly(t: 0..N) {
-    require tx_pc[t] == 1
-    require tx_has_write[t] == false
-    tx_pc = tx_pc | {t: 2}
+    require tx_pc[t] == 1;
+    require tx_has_write[t] == false;
+    tx_pc = tx_pc | {t: 2};
 }
 
 // No write-write conflict: two committed writing transactions

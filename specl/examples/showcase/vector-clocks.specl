@@ -18,21 +18,21 @@ const Max: 1..5
 var vc: Dict[0..2, Dict[0..2, 0..Max]]
 
 init {
-    vc = {p: {q: 0 for q in 0..2} for p in 0..2}
+    vc = {p: {q: 0 for q in 0..2} for p in 0..2};
 }
 
 // Tick: process p records a local event
 action Tick(p: 0..2) {
-    require vc[p][p] < Max
-    vc = vc | {p: vc[p] | {p: vc[p][p] + 1}}
+    require vc[p][p] < Max;
+    vc = vc | {p: vc[p] | {p: vc[p][p] + 1}};
 }
 
 // Merge: process q learns from process p's clock (pointwise max).
 // This models q receiving and processing a message from p.
 // Only fires if p has information q doesn't have.
 action Merge(p: 0..2, q: 0..2) {
-    require p != q
-    require any r in 0..2: vc[p][r] > vc[q][r]
+    require p != q;
+    require any r in 0..2: vc[p][r] > vc[q][r];
     vc = vc | {q:
         {r: if vc[p][r] > vc[q][r] then vc[p][r] else vc[q][r]
          for r in 0..2}

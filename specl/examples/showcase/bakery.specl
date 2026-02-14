@@ -17,47 +17,47 @@ var ticket: Dict[0..N, 0..MaxTicket]
 var choosing: Dict[0..N, Bool]
 
 init {
-    pc = {p: 0 for p in 0..N}
-    and ticket = {p: 0 for p in 0..N}
-    and choosing = {p: false for p in 0..N}
+    pc = {p: 0 for p in 0..N};
+    ticket = {p: 0 for p in 0..N};
+    choosing = {p: false for p in 0..N};
 }
 
 // Process p starts choosing a ticket
 action StartChoose(p: 0..N) {
-    require pc[p] == 0
-    choosing = choosing | {p: true}
-    and pc = pc | {p: 1}
+    require pc[p] == 0;
+    choosing = choosing | {p: true};
+    pc = pc | {p: 1};
 }
 
 // Process p picks ticket = 1 + max of all current tickets
 // (bounded by MaxTicket to keep state space finite)
 action PickTicket(p: 0..N, t: 1..MaxTicket) {
-    require pc[p] == 1
+    require pc[p] == 1;
     // t must be > all current non-zero tickets (simplified: just pick any valid ticket)
-    require all q in 0..N: ticket[q] < t
-    ticket = ticket | {p: t}
-    and choosing = choosing | {p: false}
-    and pc = pc | {p: 2}
+    require all q in 0..N: ticket[q] < t;
+    ticket = ticket | {p: t};
+    choosing = choosing | {p: false};
+    pc = pc | {p: 2};
 }
 
 // Process p enters critical section (has lowest (ticket, id))
 action EnterCritical(p: 0..N) {
-    require pc[p] == 2
+    require pc[p] == 2;
     // No one is choosing
-    require all q in 0..N: choosing[q] == false or q == p
+    require all q in 0..N: choosing[q] == false or q == p;
     // p has the smallest (ticket, id) among interested processes
     require all q in 0..N:
         q == p or ticket[q] == 0
         or ticket[p] < ticket[q]
         or (ticket[p] == ticket[q] and p < q)
-    pc = pc | {p: 3}
+    pc = pc | {p: 3};
 }
 
 // Process p exits critical section
 action ExitCritical(p: 0..N) {
-    require pc[p] == 3
-    ticket = ticket | {p: 0}
-    and pc = pc | {p: 0}
+    require pc[p] == 3;
+    ticket = ticket | {p: 0};
+    pc = pc | {p: 0};
 }
 
 // Mutual exclusion: at most one process in critical section

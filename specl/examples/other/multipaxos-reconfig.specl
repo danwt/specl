@@ -51,46 +51,46 @@ func SafeAt(b, s, v) {
 }
 
 init {
-    maxBal = {a: -1 for a in 0..N}
-    and maxVBal = {a: {s: -1 for s in 0..MaxSlot} for a in 0..N}
-    and maxVal = {a: {s: -1 for s in 0..MaxSlot} for a in 0..N}
-    and proposed = {b: {s: -1 for s in 0..MaxSlot} for b in 0..MaxBallot}
-    and accepted = {b: {s: {a: false for a in 0..N} for s in 0..MaxSlot} for b in 0..MaxBallot}
-    and decided = {s: -1 for s in 0..MaxSlot}
+    maxBal = {a: -1 for a in 0..N};
+    maxVBal = {a: {s: -1 for s in 0..MaxSlot} for a in 0..N};
+    maxVal = {a: {s: -1 for s in 0..MaxSlot} for a in 0..N};
+    proposed = {b: {s: -1 for s in 0..MaxSlot} for b in 0..MaxBallot};
+    accepted = {b: {s: {a: false for a in 0..N} for s in 0..MaxSlot} for b in 0..MaxBallot};
+    decided = {s: -1 for s in 0..MaxSlot};
 }
 
 action Promise(b: 0..MaxBallot, a: 0..N) {
-    require b > maxBal[a]
-    maxBal = maxBal | {a: b}
+    require b > maxBal[a];
+    maxBal = maxBal | {a: b};
 }
 
 // MaxVal = MaxVal, where V+1 is the reconfig command
 action Propose(b: 0..MaxBallot, s: 0..MaxSlot, v: 0..MaxVal) {
-    require proposed[b][s] == -1
-    require v >= 0
-    require SafeAt(b, s, v)
+    require proposed[b][s] == -1;
+    require v >= 0;
+    require SafeAt(b, s, v);
     // At most one reconfig command across the entire system
     require v != MaxVal or not (any s2 in 0..MaxSlot:
         decided[s2] == MaxVal
         or (s2 != s and any b2 in 0..MaxBallot: proposed[b2][s2] == MaxVal))
-    proposed = proposed | {b: (proposed[b] | {s: v})}
+    proposed = proposed | {b: (proposed[b] | {s: v})};
 }
 
 action Accept(b: 0..MaxBallot, s: 0..MaxSlot, a: 0..N) {
-    require proposed[b][s] != -1
-    require maxBal[a] <= b
-    require InConfig(a, ConfigForSlot(s))
-    maxBal = maxBal | {a: b}
-    and maxVBal = maxVBal | {a: (maxVBal[a] | {s: b})}
-    and maxVal = maxVal | {a: (maxVal[a] | {s: proposed[b][s]})}
-    and accepted = accepted | {b: (accepted[b] | {s: (accepted[b][s] | {a: true})})}
+    require proposed[b][s] != -1;
+    require maxBal[a] <= b;
+    require InConfig(a, ConfigForSlot(s));
+    maxBal = maxBal | {a: b};
+    maxVBal = maxVBal | {a: (maxVBal[a] | {s: b})};
+    maxVal = maxVal | {a: (maxVal[a] | {s: proposed[b][s]})};
+    accepted = accepted | {b: (accepted[b] | {s: (accepted[b][s] | {a: true})})};
 }
 
 action Decide(s: 0..MaxSlot, b: 0..MaxBallot) {
-    require decided[s] == -1
-    require proposed[b][s] != -1
-    require len({a in 0..N if accepted[b][s][a] and InConfig(a, ConfigForSlot(s))}) * 2 > MemberCount(ConfigForSlot(s))
-    decided = decided | {s: proposed[b][s]}
+    require decided[s] == -1;
+    require proposed[b][s] != -1;
+    require len({a in 0..N if accepted[b][s][a] and InConfig(a, ConfigForSlot(s))}) * 2 > MemberCount(ConfigForSlot(s));
+    decided = decided | {s: proposed[b][s]};
 }
 
 invariant Agreement {

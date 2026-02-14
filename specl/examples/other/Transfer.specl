@@ -9,24 +9,24 @@ var alice: 0..50
 var bob: 0..50
 
 init {
-    alice = 10 and bob = 10
+    alice = 10 and bob = 10;
 }
 
 // BUG: This action adds money to Bob without taking from Alice!
 action BrokenDeposit() {
-    bob = bob + 5
+    bob = bob + 5;
 }
 
 // Normal transfer from Alice to Bob
 action AliceToBob() {
-    require alice >= 1
-    alice = alice - 1 and bob = bob + 1
+    require alice >= 1;
+    alice = alice - 1 and bob = bob + 1;
 }
 
 // Normal transfer from Bob to Alice
 action BobToAlice() {
-    require bob >= 1
-    bob = bob - 1 and alice = alice + 1
+    require bob >= 1;
+    bob = bob - 1 and alice = alice + 1;
 }
 
 // Safety: Total money should be conserved (WILL FAIL due to BrokenDeposit!)

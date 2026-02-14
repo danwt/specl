@@ -19,16 +19,16 @@ var val: Dict[0..2, 0..1]
 var ver: Dict[0..2, 0..MaxVer]
 
 init {
-    val = {r: 0 for r in 0..2}
-    and ver = {r: 0 for r in 0..2}
+    val = {r: 0 for r in 0..2};
+    ver = {r: 0 for r in 0..2};
 }
 
 // Quorum write: update 2 of 3 replicas (skip the slow one)
 action QuorumWrite(v: 0..1, slow: 0..2) {
-    require ver[0] < MaxVer and ver[1] < MaxVer and ver[2] < MaxVer
+    require ver[0] < MaxVer and ver[1] < MaxVer and ver[2] < MaxVer;
     // Find current max version
-    val = {r: if r == slow then val[r] else v for r in 0..2}
-    and ver = {r:
+    val = {r: if r == slow then val[r] else v for r in 0..2};
+    ver = {r:
         if r == slow then ver[r]
         else (if ver[0] >= ver[1] and ver[0] >= ver[2] then ver[0]
               else if ver[1] >= ver[2] then ver[1]
@@ -39,12 +39,12 @@ action QuorumWrite(v: 0..1, slow: 0..2) {
 // Read repair: quorum read detects stale replica and repairs it.
 // Coordinator reads from r1 and r2, repairs whoever is behind.
 action Repair(r1: 0..2, r2: 0..2) {
-    require r1 != r2
-    require ver[r1] != ver[r2]
+    require r1 != r2;
+    require ver[r1] != ver[r2];
     // Both replicas end up with the max version and its value
     val = val | {r1: if ver[r2] > ver[r1] then val[r2] else val[r1],
-                 r2: if ver[r1] > ver[r2] then val[r1] else val[r2]}
-    and ver = ver | {r1: if ver[r2] > ver[r1] then ver[r2] else ver[r1],
+                 r2: if ver[r1] > ver[r2] then val[r1] else val[r2]};
+    ver = ver | {r1: if ver[r2] > ver[r1] then ver[r2] else ver[r1],
                      r2: if ver[r1] > ver[r2] then ver[r1] else ver[r2]}
 }
 

@@ -20,36 +20,36 @@ var dirty: Dict[0..N, Bool]
 var ops: 0..MaxOps
 
 init {
-    val = {r: 0 for r in 0..N}
-    and ts = {r: 0 for r in 0..N}
-    and dirty = {r: false for r in 0..N}
-    and ops = 0
+    val = {r: 0 for r in 0..N};
+    ts = {r: 0 for r in 0..N};
+    dirty = {r: false for r in 0..N};
+    ops = 0;
 }
 
 // Local write at replica r
 action LocalWrite(r: 0..N, v: 0..1) {
-    require ops < MaxOps
-    ops = ops + 1
-    and val = val | {r: v}
-    and ts = ts | {r: ops + 1}
-    and dirty = dirty | {r: true}
+    require ops < MaxOps;
+    ops = ops + 1;
+    val = val | {r: v};
+    ts = ts | {r: ops + 1};
+    dirty = dirty | {r: true};
 }
 
 // Sync: replica src pushes to dst, resolve by timestamp
 action Sync(src: 0..N, dst: 0..N) {
-    require src != dst
-    require dirty[src] == true or ts[src] > ts[dst]
+    require src != dst;
+    require dirty[src] == true or ts[src] > ts[dst];
     // Higher timestamp wins; tie-break by replica ID
     val = val | {dst:
         if ts[src] > ts[dst] then val[src]
         else if ts[src] == ts[dst] and src > dst then val[src]
         else val[dst]
-    }
-    and ts = ts | {dst:
+    };
+    ts = ts | {dst:
         if ts[src] > ts[dst] then ts[src]
         else ts[dst]
-    }
-    and dirty = dirty | {src: false}
+    };
+    dirty = dirty | {src: false};
 }
 
 // After full sync, all replicas converge

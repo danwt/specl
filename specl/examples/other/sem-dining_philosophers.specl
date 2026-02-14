@@ -110,7 +110,7 @@ var footman: 0..5
 init {
     philos = {i: 0 for i in 0..N} and
     forks = {0: 1, 1: 1, 2: 1, 3: 1, 4: 1} and  // All forks available
-    footman = N - 1  // N-1 philosophers allowed at table
+    footman = N - 1;  // N-1 philosophers allowed at table
 }
 
 // Helper: right fork for philosopher i
@@ -122,36 +122,36 @@ func left(i) { (i + 1) % 5 }
 // === Philosopher actions ===
 
 action Philosopher_GetHungry(i: 0..N) {
-    require philos[i] == 0
-    require footman > 0
+    require philos[i] == 0;
+    require footman > 0;
     philos = philos | {i: 1} and
-    footman = footman - 1
+    footman = footman - 1;
 }
 
 action Philosopher_PickupRight(i: 0..N) {
-    require philos[i] == 1
-    require forks[right(i)] == 1
+    require philos[i] == 1;
+    require forks[right(i)] == 1;
     philos = philos | {i: 2} and
-    forks = forks | {right(i): 0}
+    forks = forks | {right(i): 0};
 }
 
 action Philosopher_PickupLeft(i: 0..N) {
-    require philos[i] == 2
-    require forks[left(i)] == 1
+    require philos[i] == 2;
+    require forks[left(i)] == 1;
     philos = philos | {i: 3} and
-    forks = forks | {left(i): 0}
+    forks = forks | {left(i): 0};
 }
 
 action Philosopher_Eat(i: 0..N) {
-    require philos[i] == 3
-    philos = philos | {i: 4}
+    require philos[i] == 3;
+    philos = philos | {i: 4};
 }
 
 action Philosopher_PutdownForks(i: 0..N) {
-    require philos[i] == 4
+    require philos[i] == 4;
     philos = philos | {i: 0} and
     forks = forks | {right(i): 1, left(i): 1} and
-    footman = footman + 1
+    footman = footman + 1;
 }
 
 // === Safety invariants ===

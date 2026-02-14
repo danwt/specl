@@ -25,35 +25,35 @@ var phase: 0..3
 var inverted: Bool
 
 init {
-    phase = 0
-    and inverted = false
+    phase = 0;
+    inverted = false;
 }
 
 // Low acquires the mutex
 action LowAcquire() {
-    require phase == 0
-    phase = 1
+    require phase == 0;
+    phase = 1;
 }
 
 // High arrives and blocks on the mutex
 action HighBlock() {
-    require phase == 1
-    phase = 2
+    require phase == 1;
+    phase = 2;
 }
 
 // Medium preempts Low (priority inversion!)
 // With fix: Low has inherited High's priority, Medium can't preempt
 action MedPreempt() {
-    require phase == 2
-    require UseFix == 0
-    phase = 3
-    and inverted = true
+    require phase == 2;
+    require UseFix == 0;
+    phase = 3;
+    inverted = true;
 }
 
 // Low finishes with mutex (no preemption happened)
 action LowFinish() {
-    require phase == 2
-    phase = 3
+    require phase == 2;
+    phase = 3;
 }
 
 // Priority inversion should never happen

@@ -25,32 +25,32 @@ var clock: 0..MaxTs
 var synced: Bool
 
 init {
-    val = {r: 0 for r in 0..N}
-    and ts = {r: 0 for r in 0..N}
-    and clock = 0
-    and synced = false
+    val = {r: 0 for r in 0..N};
+    ts = {r: 0 for r in 0..N};
+    clock = 0;
+    synced = false;
 }
 
 // Replica r writes value v
 action Write(r: 0..N, v: 0..1) {
-    require clock < MaxTs
-    require synced == false
-    clock = clock + 1
-    and val = val | {r: v}
-    and ts = ts | {r: clock + 1}
+    require clock < MaxTs;
+    require synced == false;
+    clock = clock + 1;
+    val = val | {r: v};
+    ts = ts | {r: clock + 1};
 }
 
 // Replica dst merges from replica src
 action Merge(src: 0..N, dst: 0..N) {
-    require src != dst
-    require synced == false
+    require src != dst;
+    require synced == false;
     // LWW: higher timestamp wins; tie-break by replica ID
     val = val | {dst:
         if ts[src] > ts[dst] then val[src]
         else if ts[src] == ts[dst] and src > dst then val[src]
         else val[dst]
-    }
-    and ts = ts | {dst:
+    };
+    ts = ts | {dst:
         if ts[src] > ts[dst] then ts[src]
         else ts[dst]
     }
@@ -58,10 +58,10 @@ action Merge(src: 0..N, dst: 0..N) {
 
 // Mark as synced (no more writes, only merges have happened)
 action MarkSynced() {
-    require synced == false
+    require synced == false;
     // All replicas have merged to the same state
-    require all i in 0..N: all j in 0..N: ts[i] == ts[j] and val[i] == val[j]
-    synced = true
+    require all i in 0..N: all j in 0..N: ts[i] == ts[j] and val[i] == val[j];
+    synced = true;
 }
 
 // After sync, all replicas agree

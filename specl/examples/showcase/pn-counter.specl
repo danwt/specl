@@ -23,31 +23,31 @@ var P: Dict[0..N, Dict[0..N, 0..Max]]
 var M: Dict[0..N, Dict[0..N, 0..Max]]
 
 init {
-    P = {p: {q: 0 for q in 0..N} for p in 0..N}
-    and M = {p: {q: 0 for q in 0..N} for p in 0..N}
+    P = {p: {q: 0 for q in 0..N} for p in 0..N};
+    M = {p: {q: 0 for q in 0..N} for p in 0..N};
 }
 
 // Process p increments its own counter
 action Increment(p: 0..N) {
-    require P[p][p] < Max
-    P = P | {p: P[p] | {p: P[p][p] + 1}}
+    require P[p][p] < Max;
+    P = P | {p: P[p] | {p: P[p][p] + 1}};
 }
 
 // Process p decrements its own counter
 action Decrement(p: 0..N) {
-    require M[p][p] < Max
-    M = M | {p: M[p] | {p: M[p][p] + 1}}
+    require M[p][p] < Max;
+    M = M | {p: M[p] | {p: M[p][p] + 1}};
 }
 
 // Process p merges process q's state (pointwise max on both P and M)
 action Merge(p: 0..N, q: 0..N) {
-    require p != q
-    require any r in 0..N: P[q][r] > P[p][r] or M[q][r] > M[p][r]
+    require p != q;
+    require any r in 0..N: P[q][r] > P[p][r] or M[q][r] > M[p][r];
     P = P | {p:
         {r: if P[q][r] > P[p][r] then P[q][r] else P[p][r]
          for r in 0..N}
-    }
-    and M = M | {p:
+    };
+    M = M | {p:
         {r: if M[q][r] > M[p][r] then M[q][r] else M[p][r]
          for r in 0..N}
     }

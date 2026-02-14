@@ -139,118 +139,118 @@ init {
     hydroQueue = 0 and
     barrierCount = 0 and
     mutex = 0 and
-    molecules = 0
+    molecules = 0;
 }
 
 // === OXYGEN ACTIONS ===
 
 action Oxygen_Arrive() {
-    require oxy_not_arrived > 0
-    require mutex == 0
+    require oxy_not_arrived > 0;
+    require mutex == 0;
     oxy_not_arrived = oxy_not_arrived - 1 and
     oxy_waiting = oxy_waiting + 1 and
-    mutex = 1
+    mutex = 1;
 }
 
 action Oxygen_FormMolecule() {
-    require oxy_waiting > 0
-    require hydro_waiting >= 2
-    require mutex == 1
+    require oxy_waiting > 0;
+    require hydro_waiting >= 2;
+    require mutex == 1;
     // Release 1 oxygen and 2 hydrogens
     oxyQueue = oxyQueue + 1 and
     hydroQueue = hydroQueue + 2 and
     oxy_waiting = oxy_waiting - 1 and
     hydro_waiting = hydro_waiting - 2 and
-    mutex = 0
+    mutex = 0;
 }
 
 action Oxygen_CannotForm() {
-    require oxy_waiting > 0
-    require hydro_waiting < 2
-    require mutex == 1
+    require oxy_waiting > 0;
+    require hydro_waiting < 2;
+    require mutex == 1;
     // Oxygen stays waiting, just release mutex
-    mutex = 0
+    mutex = 0;
 }
 
 action Oxygen_LeaveQueue() {
-    require oxyQueue > 0
+    require oxyQueue > 0;
     oxyQueue = oxyQueue - 1 and
-    oxy_bonding = oxy_bonding + 1
+    oxy_bonding = oxy_bonding + 1;
 }
 
 action Oxygen_Bond() {
-    require oxy_bonding > 0
+    require oxy_bonding > 0;
     oxy_bonding = oxy_bonding - 1 and
     oxy_at_barrier = oxy_at_barrier + 1 and
-    barrierCount = barrierCount + 1
+    barrierCount = barrierCount + 1;
 }
 
 action Oxygen_PassBarrier() {
-    require barrierCount == 3
-    require oxy_at_barrier > 0
-    require mutex == 0
+    require barrierCount == 3;
+    require oxy_at_barrier > 0;
+    require mutex == 0;
     oxy_at_barrier = oxy_at_barrier - 1 and
     barrierCount = barrierCount - 1 and
     oxy_done = oxy_done + 1 and
     mutex = 1 and
-    molecules = molecules + 1
+    molecules = molecules + 1;
 }
 
 action Oxygen_ReleaseMutex() {
-    require mutex == 1
-    require oxy_done > 0
-    mutex = 0
+    require mutex == 1;
+    require oxy_done > 0;
+    mutex = 0;
 }
 
 // === HYDROGEN ACTIONS ===
 
 action Hydrogen_Arrive() {
-    require hydro_not_arrived > 0
-    require mutex == 0
+    require hydro_not_arrived > 0;
+    require mutex == 0;
     hydro_not_arrived = hydro_not_arrived - 1 and
     hydro_waiting = hydro_waiting + 1 and
-    mutex = 1
+    mutex = 1;
 }
 
 action Hydrogen_FormMolecule() {
-    require hydro_waiting >= 2
-    require oxy_waiting >= 1
-    require mutex == 1
+    require hydro_waiting >= 2;
+    require oxy_waiting >= 1;
+    require mutex == 1;
     // Release 2 hydrogens and 1 oxygen
     hydroQueue = hydroQueue + 2 and
     oxyQueue = oxyQueue + 1 and
     hydro_waiting = hydro_waiting - 2 and
     oxy_waiting = oxy_waiting - 1 and
-    mutex = 0
+    mutex = 0;
 }
 
 action Hydrogen_CannotForm() {
-    require hydro_waiting > 0
-    require mutex == 1
-    require hydro_waiting < 2 or oxy_waiting < 1
+    require hydro_waiting > 0;
+    require mutex == 1;
+    require hydro_waiting < 2 or oxy_waiting < 1;
     // Hydrogen stays waiting, just release mutex
-    mutex = 0
+    mutex = 0;
 }
 
 action Hydrogen_LeaveQueue() {
-    require hydroQueue > 0
+    require hydroQueue > 0;
     hydroQueue = hydroQueue - 1 and
-    hydro_bonding = hydro_bonding + 1
+    hydro_bonding = hydro_bonding + 1;
 }
 
 action Hydrogen_Bond() {
-    require hydro_bonding > 0
+    require hydro_bonding > 0;
     hydro_bonding = hydro_bonding - 1 and
     hydro_at_barrier = hydro_at_barrier + 1 and
-    barrierCount = barrierCount + 1
+    barrierCount = barrierCount + 1;
 }
 
 action Hydrogen_PassBarrier() {
-    require barrierCount == 3
-    require hydro_at_barrier > 0
+    require barrierCount == 3;
+    require hydro_at_barrier > 0;
     hydro_at_barrier = hydro_at_barrier - 1 and
     barrierCount = barrierCount - 1 and
-    hydro_done = hydro_done + 1
+    hydro_done = hydro_done + 1;
 }
 
 // === INVARIANTS ===

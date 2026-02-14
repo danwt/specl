@@ -12,10 +12,10 @@ var tpos: Int                  // token position
 var tcolor: String             // token color
 
 init {
-    active = {i: true for i in 0..N}
-    and color = {i: "white" for i in 0..N}
-    and tpos = 0
-    and tcolor = "black"
+    active = {i: true for i in 0..N};
+    color = {i: "white" for i in 0..N};
+    tpos = 0;
+    tcolor = "black";
 }
 
 invariant TerminationDetection {
@@ -24,34 +24,34 @@ invariant TerminationDetection {
 }
 
 action InitiateProbe() {
-    require tpos == 0
-    require tcolor == "black" or color[0] == "black"
-    tpos = N
-    and tcolor = "white"
-    and color = color | { 0: "white" }
+    require tpos == 0;
+    require tcolor == "black" or color[0] == "black";
+    tpos = N;
+    tcolor = "white";
+    color = color | { 0: "white" };
 }
 
 action PassToken(i: 0..N) {
-    require i > 0
-    require tpos == i
-    require not active[i] or color[i] == "black" or tcolor == "black"
-    tpos = i - 1
-    and tcolor = (if color[i] == "black" then "black" else tcolor)
-    and color = color | { i: "white" }
+    require i > 0;
+    require tpos == i;
+    require not active[i] or color[i] == "black" or tcolor == "black";
+    tpos = i - 1;
+    tcolor = (if color[i] == "black" then "black" else tcolor);
+    color = color | { i: "white" };
 }
 
 action SendMsg(i: 0..N, j: 0..N) {
-    require active[i]
-    require i != j
-    active = active | { j: true }
-    and color = color | { i: (if j > i then "black" else color[i]) }
+    require active[i];
+    require i != j;
+    active = active | { j: true };
+    color = color | { i: (if j > i then "black" else color[i]) };
 }
 
 action Deactivate(i: 0..N) {
-    require active[i]
-    active = active | { i: false }
+    require active[i];
+    active = active | { i: false };
 }
 
 action Stutter() {
-    require tpos == 0 and tcolor == "white" and color[0] == "white" and not active[0]
+    require tpos == 0 and tcolor == "white" and color[0] == "white" and not active[0];
 }

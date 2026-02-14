@@ -81,18 +81,18 @@ func Min(a, b) {
 // ============================================================================
 
 init {
-    currentTerm = {s: 0 for s in 0..N}
-    and votedFor = {s: -1 for s in 0..N}
-    and log = {s: [] for s in 0..N}
-    and commitIndex = {s: 0 for s in 0..N}
-    and role = {s: 0 for s in 0..N}
-    and nextIndex = {s: {t: 1 for t in 0..N} for s in 0..N}
-    and matchIndex = {s: {t: 0 for t in 0..N} for s in 0..N}
-    and votesGranted = {s: {t: false for t in 0..N} for s in 0..N}
-    and requestVoteReqs = {}
-    and requestVoteResps = {}
-    and appendEntriesReqs = {}
-    and appendEntriesResps = {}
+    currentTerm = {s: 0 for s in 0..N};
+    votedFor = {s: -1 for s in 0..N};
+    log = {s: [] for s in 0..N};
+    commitIndex = {s: 0 for s in 0..N};
+    role = {s: 0 for s in 0..N};
+    nextIndex = {s: {t: 1 for t in 0..N} for s in 0..N};
+    matchIndex = {s: {t: 0 for t in 0..N} for s in 0..N};
+    votesGranted = {s: {t: false for t in 0..N} for s in 0..N};
+    requestVoteReqs = {};
+    requestVoteResps = {};
+    appendEntriesReqs = {};
+    appendEntriesResps = {};
 }
 
 // ============================================================================
@@ -101,14 +101,14 @@ init {
 
 // Server i times out and starts election
 action Timeout(i: 0..N) {
-    require role[i] != 2
-    require currentTerm[i] < MaxTerm
+    require role[i] != 2;
+    require currentTerm[i] < MaxTerm;
 
-    currentTerm = currentTerm | {i: currentTerm[i] + 1}
-    and role = role | {i: 1}
-    and votedFor = votedFor | {i: i}
-    and votesGranted = votesGranted | {i: {t: (t == i) for t in 0..N}}
-    and requestVoteReqs = requestVoteReqs union {
+    currentTerm = currentTerm | {i: currentTerm[i] + 1};
+    role = role | {i: 1};
+    votedFor = votedFor | {i: i};
+    votesGranted = votesGranted | {i: {t: (t == i) for t in 0..N}};
+    requestVoteReqs = requestVoteReqs union {
         [1, i, j, currentTerm[i] + 1, LastLogIndex(log[i]), LastLogTerm(log[i])]
         for j in 0..N if j != i
     }
@@ -117,22 +117,22 @@ action Timeout(i: 0..N) {
 // Server j receives RequestVote request
 // msg = [1, src=i, dest=j, term, lastLogIdx, lastLogTerm]
 action HandleRequestVoteRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
-    require i != j
-    require msg in requestVoteReqs
-    require msg[0] == 1 and msg[1] == i and msg[2] == j
+    require i != j;
+    require msg in requestVoteReqs;
+    require msg[0] == 1 and msg[1] == i and msg[2] == j;
 
     // Update term if higher
     currentTerm = currentTerm | {j:
         if msg[3] > currentTerm[j] then msg[3] else currentTerm[j]
-    }
+    };
 
     // Become follower if term advanced
-    and role = role | {j:
+    role = role | {j:
         if msg[3] > currentTerm[j] and role[j] != 0 then 0 else role[j]
-    }
+    };
 
     // Clear votedFor if term advanced, otherwise keep it
-    and votedFor = votedFor | {j:
+    votedFor = votedFor | {j:
         if msg[3] > currentTerm[j] then
             (if msg[3] >= currentTerm[j]
              and (msg[5] > LastLogTerm(log[j])
@@ -144,11 +144,11 @@ action HandleRequestVoteRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
              and (msg[5] > LastLogTerm(log[j])
                   or (msg[5] == LastLogTerm(log[j]) and msg[4] >= LastLogIndex(log[j])))
              then i else votedFor[j])
-    }
+    };
 
     // Remove request and send response
-    and requestVoteReqs = requestVoteReqs diff {msg}
-    and requestVoteResps = requestVoteResps union {[
+    requestVoteReqs = requestVoteReqs diff {msg};
+    requestVoteResps = requestVoteResps union {[
         2, j, i,
         if msg[3] > currentTerm[j] then msg[3] else currentTerm[j],
         if (msg[3] > currentTerm[j] and msg[3] >= currentTerm[j]
@@ -169,24 +169,24 @@ action HandleRequestVoteRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
 // Stale responses (msg[3] != currentTerm[i]) are handled by DropRequestVoteResp
 // Higher-term discovery is handled by UpdateTerm
 action HandleRequestVoteResponse(i: 0..N, j: 0..N, msg: Seq[Int]) {
-    require i != j
-    require role[i] == 1
-    require msg in requestVoteResps
-    require msg[0] == 2 and msg[1] == j and msg[2] == i
-    require msg[3] == currentTerm[i]  // only process votes from current term
+    require i != j;
+    require role[i] == 1;
+    require msg in requestVoteResps;
+    require msg[0] == 2 and msg[1] == j and msg[2] == i;
+    require msg[3] == currentTerm[i];  // only process votes from current term
 
-    votesGranted = votesGranted | {i: (votesGranted[i] | {j: msg[4] == 1})}
-    and requestVoteResps = requestVoteResps diff {msg}
+    votesGranted = votesGranted | {i: (votesGranted[i] | {j: msg[4] == 1})};
+    requestVoteResps = requestVoteResps diff {msg};
 }
 
 // Candidate becomes leader with majority
 action BecomeLeader(i: 0..N) {
-    require role[i] == 1
-    require len({k in 0..N if votesGranted[i][k]}) * 2 > N + 1
+    require role[i] == 1;
+    require len({k in 0..N if votesGranted[i][k]}) * 2 > N + 1;
 
-    role = role | {i: 2}
-    and nextIndex = nextIndex | {i: {j: LastLogIndex(log[i]) + 1 for j in 0..N}}
-    and matchIndex = matchIndex | {i: {j: 0 for j in 0..N}}
+    role = role | {i: 2};
+    nextIndex = nextIndex | {i: {j: LastLogIndex(log[i]) + 1 for j in 0..N}};
+    matchIndex = matchIndex | {i: {j: 0 for j in 0..N}};
 }
 
 // ============================================================================
@@ -195,17 +195,17 @@ action BecomeLeader(i: 0..N) {
 
 // Leader appends client entry
 action ClientRequest(i: 0..N) {
-    require role[i] == 2
-    require len(log[i]) < MaxLogLen
+    require role[i] == 2;
+    require len(log[i]) < MaxLogLen;
 
-    log = log | {i: log[i] ++ [currentTerm[i]]}
+    log = log | {i: log[i] ++ [currentTerm[i]]};
 }
 
 // Leader sends AppendEntries to follower
 // msg = [3, src=i, dest=j, term, prevLogIdx, prevLogTerm]
 action SendAppendEntries(i: 0..N, j: 0..N) {
-    require i != j
-    require role[i] == 2
+    require i != j;
+    require role[i] == 2;
 
     appendEntriesReqs = appendEntriesReqs union {[
         3, i, j, currentTerm[i],
@@ -217,25 +217,25 @@ action SendAppendEntries(i: 0..N, j: 0..N) {
 // Follower receives AppendEntries
 // msg = [3, src=i, dest=j, term, prevLogIdx, prevLogTerm]
 action HandleAppendEntriesRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
-    require i != j
-    require msg in appendEntriesReqs
-    require msg[0] == 3 and msg[1] == i and msg[2] == j
+    require i != j;
+    require msg in appendEntriesReqs;
+    require msg[0] == 3 and msg[1] == i and msg[2] == j;
 
     // Update state
     currentTerm = currentTerm | {j:
         if msg[3] > currentTerm[j] then msg[3] else currentTerm[j]
-    }
+    };
 
-    and role = role | {j:
+    role = role | {j:
         if msg[3] >= currentTerm[j] then 0 else role[j]
-    }
+    };
 
-    and votedFor = votedFor | {j:
+    votedFor = votedFor | {j:
         if msg[3] > currentTerm[j] then -1 else votedFor[j]
-    }
+    };
 
     // Update log if success: truncate to prevLogIndex, then append entries from leader
-    and log = log | {j:
+    log = log | {j:
         if not (msg[3] >= currentTerm[j]
                 and (msg[4] == 0 or (msg[4] <= len(log[j]) and LogTerm(log[j], msg[4]) == msg[5])))
         then log[j]
@@ -244,18 +244,18 @@ action HandleAppendEntriesRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
         else
             (if msg[4] == 0 then log[i][msg[4] .. len(log[i])]
              else log[j][0 .. msg[4]] ++ log[i][msg[4] .. len(log[i])])
-    }
+    };
 
     // Update commitIndex if success: min(leaderCommit, len(leader_log))
-    and commitIndex = commitIndex | {j:
+    commitIndex = commitIndex | {j:
         if (msg[3] >= currentTerm[j]
             and (msg[4] == 0 or (msg[4] <= len(log[j]) and LogTerm(log[j], msg[4]) == msg[5])))
         then Min(commitIndex[i], len(log[i])) else commitIndex[j]
-    }
+    };
 
     // Send response: [4, src=j, dest=i, term, success, matchIdx]
-    and appendEntriesReqs = appendEntriesReqs diff {msg}
-    and appendEntriesResps = appendEntriesResps union {[
+    appendEntriesReqs = appendEntriesReqs diff {msg};
+    appendEntriesResps = appendEntriesResps union {[
         4, j, i,
         if msg[3] > currentTerm[j] then msg[3] else currentTerm[j],
         if (msg[3] >= currentTerm[j]
@@ -271,34 +271,34 @@ action HandleAppendEntriesRequest(i: 0..N, j: 0..N, msg: Seq[Int]) {
 // Stale responses are handled by DropAppendEntriesResp
 // Higher-term discovery is handled by UpdateTerm
 action HandleAppendEntriesResponse(i: 0..N, j: 0..N, msg: Seq[Int]) {
-    require i != j
-    require role[i] == 2
-    require msg in appendEntriesResps
-    require msg[0] == 4 and msg[1] == j and msg[2] == i
-    require msg[3] == currentTerm[i]  // only process responses from current term
+    require i != j;
+    require role[i] == 2;
+    require msg in appendEntriesResps;
+    require msg[0] == 4 and msg[1] == j and msg[2] == i;
+    require msg[3] == currentTerm[i];  // only process responses from current term
 
     nextIndex = nextIndex | {i:
         if msg[4] == 1 then nextIndex[i] | {j: msg[5] + 1}
         else nextIndex[i] | {j: if nextIndex[i][j] > 1 then nextIndex[i][j] - 1 else 1}
-    }
+    };
 
-    and matchIndex = matchIndex | {i:
+    matchIndex = matchIndex | {i:
         if msg[4] == 1 then matchIndex[i] | {j: msg[5]}
         else matchIndex[i]
-    }
+    };
 
-    and appendEntriesResps = appendEntriesResps diff {msg}
+    appendEntriesResps = appendEntriesResps diff {msg};
 }
 
 // Leader advances commit index using matchIndex
 action AdvanceCommitIndex(i: 0..N, k: 1..MaxLogLen) {
-    require role[i] == 2
-    require k > commitIndex[i]
-    require k <= len(log[i])
-    require LogTerm(log[i], k) == currentTerm[i]
-    require len({j in 0..N if matchIndex[i][j] >= k}) * 2 > N + 1
+    require role[i] == 2;
+    require k > commitIndex[i];
+    require k <= len(log[i]);
+    require LogTerm(log[i], k) == currentTerm[i];
+    require len({j in 0..N if matchIndex[i][j] >= k}) * 2 > N + 1;
 
-    commitIndex = commitIndex | {i: k}
+    commitIndex = commitIndex | {i: k};
 }
 
 // ============================================================================
@@ -306,12 +306,12 @@ action AdvanceCommitIndex(i: 0..N, k: 1..MaxLogLen) {
 // ============================================================================
 
 action UpdateTerm(i: 0..N, j: 0..N) {
-    require i != j
-    require currentTerm[j] > currentTerm[i]
+    require i != j;
+    require currentTerm[j] > currentTerm[i];
 
-    currentTerm = currentTerm | {i: currentTerm[j]}
-    and role = role | {i: 0}
-    and votedFor = votedFor | {i: -1}
+    currentTerm = currentTerm | {i: currentTerm[j]};
+    role = role | {i: 0};
+    votedFor = votedFor | {i: -1};
 }
 
 // ============================================================================
@@ -319,23 +319,23 @@ action UpdateTerm(i: 0..N, j: 0..N) {
 // ============================================================================
 
 action DropRequestVoteReq(msg: Seq[Int]) {
-    require msg in requestVoteReqs
-    requestVoteReqs = requestVoteReqs diff {msg}
+    require msg in requestVoteReqs;
+    requestVoteReqs = requestVoteReqs diff {msg};
 }
 
 action DropRequestVoteResp(msg: Seq[Int]) {
-    require msg in requestVoteResps
-    requestVoteResps = requestVoteResps diff {msg}
+    require msg in requestVoteResps;
+    requestVoteResps = requestVoteResps diff {msg};
 }
 
 action DropAppendEntriesReq(msg: Seq[Int]) {
-    require msg in appendEntriesReqs
-    appendEntriesReqs = appendEntriesReqs diff {msg}
+    require msg in appendEntriesReqs;
+    appendEntriesReqs = appendEntriesReqs diff {msg};
 }
 
 action DropAppendEntriesResp(msg: Seq[Int]) {
-    require msg in appendEntriesResps
-    appendEntriesResps = appendEntriesResps diff {msg}
+    require msg in appendEntriesResps;
+    appendEntriesResps = appendEntriesResps diff {msg};
 }
 
 // ============================================================================

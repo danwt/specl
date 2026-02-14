@@ -28,31 +28,31 @@ func Majority(proposals, pcs) {
 }
 
 init {
-    proposal = {p: 0 for p in 0..N}
-    and pc = {p: 0 for p in 0..N}
-    and decision = {p: 0 for p in 0..N}
-    and crashes = 0
+    proposal = {p: 0 for p in 0..N};
+    pc = {p: 0 for p in 0..N};
+    decision = {p: 0 for p in 0..N};
+    crashes = 0;
 }
 
 action Propose(p: 0..N, v: 0..1) {
-    require pc[p] == 0
-    pc = pc | {p: 1}
-    and proposal = proposal | {p: v}
+    require pc[p] == 0;
+    pc = pc | {p: 1};
+    proposal = proposal | {p: v};
 }
 
 action Crash(p: 0..N) {
-    require pc[p] != 3
-    require pc[p] != 2
-    require crashes < F
-    pc = pc | {p: 3}
-    and crashes = crashes + 1
+    require pc[p] != 3;
+    require pc[p] != 2;
+    require crashes < F;
+    pc = pc | {p: 3};
+    crashes = crashes + 1;
 }
 
 action Decide(p: 0..N) {
-    require pc[p] == 1
-    require all q in 0..N: pc[q] >= 1
-    pc = pc | {p: 2}
-    and decision = decision | {p: Majority(proposal, pc)}
+    require pc[p] == 1;
+    require all q in 0..N: pc[q] >= 1;
+    pc = pc | {p: 2};
+    decision = decision | {p: Majority(proposal, pc)};
 }
 
 // bug: naive majority voting fails with crash faults.

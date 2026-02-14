@@ -14,19 +14,19 @@ const Cap: 1..8
 var count: 0..Cap
 
 init {
-    count = 0
+    count = 0;
 }
 
 // Producer adds an item (if buffer not full)
 action Produce(p: 0..N) {
-    require count < Cap
-    count = count + 1
+    require count < Cap;
+    count = count + 1;
 }
 
 // Consumer removes an item (if buffer not empty)
 action Consume(c: 0..N) {
-    require count > 0
-    count = count - 1
+    require count > 0;
+    count = count - 1;
 }
 
 // Buffer never overflows

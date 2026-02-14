@@ -25,40 +25,40 @@ init {
     tailToClient = [] and
     headValue = 0 and
     tailValue = 0 and
-    clientValue = 0
+    clientValue = 0;
 }
 
 // Client sends write request to HEAD (sets value to 1)
 action ClientWrite() {
-    require clientValue == 0
-    require headValue == 0
-    headValue = 1
+    require clientValue == 0;
+    require headValue == 0;
+    headValue = 1;
 }
 
 // HEAD forwards value to TAIL
 action HeadForward() {
-    require headValue == 1
-    require len(headToTail) < 2
-    headToTail = headToTail ++ [headValue]
+    require headValue == 1;
+    require len(headToTail) < 2;
+    headToTail = headToTail ++ [headValue];
 }
 
 // TAIL receives from HEAD
 action TailReceive() {
-    require len(headToTail) > 0
-    tailValue = head(headToTail) and headToTail = tail(headToTail)
+    require len(headToTail) > 0;
+    tailValue = head(headToTail) and headToTail = tail(headToTail);
 }
 
 // TAIL sends response to client
 action TailRespond() {
-    require tailValue == 1
-    require len(tailToClient) < 2
-    tailToClient = tailToClient ++ [tailValue]
+    require tailValue == 1;
+    require len(tailToClient) < 2;
+    tailToClient = tailToClient ++ [tailValue];
 }
 
 // Client receives response
 action ClientReceive() {
-    require len(tailToClient) > 0
-    clientValue = head(tailToClient) and tailToClient = tail(tailToClient)
+    require len(tailToClient) > 0;
+    clientValue = head(tailToClient) and tailToClient = tail(tailToClient);
 }
 
 // Safety: if client received a value, it must be 1 (the replicated value)

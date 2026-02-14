@@ -14,30 +14,30 @@ var produced: 0..5
 var consumed: 0..5
 
 init {
-    buffer = []
-    and produced = 0
-    and consumed = 0
+    buffer = [];
+    produced = 0;
+    consumed = 0;
 }
 
 // Producer adds item to buffer
 action Produce(p: 0..MAX_PRODUCER, item: 0..1) {
-    require len(buffer) < BUFFER_SIZE
-    require produced < 5  // prevent overflow
-    buffer = buffer ++ [item]
-    and produced = produced + 1
+    require len(buffer) < BUFFER_SIZE;
+    require produced < 5;  // prevent overflow
+    buffer = buffer ++ [item];
+    produced = produced + 1;
 }
 
 // Consumer removes item from buffer
 action Consume(c: 0..MAX_CONSUMER) {
-    require len(buffer) > 0
-    require consumed < 5
-    buffer = tail(buffer)
-    and consumed = consumed + 1
+    require len(buffer) > 0;
+    require consumed < 5;
+    buffer = tail(buffer);
+    consumed = consumed + 1;
 }
 
 // Stutter step (system complete - all items produced and consumed)
 action Done() {
-    require produced == 5 and consumed == 5 and buffer == []
+    require produced == 5 and consumed == 5 and buffer == [];
     // No state changes - this allows termination without deadlock
 }
 

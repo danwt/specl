@@ -18,47 +18,47 @@ var state: 0..2
 var failures: 0..Threshold
 
 init {
-    state = 0
-    and failures = 0
+    state = 0;
+    failures = 0;
 }
 
 // Closed: successful request resets failure count
 action ClosedSuccess() {
-    require state == 0
-    failures = 0
+    require state == 0;
+    failures = 0;
 }
 
 // Closed: failed request increments failure count
 action ClosedFailure() {
-    require state == 0
-    require failures < Threshold
-    failures = failures + 1
+    require state == 0;
+    require failures < Threshold;
+    failures = failures + 1;
 }
 
 // Closed: threshold reached, open circuit
 action Trip() {
-    require state == 0
-    require failures >= Threshold
-    state = 1
+    require state == 0;
+    require failures >= Threshold;
+    state = 1;
 }
 
 // Open: timeout expires, try half-open
 action Timeout() {
-    require state == 1
-    state = 2
+    require state == 1;
+    state = 2;
 }
 
 // Half-open: test request succeeds, close circuit
 action HalfOpenSuccess() {
-    require state == 2
-    state = 0
-    and failures = 0
+    require state == 2;
+    state = 0;
+    failures = 0;
 }
 
 // Half-open: test request fails, reopen circuit
 action HalfOpenFailure() {
-    require state == 2
-    state = 1
+    require state == 2;
+    state = 1;
 }
 
 // Open circuit means we hit the threshold

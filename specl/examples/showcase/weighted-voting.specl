@@ -23,27 +23,27 @@ var ver: Dict[0..N, 0..3]
 var write_count: 0..3
 
 init {
-    store = {r: 0 for r in 0..N}
-    and ver = {r: 0 for r in 0..N}
-    and write_count = 0
+    store = {r: 0 for r in 0..N};
+    ver = {r: 0 for r in 0..N};
+    write_count = 0;
 }
 
 // Quorum write: update a majority of replicas
 // Skipping one replica (the slow one)
 action QuorumWrite(v: 0..1, slow: 0..N) {
-    require write_count < 3
+    require write_count < 3;
     // All replicas get the new value, except the slow one keeps its old state
-    store = {r: v for r in 0..N} | {slow: store[slow]}
-    and ver = {r: write_count + 1 for r in 0..N} | {slow: ver[slow]}
-    and write_count = write_count + 1
+    store = {r: v for r in 0..N} | {slow: store[slow]};
+    ver = {r: write_count + 1 for r in 0..N} | {slow: ver[slow]};
+    write_count = write_count + 1;
 }
 
 // Lazy propagation: slow replica catches up from a faster one
 action Propagate(slow: 0..N, src: 0..N) {
-    require slow != src
-    require ver[src] > ver[slow]
-    store = store | {slow: store[src]}
-    and ver = ver | {slow: ver[src]}
+    require slow != src;
+    require ver[src] > ver[slow];
+    store = store | {slow: store[src]};
+    ver = ver | {slow: ver[src]};
 }
 
 // Quorum intersection: any 2 replicas include one with the latest version

@@ -15,26 +15,26 @@ var votes: Dict[0..MAX_NODE, 0..MAX_VALUE]
 var decided: 0..MAX_VALUE
 
 init {
-    votes = {n: 0 for n in 0..MAX_NODE}
-    and decided = 0
+    votes = {n: 0 for n in 0..MAX_NODE};
+    decided = 0;
 }
 
 // Node votes for a value
 action Vote(node: 0..MAX_NODE, value: 0..MAX_VALUE) {
-    require votes[node] == 0
-    votes = votes | { node: value + 1 }
+    require votes[node] == 0;
+    votes = votes | { node: value + 1 };
 }
 
 // Decide when majority agrees
 action Decide(value: 0..MAX_VALUE) {
-    require decided == 0
-    require len({ n in 0..MAX_NODE if votes[n] == value + 1 }) > (MAX_NODE + 1) / 2
-    decided = value + 1
+    require decided == 0;
+    require len({ n in 0..MAX_NODE if votes[n] == value + 1 }) > (MAX_NODE + 1) / 2;
+    decided = value + 1;
 }
 
 // Stutter when decided
 action Done() {
-    require decided > 0
+    require decided > 0;
 }
 
 // Safety: At most one value can be decided

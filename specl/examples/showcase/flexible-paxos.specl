@@ -32,62 +32,62 @@ var decided: Dict[0..1, 0..1]
 var has_decided: Dict[0..1, Bool]
 
 init {
-    promised = {a: 0 for a in 0..2}
-    and accepted_bal = {a: 0 for a in 0..2}
-    and accepted_val = {a: 0 for a in 0..2}
-    and has_accepted = {a: false for a in 0..2}
-    and prop_phase = {p: 0 for p in 0..1}
-    and prop_val = {p: 0 for p in 0..1}
-    and prop_bal = {p: 0 for p in 0..1}
-    and decided = {p: 0 for p in 0..1}
-    and has_decided = {p: false for p in 0..1}
+    promised = {a: 0 for a in 0..2};
+    accepted_bal = {a: 0 for a in 0..2};
+    accepted_val = {a: 0 for a in 0..2};
+    has_accepted = {a: false for a in 0..2};
+    prop_phase = {p: 0 for p in 0..1};
+    prop_val = {p: 0 for p in 0..1};
+    prop_bal = {p: 0 for p in 0..1};
+    decided = {p: 0 for p in 0..1};
+    has_decided = {p: false for p in 0..1};
 }
 
 // Proposer 0 picks odd ballot, proposer 1 picks even
 action Prepare(p: 0..1, b: 1..MaxBal) {
-    require prop_phase[p] == 0
-    require b > prop_bal[p]
+    require prop_phase[p] == 0;
+    require b > prop_bal[p];
     // Proposer 0: odd ballots. Proposer 1: even ballots.
-    require (p == 0 and b % 2 == 1) or (p == 1 and b % 2 == 0)
-    prop_phase = prop_phase | {p: 1}
-    and prop_bal = prop_bal | {p: b}
+    require (p == 0 and b % 2 == 1) or (p == 1 and b % 2 == 0);
+    prop_phase = prop_phase | {p: 1};
+    prop_bal = prop_bal | {p: b};
 }
 
 // Acceptor a responds to prepare (promises not to accept lower ballots)
 action Promise(a: 0..2, p: 0..1) {
-    require prop_phase[p] == 1
-    require prop_bal[p] > promised[a]
-    promised = promised | {a: prop_bal[p]}
+    require prop_phase[p] == 1;
+    require prop_bal[p] > promised[a];
+    promised = promised | {a: prop_bal[p]};
 }
 
 // Phase 1 done: Q1=1, only need one acceptor to respond.
 // Adopt highest accepted value from responder if any.
 action Phase1Done(p: 0..1, a: 0..2) {
-    require prop_phase[p] == 1
-    require promised[a] == prop_bal[p]
+    require prop_phase[p] == 1;
+    require promised[a] == prop_bal[p];
     prop_val = prop_val | {p:
         if has_accepted[a] then accepted_val[a] else p
-    }
-    and prop_phase = prop_phase | {p: 2}
+    };
+    prop_phase = prop_phase | {p: 2};
 }
 
 // Acceptor a accepts proposer p's value (Phase 2)
 action Accept(a: 0..2, p: 0..1) {
-    require prop_phase[p] == 2
-    require promised[a] <= prop_bal[p]
-    accepted_bal = accepted_bal | {a: prop_bal[p]}
-    and accepted_val = accepted_val | {a: prop_val[p]}
-    and has_accepted = has_accepted | {a: true}
-    and promised = promised | {a: prop_bal[p]}
+    require prop_phase[p] == 2;
+    require promised[a] <= prop_bal[p];
+    accepted_bal = accepted_bal | {a: prop_bal[p]};
+    accepted_val = accepted_val | {a: prop_val[p]};
+    has_accepted = has_accepted | {a: true};
+    promised = promised | {a: prop_bal[p]};
 }
 
 // Phase 2 done: Q2=3, need ALL 3 acceptors to accept at this ballot.
 action Decide(p: 0..1) {
-    require prop_phase[p] == 2
-    require all a in 0..2: accepted_bal[a] == prop_bal[p]
-    decided = decided | {p: prop_val[p]}
-    and has_decided = has_decided | {p: true}
-    and prop_phase = prop_phase | {p: 3}
+    require prop_phase[p] == 2;
+    require all a in 0..2: accepted_bal[a] == prop_bal[p];
+    decided = decided | {p: prop_val[p]};
+    has_decided = has_decided | {p: true};
+    prop_phase = prop_phase | {p: 3};
 }
 
 // Agreement: all decided values are the same

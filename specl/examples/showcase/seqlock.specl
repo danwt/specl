@@ -35,82 +35,82 @@ var reader_a: Dict[0..N, 0..2]
 var reader_b: Dict[0..N, 0..2]
 
 init {
-    seq = 0
-    and data_a = 0
-    and data_b = 0
-    and writer_pc = 0
-    and reader_pc = {r: 0 for r in 0..N}
-    and reader_seq_before = {r: 0 for r in 0..N}
-    and reader_seq_after = {r: 0 for r in 0..N}
-    and reader_a = {r: 0 for r in 0..N}
-    and reader_b = {r: 0 for r in 0..N}
+    seq = 0;
+    data_a = 0;
+    data_b = 0;
+    writer_pc = 0;
+    reader_pc = {r: 0 for r in 0..N};
+    reader_seq_before = {r: 0 for r in 0..N};
+    reader_seq_after = {r: 0 for r in 0..N};
+    reader_a = {r: 0 for r in 0..N};
+    reader_b = {r: 0 for r in 0..N};
 }
 
 // Writer begins: increment seq (odd), write first field
 action WriterBegin(v: 0..2) {
-    require writer_pc == 0
-    require seq < 3
-    seq = seq + 1
-    and data_a = v
-    and writer_pc = 1
+    require writer_pc == 0;
+    require seq < 3;
+    seq = seq + 1;
+    data_a = v;
+    writer_pc = 1;
 }
 
 // Writer writes second field (data now consistent but seq still odd)
 action WriterWriteB() {
-    require writer_pc == 1
-    data_b = data_a
-    and writer_pc = 2
+    require writer_pc == 1;
+    data_b = data_a;
+    writer_pc = 2;
 }
 
 // Writer ends: increment seq (even again)
 action WriterEnd() {
-    require writer_pc == 2
-    seq = seq + 1
-    and writer_pc = 0
+    require writer_pc == 2;
+    seq = seq + 1;
+    writer_pc = 0;
 }
 
 // Reader samples seq
 action ReaderSampleSeq(r: 0..N) {
-    require reader_pc[r] == 0
-    reader_seq_before = reader_seq_before | {r: seq}
-    and reader_pc = reader_pc | {r: 1}
+    require reader_pc[r] == 0;
+    reader_seq_before = reader_seq_before | {r: seq};
+    reader_pc = reader_pc | {r: 1};
 }
 
 // Reader reads field a
 action ReaderReadA(r: 0..N) {
-    require reader_pc[r] == 1
-    reader_a = reader_a | {r: data_a}
-    and reader_pc = reader_pc | {r: 2}
+    require reader_pc[r] == 1;
+    reader_a = reader_a | {r: data_a};
+    reader_pc = reader_pc | {r: 2};
 }
 
 // Reader reads field b
 action ReaderReadB(r: 0..N) {
-    require reader_pc[r] == 2
-    reader_b = reader_b | {r: data_b}
-    and reader_pc = reader_pc | {r: 3}
+    require reader_pc[r] == 2;
+    reader_b = reader_b | {r: data_b};
+    reader_pc = reader_pc | {r: 3};
 }
 
 // Reader samples seq again
 action ReaderSampleSeqAfter(r: 0..N) {
-    require reader_pc[r] == 3
-    reader_seq_after = reader_seq_after | {r: seq}
-    and reader_pc = reader_pc | {r: 4}
+    require reader_pc[r] == 3;
+    reader_seq_after = reader_seq_after | {r: seq};
+    reader_pc = reader_pc | {r: 4};
 }
 
 // Reader validates: seq unchanged and even -> success, go idle
 action ReaderValidate(r: 0..N) {
-    require reader_pc[r] == 4
-    require reader_seq_before[r] == reader_seq_after[r]
-    require reader_seq_before[r] % 2 == 0
-    reader_pc = reader_pc | {r: 0}
+    require reader_pc[r] == 4;
+    require reader_seq_before[r] == reader_seq_after[r];
+    require reader_seq_before[r] % 2 == 0;
+    reader_pc = reader_pc | {r: 0};
 }
 
 // Reader retries: seq changed or was odd
 action ReaderRetry(r: 0..N) {
-    require reader_pc[r] == 4
+    require reader_pc[r] == 4;
     require reader_seq_before[r] != reader_seq_after[r]
         or reader_seq_before[r] % 2 == 1
-    reader_pc = reader_pc | {r: 0}
+    reader_pc = reader_pc | {r: 0};
 }
 
 // No torn reads: if validation succeeds, both fields must match

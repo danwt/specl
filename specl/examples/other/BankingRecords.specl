@@ -13,27 +13,27 @@ var aliceFrozen: Bool
 var bobFrozen: Bool
 
 init {
-    aliceBalance = 50 and bobBalance = 50
-    and aliceFrozen = false and bobFrozen = false
+    aliceBalance = 50 and bobBalance = 50;
+    aliceFrozen = false and bobFrozen = false;
 }
 
 action Transfer(amount: 1..10) {
-    require not aliceFrozen
-    require not bobFrozen
-    require aliceBalance >= amount
+    require not aliceFrozen;
+    require not bobFrozen;
+    require aliceBalance >= amount;
 
-    aliceBalance = aliceBalance - amount
-    and bobBalance = bobBalance + amount
+    aliceBalance = aliceBalance - amount;
+    bobBalance = bobBalance + amount;
 }
 
 action FreezeAlice() {
-    require not aliceFrozen
-    aliceFrozen = true
+    require not aliceFrozen;
+    aliceFrozen = true;
 }
 
 action UnfreezeAlice() {
-    require aliceFrozen
-    aliceFrozen = false
+    require aliceFrozen;
+    aliceFrozen = false;
 }
 
 // Money is conserved

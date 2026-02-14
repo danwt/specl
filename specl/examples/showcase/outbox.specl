@@ -25,25 +25,25 @@ var ops: Dict[0..N, 0..MaxMsg]
 var total_ops: 0..MaxMsg
 
 init {
-    outbox_pending = 0
-    and published = 0
-    and ops = {s: 0 for s in 0..N}
-    and total_ops = 0
+    outbox_pending = 0;
+    published = 0;
+    ops = {s: 0 for s in 0..N};
+    total_ops = 0;
 }
 
 // Service performs operation and writes to outbox atomically
 action Operate(s: 0..N) {
-    require total_ops < MaxMsg
-    ops = ops | {s: ops[s] + 1}
-    and outbox_pending = outbox_pending + 1
-    and total_ops = total_ops + 1
+    require total_ops < MaxMsg;
+    ops = ops | {s: ops[s] + 1};
+    outbox_pending = outbox_pending + 1;
+    total_ops = total_ops + 1;
 }
 
 // Relay publishes one outbox entry
 action Relay() {
-    require outbox_pending > 0
-    outbox_pending = outbox_pending - 1
-    and published = published + 1
+    require outbox_pending > 0;
+    outbox_pending = outbox_pending - 1;
+    published = published + 1;
 }
 
 // Consistency: outbox_pending + published == total_ops

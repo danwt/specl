@@ -44,99 +44,99 @@ var instanceExpiry: Dict[Int, Int]
 func Majority() { (N + 1) / 2 + 1 }
 
 init {
-    globalTime = 0
-    and localClock = {c: 0 for c in 0..M}
-    and clientState = {c: 0 for c in 0..M}
-    and clientLocks = {c: {} for c in 0..M}
-    and acquireTime = {c: 0 for c in 0..M}
-    and nextInstance = {c: 0 for c in 0..M}
-    and instanceLock = {i: -1 for i in 0..N}
-    and instanceExpiry = {i: 0 for i in 0..N}
+    globalTime = 0;
+    localClock = {c: 0 for c in 0..M};
+    clientState = {c: 0 for c in 0..M};
+    clientLocks = {c: {} for c in 0..M};
+    acquireTime = {c: 0 for c in 0..M};
+    nextInstance = {c: 0 for c in 0..M};
+    instanceLock = {i: -1 for i in 0..N};
+    instanceExpiry = {i: 0 for i in 0..N};
 }
 
 // --- Time modeling ---
 
 // Global time advances by one tick
 action Tick() {
-    require globalTime < MaxTime
-    globalTime = globalTime + 1
+    require globalTime < MaxTime;
+    globalTime = globalTime + 1;
 }
 
 // Client c's local clock advances (catches up toward global time)
 // A client that never fires ClockAdvance is effectively paused
 action ClockAdvance(c: 0..M) {
-    require localClock[c] < globalTime
-    localClock = localClock | {c: localClock[c] + 1}
+    require localClock[c] < globalTime;
+    localClock = localClock | {c: localClock[c] + 1};
 }
 
 // --- Lock expiry ---
 
 // Instance i's lock expires (TTL exceeded in real/global time)
 action ExpireLock(i: 0..N) {
-    require instanceLock[i] != -1
-    require globalTime >= instanceExpiry[i]
-    instanceLock = instanceLock | {i: -1}
+    require instanceLock[i] != -1;
+    require globalTime >= instanceExpiry[i];
+    instanceLock = instanceLock | {i: -1};
 }
 
 // --- Client lock acquisition ---
 
 // Client c starts acquiring the lock
 action StartAcquire(c: 0..M) {
-    require clientState[c] == 0
-    clientState = clientState | {c: 1}
-    and acquireTime = acquireTime | {c: localClock[c]}
-    and clientLocks = clientLocks | {c: {}}
-    and nextInstance = nextInstance | {c: 0}
+    require clientState[c] == 0;
+    clientState = clientState | {c: 1};
+    acquireTime = acquireTime | {c: localClock[c]};
+    clientLocks = clientLocks | {c: {}};
+    nextInstance = nextInstance | {c: 0};
 }
 
 // Client c successfully locks instance i (SET NX equivalent)
 action TryLock(c: 0..M, i: 0..N) {
-    require clientState[c] == 1
-    require nextInstance[c] == i
-    require instanceLock[i] == -1
-    instanceLock = instanceLock | {i: c}
-    and instanceExpiry = instanceExpiry | {i: globalTime + TTL}
-    and clientLocks = clientLocks | {c: clientLocks[c] union {i}}
-    and nextInstance = nextInstance | {c: i + 1}
+    require clientState[c] == 1;
+    require nextInstance[c] == i;
+    require instanceLock[i] == -1;
+    instanceLock = instanceLock | {i: c};
+    instanceExpiry = instanceExpiry | {i: globalTime + TTL};
+    clientLocks = clientLocks | {c: clientLocks[c] union {i}};
+    nextInstance = nextInstance | {c: i + 1};
 }
 
 // Client c fails to lock instance i (already locked by another client)
 action FailLock(c: 0..M, i: 0..N) {
-    require clientState[c] == 1
-    require nextInstance[c] == i
-    require instanceLock[i] != -1
-    require instanceLock[i] != c
-    nextInstance = nextInstance | {c: i + 1}
+    require clientState[c] == 1;
+    require nextInstance[c] == i;
+    require instanceLock[i] != -1;
+    require instanceLock[i] != c;
+    nextInstance = nextInstance | {c: i + 1};
 }
 
 // Client c finishes acquisition: majority obtained and validity remaining
 // Validity check uses LOCAL clock (this is the source of the bug)
 action FinishAcquire(c: 0..M) {
-    require clientState[c] == 1
-    require nextInstance[c] > N
-    require len(clientLocks[c]) >= Majority()
-    require localClock[c] - acquireTime[c] < TTL
-    clientState = clientState | {c: 2}
+    require clientState[c] == 1;
+    require nextInstance[c] > N;
+    require len(clientLocks[c]) >= Majority();
+    require localClock[c] - acquireTime[c] < TTL;
+    clientState = clientState | {c: 2};
 }
 
 // Client c fails acquisition: unlock all instances, return to Idle
 action FailAcquire(c: 0..M) {
-    require clientState[c] == 1
-    require nextInstance[c] > N
+    require clientState[c] == 1;
+    require nextInstance[c] > N;
     require len(clientLocks[c]) < Majority()
         or localClock[c] - acquireTime[c] >= TTL
-    clientState = clientState | {c: 0}
-    and clientLocks = clientLocks | {c: {}}
-    and instanceLock = {i:
+    clientState = clientState | {c: 0};
+    clientLocks = clientLocks | {c: {}};
+    instanceLock = {i:
         if instanceLock[i] == c then -1 else instanceLock[i]
         for i in 0..N}
 }
 
 // Client c releases the lock (DEL on all instances if value matches)
 action ReleaseLock(c: 0..M) {
-    require clientState[c] == 2
-    clientState = clientState | {c: 3}
-    and instanceLock = {i:
+    require clientState[c] == 2;
+    clientState = clientState | {c: 3};
+    instanceLock = {i:
         if instanceLock[i] == c then -1 else instanceLock[i]
         for i in 0..N}
 }

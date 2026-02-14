@@ -30,84 +30,84 @@ var total_pushed: 0..MaxSize
 var total_taken: 0..MaxSize
 
 init {
-    top = 0
-    and bot = 0
-    and owner_pc = 0
-    and owner_snap = 0
-    and thief_pc = 0
-    and thief_snap = 0
-    and total_pushed = 0
-    and total_taken = 0
+    top = 0;
+    bot = 0;
+    owner_pc = 0;
+    owner_snap = 0;
+    thief_pc = 0;
+    thief_snap = 0;
+    total_pushed = 0;
+    total_taken = 0;
 }
 
 // Owner pushes an item (always succeeds, increments bottom)
 action Push() {
-    require owner_pc == 0
-    require bot < MaxSize
-    bot = bot + 1
-    and total_pushed = total_pushed + 1
+    require owner_pc == 0;
+    require bot < MaxSize;
+    bot = bot + 1;
+    total_pushed = total_pushed + 1;
 }
 
 // Owner begins pop: decrement bottom, read top
 action BeginPop() {
-    require owner_pc == 0
-    require bot > top
-    owner_pc = 1
-    and bot = bot - 1
-    and owner_snap = top
+    require owner_pc == 0;
+    require bot > top;
+    owner_pc = 1;
+    bot = bot - 1;
+    owner_snap = top;
 }
 
 // Owner completes pop: bottom > top, no race
 action CompletePop() {
-    require owner_pc == 1
-    require bot > owner_snap
-    owner_pc = 0
-    and total_taken = total_taken + 1
+    require owner_pc == 1;
+    require bot > owner_snap;
+    owner_pc = 0;
+    total_taken = total_taken + 1;
 }
 
 // Owner pop with race: bot == top (one item case), CAS on top
 action PopCAS() {
-    require owner_pc == 1
-    require bot == owner_snap
-    require top == owner_snap
-    top = top + 1
-    and bot = top + 1
-    and owner_pc = 0
-    and total_taken = total_taken + 1
+    require owner_pc == 1;
+    require bot == owner_snap;
+    require top == owner_snap;
+    top = top + 1;
+    bot = top + 1;
+    owner_pc = 0;
+    total_taken = total_taken + 1;
 }
 
 // Owner pop fails: thief already took the last item
 action PopFail() {
-    require owner_pc == 1
-    require bot == owner_snap
-    require top != owner_snap
-    bot = top
-    and owner_pc = 0
+    require owner_pc == 1;
+    require bot == owner_snap;
+    require top != owner_snap;
+    bot = top;
+    owner_pc = 0;
 }
 
 // Thief begins steal: read top
 action BeginSteal() {
-    require thief_pc == 0
-    require bot > top
-    thief_pc = 1
-    and thief_snap = top
+    require thief_pc == 0;
+    require bot > top;
+    thief_pc = 1;
+    thief_snap = top;
 }
 
 // Thief completes steal: CAS top succeeds
 action CompleteSteal() {
-    require thief_pc == 1
-    require top == thief_snap
-    require bot > thief_snap
-    top = top + 1
-    and thief_pc = 0
-    and total_taken = total_taken + 1
+    require thief_pc == 1;
+    require top == thief_snap;
+    require bot > thief_snap;
+    top = top + 1;
+    thief_pc = 0;
+    total_taken = total_taken + 1;
 }
 
 // Thief steal fails: someone else moved top
 action StealFail() {
-    require thief_pc == 1
-    require top != thief_snap
-    thief_pc = 0
+    require thief_pc == 1;
+    require top != thief_snap;
+    thief_pc = 0;
 }
 
 // Deque bounds are consistent

@@ -23,33 +23,33 @@ var disable_count: Dict[0..N, 0..MaxOps]
 var ops: 0..MaxOps
 
 init {
-    enable_count = {r: 0 for r in 0..N}
-    and disable_count = {r: 0 for r in 0..N}
-    and ops = 0
+    enable_count = {r: 0 for r in 0..N};
+    disable_count = {r: 0 for r in 0..N};
+    ops = 0;
 }
 
 // Enable at replica r
 action Enable(r: 0..N) {
-    require ops < MaxOps
-    ops = ops + 1
-    and enable_count = enable_count | {r: enable_count[r] + 1}
+    require ops < MaxOps;
+    ops = ops + 1;
+    enable_count = enable_count | {r: enable_count[r] + 1};
 }
 
 // Disable at replica r
 action Disable(r: 0..N) {
-    require ops < MaxOps
-    ops = ops + 1
-    and disable_count = disable_count | {r: disable_count[r] + 1}
+    require ops < MaxOps;
+    ops = ops + 1;
+    disable_count = disable_count | {r: disable_count[r] + 1};
 }
 
 // Merge: take max of enable and disable counts
 action Merge(src: 0..N, dst: 0..N) {
-    require src != dst
+    require src != dst;
     enable_count = enable_count | {dst:
         if enable_count[src] > enable_count[dst] then enable_count[src]
         else enable_count[dst]
-    }
-    and disable_count = disable_count | {dst:
+    };
+    disable_count = disable_count | {dst:
         if disable_count[src] > disable_count[dst] then disable_count[src]
         else disable_count[dst]
     }

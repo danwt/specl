@@ -22,52 +22,52 @@ var leader: Dict[0..N, 0..N]
 var decided: Dict[0..N, Bool]
 
 init {
-    msgs = {i: {} for i in 0..N}
-    and started = {i: false for i in 0..N}
-    and leader = {i: 0 for i in 0..N}
-    and decided = {i: false for i in 0..N}
+    msgs = {i: {} for i in 0..N};
+    started = {i: false for i in 0..N};
+    leader = {i: 0 for i in 0..N};
+    decided = {i: false for i in 0..N};
 }
 
 // Process i initiates by sending its own ID to the next process
 action Start(i: 0..N, next: 0..N) {
-    require started[i] == false
-    require (i < N and next == i + 1) or (i == N and next == 0)
-    started = started | {i: true}
-    and msgs = msgs | {i: msgs[i] union {i}}
+    require started[i] == false;
+    require (i < N and next == i + 1) or (i == N and next == 0);
+    started = started | {i: true};
+    msgs = msgs | {i: msgs[i] union {i}};
 }
 
 // Process i receives ID m from its predecessor and forwards if m > i
 action Forward(i: 0..N, prev: 0..N, next: 0..N, m: 0..N) {
-    require started[i] == true
-    require decided[i] == false
-    require (i > 0 and prev == i - 1) or (i == 0 and prev == N)
-    require (i < N and next == i + 1) or (i == N and next == 0)
-    require m in msgs[prev]
-    require m != i
-    require m > i
-    msgs = msgs | {prev: msgs[prev] diff {m}, i: msgs[i] union {m}}
+    require started[i] == true;
+    require decided[i] == false;
+    require (i > 0 and prev == i - 1) or (i == 0 and prev == N);
+    require (i < N and next == i + 1) or (i == N and next == 0);
+    require m in msgs[prev];
+    require m != i;
+    require m > i;
+    msgs = msgs | {prev: msgs[prev] diff {m}, i: msgs[i] union {m}};
 }
 
 // Process i receives ID m < i: absorb (drop the message)
 action Absorb(i: 0..N, prev: 0..N, m: 0..N) {
-    require started[i] == true
-    require decided[i] == false
-    require (i > 0 and prev == i - 1) or (i == 0 and prev == N)
-    require m in msgs[prev]
-    require m != i
-    require m < i
-    msgs = msgs | {prev: msgs[prev] diff {m}}
+    require started[i] == true;
+    require decided[i] == false;
+    require (i > 0 and prev == i - 1) or (i == 0 and prev == N);
+    require m in msgs[prev];
+    require m != i;
+    require m < i;
+    msgs = msgs | {prev: msgs[prev] diff {m}};
 }
 
 // Process i receives its own ID back — it's the leader
 action Elect(i: 0..N, prev: 0..N) {
-    require started[i] == true
-    require decided[i] == false
-    require (i > 0 and prev == i - 1) or (i == 0 and prev == N)
-    require i in msgs[prev]
-    decided = decided | {i: true}
-    and leader = leader | {i: i}
-    and msgs = msgs | {prev: msgs[prev] diff {i}}
+    require started[i] == true;
+    require decided[i] == false;
+    require (i > 0 and prev == i - 1) or (i == 0 and prev == N);
+    require i in msgs[prev];
+    decided = decided | {i: true};
+    leader = leader | {i: i};
+    msgs = msgs | {prev: msgs[prev] diff {i}};
 }
 
 // At most one process declares itself leader

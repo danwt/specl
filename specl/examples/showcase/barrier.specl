@@ -20,40 +20,40 @@ var pc: Dict[0..N, 0..2]
 var local_sense: Dict[0..N, Bool]
 
 init {
-    count = 0
-    and sense = false
-    and pc = {i: 0 for i in 0..N}
-    and local_sense = {i: true for i in 0..N}
+    count = 0;
+    sense = false;
+    pc = {i: 0 for i in 0..N};
+    local_sense = {i: true for i in 0..N};
 }
 
 // Process p arrives at barrier
 action Arrive(p: 0..N) {
-    require pc[p] == 0
-    count = count + 1
-    and pc = pc | {p: 1}
+    require pc[p] == 0;
+    count = count + 1;
+    pc = pc | {p: 1};
 }
 
 // Last process to arrive flips the sense (releases everyone)
 action Release(p: 0..N) {
-    require pc[p] == 1
-    require count == N + 1
-    sense = local_sense[p]
-    and count = 0
-    and pc = pc | {p: 2}
+    require pc[p] == 1;
+    require count == N + 1;
+    sense = local_sense[p];
+    count = 0;
+    pc = pc | {p: 2};
 }
 
 // Process p passes the barrier (sense matches local_sense)
 action Pass(p: 0..N) {
-    require pc[p] == 1
-    require sense == local_sense[p]
-    pc = pc | {p: 2}
+    require pc[p] == 1;
+    require sense == local_sense[p];
+    pc = pc | {p: 2};
 }
 
 // Process p goes back to working (starts next phase)
 action Reset(p: 0..N) {
-    require pc[p] == 2
-    pc = pc | {p: 0}
-    and local_sense = local_sense | {p: not local_sense[p]}
+    require pc[p] == 2;
+    pc = pc | {p: 0};
+    local_sense = local_sense | {p: not local_sense[p]};
 }
 
 // No process passes barrier before all have arrived:

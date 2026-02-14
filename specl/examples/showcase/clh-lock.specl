@@ -27,33 +27,33 @@ var next_pos: 0..10
 var released: 0..10
 
 init {
-    pc = {t: 0 for t in 0..N}
-    and queue_pos = {t: 0 for t in 0..N}
-    and next_pos = 0
-    and released = 0
+    pc = {t: 0 for t in 0..N};
+    queue_pos = {t: 0 for t in 0..N};
+    next_pos = 0;
+    released = 0;
 }
 
 // Thread t enqueues (takes a queue position)
 action Enqueue(t: 0..N) {
-    require pc[t] == 0
-    require next_pos < 10
-    queue_pos = queue_pos | {t: next_pos + 1}
-    and next_pos = next_pos + 1
-    and pc = pc | {t: 1}
+    require pc[t] == 0;
+    require next_pos < 10;
+    queue_pos = queue_pos | {t: next_pos + 1};
+    next_pos = next_pos + 1;
+    pc = pc | {t: 1};
 }
 
 // Thread t enters CS (predecessor released or first in queue)
 action Enter(t: 0..N) {
-    require pc[t] == 1
-    require queue_pos[t] == released + 1
-    pc = pc | {t: 2}
+    require pc[t] == 1;
+    require queue_pos[t] == released + 1;
+    pc = pc | {t: 2};
 }
 
 // Thread t exits CS and releases (successor can now enter)
 action Exit(t: 0..N) {
-    require pc[t] == 2
-    released = released + 1
-    and pc = pc | {t: 0}
+    require pc[t] == 2;
+    released = released + 1;
+    pc = pc | {t: 0};
 }
 
 // Mutual exclusion

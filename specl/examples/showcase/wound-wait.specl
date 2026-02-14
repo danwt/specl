@@ -21,53 +21,53 @@ var lock_holder: Dict[0..1, 0..N]
 var pc: Dict[0..N, 0..4]
 
 init {
-    lock_held = {l: false for l in 0..1}
-    and lock_holder = {l: 0 for l in 0..1}
-    and pc = {t: 0 for t in 0..N}
+    lock_held = {l: false for l in 0..1};
+    lock_holder = {l: 0 for l in 0..1};
+    pc = {t: 0 for t in 0..N};
 }
 
 // Transaction acquires lock 0 (first lock)
 action AcquireLock0(t: 0..N) {
-    require pc[t] == 0
-    require lock_held[0] == false
-    lock_held = lock_held | {0: true}
-    and lock_holder = lock_holder | {0: t}
-    and pc = pc | {t: 1}
+    require pc[t] == 0;
+    require lock_held[0] == false;
+    lock_held = lock_held | {0: true};
+    lock_holder = lock_holder | {0: t};
+    pc = pc | {t: 1};
 }
 
 // Transaction acquires lock 1 (second lock) — free
 action AcquireLock1(t: 0..N) {
-    require pc[t] == 1
-    require lock_held[1] == false
-    lock_held = lock_held | {1: true}
-    and lock_holder = lock_holder | {1: t}
-    and pc = pc | {t: 2}
+    require pc[t] == 1;
+    require lock_held[1] == false;
+    lock_held = lock_held | {1: true};
+    lock_holder = lock_holder | {1: t};
+    pc = pc | {t: 2};
 }
 
 // Wound: older txn t needs lock 1, younger txn holder is aborted
 action WoundForLock1(t: 0..N, victim: 0..N) {
-    require pc[t] == 1
-    require lock_held[1] == true
-    require lock_holder[1] == victim
-    require t < victim
-    lock_holder = lock_holder | {1: t}
-    and pc = pc | {t: 2, victim: 4}
+    require pc[t] == 1;
+    require lock_held[1] == true;
+    require lock_holder[1] == victim;
+    require t < victim;
+    lock_holder = lock_holder | {1: t};
+    pc = pc | {t: 2, victim: 4};
 }
 
 // Transaction commits — releases both locks
 action Commit(t: 0..N) {
-    require pc[t] == 2
+    require pc[t] == 2;
     lock_held = lock_held | {0: if lock_holder[0] == t then false else lock_held[0],
-                              1: if lock_holder[1] == t then false else lock_held[1]}
-    and pc = pc | {t: 3}
+                              1: if lock_holder[1] == t then false else lock_held[1]};
+    pc = pc | {t: 3};
 }
 
 // Aborted transaction releases any held locks and restarts
 action Restart(t: 0..N) {
-    require pc[t] == 4
+    require pc[t] == 4;
     lock_held = lock_held | {0: if lock_holder[0] == t then false else lock_held[0],
-                              1: if lock_holder[1] == t then false else lock_held[1]}
-    and pc = pc | {t: 0}
+                              1: if lock_holder[1] == t then false else lock_held[1]};
+    pc = pc | {t: 0};
 }
 
 // Mutual exclusion: no two txns both in has_both state

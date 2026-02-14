@@ -27,50 +27,50 @@ var msg: Dict[0..N, 0..3]
 var relayed: Dict[0..N, Bool]
 
 init {
-    crashed = {p: 0 for p in 0..N}
-    and crash_count = 0
-    and msg = {p: 0 for p in 0..N}
-    and relayed = {p: false for p in 0..N}
+    crashed = {p: 0 for p in 0..N};
+    crash_count = 0;
+    msg = {p: 0 for p in 0..N};
+    relayed = {p: false for p in 0..N};
 }
 
 // Sender broadcasts
 action SenderBroadcast() {
-    require crashed[0] == 0
-    require msg[0] == 0
-    msg = msg | {0: 3}
-    and relayed = relayed | {0: true}
+    require crashed[0] == 0;
+    require msg[0] == 0;
+    msg = msg | {0: 3};
+    relayed = relayed | {0: true};
 }
 
 // Process receives from sender
 action ReceiveFromSender(p: 1..N) {
-    require crashed[p] == 0
-    require msg[p] == 0
-    require msg[0] == 3
-    msg = msg | {p: 1}
+    require crashed[p] == 0;
+    require msg[p] == 0;
+    require msg[0] == 3;
+    msg = msg | {p: 1};
 }
 
 // Process relays (echoes) the message
 action Relay(p: 1..N) {
-    require crashed[p] == 0
-    require msg[p] == 1
-    msg = msg | {p: 2}
-    and relayed = relayed | {p: true}
+    require crashed[p] == 0;
+    require msg[p] == 1;
+    msg = msg | {p: 2};
+    relayed = relayed | {p: true};
 }
 
 // Process delivers after seeing a relay
 action Deliver(p: 1..N) {
-    require crashed[p] == 0
-    require msg[p] == 2
-    require any q in 0..N: relayed[q] == true and crashed[q] == 0
-    msg = msg | {p: 3}
+    require crashed[p] == 0;
+    require msg[p] == 2;
+    require any q in 0..N: relayed[q] == true and crashed[q] == 0;
+    msg = msg | {p: 3};
 }
 
 // Process crashes
 action Crash(p: 0..N) {
-    require crashed[p] == 0
-    require crash_count < F
-    crashed = crashed | {p: 1}
-    and crash_count = crash_count + 1
+    require crashed[p] == 0;
+    require crash_count < F;
+    crashed = crashed | {p: 1};
+    crash_count = crash_count + 1;
 }
 
 // Agreement: if any correct process delivers, all correct processes

@@ -20,33 +20,33 @@ var pc: Dict[0..N, 0..2]
 var ticket: Dict[0..N, 0..10]
 
 init {
-    next_ticket = 0
-    and serving = 0
-    and pc = {t: 0 for t in 0..N}
-    and ticket = {t: 0 for t in 0..N}
+    next_ticket = 0;
+    serving = 0;
+    pc = {t: 0 for t in 0..N};
+    ticket = {t: 0 for t in 0..N};
 }
 
 // Thread t takes a ticket (atomic fetch-and-increment)
 action TakeTicket(t: 0..N) {
-    require pc[t] == 0
-    require next_ticket < 10
-    ticket = ticket | {t: next_ticket}
-    and next_ticket = next_ticket + 1
-    and pc = pc | {t: 1}
+    require pc[t] == 0;
+    require next_ticket < 10;
+    ticket = ticket | {t: next_ticket};
+    next_ticket = next_ticket + 1;
+    pc = pc | {t: 1};
 }
 
 // Thread t enters CS when its ticket matches serving
 action Enter(t: 0..N) {
-    require pc[t] == 1
-    require ticket[t] == serving
-    pc = pc | {t: 2}
+    require pc[t] == 1;
+    require ticket[t] == serving;
+    pc = pc | {t: 2};
 }
 
 // Thread t exits CS and increments serving
 action Exit(t: 0..N) {
-    require pc[t] == 2
-    serving = serving + 1
-    and pc = pc | {t: 0}
+    require pc[t] == 2;
+    serving = serving + 1;
+    pc = pc | {t: 0};
 }
 
 // Mutual exclusion

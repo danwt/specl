@@ -22,65 +22,65 @@ var primary_val: 0..MaxVal
 var synced: Bool
 
 init {
-    val = {n: 0 for n in 0..N}
-    and role = {n: if n == 0 then 0 else 1 for n in 0..N}
-    and pending = 0
-    and primary_val = 0
-    and synced = true
+    val = {n: 0 for n in 0..N};
+    role = {n: if n == 0 then 0 else 1 for n in 0..N};
+    pending = 0;
+    primary_val = 0;
+    synced = true;
 }
 
 // Primary p writes a value (only when synced)
 action Write(p: 0..N, v: 1..MaxVal) {
-    require role[p] == 0
-    require synced == true
-    require pending == 0
-    val = val | {p: v}
-    and primary_val = v
-    and pending = len({b in 0..N if role[b] == 1})
+    require role[p] == 0;
+    require synced == true;
+    require pending == 0;
+    val = val | {p: v};
+    primary_val = v;
+    pending = len({b in 0..N if role[b] == 1});
 }
 
 // Backup receives the write
 action BackupAck(b: 0..N) {
-    require role[b] == 1
-    require pending > 0
-    require val[b] != primary_val
-    val = val | {b: primary_val}
-    and pending = pending - 1
+    require role[b] == 1;
+    require pending > 0;
+    require val[b] != primary_val;
+    val = val | {b: primary_val};
+    pending = pending - 1;
 }
 
 // Primary p fails
 action PrimaryFail(p: 0..N) {
-    require role[p] == 0
-    require pending == 0
-    role = role | {p: 2}
-    and synced = false
+    require role[p] == 0;
+    require pending == 0;
+    role = role | {p: 2};
+    synced = false;
 }
 
 // Promote lowest-id live backup to primary
 action Promote(b: 0..N) {
-    require not (any p in 0..N: role[p] == 0)
-    require role[b] == 1
-    require all j in 0..N: (j < b) implies role[j] != 1
-    role = role | {b: 0}
-    and primary_val = val[b]
-    and pending = len({x in 0..N if role[x] == 1 and x != b})
+    require not (any p in 0..N: role[p] == 0);
+    require role[b] == 1;
+    require all j in 0..N: (j < b) implies role[j] != 1;
+    role = role | {b: 0};
+    primary_val = val[b];
+    pending = len({x in 0..N if role[x] == 1 and x != b});
 }
 
 // After promotion, sync backups to new primary's value
 action PostFailoverSync(b: 0..N) {
-    require synced == false
-    require role[b] == 1
-    require pending > 0
-    require val[b] != primary_val
-    val = val | {b: primary_val}
-    and pending = pending - 1
+    require synced == false;
+    require role[b] == 1;
+    require pending > 0;
+    require val[b] != primary_val;
+    val = val | {b: primary_val};
+    pending = pending - 1;
 }
 
 // Sync complete
 action SyncComplete() {
-    require synced == false
-    require pending == 0
-    synced = true
+    require synced == false;
+    require pending == 0;
+    synced = true;
 }
 
 // When synced and no pending, all live nodes agree

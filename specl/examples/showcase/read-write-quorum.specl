@@ -16,27 +16,27 @@ var ver: Dict[0..N, 0..MaxVer]
 var latest_written: 0..MaxVer
 
 init {
-    val = {r: 0 for r in 0..N}
-    and ver = {r: 0 for r in 0..N}
-    and latest_written = 0
+    val = {r: 0 for r in 0..N};
+    ver = {r: 0 for r in 0..N};
+    latest_written = 0;
 }
 
 // Write to a majority quorum (N/2 + 1 replicas)
 // Simplified: write to replicas 0..N/2 (first majority)
 action Write(v: 1..MaxVer) {
-    require v > latest_written
-    require v <= MaxVer
-    val = {r: if r * 2 <= N then v else val[r] for r in 0..N}
-    and ver = {r: if r * 2 <= N then v else ver[r] for r in 0..N}
-    and latest_written = v
+    require v > latest_written;
+    require v <= MaxVer;
+    val = {r: if r * 2 <= N then v else val[r] for r in 0..N};
+    ver = {r: if r * 2 <= N then v else ver[r] for r in 0..N};
+    latest_written = v;
 }
 
 // Sync: any replica catches up from another with higher version
 action Sync(src: 0..N, dst: 0..N) {
-    require src != dst
-    require ver[src] > ver[dst]
-    val = val | {dst: val[src]}
-    and ver = ver | {dst: ver[src]}
+    require src != dst;
+    require ver[src] > ver[dst];
+    val = val | {dst: val[src]};
+    ver = ver | {dst: ver[src]};
 }
 
 // Any read quorum (majority) contains at least one up-to-date replica.

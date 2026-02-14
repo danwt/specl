@@ -25,67 +25,67 @@ var waiting: 0..W
 var cust_pc: Dict[0..N, 0..4]
 
 init {
-    barber = 0
-    and in_chair = 0
-    and chair_occupied = false
-    and waiting = 0
-    and cust_pc = {c: 0 for c in 0..N}
+    barber = 0;
+    in_chair = 0;
+    chair_occupied = false;
+    waiting = 0;
+    cust_pc = {c: 0 for c in 0..N};
 }
 
 // Customer arrives and barber is sleeping: wake barber, sit in chair
 action ArriveWakeBarber(c: 0..N) {
-    require cust_pc[c] == 0
-    require barber == 0
-    require chair_occupied == false
-    cust_pc = cust_pc | {c: 2}
-    and in_chair = c
-    and chair_occupied = true
-    and barber = 1
+    require cust_pc[c] == 0;
+    require barber == 0;
+    require chair_occupied == false;
+    cust_pc = cust_pc | {c: 2};
+    in_chair = c;
+    chair_occupied = true;
+    barber = 1;
 }
 
 // Customer arrives and barber is busy: sit in waiting room
 action ArriveWait(c: 0..N) {
-    require cust_pc[c] == 0
-    require barber == 1
-    require waiting < W
-    cust_pc = cust_pc | {c: 1}
-    and waiting = waiting + 1
+    require cust_pc[c] == 0;
+    require barber == 1;
+    require waiting < W;
+    cust_pc = cust_pc | {c: 1};
+    waiting = waiting + 1;
 }
 
 // Customer arrives but waiting room is full: leave
 action ArriveLeave(c: 0..N) {
-    require cust_pc[c] == 0
-    require barber == 1
-    require waiting == W
-    cust_pc = cust_pc | {c: 4}
+    require cust_pc[c] == 0;
+    require barber == 1;
+    require waiting == W;
+    cust_pc = cust_pc | {c: 4};
 }
 
 // Barber finishes cutting: customer done
 action FinishCut() {
-    require barber == 1
-    require chair_occupied == true
-    cust_pc = cust_pc | {in_chair: 3}
-    and chair_occupied = false
+    require barber == 1;
+    require chair_occupied == true;
+    cust_pc = cust_pc | {in_chair: 3};
+    chair_occupied = false;
 }
 
 // Next waiting customer moves to chair
 action NextCustomer(c: 0..N) {
-    require barber == 1
-    require chair_occupied == false
-    require waiting > 0
-    require cust_pc[c] == 1
-    cust_pc = cust_pc | {c: 2}
-    and in_chair = c
-    and chair_occupied = true
-    and waiting = waiting - 1
+    require barber == 1;
+    require chair_occupied == false;
+    require waiting > 0;
+    require cust_pc[c] == 1;
+    cust_pc = cust_pc | {c: 2};
+    in_chair = c;
+    chair_occupied = true;
+    waiting = waiting - 1;
 }
 
 // Barber goes to sleep when no one is waiting and chair empty
 action BarberSleep() {
-    require barber == 1
-    require chair_occupied == false
-    require waiting == 0
-    barber = 0
+    require barber == 1;
+    require chair_occupied == false;
+    require waiting == 0;
+    barber = 0;
 }
 
 // At most one customer in the barber chair

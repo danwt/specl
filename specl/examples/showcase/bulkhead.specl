@@ -20,44 +20,44 @@ var usage: Dict[0..1, 0..C]
 var pc: Dict[0..N, 0..3]
 
 init {
-    usage = {p: 0 for p in 0..1}
-    and pc = {w: 0 for w in 0..N}
+    usage = {p: 0 for p in 0..1};
+    pc = {w: 0 for w in 0..N};
 }
 
 // Worker acquires resource from pool 0
 action AcquirePool0(w: 0..N) {
-    require pc[w] == 0
-    require usage[0] < C
-    usage = usage | {0: usage[0] + 1}
-    and pc = pc | {w: 1}
+    require pc[w] == 0;
+    require usage[0] < C;
+    usage = usage | {0: usage[0] + 1};
+    pc = pc | {w: 1};
 }
 
 // Worker acquires resource from pool 1
 action AcquirePool1(w: 0..N) {
-    require pc[w] == 0
-    require usage[1] < C
-    usage = usage | {1: usage[1] + 1}
-    and pc = pc | {w: 2}
+    require pc[w] == 0;
+    require usage[1] < C;
+    usage = usage | {1: usage[1] + 1};
+    pc = pc | {w: 2};
 }
 
 // Worker releases pool 0
 action ReleasePool0(w: 0..N) {
-    require pc[w] == 1
-    usage = usage | {0: usage[0] - 1}
-    and pc = pc | {w: 3}
+    require pc[w] == 1;
+    usage = usage | {0: usage[0] - 1};
+    pc = pc | {w: 3};
 }
 
 // Worker releases pool 1
 action ReleasePool1(w: 0..N) {
-    require pc[w] == 2
-    usage = usage | {1: usage[1] - 1}
-    and pc = pc | {w: 3}
+    require pc[w] == 2;
+    usage = usage | {1: usage[1] - 1};
+    pc = pc | {w: 3};
 }
 
 // Worker restarts
 action Restart(w: 0..N) {
-    require pc[w] == 3
-    pc = pc | {w: 0}
+    require pc[w] == 3;
+    pc = pc | {w: 0};
 }
 
 // Pool isolation: each pool never exceeds capacity

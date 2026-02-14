@@ -39,70 +39,70 @@ var sys: 0..2
 var ops: 0..MaxOps
 
 init {
-    tx_pc = {t: 0 for t in 0..N}
-    and tx_val = {t: 0 for t in 0..N}
-    and log_entry = {t: false for t in 0..N}
-    and log_committed = {t: false for t in 0..N}
-    and data = 0
-    and last_committed_val = 0
-    and has_committed = false
-    and sys = 0
-    and ops = 0
+    tx_pc = {t: 0 for t in 0..N};
+    tx_val = {t: 0 for t in 0..N};
+    log_entry = {t: false for t in 0..N};
+    log_committed = {t: false for t in 0..N};
+    data = 0;
+    last_committed_val = 0;
+    has_committed = false;
+    sys = 0;
+    ops = 0;
 }
 
 // Transaction t writes to the log (WAL: log before data)
 action WriteLog(t: 0..N, v: 0..1) {
-    require sys == 0
-    require tx_pc[t] == 0
-    require ops < MaxOps
-    tx_pc = tx_pc | {t: 1}
-    and tx_val = tx_val | {t: v}
-    and log_entry = log_entry | {t: true}
-    and ops = ops + 1
+    require sys == 0;
+    require tx_pc[t] == 0;
+    require ops < MaxOps;
+    tx_pc = tx_pc | {t: 1};
+    tx_val = tx_val | {t: v};
+    log_entry = log_entry | {t: true};
+    ops = ops + 1;
 }
 
 // Transaction t writes to the data page
 action WriteData(t: 0..N) {
-    require sys == 0
-    require tx_pc[t] == 1
-    tx_pc = tx_pc | {t: 2}
-    and data = tx_val[t]
+    require sys == 0;
+    require tx_pc[t] == 1;
+    tx_pc = tx_pc | {t: 2};
+    data = tx_val[t];
 }
 
 // Transaction t commits (marks log entry as committed)
 action Commit(t: 0..N) {
-    require sys == 0
-    require tx_pc[t] == 2
-    tx_pc = tx_pc | {t: 3}
-    and log_committed = log_committed | {t: true}
-    and last_committed_val = tx_val[t]
-    and has_committed = true
+    require sys == 0;
+    require tx_pc[t] == 2;
+    tx_pc = tx_pc | {t: 3};
+    log_committed = log_committed | {t: true};
+    last_committed_val = tx_val[t];
+    has_committed = true;
 }
 
 // System crashes: data page may be lost, but log persists
 action Crash() {
-    require sys == 0
+    require sys == 0;
     // Reset all non-committed transactions
-    tx_pc = {t: (if tx_pc[t] == 3 then 3 else 0) for t in 0..N}
+    tx_pc = {t: (if tx_pc[t] == 3 then 3 else 0) for t in 0..N};
     // Data page reverts to 0 (simulates page loss)
-    and data = 0
-    and sys = 1
+    data = 0;
+    sys = 1;
 }
 
 // Recovery: replay committed log entries to restore data
 action Recover(t: 0..N) {
-    require sys == 1
-    require log_committed[t] == true
+    require sys == 1;
+    require log_committed[t] == true;
     // Replay: restore data from committed log entry
-    data = tx_val[t]
-    and sys = 2
+    data = tx_val[t];
+    sys = 2;
 }
 
 // Recovery complete with no committed entries to replay
 action RecoverEmpty() {
-    require sys == 1
-    require all t in 0..N: log_committed[t] == false
-    sys = 2
+    require sys == 1;
+    require all t in 0..N: log_committed[t] == false;
+    sys = 2;
 }
 
 // After recovery, committed data is restored

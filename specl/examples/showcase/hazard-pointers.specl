@@ -26,49 +26,49 @@ var accessing: Dict[0..N, 0..MaxNode]
 var alloc_next: 0..MaxNode
 
 init {
-    node_state = {n: 0 for n in 0..MaxNode}
-    and hp = {t: 0 for t in 0..N}
-    and accessing = {t: 0 for t in 0..N}
-    and alloc_next = 0
+    node_state = {n: 0 for n in 0..MaxNode};
+    hp = {t: 0 for t in 0..N};
+    accessing = {t: 0 for t in 0..N};
+    alloc_next = 0;
 }
 
 // Allocate a new node (make it active)
 action Allocate() {
-    require alloc_next < MaxNode
+    require alloc_next < MaxNode;
     // alloc_next is 0-indexed but nodes are 0..MaxNode; skip node 0 as "null"
-    node_state = node_state | {alloc_next: 1}
-    and alloc_next = alloc_next + 1
+    node_state = node_state | {alloc_next: 1};
+    alloc_next = alloc_next + 1;
 }
 
 // Thread t sets hazard pointer and starts accessing a node
 action Protect(t: 0..N, n: 0..MaxNode) {
-    require accessing[t] == 0
-    require node_state[n] == 1
-    hp = hp | {t: n}
-    and accessing = accessing | {t: n}
+    require accessing[t] == 0;
+    require node_state[n] == 1;
+    hp = hp | {t: n};
+    accessing = accessing | {t: n};
 }
 
 // Thread t finishes accessing and clears hazard pointer
 action Release(t: 0..N) {
-    require accessing[t] != 0
-    hp = hp | {t: 0}
-    and accessing = accessing | {t: 0}
+    require accessing[t] != 0;
+    hp = hp | {t: 0};
+    accessing = accessing | {t: 0};
 }
 
 // Retire a node (mark for future reclamation)
 action Retire(n: 0..MaxNode) {
-    require node_state[n] == 1
+    require node_state[n] == 1;
     // Only retire if no thread is currently protecting it via HP
     // (In reality, retirement can happen anytime; protection prevents reclamation)
-    node_state = node_state | {n: 2}
+    node_state = node_state | {n: 2};
 }
 
 // Reclaim a retired node if no hazard pointer protects it
 action Reclaim(n: 0..MaxNode) {
-    require node_state[n] == 2
+    require node_state[n] == 2;
     // Safe to reclaim only if no thread has a hazard pointer to this node
-    require all t in 0..N: hp[t] != n
-    node_state = node_state | {n: 3}
+    require all t in 0..N: hp[t] != n;
+    node_state = node_state | {n: 3};
 }
 
 // Safety: no thread accesses a reclaimed node

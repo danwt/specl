@@ -25,42 +25,42 @@ var pending_10: 0..MaxRounds
 var round: 0..MaxRounds
 
 init {
-    gen = {g: 0 for g in 0..1}
-    and pending_01 = 0
-    and pending_10 = 0
-    and round = 0
+    gen = {g: 0 for g in 0..1};
+    pending_01 = 0;
+    pending_10 = 0;
+    round = 0;
 }
 
 // General 0 decides to attack and sends message
 action ProposeAttack() {
-    require gen[0] == 0
-    require round < MaxRounds
-    gen = gen | {0: 1}
-    and pending_01 = pending_01 + 1
-    and round = round + 1
+    require gen[0] == 0;
+    require round < MaxRounds;
+    gen = gen | {0: 1};
+    pending_01 = pending_01 + 1;
+    round = round + 1;
 }
 
 // General 1 receives attack message and sends ack
 action ReceiveAndAck() {
-    require pending_01 > 0
-    require gen[1] == 0
-    gen = gen | {1: 1}
-    and pending_01 = pending_01 - 1
-    and pending_10 = pending_10 + 1
+    require pending_01 > 0;
+    require gen[1] == 0;
+    gen = gen | {1: 1};
+    pending_01 = pending_01 - 1;
+    pending_10 = pending_10 + 1;
 }
 
 // General 0 receives ack (confirms coordination)
 action ReceiveAck() {
-    require pending_10 > 0
-    pending_10 = pending_10 - 1
+    require pending_10 > 0;
+    pending_10 = pending_10 - 1;
 }
 
 // General 1 retreats (timeout, never got message)
 action Retreat1() {
-    require gen[1] == 0
-    require pending_01 == 0
-    require round > 0
-    gen = gen | {1: 2}
+    require gen[1] == 0;
+    require pending_01 == 0;
+    require round > 0;
+    gen = gen | {1: 2};
 }
 
 // When both generals decide, they agree (if no messages lost)

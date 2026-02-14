@@ -25,46 +25,46 @@ var syncing: Bool
 var synced: Bool
 
 init {
-    tx = {t: 0 for t in 0..N}
-    and pending_writes = 0
-    and syncing = false
-    and synced = false
+    tx = {t: 0 for t in 0..N};
+    pending_writes = 0;
+    syncing = false;
+    synced = false;
 }
 
 // Transaction writes to WAL buffer
 action Write(t: 0..N) {
-    require tx[t] == 0
-    require synced == false
-    tx = tx | {t: 1}
-    and pending_writes = pending_writes + 1
+    require tx[t] == 0;
+    require synced == false;
+    tx = tx | {t: 1};
+    pending_writes = pending_writes + 1;
 }
 
 // Transaction enters wait-for-sync
 action WaitSync(t: 0..N) {
-    require tx[t] == 1
-    tx = tx | {t: 2}
+    require tx[t] == 1;
+    tx = tx | {t: 2};
 }
 
 // Leader initiates group sync (at least one write pending)
 action BeginSync() {
-    require syncing == false
-    require synced == false
-    require pending_writes > 0
-    syncing = true
+    require syncing == false;
+    require synced == false;
+    require pending_writes > 0;
+    syncing = true;
 }
 
 // Sync completes (all buffered writes are durable)
 action CompleteSync() {
-    require syncing == true
-    syncing = false
-    and synced = true
+    require syncing == true;
+    syncing = false;
+    synced = true;
 }
 
 // Transaction commits (sync must be done)
 action Commit(t: 0..N) {
-    require tx[t] == 2
-    require synced == true
-    tx = tx | {t: 3}
+    require tx[t] == 2;
+    require synced == true;
+    tx = tx | {t: 3};
 }
 
 // No transaction commits before sync

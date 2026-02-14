@@ -46,34 +46,34 @@ func SafeAt(b, v) {
 }
 
 init {
-    maxBal = {a: -1 for a in 0..N}
-    and maxVBal = {a: -1 for a in 0..N}
-    and maxVal = {a: -1 for a in 0..N}
-    and proposed = {b: -1 for b in 0..MaxBallot}
-    and accepted = {b: {a: false for a in 0..N} for b in 0..MaxBallot}
+    maxBal = {a: -1 for a in 0..N};
+    maxVBal = {a: -1 for a in 0..N};
+    maxVal = {a: -1 for a in 0..N};
+    proposed = {b: -1 for b in 0..MaxBallot};
+    accepted = {b: {a: false for a in 0..N} for b in 0..MaxBallot};
 }
 
 // Acceptor a promises not to participate in any ballot lower than b
 action Promise(b: 0..MaxBallot, a: 0..N) {
-    require b > maxBal[a]
-    maxBal = maxBal | {a: b}
+    require b > maxBal[a];
+    maxBal = maxBal | {a: b};
 }
 
 // Proposer proposes value v for ballot b (must be safe)
 action Propose(b: 0..MaxBallot, v: 0..V) {
-    require proposed[b] == -1
-    require SafeAt(b, v)
-    proposed = proposed | {b: v}
+    require proposed[b] == -1;
+    require SafeAt(b, v);
+    proposed = proposed | {b: v};
 }
 
 // Acceptor a votes for the proposed value in ballot b
 action Accept(b: 0..MaxBallot, a: 0..N) {
-    require proposed[b] != -1
-    require maxBal[a] <= b
-    maxBal = maxBal | {a: b}
-    and maxVBal = maxVBal | {a: b}
-    and maxVal = maxVal | {a: proposed[b]}
-    and accepted = accepted | {b: (accepted[b] | {a: true})}
+    require proposed[b] != -1;
+    require maxBal[a] <= b;
+    maxBal = maxBal | {a: b};
+    maxVBal = maxVBal | {a: b};
+    maxVal = maxVal | {a: proposed[b]};
+    accepted = accepted | {b: (accepted[b] | {a: true})};
 }
 
 // Agreement: if two ballots both achieve majority acceptance,

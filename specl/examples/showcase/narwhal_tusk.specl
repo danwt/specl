@@ -107,7 +107,7 @@ var committed: Set[Seq[Int]]
 init {
     certs = {} and
     signatures = {k: {} for k in certs} and  // Empty dict with right type
-    committed = {}
+    committed = {};
 }
 
 // === Helper Functions ===
@@ -130,25 +130,25 @@ func Leader(r) {
 // Round 0: no references required (genesis)
 // Round r>0: must reference ≥2f+1 certificates from round r-1
 action CreateCert(v: 0..N, r: 0..MAX_ROUND) {
-    require not ([v, r] in certs)    // No equivocation (one cert per round)
+    require not ([v, r] in certs);  // No equivocation (one cert per round)
 
     // Round 0 has no references (genesis)
     // Round r>0 must reference a quorum from round r-1
-    require r == 0 or IsQuorum(len({k in certs if k[1] == r - 1}))
+    require r == 0 or IsQuorum(len({k in certs if k[1] == r - 1}));
 
     // Create the certificate (references are implicit: all certs from round r-1)
     certs = certs union {[v, r]} and
-    signatures = signatures | {[v, r]: {v}}  // Self-sign initially
+    signatures = signatures | {[v, r]: {v}};  // Self-sign initially
 }
 
 // Sign a certificate
 // Validators sign certificates to build quorums
 action Sign(signer: 0..N, v: 0..N, r: 0..MAX_ROUND) {
-    require [v, r] in certs                       // Certificate exists
-    require not (signer in signatures[[v, r]])    // Haven't signed yet
-    require not IsQuorum(len(signatures[[v, r]])) // Stop at quorum (reduces state space)
+    require [v, r] in certs;  // Certificate exists
+    require not (signer in signatures[[v, r]]);  // Haven't signed yet
+    require not IsQuorum(len(signatures[[v, r]])) // Stop at quorum (reduces state space);
 
-    signatures = signatures | {[v, r]: signatures[[v, r]] union {signer}}
+    signatures = signatures | {[v, r]: signatures[[v, r]] union {signer}};
 }
 
 // Removed: AdvanceRound action (causes state space explosion)
@@ -159,19 +159,19 @@ action Sign(signer: 0..N, v: 0..N, r: 0..MAX_ROUND) {
 // Try to commit a leader certificate using Tusk commit rule
 // Leader at round r commits if ≥2f+1 certs at round r+1 reference it
 action TryCommit(v: 0..N, r: 0..MAX_ROUND) {
-    require [v, r] in certs              // Certificate exists
-    require not ([v, r] in committed)    // Not already committed
-    require v == Leader(r)               // Must be the deterministic leader
-    require r < MAX_ROUND                // Need round r+1 to check commit rule
+    require [v, r] in certs;  // Certificate exists
+    require not ([v, r] in committed);  // Not already committed
+    require v == Leader(r);  // Must be the deterministic leader
+    require r < MAX_ROUND;  // Need round r+1 to check commit rule
 
     // Check if certificate has a quorum of signatures (valid cert)
-    require IsQuorum(len(signatures[[v, r]]))
+    require IsQuorum(len(signatures[[v, r]]));
 
     // Tusk commit rule: ≥2f+1 certs exist at round r+1
     // (implicit: they all reference [v, r] since r+1 refs all of round r)
-    require IsQuorum(len({k in certs if k[1] == r + 1}))
+    require IsQuorum(len({k in certs if k[1] == r + 1}));
 
-    committed = committed union {[v, r]}
+    committed = committed union {[v, r]};
 }
 
 // Mark an ancestor of a committed certificate as committed

@@ -9,51 +9,51 @@ var northSouth: 0..2
 var eastWest: 0..2
 
 init {
-    northSouth = 0 and eastWest = 2
+    northSouth = 0 and eastWest = 2;
 }
 
 // North-South turns green (East-West must be red)
 action NSGreen() {
-    require northSouth == 0
-    require eastWest == 0
+    require northSouth == 0;
+    require eastWest == 0;
 
-    northSouth = 2
+    northSouth = 2;
 }
 
 // North-South turns yellow
 action NSYellow() {
-    require northSouth == 2
+    require northSouth == 2;
 
-    northSouth = 1
+    northSouth = 1;
 }
 
 // North-South turns red
 action NSRed() {
-    require northSouth == 1
+    require northSouth == 1;
 
-    northSouth = 0
+    northSouth = 0;
 }
 
 // East-West turns green (North-South must be red)
 action EWGreen() {
-    require eastWest == 0
-    require northSouth == 0
+    require eastWest == 0;
+    require northSouth == 0;
 
-    eastWest = 2
+    eastWest = 2;
 }
 
 // East-West turns yellow
 action EWYellow() {
-    require eastWest == 2
+    require eastWest == 2;
 
-    eastWest = 1
+    eastWest = 1;
 }
 
 // East-West turns red
 action EWRed() {
-    require eastWest == 1
+    require eastWest == 1;
 
-    eastWest = 0
+    eastWest = 0;
 }
 
 // Safety: Both directions cannot be green simultaneously

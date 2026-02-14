@@ -26,68 +26,68 @@ var pc: Dict[0..N, 0..4]
 var next_ts: 1..MaxTs
 
 init {
-    rts = 0
-    and wts = 0
-    and ts = {t: 0 for t in 0..N}
-    and pc = {t: 0 for t in 0..N}
-    and next_ts = 1
+    rts = 0;
+    wts = 0;
+    ts = {t: 0 for t in 0..N};
+    pc = {t: 0 for t in 0..N};
+    next_ts = 1;
 }
 
 // Transaction starts and gets a timestamp
 action Start(t: 0..N) {
-    require pc[t] == 0
-    require next_ts <= MaxTs
-    ts = ts | {t: next_ts}
-    and pc = pc | {t: 1}
-    and next_ts = next_ts + 1
+    require pc[t] == 0;
+    require next_ts <= MaxTs;
+    ts = ts | {t: next_ts};
+    pc = pc | {t: 1};
+    next_ts = next_ts + 1;
 }
 
 // Transaction reads: allowed if ts[t] >= wts
 action Read(t: 0..N) {
-    require pc[t] == 1
-    require ts[t] >= wts
-    rts = (if ts[t] > rts then ts[t] else rts)
-    and pc = pc | {t: 2}
+    require pc[t] == 1;
+    require ts[t] >= wts;
+    rts = (if ts[t] > rts then ts[t] else rts);
+    pc = pc | {t: 2};
 }
 
 // Read aborted: ts[t] < wts (reading stale data)
 action ReadAbort(t: 0..N) {
-    require pc[t] == 1
-    require ts[t] < wts
-    pc = pc | {t: 4}
+    require pc[t] == 1;
+    require ts[t] < wts;
+    pc = pc | {t: 4};
 }
 
 // Transaction writes: allowed if ts[t] >= rts and ts[t] >= wts
 action Write(t: 0..N) {
-    require pc[t] == 2
-    require ts[t] >= rts
-    require ts[t] >= wts
-    wts = ts[t]
-    and pc = pc | {t: 3}
+    require pc[t] == 2;
+    require ts[t] >= rts;
+    require ts[t] >= wts;
+    wts = ts[t];
+    pc = pc | {t: 3};
 }
 
 // Write aborted: ts[t] < rts (a newer txn already read)
 action WriteAbort(t: 0..N) {
-    require pc[t] == 2
-    require ts[t] < rts
-    pc = pc | {t: 4}
+    require pc[t] == 2;
+    require ts[t] < rts;
+    pc = pc | {t: 4};
 }
 
 // Thomas write rule: ts[t] < wts but >= rts — skip write (already overwritten)
 action ThomasWrite(t: 0..N) {
-    require pc[t] == 2
-    require ts[t] >= rts
-    require ts[t] < wts
-    pc = pc | {t: 3}
+    require pc[t] == 2;
+    require ts[t] >= rts;
+    require ts[t] < wts;
+    pc = pc | {t: 3};
 }
 
 // Aborted transaction restarts
 action Restart(t: 0..N) {
-    require pc[t] == 4
-    require next_ts <= MaxTs
-    ts = ts | {t: next_ts}
-    and pc = pc | {t: 1}
-    and next_ts = next_ts + 1
+    require pc[t] == 4;
+    require next_ts <= MaxTs;
+    ts = ts | {t: next_ts};
+    pc = pc | {t: 1};
+    next_ts = next_ts + 1;
 }
 
 // Serializability: committed writes respect timestamp order

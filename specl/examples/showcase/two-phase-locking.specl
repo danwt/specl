@@ -29,61 +29,61 @@ var lock_holders: Dict[0..R, Set[0..N]]
 var tx_locks: Dict[0..N, Set[0..R]]
 
 init {
-    tx_pc = {t: 0 for t in 0..N}
-    and lock_mode = {r: 0 for r in 0..R}
-    and lock_holders = {r: {} for r in 0..R}
-    and tx_locks = {t: {} for t in 0..N}
+    tx_pc = {t: 0 for t in 0..N};
+    lock_mode = {r: 0 for r in 0..R};
+    lock_holders = {r: {} for r in 0..R};
+    tx_locks = {t: {} for t in 0..N};
 }
 
 // Transaction t starts (enters growing phase)
 action TxStart(t: 0..N) {
-    require tx_pc[t] == 0
-    tx_pc = tx_pc | {t: 1}
+    require tx_pc[t] == 0;
+    tx_pc = tx_pc | {t: 1};
 }
 
 // Transaction t acquires shared lock on resource r
 action AcquireShared(t: 0..N, r: 0..R) {
-    require tx_pc[t] == 1
-    require not (r in tx_locks[t])
+    require tx_pc[t] == 1;
+    require not (r in tx_locks[t]);
     // Can acquire shared if free or already shared (no exclusive)
-    require lock_mode[r] == 0 or lock_mode[r] == 1
-    lock_mode = lock_mode | {r: 1}
-    and lock_holders = lock_holders | {r: lock_holders[r] union {t}}
-    and tx_locks = tx_locks | {t: tx_locks[t] union {r}}
+    require lock_mode[r] == 0 or lock_mode[r] == 1;
+    lock_mode = lock_mode | {r: 1};
+    lock_holders = lock_holders | {r: lock_holders[r] union {t}};
+    tx_locks = tx_locks | {t: tx_locks[t] union {r}};
 }
 
 // Transaction t acquires exclusive lock on resource r
 action AcquireExclusive(t: 0..N, r: 0..R) {
-    require tx_pc[t] == 1
-    require not (r in tx_locks[t])
+    require tx_pc[t] == 1;
+    require not (r in tx_locks[t]);
     // Can acquire exclusive only if free
-    require lock_mode[r] == 0
-    lock_mode = lock_mode | {r: 2}
-    and lock_holders = lock_holders | {r: lock_holders[r] union {t}}
-    and tx_locks = tx_locks | {t: tx_locks[t] union {r}}
+    require lock_mode[r] == 0;
+    lock_mode = lock_mode | {r: 2};
+    lock_holders = lock_holders | {r: lock_holders[r] union {t}};
+    tx_locks = tx_locks | {t: tx_locks[t] union {r}};
 }
 
 // Transaction t enters working phase (has acquired all needed locks)
 action TxWork(t: 0..N) {
-    require tx_pc[t] == 1
-    require len(tx_locks[t]) > 0
-    tx_pc = tx_pc | {t: 2}
+    require tx_pc[t] == 1;
+    require len(tx_locks[t]) > 0;
+    tx_pc = tx_pc | {t: 2};
 }
 
 // Transaction t commits: release all locks
 action TxCommit(t: 0..N) {
-    require tx_pc[t] == 2
-    tx_pc = tx_pc | {t: 3}
-    and lock_holders = {r:
+    require tx_pc[t] == 2;
+    tx_pc = tx_pc | {t: 3};
+    lock_holders = {r:
         (if r in tx_locks[t] then lock_holders[r] diff {t} else lock_holders[r])
-        for r in 0..R}
-    and lock_mode = {r:
+        for r in 0..R};
+    lock_mode = {r:
         (if r in tx_locks[t] then
             (if len(lock_holders[r] diff {t}) == 0 then 0
              else lock_mode[r])
          else lock_mode[r])
-        for r in 0..R}
-    and tx_locks = tx_locks | {t: {}}
+        for r in 0..R};
+    tx_locks = tx_locks | {t: {}};
 }
 
 // No conflicting concurrent access:
