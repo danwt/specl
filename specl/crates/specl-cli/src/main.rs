@@ -1036,17 +1036,25 @@ fn cmd_check(
 
     let secs = elapsed.as_secs_f64();
 
-    if output_format == OutputFormat::Itf {
-        // ITF mode: emit Apalache-compatible trace JSON
+    if output_format == OutputFormat::Itf || output_format == OutputFormat::Mermaid {
+        // Structured trace output (ITF or Mermaid)
         match result {
             CheckOutcome::InvariantViolation { invariant, trace } => {
-                let itf = trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
-                println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                if output_format == OutputFormat::Mermaid {
+                    println!("{}", trace_to_mermaid(&trace, &var_names, "invariant_violation", Some(&invariant)));
+                } else {
+                    let itf = trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
+                    println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                }
                 std::process::exit(1);
             }
             CheckOutcome::Deadlock { trace } => {
-                let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
-                println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                if output_format == OutputFormat::Mermaid {
+                    println!("{}", trace_to_mermaid(&trace, &var_names, "deadlock", None));
+                } else {
+                    let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
+                    println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+                }
                 std::process::exit(1);
             }
             CheckOutcome::Ok { states_explored, .. } => {
@@ -1365,6 +1373,9 @@ fn cmd_check_swarm(
                 let total_secs = start.elapsed().as_secs_f64();
                 if let CheckOutcome::InvariantViolation { invariant, trace } = result {
                     match output_format {
+                        OutputFormat::Mermaid => {
+                            println!("{}", trace_to_mermaid(&trace, var_names, "invariant_violation", Some(&invariant)));
+                        }
                         OutputFormat::Itf => {
                             let itf = trace_to_itf(&trace, var_names, "invariant_violation", Some(&invariant));
                             println!("{}", serde_json::to_string_pretty(&itf).unwrap());
@@ -1802,8 +1813,8 @@ fn cmd_simulate(
         })?;
     let secs = start.elapsed().as_secs_f64();
 
-    if output == OutputFormat::Itf {
-        // ITF output for simulation traces
+    if output == OutputFormat::Itf || output == OutputFormat::Mermaid {
+        // Structured trace output (ITF or Mermaid)
         let (trace, var_names, result_kind, invariant) = match &result {
             SimulateOutcome::Ok { trace, var_names, .. } => {
                 (trace, var_names, "ok", None)
@@ -1815,8 +1826,12 @@ fn cmd_simulate(
                 (trace, var_names, "deadlock", None)
             }
         };
-        let itf = trace_to_itf(trace, var_names, result_kind, invariant);
-        println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+        if output == OutputFormat::Mermaid {
+            println!("{}", trace_to_mermaid(trace, var_names, result_kind, invariant));
+        } else {
+            let itf = trace_to_itf(trace, var_names, result_kind, invariant);
+            println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+        }
         match &result {
             SimulateOutcome::InvariantViolation { .. } | SimulateOutcome::Deadlock { .. } => {
                 std::process::exit(1);
@@ -2177,6 +2192,133 @@ fn format_state_with_names(state: &State, var_names: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Generate a Mermaid sequence diagram from a trace.
+///
+/// Parses action names to extract participants (process indices from parameters).
+/// Actions like "LeaderPreAccept" become notes, "Accept(0, 1)" becomes 0->>1.
+fn trace_to_mermaid(
+    trace: &[(State, Option<String>)],
+    var_names: &[String],
+    result_kind: &str,
+    invariant: Option<&str>,
+) -> String {
+    let mut lines = vec!["sequenceDiagram".to_string()];
+
+    // Collect all participants from action parameters
+    let mut participants: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+
+    // Parse action names: "ActionName(p1, p2, ...)" -> extract integer params
+    let mut steps: Vec<(String, Vec<i64>)> = Vec::new();
+    for (_, action) in trace.iter() {
+        if let Some(name) = action {
+            let (action_name, params) = parse_action_params(name);
+            for &p in &params {
+                participants.insert(format!("P{}", p));
+            }
+            steps.push((action_name, params));
+        } else {
+            steps.push(("init".to_string(), vec![]));
+        }
+    }
+
+    // If no participants found, use generic "System"
+    if participants.is_empty() {
+        participants.insert("System".to_string());
+    }
+
+    for p in &participants {
+        lines.push(format!("    participant {}", p));
+    }
+    lines.push(String::new());
+
+    // Generate diagram steps
+    for (i, (state, _action)) in trace.iter().enumerate() {
+        let (action_name, params) = &steps[i];
+
+        match params.len() {
+            0 => {
+                // No params: note over first participant
+                let first = participants.iter().next().unwrap();
+                lines.push(format!("    Note over {}: {}", first, action_name));
+            }
+            1 => {
+                // Single param: note over that participant
+                let p = format!("P{}", params[0]);
+                lines.push(format!("    Note over {}: {}", p, action_name));
+            }
+            _ => {
+                // Multiple params: first param acts, message to second
+                let src = format!("P{}", params[0]);
+                let dst = format!("P{}", params[1]);
+                if src == dst {
+                    lines.push(format!("    Note over {}: {}", src, action_name));
+                } else {
+                    lines.push(format!("    {}->>{}: {}", src, dst, action_name));
+                }
+            }
+        }
+
+        // Show state changes as a note (only show changed vars compared to previous)
+        if i > 0 {
+            let prev_state = &trace[i - 1].0;
+            let changes: Vec<String> = state
+                .vars
+                .iter()
+                .enumerate()
+                .filter(|(j, v)| *v != &prev_state.vars[*j])
+                .map(|(j, v)| {
+                    let name = var_names.get(j).map(|s| s.as_str()).unwrap_or("?");
+                    format!("{}={}", name, v)
+                })
+                .collect();
+            if !changes.is_empty() && changes.len() <= 3 {
+                let actor = if !params.is_empty() {
+                    format!("P{}", params[0])
+                } else {
+                    participants.iter().next().unwrap().clone()
+                };
+                lines.push(format!("    Note right of {}: {}", actor, changes.join(", ")));
+            }
+        }
+    }
+
+    // Add violation marker
+    if let Some(inv) = invariant {
+        lines.push(String::new());
+        let last_step = &steps.last().unwrap();
+        let actor = if !last_step.1.is_empty() {
+            format!("P{}", last_step.1[0])
+        } else {
+            participants.iter().next().unwrap().clone()
+        };
+        lines.push(format!(
+            "    rect rgb(255, 200, 200)",
+        ));
+        lines.push(format!(
+            "        Note over {}: {} VIOLATION: {}",
+            actor, result_kind.to_uppercase(), inv
+        ));
+        lines.push("    end".to_string());
+    }
+
+    lines.join("\n")
+}
+
+/// Parse an action name like "Accept(0, 1)" into ("Accept", [0, 1]).
+fn parse_action_params(name: &str) -> (String, Vec<i64>) {
+    if let Some(paren_idx) = name.find('(') {
+        let action_name = name[..paren_idx].to_string();
+        let params_str = &name[paren_idx + 1..name.len().saturating_sub(1)];
+        let params: Vec<i64> = params_str
+            .split(',')
+            .filter_map(|s| s.trim().parse().ok())
+            .collect();
+        (action_name, params)
+    } else {
+        (name.to_string(), vec![])
+    }
 }
 
 /// Print spec profile, warnings, and recommendations.
