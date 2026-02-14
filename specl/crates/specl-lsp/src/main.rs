@@ -860,6 +860,72 @@ impl SpeclLanguageServer {
         ranges
     }
 
+    /// Get selection ranges for smart expand/shrink selection.
+    fn get_selection_ranges(&self, source: &str, positions: &[Position]) -> Vec<SelectionRange> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return positions.iter().map(|p| SelectionRange {
+                range: Range { start: *p, end: *p },
+                parent: None,
+            }).collect(),
+        };
+
+        positions
+            .iter()
+            .map(|pos| {
+                let line = pos.line + 1; // 1-indexed
+                let col = pos.character + 1;
+
+                // Find the innermost declaration containing this position
+                let mut best_decl: Option<&Decl> = None;
+                for decl in &module.decls {
+                    let span = decl.span();
+                    if line >= span.line {
+                        let end_line = Self::byte_offset_to_line(source, span.end.saturating_sub(1));
+                        if line <= end_line + 1 || (line == span.line && col >= span.column) {
+                            best_decl = Some(decl);
+                        }
+                    }
+                }
+
+                if let Some(decl) = best_decl {
+                    let decl_range = Self::span_to_range(decl.span());
+                    // Full file as outermost range
+                    let file_range = Range {
+                        start: Position { line: 0, character: 0 },
+                        end: Position {
+                            line: source.lines().count() as u32,
+                            character: 0,
+                        },
+                    };
+                    let file_selection = Box::new(SelectionRange {
+                        range: file_range,
+                        parent: None,
+                    });
+                    SelectionRange {
+                        range: decl_range,
+                        parent: Some(file_selection),
+                    }
+                } else {
+                    SelectionRange {
+                        range: Range { start: *pos, end: *pos },
+                        parent: None,
+                    }
+                }
+            })
+            .collect()
+    }
+
+    fn byte_offset_to_line(source: &str, byte_offset: usize) -> u32 {
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+        match line_starts.binary_search(&byte_offset) {
+            Ok(i) => i as u32 + 1,
+            Err(i) => i as u32,
+        }
+    }
+
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
     const TT_KEYWORD: u32 = 0;
     const TT_TYPE: u32 = 1;
@@ -1178,6 +1244,7 @@ impl LanguageServer for SpeclLanguageServer {
                 ),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -1245,6 +1312,16 @@ impl LanguageServer for SpeclLanguageServer {
         let position = params.text_document_position_params.position;
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         Ok(self.get_signature_help(&content, position))
+    }
+
+    async fn selection_range(
+        &self,
+        params: SelectionRangeParams,
+    ) -> Result<Option<Vec<SelectionRange>>> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let ranges = self.get_selection_ranges(&content, &params.positions);
+        Ok(Some(ranges))
     }
 
     async fn symbol(
