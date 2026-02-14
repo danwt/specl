@@ -7,7 +7,7 @@
 //! like `x == 0 and y == fn(i in S) => 0`. We can extract these assignments
 //! and evaluate them directly.
 
-use specl_eval::bytecode::{vm_eval, Bytecode};
+use specl_eval::bytecode::{vm_eval, vm_eval_reuse, Bytecode, VmBufs};
 use specl_eval::{eval, eval_bool, EvalContext, EvalError, Value};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec};
 use tracing::debug;
@@ -258,6 +258,47 @@ pub fn apply_effects_bytecode(
 
     for (var_idx, bc) in compiled_assignments {
         let value = vm_eval(bc, &state.vars, next_vars_buf, consts, params)?;
+        let old_val = &next_vars_buf[*var_idx];
+        fp = update_fingerprint(fp, *var_idx, old_val, &value);
+        next_vars_buf[*var_idx] = value;
+    }
+
+    if needs_reverify {
+        let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
+        let result = eval(effect, &mut ctx)?;
+        if result.as_bool() == Some(true) {
+            Ok(Some(State::with_fingerprint(
+                std::mem::take(next_vars_buf),
+                fp,
+            )))
+        } else {
+            Ok(None)
+        }
+    } else {
+        Ok(Some(State::with_fingerprint(
+            std::mem::take(next_vars_buf),
+            fp,
+        )))
+    }
+}
+
+/// Apply effects using bytecode-compiled assignments with reusable VM buffers.
+pub fn apply_effects_bytecode_reuse(
+    state: &State,
+    params: &[Value],
+    consts: &[Value],
+    compiled_assignments: &[(usize, Bytecode)],
+    needs_reverify: bool,
+    next_vars_buf: &mut Vec<Value>,
+    effect: &CompiledExpr,
+    vm_bufs: &mut VmBufs,
+) -> Result<Option<State>, EvalError> {
+    next_vars_buf.clear();
+    next_vars_buf.extend_from_slice(&state.vars);
+    let mut fp = state.fingerprint();
+
+    for (var_idx, bc) in compiled_assignments {
+        let value = vm_eval_reuse(bc, &state.vars, next_vars_buf, consts, params, vm_bufs)?;
         let old_val = &next_vars_buf[*var_idx];
         fp = update_fingerprint(fp, *var_idx, old_val, &value);
         next_vars_buf[*var_idx] = value;

@@ -9,8 +9,9 @@ use crate::store::StateStore;
 use memory_stats::memory_stats;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use specl_eval::bytecode::{compile_expr, vm_eval_bool, Bytecode};
+use specl_eval::bytecode::{compile_expr, vm_eval_bool, vm_eval_bool_reuse, Bytecode, VmBufs};
 use specl_eval::{eval, EvalContext, EvalError, Value};
+use std::cell::RefCell;
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
 use std::collections::BinaryHeap;
@@ -2138,6 +2139,7 @@ impl Explorer {
         let mut hit_time_limit = false;
         let mut memory_at_limit = 0usize;
         let mut next_vars_buf = Vec::new();
+        let mut vm_bufs = VmBufs::new();
 
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
@@ -2204,7 +2206,7 @@ impl Explorer {
                 if change_mask & self.inv_dep_masks[inv_idx] == 0 {
                     continue;
                 }
-                if !self.check_invariant_bc(inv_idx, &state)? {
+                if !self.check_invariant_bc_reuse(inv_idx, &state, &mut vm_bufs)? {
                     if profiling {
                         self.profile_data = Some(ProfileData {
                             action_fire_counts: prof_action_counts,
@@ -2383,6 +2385,11 @@ impl Explorer {
             // Take a batch of states from the queue
             let batch: Vec<QueueEntry> = queue.drain(..queue.len().min(batch_size)).collect();
 
+            // Thread-local reusable VM buffers (avoids per-eval allocation)
+            thread_local! {
+                static VM_BUFS: RefCell<VmBufs> = RefCell::new(VmBufs::new());
+            }
+
             // Process batch in parallel
             let results: Vec<_> = batch
                 .par_iter()
@@ -2410,7 +2417,10 @@ impl Explorer {
                         if change_mask & self.inv_dep_masks[inv_idx] == 0 {
                             continue;
                         }
-                        match self.check_invariant_bc(inv_idx, state) {
+                        let inv_result = VM_BUFS.with(|bufs| {
+                            self.check_invariant_bc_reuse(inv_idx, state, &mut bufs.borrow_mut())
+                        });
+                        match inv_result {
                             Ok(true) => {}
                             Ok(false) => {
                                 found_violation.store(true, Ordering::Relaxed);
@@ -2944,8 +2954,6 @@ impl Explorer {
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
     ) -> CheckResult<()> {
-        use std::cell::RefCell;
-
         thread_local! {
             static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
         }
@@ -3822,6 +3830,24 @@ impl Explorer {
             &state.vars,
             &self.consts,
             &[],
+        )?)
+    }
+
+    /// Check if an invariant holds using reusable VM buffers.
+    fn check_invariant_bc_reuse(
+        &self,
+        inv_idx: usize,
+        state: &State,
+        bufs: &mut VmBufs,
+    ) -> CheckResult<bool> {
+        let bc = &self.compiled_invariants[inv_idx];
+        Ok(vm_eval_bool_reuse(
+            bc,
+            &state.vars,
+            &state.vars,
+            &self.consts,
+            &[],
+            bufs,
         )?)
     }
 

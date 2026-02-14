@@ -22,9 +22,6 @@ use specl_eval::Value;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Mutex;
 
-/// Node ID in the tree table. Level-local namespace.
-type NodeId = u32;
-
 /// A single level in the tree table.
 struct TreeLevel {
     /// Forward mapping: (left_child, right_child) → node_id.
