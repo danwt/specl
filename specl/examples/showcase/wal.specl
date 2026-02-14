@@ -1,0 +1,112 @@
+module WAL
+
+// Write-Ahead Logging (WAL) for crash recovery.
+// Transactions write to a log before modifying data pages.
+// On crash, recovery replays committed log entries.
+// Key invariant: committed data survives crashes.
+//
+// Simplified model: N+1 transactions, single data page, log of entries.
+// Each transaction: begin -> write_log -> write_data -> commit_log.
+// Crash can happen anytime; recovery replays committed entries.
+//
+// Use: specl check wal.specl -c N=1 -c MaxOps=3 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxOps=3 -> OK (119 states, 0.0s)
+
+const N: 0..2
+const MaxOps: 1..5
+
+// Transaction state: 0=idle, 1=log_written, 2=data_written, 3=committed
+var tx_pc: Dict[0..N, 0..3]
+
+// Value each transaction wants to write
+var tx_val: Dict[0..N, 0..1]
+
+// Persistent log: log_committed[t] means tx t's entry is in the log as committed
+var log_entry: Dict[0..N, Bool]
+var log_committed: Dict[0..N, Bool]
+
+// Data page value (-1 = no write yet, otherwise the last written value)
+var data: 0..1
+
+// Last committed value (for invariant checking)
+var last_committed_val: 0..1
+var has_committed: Bool
+
+// System state: 0=running, 1=crashed, 2=recovered
+var sys: 0..2
+
+// Operation counter (bound the state space)
+var ops: 0..MaxOps
+
+init {
+    tx_pc = {t: 0 for t in 0..N}
+    and tx_val = {t: 0 for t in 0..N}
+    and log_entry = {t: false for t in 0..N}
+    and log_committed = {t: false for t in 0..N}
+    and data = 0
+    and last_committed_val = 0
+    and has_committed = false
+    and sys = 0
+    and ops = 0
+}
+
+// Transaction t writes to the log (WAL: log before data)
+action WriteLog(t: 0..N, v: 0..1) {
+    require sys == 0
+    require tx_pc[t] == 0
+    require ops < MaxOps
+    tx_pc = tx_pc | {t: 1}
+    and tx_val = tx_val | {t: v}
+    and log_entry = log_entry | {t: true}
+    and ops = ops + 1
+}
+
+// Transaction t writes to the data page
+action WriteData(t: 0..N) {
+    require sys == 0
+    require tx_pc[t] == 1
+    tx_pc = tx_pc | {t: 2}
+    and data = tx_val[t]
+}
+
+// Transaction t commits (marks log entry as committed)
+action Commit(t: 0..N) {
+    require sys == 0
+    require tx_pc[t] == 2
+    tx_pc = tx_pc | {t: 3}
+    and log_committed = log_committed | {t: true}
+    and last_committed_val = tx_val[t]
+    and has_committed = true
+}
+
+// System crashes: data page may be lost, but log persists
+action Crash() {
+    require sys == 0
+    // Reset all non-committed transactions
+    tx_pc = {t: (if tx_pc[t] == 3 then 3 else 0) for t in 0..N}
+    // Data page reverts to 0 (simulates page loss)
+    and data = 0
+    and sys = 1
+}
+
+// Recovery: replay committed log entries to restore data
+action Recover(t: 0..N) {
+    require sys == 1
+    require log_committed[t] == true
+    // Replay: restore data from committed log entry
+    data = tx_val[t]
+    and sys = 2
+}
+
+// Recovery complete with no committed entries to replay
+action RecoverEmpty() {
+    require sys == 1
+    require all t in 0..N: log_committed[t] == false
+    sys = 2
+}
+
+// After recovery, committed data is restored
+invariant CommittedDataSurvives {
+    (sys == 2 and has_committed) implies
+        any t in 0..N: log_committed[t] == true and data == tx_val[t]
+}

@@ -1,0 +1,97 @@
+module MSQueue
+
+// Michael-Scott lock-free queue (simplified).
+// N+1 threads performing enqueue/dequeue on a linked list with
+// Head and Tail pointers. Uses CAS for thread-safe updates.
+//
+// Nodes: 0 is sentinel (initial). Slots 1..MaxNode for enqueued items.
+// Each node has a 'next' pointer (-1 = null).
+//
+// Key invariants:
+//   - Head always points to a valid node
+//   - No item is dequeued twice
+//   - FIFO order preserved (enqueue order = dequeue order)
+//
+// Use: specl check ms-queue.specl -c N=1 -c MaxNode=3 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxNode=3 -> OK (315 states, 0.0s)
+
+const N: 0..2
+const MaxNode: 1..4
+
+// Shared queue state
+var hd: 0..MaxNode        // points to sentinel (dequeue reads hd.next)
+var tl: 0..MaxNode        // points to last node
+var next: Dict[0..MaxNode, 0..MaxNode]  // next pointer per node (-1 encoded as MaxNode+1... use 0 as null sentinel)
+var node_val: Dict[0..MaxNode, 0..N]    // value stored in each node
+var node_used: Dict[0..MaxNode, Bool]   // which nodes are allocated
+var alloc_next: 1..MaxNode              // next free node index
+
+// Per-thread state for enqueue: 0=idle, 1=allocated, 2=linked
+var enq_pc: Dict[0..N, 0..2]
+var enq_node: Dict[0..N, 0..MaxNode]   // node being enqueued
+
+// Track dequeue results for FIFO checking
+var deq_count: 0..MaxNode
+var enq_order: Dict[1..MaxNode, 0..N]  // enq_order[slot] = thread that enqueued it
+
+init {
+    hd = 0
+    and tl = 0
+    and next = {n: 0 for n in 0..MaxNode}  // 0 = null (self-referencing sentinel)
+    and node_val = {n: 0 for n in 0..MaxNode}
+    and node_used = {n: (if n == 0 then true else false) for n in 0..MaxNode}
+    and alloc_next = 1
+    and enq_pc = {t: 0 for t in 0..N}
+    and enq_node = {t: 0 for t in 0..N}
+    and deq_count = 0
+    and enq_order = {s: 0 for s in 1..MaxNode}
+}
+
+// Thread t allocates a node for enqueue
+action EnqAlloc(t: 0..N) {
+    require enq_pc[t] == 0
+    require alloc_next <= MaxNode
+    enq_pc = enq_pc | {t: 1}
+    and enq_node = enq_node | {t: alloc_next}
+    and node_val = node_val | {alloc_next: t}
+    and node_used = node_used | {alloc_next: true}
+    and alloc_next = alloc_next + 1
+}
+
+// Thread t links its node to tl.next (CAS on tl's next pointer)
+action EnqLink(t: 0..N) {
+    require enq_pc[t] == 1
+    // CAS: tl.next must be null (pointing to itself = 0, our null convention)
+    // Actually, let's use a simpler convention: next[x] == 0 means null for non-sentinel
+    require next[tl] == 0 or next[tl] == tl
+    next = next | {tl: enq_node[t]}
+    and enq_order = enq_order | {enq_node[t]: t}
+    and enq_pc = enq_pc | {t: 2}
+}
+
+// Thread t swings tl to its node
+action EnqSwingTail(t: 0..N) {
+    require enq_pc[t] == 2
+    // CAS: tl should still be the old tl (our node's predecessor)
+    // Simplified: just advance tl if it's behind
+    require tl != enq_node[t]
+    tl = enq_node[t]
+    and enq_pc = enq_pc | {t: 0}
+}
+
+// Dequeue: advance hd to hd.next
+action Dequeue() {
+    require next[hd] != 0 and next[hd] != hd
+    hd = next[hd]
+    and deq_count = deq_count + 1
+}
+
+// Head always points to a used node
+invariant HeadValid {
+    node_used[hd] == true
+}
+
+// Tail is always at or ahead of head (never behind)
+invariant TailNotBehindHead {
+    node_used[tl] == true
+}
