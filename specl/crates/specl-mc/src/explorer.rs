@@ -568,7 +568,10 @@ fn collect_param_refs_recursive(
         | CompiledExpr::Keys(e)
         | CompiledExpr::Values(e)
         | CompiledExpr::Powerset(e)
-        | CompiledExpr::BigUnion(e) => {
+        | CompiledExpr::BigUnion(e)
+        | CompiledExpr::SeqHead(e)
+        | CompiledExpr::SeqTail(e)
+        | CompiledExpr::Fix { predicate: e } => {
             collect_param_refs_recursive(e, params);
         }
         CompiledExpr::Choose { domain, predicate } => {
@@ -579,8 +582,18 @@ fn collect_param_refs_recursive(
             collect_param_refs_recursive(lo, params);
             collect_param_refs_recursive(hi, params);
         }
+        CompiledExpr::Slice { base, lo, hi } => {
+            collect_param_refs_recursive(base, params);
+            collect_param_refs_recursive(lo, params);
+            collect_param_refs_recursive(hi, params);
+        }
         CompiledExpr::Call { func, args } => {
             collect_param_refs_recursive(func, params);
+            for a in args {
+                collect_param_refs_recursive(a, params);
+            }
+        }
+        CompiledExpr::ActionCall { args, .. } => {
             for a in args {
                 collect_param_refs_recursive(a, params);
             }
@@ -592,8 +605,20 @@ fn collect_param_refs_recursive(
                 collect_param_refs_recursive(e, params);
             }
         }
+        CompiledExpr::DictLit(pairs) => {
+            for (k, v) in pairs {
+                collect_param_refs_recursive(k, params);
+                collect_param_refs_recursive(v, params);
+            }
+        }
         CompiledExpr::Field { base, .. } => {
             collect_param_refs_recursive(base, params);
+        }
+        CompiledExpr::RecordUpdate { base, updates } => {
+            collect_param_refs_recursive(base, params);
+            for (_, v) in updates {
+                collect_param_refs_recursive(v, params);
+            }
         }
         // Leaves with no param refs
         CompiledExpr::Bool(_)
@@ -606,12 +631,6 @@ fn collect_param_refs_recursive(
         | CompiledExpr::Unchanged(_)
         | CompiledExpr::Changes(_)
         | CompiledExpr::Enabled(_) => {}
-        // Remaining complex expressions
-        _ => {
-            // Conservative: don't collect from unknown patterns.
-            // This means some conjuncts may not be attributed to params,
-            // which is safe (just less optimization).
-        }
     }
 }
 
@@ -1074,8 +1093,15 @@ impl Explorer {
                 .collect()
         };
 
-        // Compute COI with active invariant filter for tighter reduction
-        let relevant_actions = Self::compute_coi(&spec, &active_invariants);
+        // Compute COI with active invariant filter for tighter reduction.
+        // Disable COI when deadlock checking is enabled: COI prunes actions
+        // irrelevant to invariants, but this prevents reaching states where
+        // deadlocks occur (no actions enabled).
+        let relevant_actions = if config.check_deadlock {
+            None
+        } else {
+            Self::compute_coi(&spec, &active_invariants)
+        };
 
         let mut explorer = Self {
             spec,

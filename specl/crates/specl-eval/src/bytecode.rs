@@ -845,7 +845,6 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
 // ============================================================================
 
 /// Execute bytecode and return the result as a bool.
-/// Execute bytecode and return the result as a bool.
 pub fn vm_eval_bool(
     bytecode: &Bytecode,
     vars: &[Value],
