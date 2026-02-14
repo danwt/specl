@@ -1,0 +1,87 @@
+=== Specl Baseline Benchmarks ===
+Date: Sat 14 Feb 2026 23:29:14 CET
+Binary: /Users/danwt/Documents/repos/specl-perf/specl/target/release/specl
+
+=== Multi-threaded (full mode) ===
+--- Raft N=2 MT (500K) ---
+Result: STATE LIMIT REACHED
+  States explored: 502599
+  Max depth: 16
+  Time: 1.15s
+
+--- Raft N=3 MT (2M) ---
+Result: STATE LIMIT REACHED
+  States explored: 2003428
+  Max depth: 17
+  Time: 4.03s
+
+--- Lamport Mutex N=2 MT (500K) ---
+Result: OK
+  States explored: 13.1K
+  Max depth: 60
+  Time: 0.0s
+  Throughput: 523.2K states/s
+
+--- Paxos N=2 MT (500K) ---
+Result: OK
+  States explored: 316.1K
+  Max depth: 24
+  Time: 0.8s
+  Throughput: 397.2K states/s
+
+--- Ricart-Agrawala N=2 MT (500K) ---
+Result: OK
+  States explored: 22.7K
+  Max depth: 60
+  Time: 0.0s
+  Throughput: 538.6K states/s
+
+=== Single-threaded (full mode) ===
+--- Raft N=2 1T (500K) ---
+Result: STATE LIMIT REACHED
+  States explored: 500000
+  Max depth: 16
+  Time: 2.29s
+
+--- Raft N=3 1T (2M) ---
+Result: STATE LIMIT REACHED
+  States explored: 2000001
+  Max depth: 17
+  Time: 13.95s
+
+--- Lamport Mutex N=2 1T (500K) ---
+Result: OK
+  States explored: 13.1K
+  Max depth: 60
+  Time: 0.1s
+  Throughput: 254.8K states/s
+
+--- Paxos N=2 1T (500K) ---
+Result: OK
+  States explored: 316.1K
+  Max depth: 24
+  Time: 4.5s
+  Throughput: 69.8K states/s
+
+--- Ricart-Agrawala N=2 1T (500K) ---
+Result: OK
+  States explored: 22.7K
+  Max depth: 60
+  Time: 0.1s
+  Throughput: 181.7K states/s
+
+=== Fast mode (multi-threaded) ===
+--- Raft N=2 --fast MT (500K) ---
+Result: STATE LIMIT REACHED
+  States explored: 501670
+  Max depth: 16
+  Time: 0.65s
+
+--- Raft N=3 --fast MT (2M) ---
+Result: STATE LIMIT REACHED
+  States explored: 2004959
+  Max depth: 17
+  Time: 3.48s
+
+
+=== Baseline complete ===

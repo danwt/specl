@@ -237,6 +237,7 @@ impl Value {
 // === kind() — the primary pattern-matching method ===
 
 impl Value {
+    #[inline]
     pub fn kind(&self) -> VK<'_> {
         match self.tag() {
             TAG_BOOL_FALSE => VK::Bool(false),

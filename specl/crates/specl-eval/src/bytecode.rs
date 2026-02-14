@@ -1581,6 +1581,7 @@ fn vm_eval_inner(
 // ============================================================================
 
 #[inline(always)]
+#[inline(always)]
 fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
     let v = stack.pop().unwrap();
     v.as_int().ok_or_else(|| EvalError::TypeMismatch {
