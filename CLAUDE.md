@@ -261,15 +261,17 @@ specl/crates/
 
 ## Language Server (LSP)
 
-The `specl-lsp` binary provides IDE support via the Language Server Protocol (32 unit tests):
+The `specl-lsp` binary provides IDE support via the Language Server Protocol (35 unit tests):
 
 - **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
 - **Completion**: Keywords, types, and symbols (vars, consts, actions, funcs, invariants) from the current file
 - **Signature help**: Parameter info when typing inside `action()` or `func()` calls
 - **Go-to-definition**: Jump to declaration of any identifier
+- **Goto type definition**: Navigate from variable/const/param to its type alias declaration
 - **Find all references**: Locate all uses of an identifier
 - **Document highlight**: Highlight all occurrences of symbol under cursor (WRITE for declarations, READ for uses)
 - **Rename**: Rename an identifier across the file (with prepare_rename validation)
+- **Linked editing ranges**: Edit all occurrences of an identifier simultaneously (multi-cursor)
 - **Document symbols**: Outline view of all declarations (with accurate multi-line ranges)
 - **Workspace symbols**: Cross-file symbol search (`Ctrl+T` in VSCode)
 - **Selection ranges**: Smart expand/shrink selection (declaration → file)
@@ -283,4 +285,4 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (32
 
 ## Examples
 
-See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, G-Counter CRDT, PN-Counter CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, Leader Election, ABD Register, CAS Register, Lamport Mutex, Seqlock, Barrier, Two-Phase Locking, Bounded Buffer, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (40 curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, G-Counter CRDT, PN-Counter CRDT, OR-Set CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, Leader Election, ABD Register, CAS Register, Lamport Mutex, Ricart-Agrawala, Ticket Lock, Byzantine Generals, RCU, Seqlock, Barrier, Two-Phase Locking, Bounded Buffer, WAL, Michael-Scott Queue, Snapshot Isolation, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
