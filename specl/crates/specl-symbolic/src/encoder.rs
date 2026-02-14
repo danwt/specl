@@ -1084,7 +1084,7 @@ impl<'a> EncoderCtx<'a> {
                 let elem_z3 = self.encode_int(elem)?;
                 let eqs: Vec<Bool> = values
                     .iter()
-                    .map(|v| elem_z3.eq(&Int::from_i64(*v)))
+                    .map(|v| elem_z3.eq(Int::from_i64(*v)))
                     .collect();
                 let eq_refs: Vec<&Bool> = eqs.iter().collect();
                 let in_domain = if eq_refs.is_empty() {
@@ -1133,7 +1133,7 @@ impl<'a> EncoderCtx<'a> {
                     let elem_z3 = self.encode_int(elem)?;
                     let mut disjuncts = Vec::new();
                     for m in &members {
-                        disjuncts.push(elem_z3.eq(&Int::from_i64(*m)));
+                        disjuncts.push(elem_z3.eq(Int::from_i64(*m)));
                     }
                     let result = if disjuncts.is_empty() {
                         Bool::from_bool(false)
@@ -1597,13 +1597,13 @@ impl<'a> EncoderCtx<'a> {
         if let CompiledExpr::SeqLit(elems) = right {
             if elems.is_empty() {
                 let len = self.encode_len(left)?;
-                return Ok(Dynamic::from_ast(&len.eq(&Int::from_i64(0))));
+                return Ok(Dynamic::from_ast(&len.eq(Int::from_i64(0))));
             }
         }
         if let CompiledExpr::SeqLit(elems) = left {
             if elems.is_empty() {
                 let len = self.encode_len(right)?;
-                return Ok(Dynamic::from_ast(&len.eq(&Int::from_i64(0))));
+                return Ok(Dynamic::from_ast(&len.eq(Int::from_i64(0))));
             }
         }
 
@@ -2012,11 +2012,11 @@ fn assert_var_range(solver: &Solver, kind: &VarKind, z3_vars: &[Dynamic]) {
         VarKind::Int { lo, hi } => {
             if let Some(lo) = lo {
                 let z3_lo = Int::from_i64(*lo);
-                solver.assert(&z3_vars[0].as_int().unwrap().ge(&z3_lo));
+                solver.assert(z3_vars[0].as_int().unwrap().ge(&z3_lo));
             }
             if let Some(hi) = hi {
                 let z3_hi = Int::from_i64(*hi);
-                solver.assert(&z3_vars[0].as_int().unwrap().le(&z3_hi));
+                solver.assert(z3_vars[0].as_int().unwrap().le(&z3_hi));
             }
         }
         VarKind::ExplodedDict {
@@ -2034,8 +2034,8 @@ fn assert_var_range(solver: &Solver, kind: &VarKind, z3_vars: &[Dynamic]) {
         VarKind::ExplodedSeq { max_len, elem_kind } => {
             // len bounded: 0 <= len <= max_len
             let len_var = z3_vars[0].as_int().unwrap();
-            solver.assert(&len_var.ge(&Int::from_i64(0)));
-            solver.assert(&len_var.le(&Int::from_i64(*max_len as i64)));
+            solver.assert(len_var.ge(Int::from_i64(0)));
+            solver.assert(len_var.le(Int::from_i64(*max_len as i64)));
             // Element range constraints
             let elem_stride = elem_kind.z3_var_count();
             for i in 0..*max_len {

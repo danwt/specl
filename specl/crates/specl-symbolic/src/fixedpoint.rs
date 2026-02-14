@@ -8,6 +8,12 @@ pub struct Fixedpoint {
     fp: z3_sys::Z3_fixedpoint,
 }
 
+impl Default for Fixedpoint {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Fixedpoint {
     /// Create a new fixedpoint engine using the thread-local Z3 context.
     pub fn new() -> Self {
@@ -19,9 +25,9 @@ impl Fixedpoint {
         let params = unsafe { z3_sys::Z3_mk_params(ctx) }.unwrap();
         unsafe { z3_sys::Z3_params_inc_ref(ctx, params) };
         let key =
-            unsafe { z3_sys::Z3_mk_string_symbol(ctx, b"engine\0".as_ptr() as *const _) }.unwrap();
+            unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"engine".as_ptr()) }.unwrap();
         let val =
-            unsafe { z3_sys::Z3_mk_string_symbol(ctx, b"spacer\0".as_ptr() as *const _) }.unwrap();
+            unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"spacer".as_ptr()) }.unwrap();
         unsafe { z3_sys::Z3_params_set_symbol(ctx, params, key, val) };
         unsafe { z3_sys::Z3_fixedpoint_set_params(ctx, fp, params) };
         unsafe { z3_sys::Z3_params_dec_ref(ctx, params) };
@@ -36,7 +42,7 @@ impl Fixedpoint {
 
     /// Add a rule (universally quantified Horn clause).
     pub fn add_rule(&self, rule: z3_sys::Z3_ast) {
-        let name = unsafe { z3_sys::Z3_mk_string_symbol(self.ctx, b"rule\0".as_ptr() as *const _) }
+        let name = unsafe { z3_sys::Z3_mk_string_symbol(self.ctx, c"rule".as_ptr()) }
             .unwrap();
         unsafe { z3_sys::Z3_fixedpoint_add_rule(self.ctx, self.fp, rule, name) };
     }

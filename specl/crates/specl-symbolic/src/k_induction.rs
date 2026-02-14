@@ -81,7 +81,7 @@ fn check_base_case(
                 whole_var_locals: Vec::new(),
             };
             let inv_encoded = enc.encode_bool(&inv.body)?;
-            solver.assert(&inv_encoded.not());
+            solver.assert(inv_encoded.not());
 
             match solver.check() {
                 SatResult::Sat => {
@@ -172,7 +172,7 @@ fn check_inductive_step(
             whole_var_locals: Vec::new(),
         };
         let inv_at_k = enc_k.encode_bool(&inv.body)?;
-        solver.assert(&inv_at_k.not());
+        solver.assert(inv_at_k.not());
 
         match solver.check() {
             SatResult::Sat => {

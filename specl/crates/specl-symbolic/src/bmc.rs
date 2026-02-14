@@ -62,7 +62,7 @@ pub fn check_bmc(
             };
 
             let inv_encoded = enc.encode_bool(&inv.body)?;
-            solver.assert(&inv_encoded.not());
+            solver.assert(inv_encoded.not());
 
             match solver.check() {
                 SatResult::Sat => {

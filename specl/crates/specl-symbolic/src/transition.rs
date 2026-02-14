@@ -30,7 +30,7 @@ fn encode_init_expr(
     match expr {
         CompiledExpr::Bool(true) => Ok(()),
         CompiledExpr::Bool(false) => {
-            solver.assert(&Bool::from_bool(false));
+            solver.assert(Bool::from_bool(false));
             Ok(())
         }
 
@@ -127,9 +127,9 @@ fn encode_init_assignment(
             };
             let rhs_z3 = enc.encode(rhs)?;
             if let (Some(vi), Some(ri)) = (z3_vars[0].as_int(), rhs_z3.as_int()) {
-                solver.assert(&vi.eq(&ri));
+                solver.assert(vi.eq(&ri));
             } else if let (Some(vb), Some(rb)) = (z3_vars[0].as_bool(), rhs_z3.as_bool()) {
-                solver.assert(&vb.eq(&rb));
+                solver.assert(vb.eq(&rb));
             }
             Ok(())
         }
@@ -164,11 +164,11 @@ fn encode_init_assignment(
                         if is_scalar_value {
                             let body_z3 = enc.encode(body)?;
                             if let (Some(vi), Some(ri)) = (z3_vars[i].as_int(), body_z3.as_int()) {
-                                solver.assert(&vi.eq(&ri));
+                                solver.assert(vi.eq(&ri));
                             } else if let (Some(vb), Some(rb)) =
                                 (z3_vars[i].as_bool(), body_z3.as_bool())
                             {
-                                solver.assert(&vb.eq(&rb));
+                                solver.assert(vb.eq(&rb));
                             }
                         } else {
                             let key_offset = i * stride;
@@ -198,11 +198,11 @@ fn encode_init_assignment(
                         let offset = (key_val - key_lo) as usize;
                         let val_z3 = enc.encode(val_expr)?;
                         if let (Some(vi), Some(ri)) = (z3_vars[offset].as_int(), val_z3.as_int()) {
-                            solver.assert(&vi.eq(&ri));
+                            solver.assert(vi.eq(&ri));
                         } else if let (Some(vb), Some(rb)) =
                             (z3_vars[offset].as_bool(), val_z3.as_bool())
                         {
-                            solver.assert(&vb.eq(&rb));
+                            solver.assert(vb.eq(&rb));
                         }
                     }
                     Ok(())
@@ -229,7 +229,7 @@ fn encode_init_assignment(
             let flags = enc.encode_as_set(rhs, *lo, *hi)?;
             for (i, flag) in flags.iter().enumerate() {
                 let vb = z3_vars[i].as_bool().unwrap();
-                solver.assert(&vb.eq(flag));
+                solver.assert(vb.eq(flag));
             }
             Ok(())
         }
@@ -250,7 +250,7 @@ fn encode_init_assignment(
                 CompiledExpr::SeqLit(elems) => {
                     // len = elems.len()
                     let len_var = z3_vars[0].as_int().unwrap();
-                    solver.assert(&len_var.eq(&Int::from_i64(elems.len() as i64)));
+                    solver.assert(len_var.eq(Int::from_i64(elems.len() as i64)));
                     // assign each element
                     let elem_stride = elem_kind.z3_var_count();
                     for (i, elem_expr) in elems.iter().enumerate() {
@@ -260,11 +260,11 @@ fn encode_init_assignment(
                         let val = enc.encode(elem_expr)?;
                         let offset = 1 + i * elem_stride;
                         if let (Some(vi), Some(ri)) = (z3_vars[offset].as_int(), val.as_int()) {
-                            solver.assert(&vi.eq(&ri));
+                            solver.assert(vi.eq(&ri));
                         } else if let (Some(vb), Some(rb)) =
                             (z3_vars[offset].as_bool(), val.as_bool())
                         {
-                            solver.assert(&vb.eq(&rb));
+                            solver.assert(vb.eq(&rb));
                         }
                     }
                     Ok(())
@@ -291,7 +291,7 @@ fn encode_init_compound_body(
         VarKind::ExplodedSeq { max_len, .. } => {
             if let CompiledExpr::SeqLit(elems) = body {
                 let len_var = slot_vars[0].as_int().unwrap();
-                solver.assert(&len_var.eq(&Int::from_i64(elems.len() as i64)));
+                solver.assert(len_var.eq(Int::from_i64(elems.len() as i64)));
                 for (ei, elem_expr) in elems.iter().enumerate() {
                     if ei >= *max_len {
                         break;
@@ -299,11 +299,11 @@ fn encode_init_compound_body(
                     let val = enc.encode(elem_expr)?;
                     let offset = 1 + ei;
                     if let (Some(vi), Some(ri)) = (slot_vars[offset].as_int(), val.as_int()) {
-                        solver.assert(&vi.eq(&ri));
+                        solver.assert(vi.eq(&ri));
                     } else if let (Some(vb), Some(rb)) =
                         (slot_vars[offset].as_bool(), val.as_bool())
                     {
-                        solver.assert(&vb.eq(&rb));
+                        solver.assert(vb.eq(&rb));
                     }
                 }
                 Ok(())
@@ -332,11 +332,11 @@ fn encode_init_compound_body(
                     if matches!(inner_vk.as_ref(), VarKind::Bool | VarKind::Int { .. }) {
                         let body_z3 = enc.encode(inner_body)?;
                         if let (Some(vi), Some(ri)) = (inner_vars[0].as_int(), body_z3.as_int()) {
-                            solver.assert(&vi.eq(&ri));
+                            solver.assert(vi.eq(&ri));
                         } else if let (Some(vb), Some(rb)) =
                             (inner_vars[0].as_bool(), body_z3.as_bool())
                         {
-                            solver.assert(&vb.eq(&rb));
+                            solver.assert(vb.eq(&rb));
                         }
                     } else {
                         encode_init_compound_body(
@@ -357,16 +357,16 @@ fn encode_init_compound_body(
             let flags = enc.encode_as_set(body, *lo, *hi)?;
             for (i, flag) in flags.iter().enumerate() {
                 let vb = slot_vars[i].as_bool().unwrap();
-                solver.assert(&vb.eq(flag));
+                solver.assert(vb.eq(flag));
             }
             Ok(())
         }
         _ => {
             let body_z3 = enc.encode(body)?;
             if let (Some(vi), Some(ri)) = (slot_vars[0].as_int(), body_z3.as_int()) {
-                solver.assert(&vi.eq(&ri));
+                solver.assert(vi.eq(&ri));
             } else if let (Some(vb), Some(rb)) = (slot_vars[0].as_bool(), body_z3.as_bool()) {
-                solver.assert(&vb.eq(&rb));
+                solver.assert(vb.eq(&rb));
             }
             Ok(())
         }
@@ -625,13 +625,13 @@ fn encode_primed_assignment(
                             val_z3.as_int(),
                             curr_vars[i].as_int(),
                         ) {
-                            conjuncts.push(ni.eq(&is_updated.ite(&vi, &ci)));
+                            conjuncts.push(ni.eq(is_updated.ite(&vi, &ci)));
                         } else if let (Some(nb), Some(vb), Some(cb)) = (
                             next_vars[i].as_bool(),
                             val_z3.as_bool(),
                             curr_vars[i].as_bool(),
                         ) {
-                            conjuncts.push(nb.eq(&is_updated.ite(&vb, &cb)));
+                            conjuncts.push(nb.eq(is_updated.ite(&vb, &cb)));
                         }
                     }
 
@@ -724,7 +724,7 @@ fn encode_primed_assignment(
                 CompiledExpr::SeqLit(elems) => {
                     let mut conjuncts = Vec::new();
                     let next_len = next_vars[0].as_int().unwrap();
-                    conjuncts.push(next_len.eq(&Int::from_i64(elems.len() as i64)));
+                    conjuncts.push(next_len.eq(Int::from_i64(elems.len() as i64)));
                     for (i, elem_expr) in elems.iter().enumerate() {
                         if i >= *max_len {
                             break;
@@ -763,7 +763,7 @@ fn encode_primed_assignment(
                     let mut conjuncts = Vec::new();
                     let curr_len = curr_vars[0].as_int().unwrap();
                     let next_len = next_vars[0].as_int().unwrap();
-                    conjuncts.push(next_len.eq(&Int::sub(&[&curr_len, &Int::from_i64(1)])));
+                    conjuncts.push(next_len.eq(Int::sub(&[&curr_len, &Int::from_i64(1)])));
                     for i in 0..max_len.saturating_sub(1) {
                         let next_offset = 1 + i * elem_stride;
                         let curr_offset = 1 + (i + 1) * elem_stride;
@@ -793,7 +793,7 @@ fn encode_primed_assignment(
                         let mut conjuncts = Vec::new();
                         let curr_len = curr_vars[0].as_int().unwrap();
                         let next_len = next_vars[0].as_int().unwrap();
-                        conjuncts.push(next_len.eq(&Int::add(&[&curr_len, &Int::from_i64(1)])));
+                        conjuncts.push(next_len.eq(Int::add(&[&curr_len, &Int::from_i64(1)])));
                         let appended = enc.encode(&elems[0])?;
                         for j in 0..*max_len {
                             let offset = 1 + j * elem_stride;
@@ -809,7 +809,7 @@ fn encode_primed_assignment(
                                     } else {
                                         ci.clone()
                                     };
-                                    conjuncts.push(ni.eq(&is_append_slot.ite(&new_val, &ci)));
+                                    conjuncts.push(ni.eq(is_append_slot.ite(&new_val, &ci)));
                                 } else if let (Some(nb), Some(cb)) = (
                                     next_vars[offset + s].as_bool(),
                                     curr_vars[offset + s].as_bool(),
@@ -819,7 +819,7 @@ fn encode_primed_assignment(
                                     } else {
                                         cb.clone()
                                     };
-                                    conjuncts.push(nb.eq(&is_append_slot.ite(&new_val, &cb)));
+                                    conjuncts.push(nb.eq(is_append_slot.ite(&new_val, &cb)));
                                 }
                             }
                         }
@@ -835,7 +835,7 @@ fn encode_primed_assignment(
                     let lo_z3 = enc.encode_int(lo)?;
                     let hi_z3 = enc.encode_int(hi)?;
                     let next_len = next_vars[0].as_int().unwrap();
-                    conjuncts.push(next_len.eq(&Int::sub(&[&hi_z3, &lo_z3])));
+                    conjuncts.push(next_len.eq(Int::sub(&[&hi_z3, &lo_z3])));
                     for i in 0..*max_len {
                         let next_offset = 1 + i * elem_stride;
                         let i_z3 = Int::from_i64(i as i64);
@@ -846,7 +846,7 @@ fn encode_primed_assignment(
                                 let mut val = curr_vars[1 + s].as_int().unwrap().clone(); // default: elem 0
                                 for j in (0..*max_len).rev() {
                                     let src_offset = 1 + j * elem_stride;
-                                    let cond = src_idx.eq(&Int::from_i64(j as i64));
+                                    let cond = src_idx.eq(Int::from_i64(j as i64));
                                     let cv = curr_vars[src_offset + s].as_int().unwrap();
                                     val = cond.ite(&cv, &val);
                                 }
@@ -855,7 +855,7 @@ fn encode_primed_assignment(
                                 let mut val = curr_vars[1 + s].as_bool().unwrap().clone();
                                 for j in (0..*max_len).rev() {
                                     let src_offset = 1 + j * elem_stride;
-                                    let cond = src_idx.eq(&Int::from_i64(j as i64));
+                                    let cond = src_idx.eq(Int::from_i64(j as i64));
                                     let cv = curr_vars[src_offset + s].as_bool().unwrap();
                                     val = cond.ite(&cv, &val);
                                 }

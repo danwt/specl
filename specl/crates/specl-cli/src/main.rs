@@ -1,5 +1,8 @@
 //! Command-line interface for Specl model checker.
 
+// False positive: thiserror/miette derive macros generate code that triggers this
+#![allow(unused_assignments)]
+
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Diagnostic, NamedSource, SourceSpan};
@@ -2126,8 +2129,7 @@ fn print_text_trace(trace: &[(State, Option<String>)], var_names: &[String], dif
     let mut prev_state: Option<&State> = None;
     for (i, (state, action)) in trace.iter().enumerate() {
         let action_str = action.as_deref().unwrap_or("init");
-        if diff && prev_state.is_some() {
-            let prev = prev_state.unwrap();
+        if let Some(prev) = prev_state.filter(|_| diff) {
             let mut changes = Vec::new();
             for (idx, v) in state.vars.iter().enumerate() {
                 if idx >= prev.vars.len() || *v != prev.vars[idx] {
@@ -2247,9 +2249,7 @@ fn trace_to_mermaid(
         } else {
             participants.iter().next().unwrap().clone()
         };
-        lines.push(format!(
-            "    rect rgb(255, 200, 200)",
-        ));
+        lines.push("    rect rgb(255, 200, 200)".to_string());
         lines.push(format!(
             "        Note over {}: {} VIOLATION: {}",
             actor, result_kind.to_uppercase(), inv
@@ -2912,7 +2912,7 @@ fn find_specl_files(dir: &Path) -> Vec<PathBuf> {
                 let path = entry.path();
                 if path.is_dir() {
                     files.extend(find_specl_files(&path));
-                } else if path.extension().map_or(false, |e| e == "specl") {
+                } else if path.extension().is_some_and(|e| e == "specl") {
                     files.push(path);
                 }
             }

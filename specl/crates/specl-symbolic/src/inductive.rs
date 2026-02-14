@@ -68,7 +68,7 @@ pub fn check_inductive(
             whole_var_locals: Vec::new(),
         };
         let inv_at_1 = enc1.encode_bool(&inv.body)?;
-        solver.assert(&inv_at_1.not());
+        solver.assert(inv_at_1.not());
 
         match solver.check() {
             SatResult::Sat => {

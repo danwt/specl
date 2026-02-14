@@ -32,7 +32,7 @@ pub fn check_ic3(
 
     // Declare Reach relation
     let reach_name =
-        unsafe { z3_sys::Z3_mk_string_symbol(ctx, b"Reach\0".as_ptr() as *const _) }.unwrap();
+        unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"Reach".as_ptr()) }.unwrap();
     let bool_sort = unsafe { z3_sys::Z3_mk_bool_sort(ctx) }.unwrap();
     let reach_decl = unsafe {
         z3_sys::Z3_mk_func_decl(ctx, reach_name, num_vars as u32, sorts.as_ptr(), bool_sort)
@@ -81,7 +81,7 @@ pub fn check_ic3(
     // === Query each invariant ===
     // Use Error relation pattern: Reach(vars) ∧ ¬inv(vars) => Error
     let err_name =
-        unsafe { z3_sys::Z3_mk_string_symbol(ctx, b"Error\0".as_ptr() as *const _) }.unwrap();
+        unsafe { z3_sys::Z3_mk_string_symbol(ctx, c"Error".as_ptr()) }.unwrap();
     let err_decl =
         unsafe { z3_sys::Z3_mk_func_decl(ctx, err_name, 0, std::ptr::null(), bool_sort) }.unwrap();
     fp.register_relation(err_decl);

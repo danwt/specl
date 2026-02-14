@@ -16,7 +16,7 @@ fn find_tla_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 files.extend(find_tla_files(&path));
-            } else if path.extension().map_or(false, |e| e == "tla") {
+            } else if path.extension().is_some_and(|e| e == "tla") {
                 files.push(path);
             }
         }

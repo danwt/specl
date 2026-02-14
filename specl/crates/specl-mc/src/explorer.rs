@@ -156,6 +156,12 @@ pub struct ProgressCounters {
     pub checked: AtomicUsize,
 }
 
+impl Default for ProgressCounters {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ProgressCounters {
     pub fn new() -> Self {
         Self {
@@ -1728,7 +1734,7 @@ impl Explorer {
             }
 
             // Check memory limit (every 1000 states)
-            if self.config.memory_limit_mb > 0 && self.store.len() % 1000 == 0 {
+            if self.config.memory_limit_mb > 0 && self.store.len().is_multiple_of(1000) {
                 if let Some(mem_mb) = current_memory_mb() {
                     if mem_mb >= self.config.memory_limit_mb {
                         return Ok(CheckOutcome::MemoryLimitReached {
@@ -1741,7 +1747,7 @@ impl Explorer {
             }
 
             // Check time limit
-            if self.deadline.is_some() && self.store.len() % 1000 == 0 && self.past_deadline() {
+            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
                 return Ok(CheckOutcome::TimeLimitReached {
                     states_explored: self.store.len(),
                     max_depth,
@@ -1902,7 +1908,7 @@ impl Explorer {
             }
 
             // Check memory limit (every 1000 states to reduce overhead)
-            if self.config.memory_limit_mb > 0 && self.store.len() % 1000 == 0 {
+            if self.config.memory_limit_mb > 0 && self.store.len().is_multiple_of(1000) {
                 if let Some(mem_mb) = current_memory_mb() {
                     if mem_mb >= self.config.memory_limit_mb {
                         info!(
@@ -1920,7 +1926,7 @@ impl Explorer {
             }
 
             // Check time limit (every 1000 states to reduce overhead)
-            if self.deadline.is_some() && self.store.len() % 1000 == 0 && self.past_deadline() {
+            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
                 return Ok(CheckOutcome::TimeLimitReached {
                     states_explored: self.store.len(),
                     max_depth,
@@ -2152,7 +2158,7 @@ impl Explorer {
             }
 
             // Check memory limit (every 1000 states to reduce overhead)
-            if self.config.memory_limit_mb > 0 && self.store.len() % 1000 == 0 {
+            if self.config.memory_limit_mb > 0 && self.store.len().is_multiple_of(1000) {
                 if let Some(mem_mb) = current_memory_mb() {
                     if mem_mb >= self.config.memory_limit_mb {
                         info!(
@@ -2168,14 +2174,14 @@ impl Explorer {
             }
 
             // Check time limit (every 1000 states to reduce overhead)
-            if self.deadline.is_some() && self.store.len() % 1000 == 0 && self.past_deadline() {
+            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
                 info!("reached time limit");
                 hit_time_limit = true;
                 break;
             }
 
             // --- Phase 1: Check invariants ---
-            let t0 = if profiling { Instant::now() } else { Instant::now() };
+            let t0 = Instant::now();
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
                 if !self.active_invariants[inv_idx] {
                     continue;
@@ -2203,7 +2209,7 @@ impl Explorer {
             if profiling { prof_time_inv += t0.elapsed(); }
 
             // --- Phase 2: Generate successor states ---
-            let t1 = if profiling { Instant::now() } else { Instant::now() };
+            let t1 = Instant::now();
             let mut successors = Vec::new();
             self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set)?;
             if profiling { prof_time_succ += t1.elapsed(); }
@@ -2227,7 +2233,7 @@ impl Explorer {
             }
 
             // --- Phase 3: Store insert + queue management ---
-            let t2 = if profiling { Instant::now() } else { Instant::now() };
+            let t2 = Instant::now();
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
             for (next_state, action_idx, pvals) in successors {
@@ -3901,7 +3907,7 @@ impl Explorer {
     /// Check if the time limit has been exceeded.
     #[inline]
     fn past_deadline(&self) -> bool {
-        self.deadline.map_or(false, |d| Instant::now() >= d)
+        self.deadline.is_some_and(|d| Instant::now() >= d)
     }
 
     /// Set an external stop flag (for swarm verification cancellation).

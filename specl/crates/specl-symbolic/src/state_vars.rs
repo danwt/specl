@@ -363,11 +363,11 @@ fn type_to_kind_simple(ty: &Type, seq_bound: usize) -> SymbolicResult<VarKind> {
 }
 
 /// Extract the init RHS expression for a variable (e.g., for `x = FnLit{...}` returns the FnLit).
-fn find_init_rhs<'a>(var_idx: usize, spec: &'a CompiledSpec) -> Option<&'a CompiledExpr> {
+fn find_init_rhs(var_idx: usize, spec: &CompiledSpec) -> Option<&CompiledExpr> {
     find_init_rhs_in(var_idx, &spec.init)
 }
 
-fn find_init_rhs_in<'a>(var_idx: usize, expr: &'a CompiledExpr) -> Option<&'a CompiledExpr> {
+fn find_init_rhs_in(var_idx: usize, expr: &CompiledExpr) -> Option<&CompiledExpr> {
     match expr {
         CompiledExpr::Binary {
             op: specl_ir::BinOp::And,

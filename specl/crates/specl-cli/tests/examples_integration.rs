@@ -16,7 +16,7 @@ fn find_specl_files(dir: &Path) -> Vec<PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 files.extend(find_specl_files(&path));
-            } else if path.extension().map_or(false, |e| e == "specl") {
+            } else if path.extension().is_some_and(|e| e == "specl") {
                 files.push(path);
             }
         }

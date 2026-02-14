@@ -588,52 +588,40 @@ impl Compiler {
         value: &CompiledExpr,
     ) -> bool {
         // Check for 2-level: value is a dict update of base[key]
-        if let Some((inner_base, inner_key, inner_value)) = extract_dict_update(value) {
-            if let CompiledExpr::Index {
-                base: idx_base,
-                index: idx_key,
-            } = inner_base
-            {
-                if expr_structural_eq(base, idx_base) && expr_structural_eq(key, idx_key) {
-                    // Check for 3-level: inner_value is a dict update of base[key][inner_key]
-                    if let Some((inner2_base, inner2_key, inner2_value)) =
-                        extract_dict_update(inner_value)
+        if let Some((CompiledExpr::Index { base: idx_base, index: idx_key }, inner_key, inner_value)) = extract_dict_update(value) {
+            if expr_structural_eq(base, idx_base) && expr_structural_eq(key, idx_key) {
+                // Check for 3-level: inner_value is a dict update of base[key][inner_key]
+                if let Some((CompiledExpr::Index { base: idx2_base, index: idx2_key }, inner2_key, inner2_value)) =
+                    extract_dict_update(inner_value)
+                {
+                    if let CompiledExpr::Index {
+                        base: idx2_inner_base,
+                        index: idx2_inner_key,
+                    } = idx2_base.as_ref()
                     {
-                        if let CompiledExpr::Index {
-                            base: idx2_base,
-                            index: idx2_key,
-                        } = inner2_base
+                        if expr_structural_eq(base, idx2_inner_base)
+                            && expr_structural_eq(key, idx2_inner_key)
+                            && expr_structural_eq(inner_key, idx2_key)
                         {
-                            if let CompiledExpr::Index {
-                                base: idx2_inner_base,
-                                index: idx2_inner_key,
-                            } = idx2_base.as_ref()
-                            {
-                                if expr_structural_eq(base, idx2_inner_base)
-                                    && expr_structural_eq(key, idx2_inner_key)
-                                    && expr_structural_eq(inner_key, idx2_key)
-                                {
-                                    // 3-level match! Compile: value3, k3, k2, k1, base
-                                    self.compile(inner2_value);
-                                    self.compile(inner2_key);
-                                    self.compile(inner_key);
-                                    self.compile(key);
-                                    self.compile(base);
-                                    self.emit(Op::NestedDictUpdate3);
-                                    return true;
-                                }
-                            }
+                            // 3-level match! Compile: value3, k3, k2, k1, base
+                            self.compile(inner2_value);
+                            self.compile(inner2_key);
+                            self.compile(inner_key);
+                            self.compile(key);
+                            self.compile(base);
+                            self.emit(Op::NestedDictUpdate3);
+                            return true;
                         }
                     }
-
-                    // 2-level match. Compile: value2, k2, k1, base
-                    self.compile(inner_value);
-                    self.compile(inner_key);
-                    self.compile(key);
-                    self.compile(base);
-                    self.emit(Op::NestedDictUpdate2);
-                    return true;
                 }
+
+                // 2-level match. Compile: value2, k2, k1, base
+                self.compile(inner_value);
+                self.compile(inner_key);
+                self.compile(key);
+                self.compile(base);
+                self.emit(Op::NestedDictUpdate2);
+                return true;
             }
         }
         false
