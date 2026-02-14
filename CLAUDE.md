@@ -261,20 +261,23 @@ specl/crates/
 
 ## Language Server (LSP)
 
-The `specl-lsp` binary provides IDE support via the Language Server Protocol:
+The `specl-lsp` binary provides IDE support via the Language Server Protocol (24 unit tests):
 
 - **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
-- **Completion**: Keywords, types, and symbols from the current file
+- **Completion**: Keywords, types, and symbols (vars, consts, actions, funcs, invariants) from the current file
 - **Signature help**: Parameter info when typing inside `action()` or `func()` calls
 - **Go-to-definition**: Jump to declaration of any identifier
 - **Find all references**: Locate all uses of an identifier
 - **Rename**: Rename an identifier across the file
 - **Document symbols**: Outline view of all declarations
+- **Workspace symbols**: Cross-file symbol search (`Ctrl+T` in VSCode)
 - **Inlay hints**: Parameter names shown inline at call sites (e.g. `Recovery(leader: 0, other: 2)`)
+- **Code actions**: Insert templates for init blocks, actions, and invariants
+- **Folding ranges**: Collapse declaration blocks and comment groups
 - **Formatting**: Pretty-print the document
 - **Semantic tokens**: Syntax highlighting (keywords, types, variables, functions, etc.)
 - **Diagnostics**: Parse and type errors shown inline
 
 ## Examples
 
-See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, CometBFT, Percolator, MESI, G-Counter CRDT, Lamport Clocks, Dining Philosophers, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, G-Counter CRDT, PN-Counter CRDT, Vector Clocks, Lamport Clocks, Peterson, Token Ring, Dining Philosophers, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
