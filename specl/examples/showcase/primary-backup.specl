@@ -1,0 +1,68 @@
+module PrimaryBackup
+
+// Primary-Backup Replication (Budhiraja et al., 1993).
+// A primary processes all writes and forwards to backup(s).
+// On primary failure, a backup is promoted. Reads always go
+// to the primary for strong consistency.
+//
+// N+1 nodes. Node with role 0 is primary. Simplified: track values.
+//
+// Use: specl check primary-backup.specl -c N=2 -c MaxVal=3 --no-deadlock --no-auto --bfs
+// Verified:
+
+const N: 1..3
+const MaxVal: 1..4
+
+// Node values
+var val: Dict[0..N, 0..MaxVal]
+// 0=primary, 1=backup, 2=dead
+var role: Dict[0..N, 0..2]
+// Write propagation: pending acks from backups
+var pending: 0..N
+var primary_val: 0..MaxVal
+
+init {
+    val = {n: 0 for n in 0..N}
+    and role = {n: if n == 0 then 0 else 1 for n in 0..N}
+    and pending = 0
+    and primary_val = 0
+}
+
+// Primary p writes a value
+action Write(p: 0..N, v: 1..MaxVal) {
+    require role[p] == 0
+    require pending == 0
+    val = val | {p: v}
+    and primary_val = v
+    and pending = len({b in 0..N if role[b] == 1})
+}
+
+// Backup receives the write
+action BackupAck(b: 0..N) {
+    require role[b] == 1
+    require pending > 0
+    val = val | {b: primary_val}
+    and pending = pending - 1
+}
+
+// Primary p fails
+action PrimaryFail(p: 0..N) {
+    require role[p] == 0
+    role = role | {p: 2}
+    and pending = 0
+}
+
+// Promote backup to primary (pick lowest-id live backup)
+action Promote(b: 0..N) {
+    require not (any p in 0..N: role[p] == 0)
+    require role[b] == 1
+    require all j in 0..N: (j < b) implies role[j] != 1
+    role = role | {b: 0}
+}
+
+// After sync, all live nodes agree
+invariant SyncAgreement {
+    pending > 0 or
+    (all i in 0..N: all j in 0..N:
+        (role[i] != 2 and role[j] != 2) implies val[i] == val[j])
+}

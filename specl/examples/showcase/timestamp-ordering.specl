@@ -1,0 +1,103 @@
+module TimestampOrdering
+
+// Basic Timestamp Ordering (Bernstein & Goodman, 1981).
+// Each transaction gets a unique timestamp at start.
+// Read/write operations are validated against timestamps.
+// A transaction is aborted if it would violate timestamp order.
+//
+// Simplified: N+1 transactions, 1 data item. Each transaction
+// reads then writes. Read timestamp (RTS) and write timestamp (WTS)
+// track the latest accessing transaction.
+//
+// Use: specl check timestamp-ordering.specl -c N=2 -c MaxTs=4 --no-deadlock --no-auto --bfs
+// Verified:
+
+const N: 0..3
+const MaxTs: 2..5
+
+// Data item timestamps
+var rts: 0..MaxTs
+var wts: 0..MaxTs
+
+// Per-transaction: timestamp and state
+// State: 0=idle, 1=started, 2=read_done, 3=write_done, 4=aborted
+var ts: Dict[0..N, 0..MaxTs]
+var pc: Dict[0..N, 0..4]
+var next_ts: 1..MaxTs
+
+init {
+    rts = 0
+    and wts = 0
+    and ts = {t: 0 for t in 0..N}
+    and pc = {t: 0 for t in 0..N}
+    and next_ts = 1
+}
+
+// Transaction starts and gets a timestamp
+action Start(t: 0..N) {
+    require pc[t] == 0
+    require next_ts <= MaxTs
+    ts = ts | {t: next_ts}
+    and pc = pc | {t: 1}
+    and next_ts = next_ts + 1
+}
+
+// Transaction reads: allowed if ts[t] >= wts
+action Read(t: 0..N) {
+    require pc[t] == 1
+    require ts[t] >= wts
+    rts = (if ts[t] > rts then ts[t] else rts)
+    and pc = pc | {t: 2}
+}
+
+// Read aborted: ts[t] < wts (reading stale data)
+action ReadAbort(t: 0..N) {
+    require pc[t] == 1
+    require ts[t] < wts
+    pc = pc | {t: 4}
+}
+
+// Transaction writes: allowed if ts[t] >= rts and ts[t] >= wts
+action Write(t: 0..N) {
+    require pc[t] == 2
+    require ts[t] >= rts
+    require ts[t] >= wts
+    wts = ts[t]
+    and pc = pc | {t: 3}
+}
+
+// Write aborted: ts[t] < rts (a newer txn already read)
+action WriteAbort(t: 0..N) {
+    require pc[t] == 2
+    require ts[t] < rts
+    pc = pc | {t: 4}
+}
+
+// Thomas write rule: ts[t] < wts but >= rts — skip write (already overwritten)
+action ThomasWrite(t: 0..N) {
+    require pc[t] == 2
+    require ts[t] >= rts
+    require ts[t] < wts
+    pc = pc | {t: 3}
+}
+
+// Aborted transaction restarts
+action Restart(t: 0..N) {
+    require pc[t] == 4
+    require next_ts <= MaxTs
+    ts = ts | {t: next_ts}
+    and pc = pc | {t: 1}
+    and next_ts = next_ts + 1
+}
+
+// Serializability: committed writes respect timestamp order
+invariant TimestampConsistency {
+    all i in 0..N: all j in 0..N:
+        (pc[i] == 3 and pc[j] == 3 and ts[i] < ts[j])
+        implies wts >= ts[i]
+}
+
+// RTS/WTS are non-negative
+invariant NonNegative {
+    rts >= 0 and wts >= 0
+}

@@ -1,0 +1,112 @@
+module Maekawa
+
+// Maekawa's Algorithm for Distributed Mutual Exclusion (Maekawa, 1985).
+// Each process has a voting set (quorum). To enter the critical section,
+// a process must collect votes from all members of its quorum.
+// Each process can only vote for one requester at a time.
+// Quorums must pairwise intersect, ensuring mutual exclusion.
+//
+// Simplified: 3 processes with quorums that pairwise intersect.
+// Quorum(0) = {0,1}, Quorum(1) = {1,2}, Quorum(2) = {0,2}.
+// voted_for value 3 = nobody.
+//
+// Use: specl check maekawa.specl --no-deadlock --no-auto --bfs
+// Verified:
+
+// 0=idle, 1=requesting, 2=voted_self, 3=in_cs
+var pc: Dict[0..2, 0..3]
+
+// voted_for[i] = who process i voted for (3 = nobody)
+var voted_for: Dict[0..2, 0..3]
+
+init {
+    pc = {p: 0 for p in 0..2}
+    and voted_for = {p: 3 for p in 0..2}
+}
+
+// Process requests CS
+action Request(p: 0..2) {
+    require pc[p] == 0
+    pc = pc | {p: 1}
+}
+
+// Process votes for itself (if in its own quorum and hasn't voted)
+action VoteSelf(p: 0..2) {
+    require pc[p] == 1
+    require voted_for[p] == 3
+    voted_for = voted_for | {p: p}
+    and pc = pc | {p: 2}
+}
+
+// Process 0 gets vote from process 1 (quorum {0,1})
+action Vote1For0() {
+    require pc[0] >= 1
+    require voted_for[1] == 3
+    voted_for = voted_for | {1: 0}
+}
+
+// Process 0 enters CS: has votes from 0 and 1
+action EnterCS0() {
+    require pc[0] == 2
+    require voted_for[0] == 0
+    require voted_for[1] == 0
+    pc = pc | {0: 3}
+}
+
+// Process 1 gets vote from process 2 (quorum {1,2})
+action Vote2For1() {
+    require pc[1] >= 1
+    require voted_for[2] == 3
+    voted_for = voted_for | {2: 1}
+}
+
+// Process 1 enters CS: has votes from 1 and 2
+action EnterCS1() {
+    require pc[1] == 2
+    require voted_for[1] == 1
+    require voted_for[2] == 1
+    pc = pc | {1: 3}
+}
+
+// Process 2 gets vote from process 0 (quorum {0,2})
+action Vote0For2() {
+    require pc[2] >= 1
+    require voted_for[0] == 3
+    voted_for = voted_for | {0: 2}
+}
+
+// Process 2 enters CS: has votes from 2 and 0
+action EnterCS2() {
+    require pc[2] == 2
+    require voted_for[2] == 2
+    require voted_for[0] == 2
+    pc = pc | {2: 3}
+}
+
+// Release: process leaves CS and releases all votes
+action Release0() {
+    require pc[0] == 3
+    pc = pc | {0: 0}
+    and voted_for = voted_for | {0: if voted_for[0] == 0 then 3 else voted_for[0],
+                                   1: if voted_for[1] == 0 then 3 else voted_for[1]}
+}
+
+action Release1() {
+    require pc[1] == 3
+    pc = pc | {1: 0}
+    and voted_for = voted_for | {1: if voted_for[1] == 1 then 3 else voted_for[1],
+                                   2: if voted_for[2] == 1 then 3 else voted_for[2]}
+}
+
+action Release2() {
+    require pc[2] == 3
+    pc = pc | {2: 0}
+    and voted_for = voted_for | {2: if voted_for[2] == 2 then 3 else voted_for[2],
+                                   0: if voted_for[0] == 2 then 3 else voted_for[0]}
+}
+
+// Mutual exclusion
+invariant MutualExclusion {
+    all i in 0..2: all j in 0..2:
+        (i != j) implies not (pc[i] == 3 and pc[j] == 3)
+}
