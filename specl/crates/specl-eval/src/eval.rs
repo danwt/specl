@@ -1,6 +1,7 @@
 //! Expression evaluator for Specl.
 
 use crate::value::Value;
+use crate::value::VK;
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
 use std::sync::Arc;
 use thiserror::Error;
@@ -86,9 +87,9 @@ impl<'a> EvalContext<'a> {
 /// Evaluate a compiled expression.
 pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
     match expr {
-        CompiledExpr::Bool(b) => Ok(Value::Bool(*b)),
-        CompiledExpr::Int(n) => Ok(Value::Int(*n)),
-        CompiledExpr::String(s) => Ok(Value::String(s.clone())),
+        CompiledExpr::Bool(b) => Ok(Value::bool(*b)),
+        CompiledExpr::Int(n) => Ok(Value::int(*n)),
+        CompiledExpr::String(s) => Ok(Value::string(s.clone())),
 
         CompiledExpr::Var(idx) => ctx
             .vars
@@ -128,7 +129,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             for elem in elements {
                 Value::set_insert(&mut set, eval(elem, ctx)?);
             }
-            Ok(Value::Set(Arc::new(set)))
+            Ok(Value::set(Arc::new(set)))
         }
 
         CompiledExpr::SeqLit(elements) => {
@@ -136,7 +137,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 .iter()
                 .map(|e| eval(e, ctx))
                 .collect::<EvalResult<_>>()?;
-            Ok(Value::Seq(seq))
+            Ok(Value::seq(seq))
         }
 
         CompiledExpr::TupleLit(elements) => {
@@ -144,7 +145,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 .iter()
                 .map(|e| eval(e, ctx))
                 .collect::<EvalResult<_>>()?;
-            Ok(Value::Tuple(tuple))
+            Ok(Value::tuple(tuple))
         }
 
         CompiledExpr::DictLit(entries) => {
@@ -154,7 +155,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let v = eval(value, ctx)?;
                 Value::fn_insert(&mut dict, k, v);
             }
-            Ok(Value::Fn(Arc::new(dict)))
+            Ok(Value::func(Arc::new(dict)))
         }
 
         CompiledExpr::FnLit { domain, body } => {
@@ -164,26 +165,20 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let hi_val = expect_int(&eval(hi, ctx)?)?;
                 let mut map = Vec::with_capacity((hi_val - lo_val + 1).max(0) as usize);
                 for i in lo_val..=hi_val {
-                    ctx.push_local(Value::Int(i));
+                    ctx.push_local(Value::int(i));
                     let value = eval(body, ctx)?;
                     ctx.pop_local();
-                    map.push((Value::Int(i), value));
+                    map.push((Value::int(i), value));
                 }
                 // Produce IntMap if keys start at 0 and all values are Int
-                if lo_val == 0 && map.iter().all(|(_, v)| matches!(v, Value::Int(_))) {
+                if lo_val == 0 && map.iter().all(|(_, v)| v.is_int()) {
                     let arr: Vec<i64> = map
                         .iter()
-                        .map(|(_, v)| {
-                            if let Value::Int(n) = v {
-                                *n
-                            } else {
-                                unreachable!()
-                            }
-                        })
+                        .map(|(_, v)| v.as_int().unwrap())
                         .collect();
-                    return Ok(Value::IntMap(Arc::new(arr)));
+                    return Ok(Value::intmap(Arc::new(arr)));
                 }
-                return Ok(Value::Fn(Arc::new(map)));
+                return Ok(Value::func(Arc::new(map)));
             }
 
             let domain_val = eval(domain, ctx)?;
@@ -196,15 +191,15 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 map.push((key.clone(), value));
             }
             // domain_set is already sorted, so map is sorted by key
-            Ok(Value::Fn(Arc::new(map)))
+            Ok(Value::func(Arc::new(map)))
         }
 
         CompiledExpr::Index { base, index } => {
             let base_val = eval(base, ctx)?;
             let index_val = eval(index, ctx)?;
 
-            match &base_val {
-                Value::Seq(seq) => {
+            match base_val.kind() {
+                VK::Seq(seq) => {
                     let idx = expect_int(&index_val)?;
                     if idx < 0 || idx as usize >= seq.len() {
                         return Err(EvalError::IndexOutOfBounds {
@@ -214,11 +209,11 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     }
                     Ok(seq[idx as usize].clone())
                 }
-                Value::IntMap(arr) => {
+                VK::IntMap(arr) => {
                     let k = expect_int(&index_val)? as usize;
-                    Ok(Value::Int(arr[k]))
+                    Ok(Value::int(arr[k]))
                 }
-                Value::Fn(map) => Value::fn_get(map, &index_val)
+                VK::Fn(map) => Value::fn_get(map, &index_val)
                     .cloned()
                     .ok_or_else(|| EvalError::KeyNotFound(index_val.to_string())),
                 _ => Err(type_mismatch("Seq or Fn", &base_val)),
@@ -230,8 +225,8 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             let lo_val = expect_int(&eval(lo, ctx)?)?;
             let hi_val = expect_int(&eval(hi, ctx)?)?;
 
-            match base_val {
-                Value::Seq(seq) => {
+            match base_val.kind() {
+                VK::Seq(seq) => {
                     let start = lo_val.max(0) as usize;
                     let end = if hi_val < 0 {
                         0
@@ -239,9 +234,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                         (hi_val as usize).min(seq.len())
                     };
                     if start >= end {
-                        Ok(Value::Seq(Vec::new()))
+                        Ok(Value::seq(Vec::new()))
                     } else {
-                        Ok(Value::Seq(seq[start..end].to_vec()))
+                        Ok(Value::seq(seq[start..end].to_vec()))
                     }
                 }
                 _ => Err(type_mismatch("Seq", &base_val)),
@@ -250,8 +245,8 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
 
         CompiledExpr::Field { base, field } => {
             let base_val = eval(base, ctx)?;
-            match &base_val {
-                Value::Record(r) => r
+            match base_val.kind() {
+                VK::Record(r) => r
                     .get(field)
                     .cloned()
                     .ok_or_else(|| EvalError::KeyNotFound(field.clone())),
@@ -261,8 +256,8 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
 
         CompiledExpr::Call { func, args } => {
             let func_val = eval(func, ctx)?;
-            match &func_val {
-                Value::IntMap(arr) => {
+            match func_val.kind() {
+                VK::IntMap(arr) => {
                     if args.len() != 1 {
                         return Err(EvalError::Internal(
                             "function call with wrong arity".to_string(),
@@ -270,9 +265,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     }
                     let arg = eval(&args[0], ctx)?;
                     let k = expect_int(&arg)? as usize;
-                    Ok(Value::Int(arr[k]))
+                    Ok(Value::int(arr[k]))
                 }
-                Value::Fn(map) => {
+                VK::Fn(map) => {
                     if args.len() != 1 {
                         return Err(EvalError::Internal(
                             "function call with wrong arity".to_string(),
@@ -295,38 +290,40 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
         }
 
         CompiledExpr::RecordUpdate { base, updates } => {
-            let mut record = match eval(base, ctx)? {
-                Value::Record(r) => r,
-                v => return Err(type_mismatch("Record", &v)),
-            };
-            for (name, value) in updates {
-                record.insert(name.clone(), eval(value, ctx)?);
+            let base_val = eval(base, ctx)?;
+            if !base_val.is_record() {
+                return Err(type_mismatch("Record", &base_val));
             }
-            Ok(Value::Record(record))
+            let mut record = base_val.into_record_arc();
+            let r = Arc::make_mut(&mut record);
+            for (name, value) in updates {
+                r.insert(name.clone(), eval(value, ctx)?);
+            }
+            Ok(Value::from_record_arc(record))
         }
 
         CompiledExpr::FnUpdate { base, key, value } => {
             let base_val = eval(base, ctx)?;
             let key_val = eval(key, ctx)?;
             let value_val = eval(value, ctx)?;
-            match base_val {
-                Value::IntMap(mut arr) => {
-                    let k = expect_int(&key_val)? as usize;
-                    if let Value::Int(v) = value_val {
-                        Arc::make_mut(&mut arr)[k] = v;
-                        Ok(Value::IntMap(arr))
-                    } else {
-                        // Fall back to Fn if value isn't Int
-                        let mut fn_vec = Value::intmap_to_fn_vec(&arr);
-                        Value::fn_insert(&mut fn_vec, key_val, value_val);
-                        Ok(Value::Fn(Arc::new(fn_vec)))
-                    }
+            if base_val.is_intmap() {
+                let mut arr = base_val.into_intmap_arc();
+                let k = expect_int(&key_val)? as usize;
+                if let Some(v) = value_val.as_int() {
+                    Arc::make_mut(&mut arr)[k] = v;
+                    Ok(Value::from_intmap_arc(arr))
+                } else {
+                    // Fall back to Fn if value isn't Int
+                    let mut fn_vec = Value::intmap_to_fn_vec(&arr);
+                    Value::fn_insert(&mut fn_vec, key_val, value_val);
+                    Ok(Value::func(Arc::new(fn_vec)))
                 }
-                Value::Fn(mut map) => {
-                    Value::fn_insert(Arc::make_mut(&mut map), key_val, value_val);
-                    Ok(Value::Fn(map))
-                }
-                v => Err(type_mismatch("Fn", &v)),
+            } else if base_val.is_fn() {
+                let mut map = base_val.into_fn_arc();
+                Value::fn_insert(Arc::make_mut(&mut map), key_val, value_val);
+                Ok(Value::from_fn_arc(map))
+            } else {
+                Err(type_mismatch("Fn", &base_val))
             }
         }
 
@@ -342,7 +339,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let lo_val = expect_int(&eval(lo, ctx)?)?;
                 let hi_val = expect_int(&eval(hi, ctx)?)?;
                 for i in lo_val..=hi_val {
-                    ctx.push_local(Value::Int(i));
+                    ctx.push_local(Value::int(i));
                     let include = if let Some(f) = filter {
                         expect_bool(&eval(f, ctx)?)?
                     } else {
@@ -354,7 +351,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     }
                     ctx.pop_local();
                 }
-                return Ok(Value::Set(Arc::new(result)));
+                return Ok(Value::set(Arc::new(result)));
             }
 
             let domain_val = eval(domain, ctx)?;
@@ -377,7 +374,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 ctx.pop_local();
             }
 
-            Ok(Value::Set(Arc::new(result)))
+            Ok(Value::set(Arc::new(result)))
         }
 
         CompiledExpr::Forall { domain, body } => {
@@ -386,19 +383,19 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let lo_val = expect_int(&eval(lo, ctx)?)?;
                 let hi_val = expect_int(&eval(hi, ctx)?)?;
                 for i in lo_val..=hi_val {
-                    ctx.push_local(Value::Int(i));
+                    ctx.push_local(Value::int(i));
                     let result = expect_bool(&eval(body, ctx)?)?;
                     ctx.pop_local();
                     if !result {
-                        return Ok(Value::Bool(false));
+                        return Ok(Value::bool(false));
                     }
                 }
-                return Ok(Value::Bool(true));
+                return Ok(Value::bool(true));
             }
 
             // Fast path: Forall over Powerset
             if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
-                return Ok(Value::Bool(forall_over_powerset_bool(
+                return Ok(Value::bool(forall_over_powerset_bool(
                     inner_domain,
                     body,
                     ctx,
@@ -413,11 +410,11 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let result = expect_bool(&eval(body, ctx)?)?;
                 ctx.pop_local();
                 if !result {
-                    return Ok(Value::Bool(false));
+                    return Ok(Value::bool(false));
                 }
             }
 
-            Ok(Value::Bool(true))
+            Ok(Value::bool(true))
         }
 
         CompiledExpr::Exists { domain, body } => {
@@ -426,19 +423,19 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let lo_val = expect_int(&eval(lo, ctx)?)?;
                 let hi_val = expect_int(&eval(hi, ctx)?)?;
                 for i in lo_val..=hi_val {
-                    ctx.push_local(Value::Int(i));
+                    ctx.push_local(Value::int(i));
                     let result = expect_bool(&eval(body, ctx)?)?;
                     ctx.pop_local();
                     if result {
-                        return Ok(Value::Bool(true));
+                        return Ok(Value::bool(true));
                     }
                 }
-                return Ok(Value::Bool(false));
+                return Ok(Value::bool(false));
             }
 
             // Fast path: Exists over Powerset
             if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
-                return Ok(Value::Bool(exists_over_powerset_bool(
+                return Ok(Value::bool(exists_over_powerset_bool(
                     inner_domain,
                     body,
                     ctx,
@@ -453,11 +450,11 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let result = expect_bool(&eval(body, ctx)?)?;
                 ctx.pop_local();
                 if result {
-                    return Ok(Value::Bool(true));
+                    return Ok(Value::bool(true));
                 }
             }
 
-            Ok(Value::Bool(false))
+            Ok(Value::bool(false))
         }
 
         CompiledExpr::Choose { domain, predicate } => {
@@ -507,7 +504,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
         CompiledExpr::Changes(_) => {
             // Changes is used during frame analysis, not runtime evaluation
             // At runtime, we just return true (the change is allowed)
-            Ok(Value::Bool(true))
+            Ok(Value::bool(true))
         }
 
         CompiledExpr::Unchanged(idx) => {
@@ -520,7 +517,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 .next_vars
                 .get(*idx)
                 .ok_or(EvalError::UndefinedVariable(*idx))?;
-            Ok(Value::Bool(current == next))
+            Ok(Value::bool(current == next))
         }
 
         CompiledExpr::Enabled(_) => {
@@ -538,9 +535,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
 
         CompiledExpr::SeqHead(seq) => {
             let seq_val = eval(seq, ctx)?;
-            match seq_val {
-                Value::Seq(s) if !s.is_empty() => Ok(s[0].clone()),
-                Value::Seq(_) => Err(EvalError::IndexOutOfBounds {
+            match seq_val.kind() {
+                VK::Seq(s) if !s.is_empty() => Ok(s[0].clone()),
+                VK::Seq(_) => Err(EvalError::IndexOutOfBounds {
                     index: 0,
                     length: 0,
                 }),
@@ -550,15 +547,15 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
 
         CompiledExpr::SeqTail(seq) => {
             let seq_val = eval(seq, ctx)?;
-            match seq_val {
-                Value::Seq(s) if !s.is_empty() => Ok(Value::Seq(s[1..].to_vec())),
-                Value::Seq(_) => Ok(Value::Seq(vec![])),
+            match seq_val.kind() {
+                VK::Seq(s) if !s.is_empty() => Ok(Value::seq(s[1..].to_vec())),
+                VK::Seq(_) => Ok(Value::seq(vec![])),
                 _ => Err(type_mismatch("Seq", &seq_val)),
             }
         }
 
         CompiledExpr::Len(expr) => {
-            // Fast path: len({x in D if pred}) → count without materializing set
+            // Fast path: len({x in D if pred}) -> count without materializing set
             if let CompiledExpr::SetComprehension {
                 element,
                 domain,
@@ -567,33 +564,33 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             {
                 if matches!(element.as_ref(), CompiledExpr::Local(0)) {
                     if let Some(filter) = filter {
-                        return Ok(Value::Int(count_filtered(domain, filter, ctx)?));
+                        return Ok(Value::int(count_filtered(domain, filter, ctx)?));
                     }
                 }
             }
             let val = eval(expr, ctx)?;
-            match val {
-                Value::Seq(s) => Ok(Value::Int(s.len() as i64)),
-                Value::Set(s) => Ok(Value::Int(s.len() as i64)),
-                Value::Fn(m) => Ok(Value::Int(m.len() as i64)),
-                Value::IntMap(arr) => Ok(Value::Int(arr.len() as i64)),
+            match val.kind() {
+                VK::Seq(s) => Ok(Value::int(s.len() as i64)),
+                VK::Set(s) => Ok(Value::int(s.len() as i64)),
+                VK::Fn(m) => Ok(Value::int(m.len() as i64)),
+                VK::IntMap(arr) => Ok(Value::int(arr.len() as i64)),
                 _ => Err(type_mismatch("Seq, Set, or Fn", &val)),
             }
         }
 
         CompiledExpr::Keys(expr) => {
             let val = eval(expr, ctx)?;
-            match val {
+            match val.kind() {
                 // Keys of sorted fn vec are already sorted
-                Value::IntMap(arr) => Ok(Value::Set(Arc::new(
-                    (0..arr.len() as i64).map(Value::Int).collect(),
+                VK::IntMap(arr) => Ok(Value::set(Arc::new(
+                    (0..arr.len() as i64).map(Value::int).collect(),
                 ))),
-                Value::Fn(m) => Ok(Value::Set(Arc::new(
+                VK::Fn(m) => Ok(Value::set(Arc::new(
                     m.iter().map(|(k, _)| k.clone()).collect(),
                 ))),
-                // For sequences, DOMAIN returns 1..Len(seq) — already sorted
-                Value::Seq(s) => Ok(Value::Set(Arc::new(
-                    (1..=s.len() as i64).map(Value::Int).collect(),
+                // For sequences, DOMAIN returns 1..Len(seq) -- already sorted
+                VK::Seq(s) => Ok(Value::set(Arc::new(
+                    (1..=s.len() as i64).map(Value::int).collect(),
                 ))),
                 _ => Err(type_mismatch("Fn or Seq", &val)),
             }
@@ -601,18 +598,18 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
 
         CompiledExpr::Values(expr) => {
             let val = eval(expr, ctx)?;
-            match val {
-                Value::IntMap(arr) => {
-                    let mut vals: Vec<Value> = arr.iter().map(|v| Value::Int(*v)).collect();
+            match val.kind() {
+                VK::IntMap(arr) => {
+                    let mut vals: Vec<Value> = arr.iter().map(|v| Value::int(*v)).collect();
                     vals.sort();
                     vals.dedup();
-                    Ok(Value::Set(Arc::new(vals)))
+                    Ok(Value::set(Arc::new(vals)))
                 }
-                Value::Fn(m) => {
+                VK::Fn(m) => {
                     let mut vals: Vec<Value> = m.iter().map(|(_, v)| v.clone()).collect();
                     vals.sort();
                     vals.dedup();
-                    Ok(Value::Set(Arc::new(vals)))
+                    Ok(Value::set(Arc::new(vals)))
                 }
                 _ => Err(type_mismatch("Fn", &val)),
             }
@@ -628,7 +625,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     Value::set_insert(&mut result, elem.clone());
                 }
             }
-            Ok(Value::Set(Arc::new(result)))
+            Ok(Value::set(Arc::new(result)))
         }
 
         CompiledExpr::Powerset(expr) => {
@@ -644,9 +641,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     }
                 }
                 // subset is already sorted (input_set is sorted, we iterate in order)
-                Value::set_insert(&mut result, Value::Set(Arc::new(subset)));
+                Value::set_insert(&mut result, Value::set(Arc::new(subset)));
             }
-            Ok(Value::Set(Arc::new(result)))
+            Ok(Value::set(Arc::new(result)))
         }
     }
 }
@@ -700,18 +697,18 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
             BinOp::In => {
                 let left_val = eval(left, ctx)?;
                 let right_val = eval(right, ctx)?;
-                match &right_val {
-                    Value::Set(s) => Ok(Value::set_contains(s, &left_val)),
-                    Value::Fn(f) => Ok(Value::fn_get(f, &left_val).is_some()),
+                match right_val.kind() {
+                    VK::Set(s) => Ok(Value::set_contains(s, &left_val)),
+                    VK::Fn(f) => Ok(Value::fn_get(f, &left_val).is_some()),
                     _ => Err(type_mismatch("Set or Dict", &right_val)),
                 }
             }
             BinOp::NotIn => {
                 let left_val = eval(left, ctx)?;
                 let right_val = eval(right, ctx)?;
-                match &right_val {
-                    Value::Set(s) => Ok(!Value::set_contains(s, &left_val)),
-                    Value::Fn(f) => Ok(Value::fn_get(f, &left_val).is_none()),
+                match right_val.kind() {
+                    VK::Set(s) => Ok(!Value::set_contains(s, &left_val)),
+                    VK::Fn(f) => Ok(Value::fn_get(f, &left_val).is_none()),
                     _ => Err(type_mismatch("Set or Dict", &right_val)),
                 }
             }
@@ -735,7 +732,7 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                 let lo_val = expect_int(&eval(lo, ctx)?)?;
                 let hi_val = expect_int(&eval(hi, ctx)?)?;
                 for i in lo_val..=hi_val {
-                    ctx.push_local(Value::Int(i));
+                    ctx.push_local(Value::int(i));
                     let result = eval_bool(body, ctx)?;
                     ctx.pop_local();
                     if !result {
@@ -745,7 +742,7 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                 return Ok(true);
             }
 
-            // Fast path: Forall over Powerset — iterate bitmasks without
+            // Fast path: Forall over Powerset -- iterate bitmasks without
             // materializing all 2^n subsets upfront
             if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
                 return forall_over_powerset_bool(inner_domain, body, ctx);
@@ -769,7 +766,7 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                 let lo_val = expect_int(&eval(lo, ctx)?)?;
                 let hi_val = expect_int(&eval(hi, ctx)?)?;
                 for i in lo_val..=hi_val {
-                    ctx.push_local(Value::Int(i));
+                    ctx.push_local(Value::int(i));
                     let result = eval_bool(body, ctx)?;
                     ctx.pop_local();
                     if result {
@@ -779,7 +776,7 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                 return Ok(false);
             }
 
-            // Fast path: Exists over Powerset — iterate bitmasks without
+            // Fast path: Exists over Powerset -- iterate bitmasks without
             // materializing all 2^n subsets upfront
             if let CompiledExpr::Powerset(inner_domain) = domain.as_ref() {
                 return exists_over_powerset_bool(inner_domain, body, ctx);
@@ -829,26 +826,22 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
         CompiledExpr::Int(n) => Ok(*n),
 
         CompiledExpr::Var(idx) => match ctx.vars.get(*idx) {
-            Some(Value::Int(n)) => Ok(*n),
-            Some(v) => Err(type_mismatch("Int", v)),
+            Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
             None => Err(EvalError::UndefinedVariable(*idx)),
         },
 
         CompiledExpr::Const(idx) => match ctx.consts.get(*idx) {
-            Some(Value::Int(n)) => Ok(*n),
-            Some(v) => Err(type_mismatch("Int", v)),
+            Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
             None => Err(EvalError::UndefinedConstant(*idx)),
         },
 
         CompiledExpr::Local(idx) => match ctx.get_local(*idx) {
-            Some(Value::Int(n)) => Ok(*n),
-            Some(v) => Err(type_mismatch("Int", v)),
+            Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
             None => Err(EvalError::Internal(format!("local {} not found", idx))),
         },
 
         CompiledExpr::Param(idx) => match ctx.params.get(*idx) {
-            Some(Value::Int(n)) => Ok(*n),
-            Some(v) => Err(type_mismatch("Int", v)),
+            Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
             None => Err(EvalError::Internal(format!("param {} not found", idx))),
         },
 
@@ -878,21 +871,19 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
         CompiledExpr::Index { base, index } => {
             let base_val = eval(base, ctx)?;
             let index_val = eval(index, ctx)?;
-            match &base_val {
-                Value::IntMap(arr) => {
+            match base_val.kind() {
+                VK::IntMap(arr) => {
                     let k = expect_int(&index_val)? as usize;
                     Ok(arr[k])
                 }
-                Value::Fn(map) => match Value::fn_get(map, &index_val) {
-                    Some(Value::Int(n)) => Ok(*n),
-                    Some(v) => Err(type_mismatch("Int", v)),
+                VK::Fn(map) => match Value::fn_get(map, &index_val) {
+                    Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
                     None => Err(EvalError::KeyNotFound(index_val.to_string())),
                 },
-                Value::Seq(seq) => {
+                VK::Seq(seq) => {
                     let idx = expect_int(&index_val)?;
                     match seq.get(idx as usize) {
-                        Some(Value::Int(n)) => Ok(*n),
-                        Some(v) => Err(type_mismatch("Int", v)),
+                        Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
                         None => Err(EvalError::IndexOutOfBounds {
                             index: idx,
                             length: seq.len(),
@@ -904,7 +895,7 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
         }
 
         CompiledExpr::Len(inner) => {
-            // Fast path: len({x in D if pred}) → count without materializing set
+            // Fast path: len({x in D if pred}) -> count without materializing set
             if let CompiledExpr::SetComprehension {
                 element,
                 domain,
@@ -918,11 +909,11 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                 }
             }
             let val = eval(inner, ctx)?;
-            match &val {
-                Value::Set(s) => Ok(s.len() as i64),
-                Value::Seq(s) => Ok(s.len() as i64),
-                Value::Fn(f) => Ok(f.len() as i64),
-                Value::IntMap(arr) => Ok(arr.len() as i64),
+            match val.kind() {
+                VK::Set(s) => Ok(s.len() as i64),
+                VK::Seq(s) => Ok(s.len() as i64),
+                VK::Fn(f) => Ok(f.len() as i64),
+                VK::IntMap(arr) => Ok(arr.len() as i64),
                 _ => Err(type_mismatch("Set, Seq, or Fn", &val)),
             }
         }
@@ -981,7 +972,7 @@ fn exists_over_powerset_bool(
                 subset_buf.push(elem.clone());
             }
         }
-        ctx.push_local(Value::Set(Arc::new(subset_buf.clone())));
+        ctx.push_local(Value::set(Arc::new(subset_buf.clone())));
         let result = eval_bool(body, ctx)?;
         ctx.pop_local();
         if result {
@@ -1007,7 +998,7 @@ fn forall_over_powerset_bool(
                 subset_buf.push(elem.clone());
             }
         }
-        ctx.push_local(Value::Set(Arc::new(subset_buf.clone())));
+        ctx.push_local(Value::set(Arc::new(subset_buf.clone())));
         let result = eval_bool(body, ctx)?;
         ctx.pop_local();
         if !result {
@@ -1023,7 +1014,7 @@ fn eval_set_domain(domain_expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalRes
     if let CompiledExpr::Range { lo, hi } = domain_expr {
         let lo_val = expect_int(&eval(lo, ctx)?)?;
         let hi_val = expect_int(&eval(hi, ctx)?)?;
-        return Ok((lo_val..=hi_val).map(Value::Int).collect());
+        return Ok((lo_val..=hi_val).map(Value::int).collect());
     }
     let domain_val = eval(domain_expr, ctx)?;
     extract_domain_elements(&domain_val)
@@ -1041,7 +1032,7 @@ fn count_filtered(
         let lo_val = expect_int(&eval(lo, ctx)?)?;
         let hi_val = expect_int(&eval(hi, ctx)?)?;
         for i in lo_val..=hi_val {
-            ctx.push_local(Value::Int(i));
+            ctx.push_local(Value::int(i));
             if eval_bool(filter, ctx)? {
                 count += 1;
             }
@@ -1072,23 +1063,23 @@ fn eval_binary(
         BinOp::And => {
             let left_val = expect_bool(&eval(left, ctx)?)?;
             if !left_val {
-                return Ok(Value::Bool(false));
+                return Ok(Value::bool(false));
             }
-            return Ok(Value::Bool(expect_bool(&eval(right, ctx)?)?));
+            return Ok(Value::bool(expect_bool(&eval(right, ctx)?)?));
         }
         BinOp::Or => {
             let left_val = expect_bool(&eval(left, ctx)?)?;
             if left_val {
-                return Ok(Value::Bool(true));
+                return Ok(Value::bool(true));
             }
-            return Ok(Value::Bool(expect_bool(&eval(right, ctx)?)?));
+            return Ok(Value::bool(expect_bool(&eval(right, ctx)?)?));
         }
         BinOp::Implies => {
             let left_val = expect_bool(&eval(left, ctx)?)?;
             if !left_val {
-                return Ok(Value::Bool(true));
+                return Ok(Value::bool(true));
             }
-            return Ok(Value::Bool(expect_bool(&eval(right, ctx)?)?));
+            return Ok(Value::bool(expect_bool(&eval(right, ctx)?)?));
         }
         _ => {}
     }
@@ -1102,47 +1093,47 @@ fn eval_binary(
         BinOp::Iff => {
             let a = expect_bool(&left_val)?;
             let b = expect_bool(&right_val)?;
-            Ok(Value::Bool(a == b))
+            Ok(Value::bool(a == b))
         }
 
-        BinOp::Eq => Ok(Value::Bool(left_val == right_val)),
-        BinOp::Ne => Ok(Value::Bool(left_val != right_val)),
+        BinOp::Eq => Ok(Value::bool(left_val == right_val)),
+        BinOp::Ne => Ok(Value::bool(left_val != right_val)),
 
         BinOp::Lt => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Bool(a < b))
+            Ok(Value::bool(a < b))
         }
         BinOp::Le => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Bool(a <= b))
+            Ok(Value::bool(a <= b))
         }
         BinOp::Gt => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Bool(a > b))
+            Ok(Value::bool(a > b))
         }
         BinOp::Ge => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Bool(a >= b))
+            Ok(Value::bool(a >= b))
         }
 
         BinOp::Add => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Int(a + b))
+            Ok(Value::int(a + b))
         }
         BinOp::Sub => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Int(a - b))
+            Ok(Value::int(a - b))
         }
         BinOp::Mul => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::Int(a * b))
+            Ok(Value::int(a * b))
         }
         BinOp::Div => {
             let a = expect_int(&left_val)?;
@@ -1150,7 +1141,7 @@ fn eval_binary(
             if b == 0 {
                 return Err(EvalError::DivisionByZero);
             }
-            Ok(Value::Int(a / b))
+            Ok(Value::int(a / b))
         }
         BinOp::Mod => {
             let a = expect_int(&left_val)?;
@@ -1158,109 +1149,118 @@ fn eval_binary(
             if b == 0 {
                 return Err(EvalError::DivisionByZero);
             }
-            Ok(Value::Int(a % b))
+            Ok(Value::int(a % b))
         }
 
-        BinOp::In => match &right_val {
-            Value::Set(s) => Ok(Value::Bool(Value::set_contains(s, &left_val))),
-            Value::Fn(f) => Ok(Value::Bool(Value::fn_get(f, &left_val).is_some())),
+        BinOp::In => match right_val.kind() {
+            VK::Set(s) => Ok(Value::bool(Value::set_contains(s, &left_val))),
+            VK::Fn(f) => Ok(Value::bool(Value::fn_get(f, &left_val).is_some())),
             _ => Err(type_mismatch("Set or Dict", &right_val)),
         },
-        BinOp::NotIn => match &right_val {
-            Value::Set(s) => Ok(Value::Bool(!Value::set_contains(s, &left_val))),
-            Value::Fn(f) => Ok(Value::Bool(Value::fn_get(f, &left_val).is_none())),
+        BinOp::NotIn => match right_val.kind() {
+            VK::Set(s) => Ok(Value::bool(!Value::set_contains(s, &left_val))),
+            VK::Fn(f) => Ok(Value::bool(Value::fn_get(f, &left_val).is_none())),
             _ => Err(type_mismatch("Set or Dict", &right_val)),
         },
 
         BinOp::Union => {
-            match (left_val, right_val) {
-                (Value::Set(a), Value::Set(b)) => {
-                    if b.len() <= 4 {
-                        // Small right side: insert into left via CoW
-                        let mut result = a;
-                        let inner = Arc::make_mut(&mut result);
-                        for v in b.iter() {
-                            Value::set_insert(inner, v.clone());
-                        }
-                        Ok(Value::Set(result))
-                    } else if a.len() <= 4 {
-                        let mut result = b;
-                        let inner = Arc::make_mut(&mut result);
-                        for v in a.iter() {
-                            Value::set_insert(inner, v.clone());
-                        }
-                        Ok(Value::Set(result))
-                    } else {
-                        Ok(Value::Set(Arc::new(sorted_vec_union(&a, &b))))
+            if left_val.is_set_v() && right_val.is_set_v() {
+                let a = left_val.into_set_arc();
+                let b = right_val.into_set_arc();
+                if b.len() <= 4 {
+                    // Small right side: insert into left via CoW
+                    let mut result = a;
+                    let inner = Arc::make_mut(&mut result);
+                    for v in b.iter() {
+                        Value::set_insert(inner, v.clone());
+                    }
+                    Ok(Value::from_set_arc(result))
+                } else if a.len() <= 4 {
+                    let mut result = b;
+                    let inner = Arc::make_mut(&mut result);
+                    for v in a.iter() {
+                        Value::set_insert(inner, v.clone());
+                    }
+                    Ok(Value::from_set_arc(result))
+                } else {
+                    Ok(Value::set(Arc::new(sorted_vec_union(&a, &b))))
+                }
+            } else if left_val.is_intmap() && right_val.is_intmap() {
+                let mut a = left_val.into_intmap_arc();
+                let b = right_val.into_intmap_arc();
+                // Right overrides left for IntMap union
+                let arr = Arc::make_mut(&mut a);
+                for (i, v) in b.iter().enumerate() {
+                    if i < arr.len() {
+                        arr[i] = *v;
                     }
                 }
-                (Value::IntMap(mut a), Value::IntMap(b)) => {
-                    // Right overrides left for IntMap union
-                    let arr = Arc::make_mut(&mut a);
-                    for (i, v) in b.iter().enumerate() {
-                        if i < arr.len() {
-                            arr[i] = *v;
-                        }
-                    }
-                    Ok(Value::IntMap(a))
+                Ok(Value::from_intmap_arc(a))
+            } else if left_val.is_intmap() && right_val.is_fn() {
+                let a = left_val.into_intmap_arc();
+                let b = right_val.into_fn_arc();
+                let mut fn_vec = Value::intmap_to_fn_vec(&a);
+                for (key, value) in b.iter() {
+                    Value::fn_insert(&mut fn_vec, key.clone(), value.clone());
                 }
-                (Value::IntMap(a), Value::Fn(b)) => {
-                    let mut fn_vec = Value::intmap_to_fn_vec(&a);
-                    for (key, value) in b.iter() {
-                        Value::fn_insert(&mut fn_vec, key.clone(), value.clone());
-                    }
-                    Ok(Value::Fn(Arc::new(fn_vec)))
+                Ok(Value::func(Arc::new(fn_vec)))
+            } else if left_val.is_fn() && right_val.is_intmap() {
+                let mut fn_a = left_val.into_fn_arc();
+                let b = right_val.into_intmap_arc();
+                let inner = Arc::make_mut(&mut fn_a);
+                for (i, v) in b.iter().enumerate() {
+                    Value::fn_insert(inner, Value::int(i as i64), Value::int(*v));
                 }
-                (Value::Fn(a), Value::IntMap(b)) => {
-                    let mut fn_a = a;
-                    let inner = Arc::make_mut(&mut fn_a);
-                    for (i, v) in b.iter().enumerate() {
-                        Value::fn_insert(inner, Value::Int(i as i64), Value::Int(*v));
-                    }
-                    Ok(Value::Fn(fn_a))
+                Ok(Value::from_fn_arc(fn_a))
+            } else if left_val.is_fn() && right_val.is_fn() {
+                let mut a = left_val.into_fn_arc();
+                let b = right_val.into_fn_arc();
+                // Insert right entries into left via CoW
+                let inner = Arc::make_mut(&mut a);
+                for (key, value) in b.iter() {
+                    Value::fn_insert(inner, key.clone(), value.clone());
                 }
-                (Value::Fn(mut a), Value::Fn(b)) => {
-                    // Insert right entries into left via CoW
-                    let inner = Arc::make_mut(&mut a);
-                    for (key, value) in b.iter() {
-                        Value::fn_insert(inner, key.clone(), value.clone());
-                    }
-                    Ok(Value::Fn(a))
-                }
-                (a, b) => {
-                    let a = expect_set(&a)?;
-                    let b = expect_set(&b)?;
-                    Ok(Value::Set(Arc::new(sorted_vec_union(a, b))))
-                }
+                Ok(Value::from_fn_arc(a))
+            } else {
+                let a = expect_set(&left_val)?;
+                let b = expect_set(&right_val)?;
+                Ok(Value::set(Arc::new(sorted_vec_union(a, b))))
             }
         }
         BinOp::Intersect => {
             let a = expect_set(&left_val)?;
             let b = expect_set(&right_val)?;
-            Ok(Value::Set(Arc::new(sorted_vec_intersect(a, b))))
+            Ok(Value::set(Arc::new(sorted_vec_intersect(a, b))))
         }
         BinOp::Diff => {
             let a = expect_set(&left_val)?;
             let b = expect_set(&right_val)?;
-            Ok(Value::Set(Arc::new(sorted_vec_diff(a, b))))
+            Ok(Value::set(Arc::new(sorted_vec_diff(a, b))))
         }
         BinOp::SubsetOf => {
             let a = expect_set(&left_val)?;
             let b = expect_set(&right_val)?;
-            Ok(Value::Bool(sorted_vec_is_subset(a, b)))
+            Ok(Value::bool(sorted_vec_is_subset(a, b)))
         }
 
-        BinOp::Concat => match (left_val, right_val) {
-            (Value::Seq(mut a), Value::Seq(b)) => {
-                a.extend(b);
-                Ok(Value::Seq(a))
+        BinOp::Concat => {
+            if left_val.is_seq() && right_val.is_seq() {
+                let mut a = left_val.into_seq_arc();
+                let b = right_val.into_seq_arc();
+                Arc::make_mut(&mut a).extend(b.iter().cloned());
+                Ok(Value::from_seq_arc(a))
+            } else if left_val.is_string() && right_val.is_string() {
+                let mut a = left_val.into_string_arc();
+                let b = right_val.into_string_arc();
+                Arc::make_mut(&mut a).push_str(&b);
+                Ok(Value::from_string_arc(a))
+            } else {
+                Err(EvalError::TypeMismatch {
+                    expected: "Seq or String".to_string(),
+                    actual: format!("{} and {}", type_name(&left_val), type_name(&right_val)),
+                })
             }
-            (Value::String(a), Value::String(b)) => Ok(Value::String(a + &b)),
-            (a, b) => Err(EvalError::TypeMismatch {
-                expected: "Seq or String".to_string(),
-                actual: format!("{} and {}", type_name(&a), type_name(&b)),
-            }),
-        },
+        }
     }
 }
 
@@ -1270,43 +1270,34 @@ fn eval_unary(op: UnaryOp, operand: &CompiledExpr, ctx: &mut EvalContext) -> Eva
     match op {
         UnaryOp::Not => {
             let b = expect_bool(&val)?;
-            Ok(Value::Bool(!b))
+            Ok(Value::bool(!b))
         }
         UnaryOp::Neg => {
             let n = expect_int(&val)?;
-            Ok(Value::Int(-n))
+            Ok(Value::int(-n))
         }
     }
 }
 
 pub fn expect_bool(val: &Value) -> EvalResult<bool> {
-    match val {
-        Value::Bool(b) => Ok(*b),
-        _ => Err(type_mismatch("Bool", val)),
-    }
+    val.as_bool().ok_or_else(|| type_mismatch("Bool", val))
 }
 
 pub fn expect_int(val: &Value) -> EvalResult<i64> {
-    match val {
-        Value::Int(n) => Ok(*n),
-        _ => Err(type_mismatch("Int", val)),
-    }
+    val.as_int().ok_or_else(|| type_mismatch("Int", val))
 }
 
 pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
-    match val {
-        Value::Set(s) => Ok(s),
-        _ => Err(type_mismatch("Set", val)),
-    }
+    val.as_set().ok_or_else(|| type_mismatch("Set", val))
 }
 
 /// Extract elements for domain iteration: Set elements, Dict/Fn keys, or IntMap indices.
 /// Use this for quantifier/comprehension domains where iterating over a Dict yields its keys.
 fn extract_domain_elements(val: &Value) -> EvalResult<Vec<Value>> {
-    match val {
-        Value::Set(s) => Ok((**s).clone()),
-        Value::Fn(m) => Ok(m.iter().map(|(k, _)| k.clone()).collect()),
-        Value::IntMap(arr) => Ok((0..arr.len() as i64).map(Value::Int).collect()),
+    match val.kind() {
+        VK::Set(s) => Ok(s.to_vec()),
+        VK::Fn(m) => Ok(m.iter().map(|(k, _)| k.clone()).collect()),
+        VK::IntMap(arr) => Ok((0..arr.len() as i64).map(Value::int).collect()),
         _ => Err(type_mismatch("Set or Dict", val)),
     }
 }
@@ -1408,18 +1399,7 @@ pub(crate) fn type_mismatch(expected: &str, actual: &Value) -> EvalError {
 }
 
 fn type_name(val: &Value) -> String {
-    match val {
-        Value::Bool(_) => "Bool".to_string(),
-        Value::Int(_) => "Int".to_string(),
-        Value::String(_) => "String".to_string(),
-        Value::Set(_) => "Set".to_string(),
-        Value::Seq(_) => "Seq".to_string(),
-        Value::Fn(_) | Value::IntMap(_) => "Fn".to_string(),
-        Value::Record(_) => "Record".to_string(),
-        Value::Tuple(_) => "Tuple".to_string(),
-        Value::None => "None".to_string(),
-        Value::Some(_) => "Some".to_string(),
-    }
+    val.type_name().to_string()
 }
 
 #[cfg(test)]
@@ -1435,12 +1415,12 @@ mod tests {
     fn test_literals() {
         assert_eq!(
             eval_simple(&CompiledExpr::Bool(true)).unwrap(),
-            Value::Bool(true)
+            Value::bool(true)
         );
-        assert_eq!(eval_simple(&CompiledExpr::Int(42)).unwrap(), Value::Int(42));
+        assert_eq!(eval_simple(&CompiledExpr::Int(42)).unwrap(), Value::int(42));
         assert_eq!(
             eval_simple(&CompiledExpr::String("hello".to_string())).unwrap(),
-            Value::String("hello".to_string())
+            Value::string("hello".to_string())
         );
     }
 
@@ -1451,14 +1431,14 @@ mod tests {
             left: Box::new(CompiledExpr::Int(2)),
             right: Box::new(CompiledExpr::Int(3)),
         };
-        assert_eq!(eval_simple(&add).unwrap(), Value::Int(5));
+        assert_eq!(eval_simple(&add).unwrap(), Value::int(5));
 
         let mul = CompiledExpr::Binary {
             op: BinOp::Mul,
             left: Box::new(CompiledExpr::Int(4)),
             right: Box::new(CompiledExpr::Int(5)),
         };
-        assert_eq!(eval_simple(&mul).unwrap(), Value::Int(20));
+        assert_eq!(eval_simple(&mul).unwrap(), Value::int(20));
     }
 
     #[test]
@@ -1468,14 +1448,14 @@ mod tests {
             left: Box::new(CompiledExpr::Int(2)),
             right: Box::new(CompiledExpr::Int(3)),
         };
-        assert_eq!(eval_simple(&lt).unwrap(), Value::Bool(true));
+        assert_eq!(eval_simple(&lt).unwrap(), Value::bool(true));
 
         let eq = CompiledExpr::Binary {
             op: BinOp::Eq,
             left: Box::new(CompiledExpr::Int(2)),
             right: Box::new(CompiledExpr::Int(2)),
         };
-        assert_eq!(eval_simple(&eq).unwrap(), Value::Bool(true));
+        assert_eq!(eval_simple(&eq).unwrap(), Value::bool(true));
     }
 
     #[test]
@@ -1485,14 +1465,14 @@ mod tests {
             left: Box::new(CompiledExpr::Bool(true)),
             right: Box::new(CompiledExpr::Bool(false)),
         };
-        assert_eq!(eval_simple(&and).unwrap(), Value::Bool(false));
+        assert_eq!(eval_simple(&and).unwrap(), Value::bool(false));
 
         let or = CompiledExpr::Binary {
             op: BinOp::Or,
             left: Box::new(CompiledExpr::Bool(true)),
             right: Box::new(CompiledExpr::Bool(false)),
         };
-        assert_eq!(eval_simple(&or).unwrap(), Value::Bool(true));
+        assert_eq!(eval_simple(&or).unwrap(), Value::bool(true));
     }
 
     #[test]
@@ -1507,7 +1487,7 @@ mod tests {
         };
 
         let result = eval_simple(&union).unwrap();
-        if let Value::Set(s) = &result {
+        if let VK::Set(s) = result.kind() {
             assert_eq!(s.len(), 3);
         } else {
             panic!("expected set");
@@ -1518,7 +1498,7 @@ mod tests {
             left: Box::new(CompiledExpr::Int(1)),
             right: Box::new(set1),
         };
-        assert_eq!(eval_simple(&in_op).unwrap(), Value::Bool(true));
+        assert_eq!(eval_simple(&in_op).unwrap(), Value::bool(true));
     }
 
     #[test]
@@ -1537,7 +1517,7 @@ mod tests {
                 right: Box::new(CompiledExpr::Int(0)),
             }),
         };
-        assert_eq!(eval_simple(&forall).unwrap(), Value::Bool(true));
+        assert_eq!(eval_simple(&forall).unwrap(), Value::bool(true));
 
         // forall x in 1..5: x > 3
         let forall2 = CompiledExpr::Forall {
@@ -1548,7 +1528,7 @@ mod tests {
                 right: Box::new(CompiledExpr::Int(3)),
             }),
         };
-        assert_eq!(eval_simple(&forall2).unwrap(), Value::Bool(false));
+        assert_eq!(eval_simple(&forall2).unwrap(), Value::bool(false));
     }
 
     #[test]
@@ -1567,7 +1547,7 @@ mod tests {
                 right: Box::new(CompiledExpr::Int(3)),
             }),
         };
-        assert_eq!(eval_simple(&exists).unwrap(), Value::Bool(true));
+        assert_eq!(eval_simple(&exists).unwrap(), Value::bool(true));
     }
 
     #[test]
@@ -1581,7 +1561,7 @@ mod tests {
                 right: Box::new(CompiledExpr::Int(3)),
             }),
         };
-        assert_eq!(eval_simple(&expr).unwrap(), Value::Int(8));
+        assert_eq!(eval_simple(&expr).unwrap(), Value::int(8));
     }
 
     #[test]
@@ -1591,56 +1571,56 @@ mod tests {
             then_branch: Box::new(CompiledExpr::Int(1)),
             else_branch: Box::new(CompiledExpr::Int(2)),
         };
-        assert_eq!(eval_simple(&if_true).unwrap(), Value::Int(1));
+        assert_eq!(eval_simple(&if_true).unwrap(), Value::int(1));
 
         let if_false = CompiledExpr::If {
             cond: Box::new(CompiledExpr::Bool(false)),
             then_branch: Box::new(CompiledExpr::Int(1)),
             else_branch: Box::new(CompiledExpr::Int(2)),
         };
-        assert_eq!(eval_simple(&if_false).unwrap(), Value::Int(2));
+        assert_eq!(eval_simple(&if_false).unwrap(), Value::int(2));
     }
 
     #[test]
     fn test_state_vars() {
-        let vars = vec![Value::Int(10), Value::Int(20)];
-        let next_vars = vec![Value::Int(15), Value::Int(25)];
+        let vars = vec![Value::int(10), Value::int(20)];
+        let next_vars = vec![Value::int(15), Value::int(25)];
         let mut ctx = EvalContext::new(&vars, &next_vars, &[], &[]);
 
         // Read current state
         assert_eq!(
             eval(&CompiledExpr::Var(0), &mut ctx).unwrap(),
-            Value::Int(10)
+            Value::int(10)
         );
         assert_eq!(
             eval(&CompiledExpr::Var(1), &mut ctx).unwrap(),
-            Value::Int(20)
+            Value::int(20)
         );
 
         // Read next state
         assert_eq!(
             eval(&CompiledExpr::PrimedVar(0), &mut ctx).unwrap(),
-            Value::Int(15)
+            Value::int(15)
         );
         assert_eq!(
             eval(&CompiledExpr::PrimedVar(1), &mut ctx).unwrap(),
-            Value::Int(25)
+            Value::int(25)
         );
     }
 
     #[test]
     fn test_unchanged() {
-        let vars = vec![Value::Int(10), Value::Int(20)];
-        let next_vars = vec![Value::Int(10), Value::Int(25)]; // 0 unchanged, 1 changed
+        let vars = vec![Value::int(10), Value::int(20)];
+        let next_vars = vec![Value::int(10), Value::int(25)]; // 0 unchanged, 1 changed
         let mut ctx = EvalContext::new(&vars, &next_vars, &[], &[]);
 
         assert_eq!(
             eval(&CompiledExpr::Unchanged(0), &mut ctx).unwrap(),
-            Value::Bool(true)
+            Value::bool(true)
         );
         assert_eq!(
             eval(&CompiledExpr::Unchanged(1), &mut ctx).unwrap(),
-            Value::Bool(false)
+            Value::bool(false)
         );
     }
 
@@ -1661,10 +1641,10 @@ mod tests {
         };
 
         let result = eval_simple(&comp).unwrap();
-        if let Value::Set(s) = &result {
-            assert!(Value::set_contains(s, &Value::Int(2)));
-            assert!(Value::set_contains(s, &Value::Int(4)));
-            assert!(Value::set_contains(s, &Value::Int(6)));
+        if let VK::Set(s) = result.kind() {
+            assert!(Value::set_contains(s, &Value::int(2)));
+            assert!(Value::set_contains(s, &Value::int(4)));
+            assert!(Value::set_contains(s, &Value::int(6)));
         } else {
             panic!("expected set");
         }

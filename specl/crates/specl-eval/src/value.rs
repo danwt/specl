@@ -1,89 +1,319 @@
-//! Runtime values for Specl.
+//! NaN-boxed runtime values for Specl.
+//!
+//! `Value` is a compact 8-byte representation using a tagged pointer scheme.
+//! Inline types (Int, Bool, None) are stored directly in the u64.
+//! Heap types (Set, Seq, Fn, etc.) store an Arc raw pointer in the lower 56 bits.
+//!
+//! This reduces per-value memory from 32 bytes to 8 bytes (4x improvement),
+//! and makes Clone O(1) for all types (Arc refcount increment for heap types).
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
-/// A runtime value in Specl.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Value {
-    /// Boolean value.
+// === Tag constants (bits 56-63) ===
+
+const TAG_INT: u8 = 0x00; // i56 sign-extended in payload (most common → cheapest)
+const TAG_BOOL_FALSE: u8 = 0x01;
+const TAG_BOOL_TRUE: u8 = 0x02;
+const TAG_NONE: u8 = 0x03;
+const TAG_STRING: u8 = 0x10; // Arc<String>
+const TAG_SET: u8 = 0x11; // Arc<Vec<Value>>
+const TAG_SEQ: u8 = 0x12; // Arc<Vec<Value>>
+const TAG_FN: u8 = 0x13; // Arc<Vec<(Value, Value)>>
+const TAG_INTMAP: u8 = 0x14; // Arc<Vec<i64>>
+const TAG_RECORD: u8 = 0x15; // Arc<BTreeMap<String, Value>>
+const TAG_TUPLE: u8 = 0x16; // Arc<Vec<Value>>
+const TAG_SOME: u8 = 0x17; // Arc<Value>
+const TAG_BIGINT: u8 = 0xFF; // Arc<i64> (values outside i56 range)
+
+const TAG_SHIFT: u32 = 56;
+const PTR_MASK: u64 = (1u64 << TAG_SHIFT) - 1;
+const I56_MIN: i64 = -(1i64 << 55);
+const I56_MAX: i64 = (1i64 << 55) - 1;
+
+/// NaN-boxed runtime value. 8 bytes.
+///
+/// Stores inline integers (i56), booleans, and None directly.
+/// Heap types (String, Set, Seq, Fn, IntMap, Record, Tuple, Some)
+/// are stored as Arc raw pointers for O(1) clone.
+#[repr(transparent)]
+pub struct Value(u64);
+
+// SAFETY: Value contains either inline data (Int/Bool/None) or raw pointers
+// to Arc allocations. Arc<T> is Send+Sync when T: Send+Sync, and all our
+// inner types satisfy this.
+unsafe impl Send for Value {}
+unsafe impl Sync for Value {}
+
+/// Borrowed view of a Value for pattern matching.
+pub enum VK<'a> {
     Bool(bool),
-    /// Integer value (arbitrary precision).
     Int(i64),
-    /// String value.
-    String(String),
-    /// Set of values (sorted Vec for cache-friendly small-set performance).
-    /// Arc-wrapped for cheap cloning (CoW semantics).
-    Set(Arc<Vec<Value>>),
-    /// Sequence of values.
-    Seq(Vec<Value>),
-    /// Function/map from keys to values (sorted Vec of pairs for cache-friendly performance).
-    /// Arc-wrapped for cheap cloning (CoW semantics).
-    Fn(Arc<Vec<(Value, Value)>>),
-    /// Flat integer map: keys are implicit 0..len, values are i64.
-    /// 4x smaller and O(1) lookup vs O(log N) binary search.
-    /// Produced automatically for Dict[Int, Int] comprehensions.
-    IntMap(Arc<Vec<i64>>),
-    /// Record with named fields.
-    Record(BTreeMap<String, Value>),
-    /// Tuple of values.
-    Tuple(Vec<Value>),
-    /// None value (for Option type).
+    String(&'a str),
+    Set(&'a [Value]),
+    Seq(&'a [Value]),
+    Fn(&'a [(Value, Value)]),
+    IntMap(&'a [i64]),
+    Record(&'a BTreeMap<String, Value>),
+    Tuple(&'a [Value]),
     None,
-    /// Some value (for Option type).
-    Some(Box<Value>),
+    Some(&'a Value),
 }
 
+// === Tag / pointer helpers (private) ===
+
 impl Value {
-    /// Return a human-readable type name for error messages.
-    pub fn type_name(&self) -> &'static str {
-        match self {
-            Value::Bool(_) => "Bool",
-            Value::Int(_) => "Int",
-            Value::String(_) => "String",
-            Value::Set(_) => "Set",
-            Value::Seq(_) => "Seq",
-            Value::Fn(_) => "Fn",
-            Value::IntMap(_) => "Fn",
-            Value::Record(_) => "Record",
-            Value::Tuple(_) => "Tuple",
-            Value::None => "None",
-            Value::Some(_) => "Some",
+    #[inline(always)]
+    fn tag(&self) -> u8 {
+        (self.0 >> TAG_SHIFT) as u8
+    }
+
+    #[inline(always)]
+    fn ptr(&self) -> usize {
+        (self.0 & PTR_MASK) as usize
+    }
+
+    /// Extract inline i56 via sign extension.
+    #[inline(always)]
+    fn as_i56(&self) -> i64 {
+        // Shift left 8 to put bit 55 in sign position, then arithmetic right shift
+        ((self.0 << 8) as i64) >> 8
+    }
+
+    /// Read i64 from a BigInt Arc.
+    #[inline]
+    fn bigint_val(&self) -> i64 {
+        debug_assert_eq!(self.tag(), TAG_BIGINT);
+        unsafe { *(self.ptr() as *const i64) }
+    }
+
+    /// Pack a tag + pointer into a Value.
+    #[inline(always)]
+    fn from_heap<T>(tag: u8, arc: Arc<T>) -> Self {
+        let ptr = Arc::into_raw(arc) as u64;
+        debug_assert_eq!(ptr >> TAG_SHIFT, 0, "pointer exceeds 56 bits");
+        Value(((tag as u64) << TAG_SHIFT) | (ptr & PTR_MASK))
+    }
+
+    /// Reconstruct Arc from stored pointer WITHOUT running Drop on self.
+    /// Caller takes ownership of the Arc.
+    #[inline]
+    unsafe fn take_arc<T>(&self) -> Arc<T> {
+        Arc::from_raw(self.ptr() as *const T)
+    }
+}
+
+// === Constructors ===
+
+impl Value {
+    #[inline]
+    pub fn int(n: i64) -> Self {
+        if n >= I56_MIN && n <= I56_MAX {
+            Value((n as u64) & PTR_MASK)
+        } else {
+            Self::from_heap(TAG_BIGINT, Arc::new(n))
         }
     }
 
-    /// Create an empty set.
+    #[inline]
+    pub fn bool(b: bool) -> Self {
+        if b {
+            Value((TAG_BOOL_TRUE as u64) << TAG_SHIFT)
+        } else {
+            Value((TAG_BOOL_FALSE as u64) << TAG_SHIFT)
+        }
+    }
+
+    #[inline]
+    pub fn none() -> Self {
+        Value((TAG_NONE as u64) << TAG_SHIFT)
+    }
+
+    #[inline]
+    pub fn string(s: String) -> Self {
+        Self::from_heap(TAG_STRING, Arc::new(s))
+    }
+
+    #[inline]
+    pub fn set(v: Arc<Vec<Value>>) -> Self {
+        Self::from_heap(TAG_SET, v)
+    }
+
+    #[inline]
+    pub fn seq(v: Vec<Value>) -> Self {
+        Self::from_heap(TAG_SEQ, Arc::new(v))
+    }
+
+    /// Named `func` to avoid conflict with `fn` keyword.
+    #[inline]
+    pub fn func(v: Arc<Vec<(Value, Value)>>) -> Self {
+        Self::from_heap(TAG_FN, v)
+    }
+
+    #[inline]
+    pub fn intmap(v: Arc<Vec<i64>>) -> Self {
+        Self::from_heap(TAG_INTMAP, v)
+    }
+
+    #[inline]
+    pub fn record(r: BTreeMap<String, Value>) -> Self {
+        Self::from_heap(TAG_RECORD, Arc::new(r))
+    }
+
+    #[inline]
+    pub fn tuple(v: Vec<Value>) -> Self {
+        Self::from_heap(TAG_TUPLE, Arc::new(v))
+    }
+
+    #[inline]
+    pub fn some(v: Value) -> Self {
+        Self::from_heap(TAG_SOME, Arc::new(v))
+    }
+}
+
+// === Heap type methods (is_*, into_*_arc, from_*_arc) ===
+
+macro_rules! heap_methods {
+    ($tag:expr, $T:ty, $is_name:ident, $into_name:ident, $from_name:ident) => {
+        #[inline]
+        pub fn $is_name(&self) -> bool {
+            self.tag() == $tag
+        }
+
+        /// Consume this Value and return the inner Arc.
+        pub fn $into_name(self) -> Arc<$T> {
+            debug_assert_eq!(self.tag(), $tag);
+            let arc = unsafe { self.take_arc::<$T>() };
+            std::mem::forget(self); // prevent Drop from running
+            arc
+        }
+
+        pub fn $from_name(arc: Arc<$T>) -> Self {
+            Self::from_heap($tag, arc)
+        }
+    };
+}
+
+impl Value {
+    heap_methods!(TAG_STRING, String, is_string, into_string_arc, from_string_arc);
+    heap_methods!(TAG_SET, Vec<Value>, is_set_v, into_set_arc, from_set_arc);
+    heap_methods!(TAG_SEQ, Vec<Value>, is_seq, into_seq_arc, from_seq_arc);
+    heap_methods!(TAG_FN, Vec<(Value, Value)>, is_fn, into_fn_arc, from_fn_arc);
+    heap_methods!(TAG_INTMAP, Vec<i64>, is_intmap, into_intmap_arc, from_intmap_arc);
+    heap_methods!(
+        TAG_RECORD,
+        BTreeMap<String, Value>,
+        is_record,
+        into_record_arc,
+        from_record_arc
+    );
+    heap_methods!(TAG_TUPLE, Vec<Value>, is_tuple, into_tuple_arc, from_tuple_arc);
+    heap_methods!(TAG_SOME, Value, is_some_v, into_some_arc, from_some_arc);
+
+    #[inline]
+    pub fn is_int(&self) -> bool {
+        self.tag() == TAG_INT || self.tag() == TAG_BIGINT
+    }
+
+    #[inline]
+    pub fn is_bool(&self) -> bool {
+        self.tag() == TAG_BOOL_FALSE || self.tag() == TAG_BOOL_TRUE
+    }
+
+    #[inline]
+    pub fn is_none(&self) -> bool {
+        self.tag() == TAG_NONE
+    }
+
+    /// True for TAG_FN or TAG_INTMAP (both represent dict/function values).
+    #[inline]
+    pub fn is_fn_like(&self) -> bool {
+        self.is_fn() || self.is_intmap()
+    }
+}
+
+// === kind() — the primary pattern-matching method ===
+
+impl Value {
+    pub fn kind(&self) -> VK<'_> {
+        match self.tag() {
+            TAG_BOOL_FALSE => VK::Bool(false),
+            TAG_BOOL_TRUE => VK::Bool(true),
+            TAG_INT => VK::Int(self.as_i56()),
+            TAG_BIGINT => VK::Int(self.bigint_val()),
+            TAG_NONE => VK::None,
+            TAG_STRING => VK::String(unsafe { &*(self.ptr() as *const String) }),
+            TAG_SET => {
+                let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                VK::Set(vec.as_slice())
+            }
+            TAG_SEQ => {
+                let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                VK::Seq(vec.as_slice())
+            }
+            TAG_FN => {
+                let vec = unsafe { &*(self.ptr() as *const Vec<(Value, Value)>) };
+                VK::Fn(vec.as_slice())
+            }
+            TAG_INTMAP => {
+                let vec = unsafe { &*(self.ptr() as *const Vec<i64>) };
+                VK::IntMap(vec.as_slice())
+            }
+            TAG_RECORD => VK::Record(unsafe { &*(self.ptr() as *const BTreeMap<String, Value>) }),
+            TAG_TUPLE => {
+                let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                VK::Tuple(vec.as_slice())
+            }
+            TAG_SOME => VK::Some(unsafe { &*(self.ptr() as *const Value) }),
+            _ => unreachable!("invalid Value tag: {:#x}", self.tag()),
+        }
+    }
+}
+
+// === Existing API (unchanged signatures where possible) ===
+
+impl Value {
+    pub fn type_name(&self) -> &'static str {
+        match self.tag() {
+            TAG_BOOL_FALSE | TAG_BOOL_TRUE => "Bool",
+            TAG_INT | TAG_BIGINT => "Int",
+            TAG_STRING => "String",
+            TAG_SET => "Set",
+            TAG_SEQ => "Seq",
+            TAG_FN | TAG_INTMAP => "Fn",
+            TAG_RECORD => "Record",
+            TAG_TUPLE => "Tuple",
+            TAG_NONE => "None",
+            TAG_SOME => "Some",
+            _ => "Unknown",
+        }
+    }
+
     pub fn empty_set() -> Self {
-        Value::Set(Arc::new(Vec::new()))
+        Value::set(Arc::new(Vec::new()))
     }
 
-    /// Create an empty sequence.
     pub fn empty_seq() -> Self {
-        Value::Seq(Vec::new())
+        Value::seq(Vec::new())
     }
 
-    /// Create an empty function/map.
     pub fn empty_fn() -> Self {
-        Value::Fn(Arc::new(Vec::new()))
+        Value::func(Arc::new(Vec::new()))
     }
 
-    /// Create a range set (lo..hi, inclusive). Already sorted.
     pub fn range(lo: i64, hi: i64) -> Self {
-        Value::Set(Arc::new((lo..=hi).map(Value::Int).collect()))
+        Value::set(Arc::new((lo..=hi).map(Value::int).collect()))
     }
 
-    /// Create a set from an iterator, sorting and deduplicating.
     pub fn set_from_iter(iter: impl IntoIterator<Item = Value>) -> Self {
         let mut v: Vec<Value> = iter.into_iter().collect();
         v.sort();
         v.dedup();
-        Value::Set(Arc::new(v))
+        Value::set(Arc::new(v))
     }
 
-    /// Create a function/map from an iterator of key-value pairs, sorting by key.
-    /// Last value wins for duplicate keys.
     pub fn fn_from_iter(iter: impl IntoIterator<Item = (Value, Value)>) -> Self {
         let mut v: Vec<(Value, Value)> = iter.into_iter().collect();
         v.sort_by(|a, b| a.0.cmp(&b.0));
@@ -95,10 +325,9 @@ impl Value {
                 false
             }
         });
-        Value::Fn(Arc::new(v))
+        Value::func(Arc::new(v))
     }
 
-    /// Insert a value into a sorted set Vec. Returns true if newly inserted.
     pub fn set_insert(set: &mut Vec<Value>, val: Value) -> bool {
         match set.binary_search(&val) {
             Ok(_) => false,
@@ -109,19 +338,16 @@ impl Value {
         }
     }
 
-    /// Check if a sorted set Vec contains a value.
     pub fn set_contains(set: &[Value], val: &Value) -> bool {
         set.binary_search(val).is_ok()
     }
 
-    /// Get a value from a sorted function Vec by key.
     pub fn fn_get<'a>(func: &'a [(Value, Value)], key: &Value) -> Option<&'a Value> {
         func.binary_search_by(|(k, _)| k.cmp(key))
             .ok()
             .map(|idx| &func[idx].1)
     }
 
-    /// Insert or update a key-value pair in a sorted function Vec.
     pub fn fn_insert(func: &mut Vec<(Value, Value)>, key: Value, value: Value) {
         match func.binary_search_by(|(k, _)| k.cmp(&key)) {
             Ok(idx) => func[idx].1 = value,
@@ -129,166 +355,323 @@ impl Value {
         }
     }
 
-    /// Check if this value is "truthy" (for boolean coercion).
     pub fn is_truthy(&self) -> bool {
-        match self {
-            Value::Bool(b) => *b,
+        match self.tag() {
+            TAG_BOOL_FALSE => false,
             _ => true,
         }
     }
 
-    /// Get as boolean, if this is a boolean value.
     pub fn as_bool(&self) -> Option<bool> {
-        match self {
-            Value::Bool(b) => Some(*b),
+        match self.tag() {
+            TAG_BOOL_TRUE => Some(true),
+            TAG_BOOL_FALSE => Some(false),
             _ => None,
         }
     }
 
-    /// Get as integer, if this is an integer value.
     pub fn as_int(&self) -> Option<i64> {
-        match self {
-            Value::Int(n) => Some(*n),
+        match self.tag() {
+            TAG_INT => Some(self.as_i56()),
+            TAG_BIGINT => Some(self.bigint_val()),
             _ => None,
         }
     }
 
-    /// Get as string, if this is a string value.
     pub fn as_string(&self) -> Option<&str> {
-        match self {
-            Value::String(s) => Some(s),
-            _ => None,
+        if self.tag() == TAG_STRING {
+            Some(unsafe { &*(self.ptr() as *const String) })
+        } else {
+            None
         }
     }
 
-    /// Get as set, if this is a set value.
     pub fn as_set(&self) -> Option<&[Value]> {
-        match self {
-            Value::Set(s) => Some(s),
-            _ => None,
+        if self.tag() == TAG_SET {
+            Some(unsafe { &*(self.ptr() as *const Vec<Value>) })
+        } else {
+            None
         }
     }
 
-    /// Get as sequence, if this is a sequence value.
-    pub fn as_seq(&self) -> Option<&Vec<Value>> {
-        match self {
-            Value::Seq(s) => Some(s),
-            _ => None,
+    pub fn as_seq(&self) -> Option<&[Value]> {
+        if self.tag() == TAG_SEQ {
+            Some(unsafe { &*(self.ptr() as *const Vec<Value>) })
+        } else {
+            None
         }
     }
 
-    /// Get as function/map, if this is a function value.
     pub fn as_fn(&self) -> Option<&[(Value, Value)]> {
-        match self {
-            Value::Fn(f) => Some(f),
-            _ => None,
+        if self.tag() == TAG_FN {
+            Some(unsafe { &*(self.ptr() as *const Vec<(Value, Value)>) })
+        } else {
+            None
         }
     }
 
-    /// Get as IntMap, if this is an IntMap value.
     pub fn as_intmap(&self) -> Option<&[i64]> {
-        match self {
-            Value::IntMap(arr) => Some(arr),
-            _ => None,
+        if self.tag() == TAG_INTMAP {
+            Some(unsafe { &*(self.ptr() as *const Vec<i64>) })
+        } else {
+            None
         }
     }
 
-    /// Convert IntMap to equivalent Fn representation.
-    pub fn intmap_to_fn(arr: &[i64]) -> Value {
-        Value::Fn(Arc::new(Self::intmap_to_fn_vec(arr)))
+    pub fn as_record(&self) -> Option<&BTreeMap<String, Value>> {
+        if self.tag() == TAG_RECORD {
+            Some(unsafe { &*(self.ptr() as *const BTreeMap<String, Value>) })
+        } else {
+            None
+        }
     }
 
-    /// Convert IntMap slice to Vec of (key, value) pairs.
+    pub fn intmap_to_fn(arr: &[i64]) -> Value {
+        Value::func(Arc::new(Self::intmap_to_fn_vec(arr)))
+    }
+
     pub fn intmap_to_fn_vec(arr: &[i64]) -> Vec<(Value, Value)> {
         arr.iter()
             .enumerate()
-            .map(|(i, v)| (Value::Int(i as i64), Value::Int(*v)))
+            .map(|(i, v)| (Value::int(i as i64), Value::int(*v)))
             .collect()
     }
 
-    /// Get as record, if this is a record value.
-    pub fn as_record(&self) -> Option<&BTreeMap<String, Value>> {
-        match self {
-            Value::Record(r) => Some(r),
-            _ => None,
-        }
-    }
-
-    /// Serialize value to bytes for fingerprinting.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut bytes = Vec::new();
         self.write_bytes(&mut bytes);
         bytes
     }
 
-    /// Write serialized bytes into a buffer. Used by State::fingerprint to avoid per-var allocation.
     pub fn write_bytes(&self, out: &mut Vec<u8>) {
-        match self {
-            Value::Bool(b) => {
+        match self.kind() {
+            VK::Bool(b) => {
                 out.push(0);
-                out.push(if *b { 1 } else { 0 });
+                out.push(if b { 1 } else { 0 });
             }
-            Value::Int(n) => {
+            VK::Int(n) => {
                 out.push(1);
                 out.extend_from_slice(&n.to_le_bytes());
             }
-            Value::String(s) => {
+            VK::String(s) => {
                 out.push(2);
                 out.extend_from_slice(&(s.len() as u64).to_le_bytes());
                 out.extend_from_slice(s.as_bytes());
             }
-            Value::Set(s) => {
+            VK::Set(s) => {
                 out.push(3);
                 out.extend_from_slice(&(s.len() as u64).to_le_bytes());
-                for v in s.iter() {
+                for v in s {
                     v.write_bytes(out);
                 }
             }
-            Value::Seq(s) => {
+            VK::Seq(s) => {
                 out.push(4);
                 out.extend_from_slice(&(s.len() as u64).to_le_bytes());
                 for v in s {
                     v.write_bytes(out);
                 }
             }
-            Value::Fn(f) => {
+            VK::Fn(f) => {
                 out.push(5);
                 out.extend_from_slice(&(f.len() as u64).to_le_bytes());
-                for (k, v) in f.iter() {
+                for (k, v) in f {
                     k.write_bytes(out);
                     v.write_bytes(out);
                 }
             }
-            Value::IntMap(arr) => {
+            VK::IntMap(arr) => {
                 out.push(10);
                 out.extend_from_slice(&(arr.len() as u64).to_le_bytes());
-                for v in arr.iter() {
+                for v in arr {
                     out.extend_from_slice(&v.to_le_bytes());
                 }
             }
-            Value::Record(r) => {
+            VK::Record(r) => {
                 out.push(6);
                 out.extend_from_slice(&(r.len() as u64).to_le_bytes());
-                for (k, v) in r {
+                for (k, v) in &*r {
                     out.extend_from_slice(&(k.len() as u64).to_le_bytes());
                     out.extend_from_slice(k.as_bytes());
                     v.write_bytes(out);
                 }
             }
-            Value::Tuple(t) => {
+            VK::Tuple(t) => {
                 out.push(7);
                 out.extend_from_slice(&(t.len() as u64).to_le_bytes());
                 for v in t {
                     v.write_bytes(out);
                 }
             }
-            Value::None => {
+            VK::None => {
                 out.push(8);
             }
-            Value::Some(v) => {
+            VK::Some(v) => {
                 out.push(9);
                 v.write_bytes(out);
             }
+        }
+    }
+}
+
+// === Clone ===
+
+impl Clone for Value {
+    #[inline]
+    fn clone(&self) -> Self {
+        match self.tag() {
+            // Inline types: just copy the bits
+            TAG_INT | TAG_BOOL_FALSE | TAG_BOOL_TRUE | TAG_NONE => Value(self.0),
+            // Heap types: increment Arc refcount
+            TAG_STRING => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const String) };
+                Value(self.0)
+            }
+            TAG_SET => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<Value>) };
+                Value(self.0)
+            }
+            TAG_SEQ => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<Value>) };
+                Value(self.0)
+            }
+            TAG_FN => {
+                unsafe {
+                    Arc::increment_strong_count(self.ptr() as *const Vec<(Value, Value)>)
+                };
+                Value(self.0)
+            }
+            TAG_INTMAP => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<i64>) };
+                Value(self.0)
+            }
+            TAG_RECORD => {
+                unsafe {
+                    Arc::increment_strong_count(
+                        self.ptr() as *const BTreeMap<String, Value>,
+                    )
+                };
+                Value(self.0)
+            }
+            TAG_TUPLE => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<Value>) };
+                Value(self.0)
+            }
+            TAG_SOME => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Value) };
+                Value(self.0)
+            }
+            TAG_BIGINT => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const i64) };
+                Value(self.0)
+            }
+            _ => unreachable!("invalid Value tag in clone"),
+        }
+    }
+}
+
+// === Drop ===
+
+impl Drop for Value {
+    fn drop(&mut self) {
+        match self.tag() {
+            // Inline types: nothing to drop
+            TAG_INT | TAG_BOOL_FALSE | TAG_BOOL_TRUE | TAG_NONE => {}
+            // Heap types: decrement Arc refcount
+            TAG_STRING => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const String);
+            },
+            TAG_SET => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const Vec<Value>);
+            },
+            TAG_SEQ => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const Vec<Value>);
+            },
+            TAG_FN => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const Vec<(Value, Value)>);
+            },
+            TAG_INTMAP => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const Vec<i64>);
+            },
+            TAG_RECORD => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const BTreeMap<String, Value>);
+            },
+            TAG_TUPLE => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const Vec<Value>);
+            },
+            TAG_SOME => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const Value);
+            },
+            TAG_BIGINT => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const i64);
+            },
+            _ => {}
+        }
+    }
+}
+
+// === PartialEq / Eq ===
+
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        // Fast path: identical bits (same Arc pointer or same inline value)
+        if self.0 == other.0 {
+            return true;
+        }
+        let t1 = self.tag();
+        let t2 = other.tag();
+        // Int == BigInt cross-comparison
+        if (t1 == TAG_INT || t1 == TAG_BIGINT) && (t2 == TAG_INT || t2 == TAG_BIGINT) {
+            return self.as_int().unwrap() == other.as_int().unwrap();
+        }
+        if t1 != t2 {
+            // IntMap and Fn are considered different tags for the purposes of Eq,
+            // even though they have the same ordering discriminant.
+            return false;
+        }
+        // Same tag, different bits — compare inner data
+        match t1 {
+            TAG_INT | TAG_BOOL_FALSE | TAG_BOOL_TRUE | TAG_NONE => false,
+            TAG_STRING => self.as_string() == other.as_string(),
+            TAG_SET => self.as_set() == other.as_set(),
+            TAG_SEQ => self.as_seq() == other.as_seq(),
+            TAG_FN => self.as_fn() == other.as_fn(),
+            TAG_INTMAP => self.as_intmap() == other.as_intmap(),
+            TAG_RECORD => self.as_record() == other.as_record(),
+            TAG_TUPLE => {
+                let a = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                let b = unsafe { &*(other.ptr() as *const Vec<Value>) };
+                a == b
+            }
+            TAG_SOME => {
+                let a = unsafe { &*(self.ptr() as *const Value) };
+                let b = unsafe { &*(other.ptr() as *const Value) };
+                a == b
+            }
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Value {}
+
+// === PartialOrd / Ord ===
+
+impl Value {
+    /// Ordering discriminant matching the original enum layout.
+    fn ord_discriminant(&self) -> u8 {
+        match self.tag() {
+            TAG_BOOL_FALSE | TAG_BOOL_TRUE => 0,
+            TAG_INT | TAG_BIGINT => 1,
+            TAG_STRING => 2,
+            TAG_SET => 3,
+            TAG_SEQ => 4,
+            TAG_FN | TAG_INTMAP => 5,
+            TAG_RECORD => 6,
+            TAG_TUPLE => 7,
+            TAG_NONE => 8,
+            TAG_SOME => 9,
+            _ => 255,
         }
     }
 }
@@ -301,111 +684,99 @@ impl PartialOrd for Value {
 
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        fn discriminant(v: &Value) -> u8 {
-            match v {
-                Value::Bool(_) => 0,
-                Value::Int(_) => 1,
-                Value::String(_) => 2,
-                Value::Set(_) => 3,
-                Value::Seq(_) => 4,
-                Value::Fn(_) | Value::IntMap(_) => 5,
-                Value::Record(_) => 6,
-                Value::Tuple(_) => 7,
-                Value::None => 8,
-                Value::Some(_) => 9,
-            }
-        }
+        use std::cmp::Ordering;
 
-        let d1 = discriminant(self);
-        let d2 = discriminant(other);
-
+        let d1 = self.ord_discriminant();
+        let d2 = other.ord_discriminant();
         match d1.cmp(&d2) {
-            std::cmp::Ordering::Equal => {}
+            Ordering::Equal => {}
             other => return other,
         }
 
-        match (self, other) {
-            (Value::Bool(a), Value::Bool(b)) => a.cmp(b),
-            (Value::Int(a), Value::Int(b)) => a.cmp(b),
-            (Value::String(a), Value::String(b)) => a.cmp(b),
-            (Value::Set(a), Value::Set(b)) => a.cmp(b),
-            (Value::Seq(a), Value::Seq(b)) => a.cmp(b),
-            (Value::Fn(a), Value::Fn(b)) => a.cmp(b),
-            (Value::IntMap(a), Value::IntMap(b)) => a.cmp(b),
-            (Value::IntMap(_), Value::Fn(_)) => std::cmp::Ordering::Less,
-            (Value::Fn(_), Value::IntMap(_)) => std::cmp::Ordering::Greater,
-            (Value::Record(a), Value::Record(b)) => a.cmp(b),
-            (Value::Tuple(a), Value::Tuple(b)) => a.cmp(b),
-            (Value::None, Value::None) => std::cmp::Ordering::Equal,
-            (Value::Some(a), Value::Some(b)) => a.cmp(b),
+        match (self.kind(), other.kind()) {
+            (VK::Bool(a), VK::Bool(b)) => a.cmp(&b),
+            (VK::Int(a), VK::Int(b)) => a.cmp(&b),
+            (VK::String(a), VK::String(b)) => a.cmp(b),
+            (VK::Set(a), VK::Set(b)) => a.cmp(b),
+            (VK::Seq(a), VK::Seq(b)) => a.cmp(b),
+            (VK::Fn(a), VK::Fn(b)) => a.cmp(b),
+            (VK::IntMap(a), VK::IntMap(b)) => a.cmp(b),
+            (VK::IntMap(_), VK::Fn(_)) => Ordering::Less,
+            (VK::Fn(_), VK::IntMap(_)) => Ordering::Greater,
+            (VK::Record(a), VK::Record(b)) => a.cmp(b),
+            (VK::Tuple(a), VK::Tuple(b)) => a.cmp(b),
+            (VK::None, VK::None) => Ordering::Equal,
+            (VK::Some(a), VK::Some(b)) => a.cmp(b),
             _ => unreachable!("discriminants should match"),
         }
     }
 }
 
+// === Hash ===
+
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        match self {
-            Value::Bool(b) => {
+        match self.kind() {
+            VK::Bool(b) => {
                 0u8.hash(state);
                 b.hash(state);
             }
-            Value::Int(n) => {
+            VK::Int(n) => {
                 1u8.hash(state);
                 n.hash(state);
             }
-            Value::String(s) => {
+            VK::String(s) => {
                 2u8.hash(state);
                 s.hash(state);
             }
-            Value::Set(s) => {
+            VK::Set(s) => {
                 3u8.hash(state);
                 s.len().hash(state);
-                for v in s.iter() {
+                for v in s {
                     v.hash(state);
                 }
             }
-            Value::Seq(s) => {
+            VK::Seq(s) => {
                 4u8.hash(state);
                 s.len().hash(state);
                 for v in s {
                     v.hash(state);
                 }
             }
-            Value::Fn(f) => {
+            VK::Fn(f) => {
                 5u8.hash(state);
                 f.len().hash(state);
-                for (k, v) in f.iter() {
+                for (k, v) in f {
                     k.hash(state);
                     v.hash(state);
                 }
             }
-            Value::IntMap(arr) => {
+            VK::IntMap(arr) => {
                 10u8.hash(state);
                 arr.len().hash(state);
-                for v in arr.iter() {
+                for v in arr {
                     v.hash(state);
                 }
             }
-            Value::Record(r) => {
+            VK::Record(r) => {
                 6u8.hash(state);
                 r.len().hash(state);
-                for (k, v) in r {
+                for (k, v) in &*r {
                     k.hash(state);
                     v.hash(state);
                 }
             }
-            Value::Tuple(t) => {
+            VK::Tuple(t) => {
                 7u8.hash(state);
                 t.len().hash(state);
                 for v in t {
                     v.hash(state);
                 }
             }
-            Value::None => {
+            VK::None => {
                 8u8.hash(state);
             }
-            Value::Some(v) => {
+            VK::Some(v) => {
                 9u8.hash(state);
                 v.hash(state);
             }
@@ -413,13 +784,15 @@ impl Hash for Value {
     }
 }
 
+// === Display ===
+
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Int(n) => write!(f, "{}", n),
-            Value::String(s) => write!(f, "\"{}\"", s),
-            Value::Set(s) => {
+        match self.kind() {
+            VK::Bool(b) => write!(f, "{}", b),
+            VK::Int(n) => write!(f, "{}", n),
+            VK::String(s) => write!(f, "\"{}\"", s),
+            VK::Set(s) => {
                 write!(f, "{{")?;
                 for (i, v) in s.iter().enumerate() {
                     if i > 0 {
@@ -429,7 +802,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Seq(s) => {
+            VK::Seq(s) => {
                 write!(f, "[")?;
                 for (i, v) in s.iter().enumerate() {
                     if i > 0 {
@@ -439,7 +812,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "]")
             }
-            Value::Fn(m) => {
+            VK::Fn(m) => {
                 write!(f, "fn{{")?;
                 for (i, (k, v)) in m.iter().enumerate() {
                     if i > 0 {
@@ -449,7 +822,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::IntMap(arr) => {
+            VK::IntMap(arr) => {
                 write!(f, "fn{{")?;
                 for (i, v) in arr.iter().enumerate() {
                     if i > 0 {
@@ -459,7 +832,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Record(r) => {
+            VK::Record(r) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in r.iter().enumerate() {
                     if i > 0 {
@@ -469,7 +842,7 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            Value::Tuple(t) => {
+            VK::Tuple(t) => {
                 write!(f, "(")?;
                 for (i, v) in t.iter().enumerate() {
                     if i > 0 {
@@ -479,33 +852,94 @@ impl fmt::Display for Value {
                 }
                 write!(f, ")")
             }
-            Value::None => write!(f, "None"),
-            Value::Some(v) => write!(f, "Some({})", v),
+            VK::None => write!(f, "None"),
+            VK::Some(v) => write!(f, "Some({})", v),
         }
     }
 }
+
+// === Debug ===
+
+impl fmt::Debug for Value {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind() {
+            VK::Bool(b) => write!(f, "Bool({})", b),
+            VK::Int(n) => write!(f, "Int({})", n),
+            VK::String(s) => write!(f, "String({:?})", s),
+            VK::Set(s) => {
+                write!(f, "Set(")?;
+                f.debug_list().entries(s.iter()).finish()?;
+                write!(f, ")")
+            }
+            VK::Seq(s) => {
+                write!(f, "Seq(")?;
+                f.debug_list().entries(s.iter()).finish()?;
+                write!(f, ")")
+            }
+            VK::Fn(m) => {
+                write!(f, "Fn(")?;
+                f.debug_list().entries(m.iter()).finish()?;
+                write!(f, ")")
+            }
+            VK::IntMap(a) => {
+                write!(f, "IntMap(")?;
+                f.debug_list().entries(a.iter()).finish()?;
+                write!(f, ")")
+            }
+            VK::Record(r) => {
+                write!(f, "Record(")?;
+                f.debug_map().entries(r.iter()).finish()?;
+                write!(f, ")")
+            }
+            VK::Tuple(t) => {
+                write!(f, "Tuple(")?;
+                f.debug_list().entries(t.iter()).finish()?;
+                write!(f, ")")
+            }
+            VK::None => write!(f, "None"),
+            VK::Some(v) => write!(f, "Some({:?})", v),
+        }
+    }
+}
+
+// === Tests ===
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
+    fn test_value_size() {
+        assert_eq!(std::mem::size_of::<Value>(), 8);
+    }
+
+    #[test]
+    fn test_int_roundtrip() {
+        for n in [0, 1, -1, 42, -42, I56_MIN, I56_MAX] {
+            let v = Value::int(n);
+            assert_eq!(v.as_int(), Some(n), "failed for n={n}");
+        }
+        // BigInt
+        let big = Value::int(i64::MAX);
+        assert_eq!(big.as_int(), Some(i64::MAX));
+        let big_neg = Value::int(i64::MIN);
+        assert_eq!(big_neg.as_int(), Some(i64::MIN));
+    }
+
+    #[test]
     fn test_value_equality() {
-        assert_eq!(Value::Int(42), Value::Int(42));
-        assert_ne!(Value::Int(42), Value::Int(43));
-        assert_eq!(Value::Bool(true), Value::Bool(true));
-        assert_eq!(
-            Value::String("hello".to_string()),
-            Value::String("hello".to_string())
-        );
+        assert_eq!(Value::int(42), Value::int(42));
+        assert_ne!(Value::int(42), Value::int(43));
+        assert_eq!(Value::bool(true), Value::bool(true));
+        assert_eq!(Value::string("hello".to_string()), Value::string("hello".to_string()));
     }
 
     #[test]
     fn test_value_set() {
         let mut s = Vec::new();
-        Value::set_insert(&mut s, Value::Int(1));
-        Value::set_insert(&mut s, Value::Int(2));
-        Value::set_insert(&mut s, Value::Int(1)); // duplicate
+        Value::set_insert(&mut s, Value::int(1));
+        Value::set_insert(&mut s, Value::int(2));
+        Value::set_insert(&mut s, Value::int(1)); // duplicate
         assert_eq!(s.len(), 2);
     }
 
@@ -517,9 +951,9 @@ mod tests {
             v.hash(&mut h);
             h.finish()
         }
-        let v1 = Value::Int(42);
-        let v2 = Value::Int(42);
-        let v3 = Value::Int(43);
+        let v1 = Value::int(42);
+        let v2 = Value::int(42);
+        let v3 = Value::int(43);
 
         assert_eq!(hash_value(&v1), hash_value(&v2));
         assert_ne!(hash_value(&v1), hash_value(&v3));
@@ -528,11 +962,11 @@ mod tests {
     #[test]
     fn test_range() {
         let r = Value::range(1, 3);
-        if let Value::Set(s) = r {
+        if let VK::Set(s) = r.kind() {
             assert_eq!(s.len(), 3);
-            assert!(Value::set_contains(&s, &Value::Int(1)));
-            assert!(Value::set_contains(&s, &Value::Int(2)));
-            assert!(Value::set_contains(&s, &Value::Int(3)));
+            assert!(Value::set_contains(s, &Value::int(1)));
+            assert!(Value::set_contains(s, &Value::int(2)));
+            assert!(Value::set_contains(s, &Value::int(3)));
         } else {
             panic!("expected set");
         }
@@ -540,22 +974,58 @@ mod tests {
 
     #[test]
     fn test_display() {
-        assert_eq!(Value::Int(42).to_string(), "42");
-        assert_eq!(Value::Bool(true).to_string(), "true");
-        assert_eq!(Value::String("hello".to_string()).to_string(), "\"hello\"");
+        assert_eq!(Value::int(42).to_string(), "42");
+        assert_eq!(Value::bool(true).to_string(), "true");
+        assert_eq!(Value::string("hello".to_string()).to_string(), "\"hello\"");
     }
 
     #[test]
     fn test_fn_operations() {
         let mut f = Vec::new();
-        Value::fn_insert(&mut f, Value::Int(1), Value::Bool(true));
-        Value::fn_insert(&mut f, Value::Int(2), Value::Bool(false));
-        assert_eq!(Value::fn_get(&f, &Value::Int(1)), Some(&Value::Bool(true)));
-        assert_eq!(Value::fn_get(&f, &Value::Int(2)), Some(&Value::Bool(false)));
-        assert_eq!(Value::fn_get(&f, &Value::Int(3)), None);
+        Value::fn_insert(&mut f, Value::int(1), Value::bool(true));
+        Value::fn_insert(&mut f, Value::int(2), Value::bool(false));
+        assert_eq!(Value::fn_get(&f, &Value::int(1)), Some(&Value::bool(true)));
+        assert_eq!(Value::fn_get(&f, &Value::int(2)), Some(&Value::bool(false)));
+        assert_eq!(Value::fn_get(&f, &Value::int(3)), None);
 
         // Update existing key
-        Value::fn_insert(&mut f, Value::Int(1), Value::Bool(false));
-        assert_eq!(Value::fn_get(&f, &Value::Int(1)), Some(&Value::Bool(false)));
+        Value::fn_insert(&mut f, Value::int(1), Value::bool(false));
+        assert_eq!(Value::fn_get(&f, &Value::int(1)), Some(&Value::bool(false)));
+    }
+
+    #[test]
+    fn test_clone_and_drop() {
+        // Heap types: clone should increment refcount, drop should decrement
+        let set = Value::set(Arc::new(vec![Value::int(1), Value::int(2)]));
+        let set2 = set.clone();
+        assert_eq!(set, set2);
+        drop(set2);
+        // Original should still be valid
+        assert_eq!(set.as_set().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn test_bigint_equality() {
+        // BigInt values should be equal based on mathematical value
+        let a = Value::int(i64::MAX);
+        let b = Value::int(i64::MAX);
+        assert_eq!(a, b);
+        assert_ne!(a, Value::int(i64::MAX - 1));
+    }
+
+    #[test]
+    fn test_ordering() {
+        assert!(Value::int(1) < Value::int(2));
+        assert!(Value::bool(false) < Value::bool(true));
+        assert!(Value::bool(true) < Value::int(0)); // Bool < Int in discriminant order
+    }
+
+    #[test]
+    fn test_into_arc_roundtrip() {
+        let v = Value::set(Arc::new(vec![Value::int(1), Value::int(2)]));
+        let arc = v.into_set_arc();
+        assert_eq!(arc.len(), 2);
+        let v2 = Value::from_set_arc(arc);
+        assert_eq!(v2.as_set().unwrap().len(), 2);
     }
 }

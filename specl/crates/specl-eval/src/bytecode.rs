@@ -4,7 +4,7 @@
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
 use crate::eval::{eval, eval_bool, eval_int, expect_int, type_mismatch};
-use crate::value::Value;
+use crate::value::{Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
 use std::sync::Arc;
@@ -853,13 +853,10 @@ pub fn vm_eval_bool(
     params: &[Value],
 ) -> EvalResult<bool> {
     let result = vm_eval(bytecode, vars, next_vars, consts, params)?;
-    match result {
-        Value::Bool(b) => Ok(b),
-        _ => Err(EvalError::TypeMismatch {
-            expected: "Bool".to_string(),
-            actual: result.type_name().to_string(),
-        }),
-    }
+    result.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Bool".to_string(),
+        actual: result.type_name().to_string(),
+    })
 }
 
 /// Execute bytecode and return the result as a Value.
@@ -880,8 +877,8 @@ pub fn vm_eval(
         // Safety: compiler always emits Halt, so pc is always valid
         let op = unsafe { ops.get_unchecked(pc) };
         match op {
-            Op::Int(n) => stack.push(Value::Int(*n)),
-            Op::Bool(b) => stack.push(Value::Bool(*b)),
+            Op::Int(n) => stack.push(Value::int(*n)),
+            Op::Bool(b) => stack.push(Value::bool(*b)),
 
             Op::Var(idx) => stack.push(vars[*idx as usize].clone()),
             Op::PrimedVar(idx) => stack.push(next_vars[*idx as usize].clone()),
@@ -896,17 +893,17 @@ pub fn vm_eval(
             Op::Add => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Int(a + b));
+                stack.push(Value::int(a + b));
             }
             Op::Sub => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Int(a - b));
+                stack.push(Value::int(a - b));
             }
             Op::Mul => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Int(a * b));
+                stack.push(Value::int(a * b));
             }
             Op::Div => {
                 let b = pop_int(&mut stack)?;
@@ -914,7 +911,7 @@ pub fn vm_eval(
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
-                stack.push(Value::Int(a / b));
+                stack.push(Value::int(a / b));
             }
             Op::Mod => {
                 let b = pop_int(&mut stack)?;
@@ -922,61 +919,61 @@ pub fn vm_eval(
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
-                stack.push(Value::Int(a % b));
+                stack.push(Value::int(a % b));
             }
             Op::Neg => {
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Int(-a));
+                stack.push(Value::int(-a));
             }
 
             // Boolean
             Op::Not => {
                 let a = pop_bool(&mut stack)?;
-                stack.push(Value::Bool(!a));
+                stack.push(Value::bool(!a));
             }
 
             // General comparison
             Op::Eq => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
-                stack.push(Value::Bool(a == b));
+                stack.push(Value::bool(a == b));
             }
             Op::Ne => {
                 let b = stack.pop().unwrap();
                 let a = stack.pop().unwrap();
-                stack.push(Value::Bool(a != b));
+                stack.push(Value::bool(a != b));
             }
 
             // Integer comparison
             Op::IntEq => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Bool(a == b));
+                stack.push(Value::bool(a == b));
             }
             Op::IntNe => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Bool(a != b));
+                stack.push(Value::bool(a != b));
             }
             Op::IntLt => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Bool(a < b));
+                stack.push(Value::bool(a < b));
             }
             Op::IntLe => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Bool(a <= b));
+                stack.push(Value::bool(a <= b));
             }
             Op::IntGt => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Bool(a > b));
+                stack.push(Value::bool(a > b));
             }
             Op::IntGe => {
                 let b = pop_int(&mut stack)?;
                 let a = pop_int(&mut stack)?;
-                stack.push(Value::Bool(a >= b));
+                stack.push(Value::bool(a >= b));
             }
 
             // Control flow
@@ -1006,18 +1003,18 @@ pub fn vm_eval(
                 // base dict is already on stack below.
                 let key = &vars[*var_idx as usize];
                 let base = stack.pop().unwrap();
-                match &base {
-                    Value::IntMap(arr) => {
+                match base.kind() {
+                    VK::IntMap(arr) => {
                         let k = expect_int(key)? as usize;
-                        stack.push(Value::Int(arr[k]));
+                        stack.push(Value::int(arr[k]));
                     }
-                    Value::Fn(map) => {
+                    VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
                             .cloned()
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         stack.push(val);
                     }
-                    Value::Seq(seq) => {
+                    VK::Seq(seq) => {
                         let idx = expect_int(key)?;
                         if idx < 0 || idx as usize >= seq.len() {
                             return Err(EvalError::IndexOutOfBounds {
@@ -1037,25 +1034,26 @@ pub fn vm_eval(
             }
             Op::VarIntEq(var_idx, k) => {
                 // Fused: Var(i) + Int(k) + IntEq — compare var to constant
-                if let Value::Int(v) = &vars[*var_idx as usize] {
-                    stack.push(Value::Bool(*v == *k));
-                } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Int".to_string(),
-                        actual: vars[*var_idx as usize].type_name().to_string(),
-                    });
+                match vars[*var_idx as usize].as_int() {
+                    Some(v) => stack.push(Value::bool(v == *k)),
+                    None => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Int".to_string(),
+                            actual: vars[*var_idx as usize].type_name().to_string(),
+                        });
+                    }
                 }
             }
             Op::VarParamDictGet(var_idx, param_idx) => {
                 // Fused: Var(i) + Param(j) + DictGet — dict[param] from var
                 let key = &params[*param_idx as usize];
                 let base = &vars[*var_idx as usize];
-                match base {
-                    Value::IntMap(arr) => {
+                match base.kind() {
+                    VK::IntMap(arr) => {
                         let k = expect_int(key)? as usize;
-                        stack.push(Value::Int(arr[k]));
+                        stack.push(Value::int(arr[k]));
                     }
-                    Value::Fn(map) => {
+                    VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
                             .cloned()
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
@@ -1074,18 +1072,18 @@ pub fn vm_eval(
             Op::DictGet => {
                 let key = stack.pop().unwrap();
                 let base = stack.pop().unwrap();
-                match &base {
-                    Value::IntMap(arr) => {
+                match base.kind() {
+                    VK::IntMap(arr) => {
                         let k = expect_int(&key)? as usize;
-                        stack.push(Value::Int(arr[k]));
+                        stack.push(Value::int(arr[k]));
                     }
-                    Value::Fn(map) => {
+                    VK::Fn(map) => {
                         let val = Value::fn_get(map, &key)
                             .cloned()
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         stack.push(val);
                     }
-                    Value::Seq(seq) => {
+                    VK::Seq(seq) => {
                         let idx = expect_int(&key)?;
                         if idx < 0 || idx as usize >= seq.len() {
                             return Err(EvalError::IndexOutOfBounds {
@@ -1107,32 +1105,31 @@ pub fn vm_eval(
                 let value = stack.pop().unwrap();
                 let key = stack.pop().unwrap();
                 let base = stack.pop().unwrap();
-                match base {
-                    Value::IntMap(mut arr) => {
-                        let k = expect_int(&key)? as usize;
-                        if let Value::Int(v) = value {
-                            Arc::make_mut(&mut arr)[k] = v;
-                            stack.push(Value::IntMap(arr));
-                        } else {
-                            let mut fn_vec: Vec<(Value, Value)> = arr
-                                .iter()
-                                .enumerate()
-                                .map(|(i, v)| (Value::Int(i as i64), Value::Int(*v)))
-                                .collect();
-                            Value::fn_insert(&mut fn_vec, key, value);
-                            stack.push(Value::Fn(Arc::new(fn_vec)));
-                        }
+                if base.is_intmap() {
+                    let mut arr = base.into_intmap_arc();
+                    let k = expect_int(&key)? as usize;
+                    if let Some(v) = value.as_int() {
+                        Arc::make_mut(&mut arr)[k] = v;
+                        stack.push(Value::from_intmap_arc(arr));
+                    } else {
+                        let fn_vec: Vec<(Value, Value)> = arr
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| (Value::int(i as i64), Value::int(*v)))
+                            .collect();
+                        let mut fn_vec = fn_vec;
+                        Value::fn_insert(&mut fn_vec, key, value);
+                        stack.push(Value::func(Arc::new(fn_vec)));
                     }
-                    Value::Fn(mut map) => {
-                        Value::fn_insert(Arc::make_mut(&mut map), key, value);
-                        stack.push(Value::Fn(map));
-                    }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                } else if base.is_fn() {
+                    let mut map = base.into_fn_arc();
+                    Value::fn_insert(Arc::make_mut(&mut map), key, value);
+                    stack.push(Value::from_fn_arc(map));
+                } else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: base.type_name().to_string(),
+                    });
                 }
             }
             Op::DictUpdateN(n) => {
@@ -1147,44 +1144,40 @@ pub fn vm_eval(
                 }
                 pairs.reverse();
                 let base = stack.pop().unwrap();
-                match base {
-                    Value::IntMap(mut arr) => {
-                        // Check if all updates stay in IntMap form
-                        let all_int = pairs.iter().all(|(_, v)| matches!(v, Value::Int(_)));
-                        if all_int {
-                            let data = Arc::make_mut(&mut arr);
-                            for (key, value) in &pairs {
-                                let k = expect_int(key)? as usize;
-                                if let Value::Int(v) = value {
-                                    data[k] = *v;
-                                }
-                            }
-                            stack.push(Value::IntMap(arr));
-                        } else {
-                            let mut fn_vec: Vec<(Value, Value)> = arr
-                                .iter()
-                                .enumerate()
-                                .map(|(i, v)| (Value::Int(i as i64), Value::Int(*v)))
-                                .collect();
-                            for (key, value) in pairs {
-                                Value::fn_insert(&mut fn_vec, key, value);
-                            }
-                            stack.push(Value::Fn(Arc::new(fn_vec)));
+                if base.is_intmap() {
+                    let mut arr = base.into_intmap_arc();
+                    // Check if all updates stay in IntMap form
+                    let all_int = pairs.iter().all(|(_, v)| v.is_int());
+                    if all_int {
+                        let data = Arc::make_mut(&mut arr);
+                        for (key, value) in &pairs {
+                            let k = expect_int(key)? as usize;
+                            data[k] = value.as_int().unwrap();
                         }
-                    }
-                    Value::Fn(mut map) => {
-                        let data = Arc::make_mut(&mut map);
+                        stack.push(Value::from_intmap_arc(arr));
+                    } else {
+                        let mut fn_vec: Vec<(Value, Value)> = arr
+                            .iter()
+                            .enumerate()
+                            .map(|(i, v)| (Value::int(i as i64), Value::int(*v)))
+                            .collect();
                         for (key, value) in pairs {
-                            Value::fn_insert(data, key, value);
+                            Value::fn_insert(&mut fn_vec, key, value);
                         }
-                        stack.push(Value::Fn(map));
+                        stack.push(Value::func(Arc::new(fn_vec)));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
+                } else if base.is_fn() {
+                    let mut map = base.into_fn_arc();
+                    let data = Arc::make_mut(&mut map);
+                    for (key, value) in pairs {
+                        Value::fn_insert(data, key, value);
                     }
+                    stack.push(Value::from_fn_arc(map));
+                } else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: base.type_name().to_string(),
+                    });
                 }
             }
             Op::NestedDictUpdate2 => {
@@ -1192,37 +1185,36 @@ pub fn vm_eval(
                 let k1 = stack.pop().unwrap();
                 let k2 = stack.pop().unwrap();
                 let value = stack.pop().unwrap();
-                match dict {
-                    Value::Fn(mut outer_arc) => {
-                        let outer = Arc::make_mut(&mut outer_arc);
-                        let pos = outer
-                            .binary_search_by(|(k, _)| k.cmp(&k1))
-                            .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
-                        match &mut outer[pos].1 {
-                            Value::IntMap(inner_arc) => {
-                                let k2_int = expect_int(&k2)? as usize;
-                                let v_int = expect_int(&value)?;
-                                Arc::make_mut(inner_arc)[k2_int] = v_int;
-                            }
-                            Value::Fn(inner_arc) => {
-                                Value::fn_insert(Arc::make_mut(inner_arc), k2, value);
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn".to_string(),
-                                    actual: outer[pos].1.type_name().to_string(),
-                                })
-                            }
-                        }
-                        stack.push(Value::Fn(outer_arc));
-                    }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn".to_string(),
-                            actual: dict.type_name().to_string(),
-                        })
-                    }
+                if !dict.is_fn() {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: dict.type_name().to_string(),
+                    });
                 }
+                let mut outer_arc = dict.into_fn_arc();
+                let outer = Arc::make_mut(&mut outer_arc);
+                let pos = outer
+                    .binary_search_by(|(k, _)| k.cmp(&k1))
+                    .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
+                if outer[pos].1.is_intmap() {
+                    let k2_int = expect_int(&k2)? as usize;
+                    let v_int = expect_int(&value)?;
+                    let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
+                    let mut inner_arc = inner_val.into_intmap_arc();
+                    Arc::make_mut(&mut inner_arc)[k2_int] = v_int;
+                    outer[pos].1 = Value::from_intmap_arc(inner_arc);
+                } else if outer[pos].1.is_fn() {
+                    let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
+                    let mut inner_arc = inner_val.into_fn_arc();
+                    Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
+                    outer[pos].1 = Value::from_fn_arc(inner_arc);
+                } else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: outer[pos].1.type_name().to_string(),
+                    });
+                }
+                stack.push(Value::from_fn_arc(outer_arc));
             }
             Op::NestedDictUpdate3 => {
                 let dict = stack.pop().unwrap();
@@ -1230,59 +1222,57 @@ pub fn vm_eval(
                 let k2 = stack.pop().unwrap();
                 let k3 = stack.pop().unwrap();
                 let value = stack.pop().unwrap();
-                match dict {
-                    Value::Fn(mut outer_arc) => {
-                        let outer = Arc::make_mut(&mut outer_arc);
-                        let pos1 = outer
-                            .binary_search_by(|(k, _)| k.cmp(&k1))
-                            .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
-                        match &mut outer[pos1].1 {
-                            Value::Fn(mid_arc) => {
-                                let mid = Arc::make_mut(mid_arc);
-                                let pos2 = mid
-                                    .binary_search_by(|(k, _)| k.cmp(&k2))
-                                    .map_err(|_| EvalError::KeyNotFound(k2.to_string()))?;
-                                match &mut mid[pos2].1 {
-                                    Value::IntMap(inner_arc) => {
-                                        let k3_int = expect_int(&k3)? as usize;
-                                        let v_int = expect_int(&value)?;
-                                        Arc::make_mut(inner_arc)[k3_int] = v_int;
-                                    }
-                                    Value::Fn(inner_arc) => {
-                                        Value::fn_insert(Arc::make_mut(inner_arc), k3, value);
-                                    }
-                                    _ => {
-                                        return Err(EvalError::TypeMismatch {
-                                            expected: "Fn".to_string(),
-                                            actual: mid[pos2].1.type_name().to_string(),
-                                        })
-                                    }
-                                }
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn".to_string(),
-                                    actual: outer[pos1].1.type_name().to_string(),
-                                })
-                            }
-                        }
-                        stack.push(Value::Fn(outer_arc));
-                    }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn".to_string(),
-                            actual: dict.type_name().to_string(),
-                        })
-                    }
+                if !dict.is_fn() {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: dict.type_name().to_string(),
+                    });
                 }
+                let mut outer_arc = dict.into_fn_arc();
+                let outer = Arc::make_mut(&mut outer_arc);
+                let pos1 = outer
+                    .binary_search_by(|(k, _)| k.cmp(&k1))
+                    .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
+                if !outer[pos1].1.is_fn() {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: outer[pos1].1.type_name().to_string(),
+                    });
+                }
+                let mid_val = std::mem::replace(&mut outer[pos1].1, Value::none());
+                let mut mid_arc = mid_val.into_fn_arc();
+                let mid = Arc::make_mut(&mut mid_arc);
+                let pos2 = mid
+                    .binary_search_by(|(k, _)| k.cmp(&k2))
+                    .map_err(|_| EvalError::KeyNotFound(k2.to_string()))?;
+                if mid[pos2].1.is_intmap() {
+                    let k3_int = expect_int(&k3)? as usize;
+                    let v_int = expect_int(&value)?;
+                    let inner_val = std::mem::replace(&mut mid[pos2].1, Value::none());
+                    let mut inner_arc = inner_val.into_intmap_arc();
+                    Arc::make_mut(&mut inner_arc)[k3_int] = v_int;
+                    mid[pos2].1 = Value::from_intmap_arc(inner_arc);
+                } else if mid[pos2].1.is_fn() {
+                    let inner_val = std::mem::replace(&mut mid[pos2].1, Value::none());
+                    let mut inner_arc = inner_val.into_fn_arc();
+                    Value::fn_insert(Arc::make_mut(&mut inner_arc), k3, value);
+                    mid[pos2].1 = Value::from_fn_arc(inner_arc);
+                } else {
+                    return Err(EvalError::TypeMismatch {
+                        expected: "Fn".to_string(),
+                        actual: mid[pos2].1.type_name().to_string(),
+                    });
+                }
+                outer[pos1].1 = Value::from_fn_arc(mid_arc);
+                stack.push(Value::from_fn_arc(outer_arc));
             }
             Op::Len => {
                 let val = stack.pop().unwrap();
-                let len = match &val {
-                    Value::Set(s) => s.len() as i64,
-                    Value::Seq(s) => s.len() as i64,
-                    Value::Fn(f) => f.len() as i64,
-                    Value::IntMap(arr) => arr.len() as i64,
+                let len = match val.kind() {
+                    VK::Set(s) => s.len() as i64,
+                    VK::Seq(s) => s.len() as i64,
+                    VK::Fn(f) => f.len() as i64,
+                    VK::IntMap(arr) => arr.len() as i64,
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             expected: "Set, Seq, or Fn".to_string(),
@@ -1290,27 +1280,27 @@ pub fn vm_eval(
                         })
                     }
                 };
-                stack.push(Value::Int(len));
+                stack.push(Value::int(len));
             }
             Op::Contains => {
                 let right_val = stack.pop().unwrap();
                 let elem = stack.pop().unwrap();
-                let result = match &right_val {
-                    Value::Set(s) => Value::set_contains(s, &elem),
-                    Value::Fn(f) => Value::fn_get(f, &elem).is_some(),
+                let result = match right_val.kind() {
+                    VK::Set(s) => Value::set_contains(s, &elem),
+                    VK::Fn(f) => Value::fn_get(f, &elem).is_some(),
                     _ => return Err(type_mismatch("Set or Dict", &right_val)),
                 };
-                stack.push(Value::Bool(result));
+                stack.push(Value::bool(result));
             }
             Op::NotContains => {
                 let right_val = stack.pop().unwrap();
                 let elem = stack.pop().unwrap();
-                let result = match &right_val {
-                    Value::Set(s) => !Value::set_contains(s, &elem),
-                    Value::Fn(f) => Value::fn_get(f, &elem).is_none(),
+                let result = match right_val.kind() {
+                    VK::Set(s) => !Value::set_contains(s, &elem),
+                    VK::Fn(f) => Value::fn_get(f, &elem).is_none(),
                     _ => return Err(type_mismatch("Set or Dict", &right_val)),
                 };
-                stack.push(Value::Bool(result));
+                stack.push(Value::bool(result));
             }
 
             // Local variable management
@@ -1327,7 +1317,7 @@ pub fn vm_eval(
                 let hi = pop_int(&mut stack)?;
                 let lo = pop_int(&mut stack)?;
                 if lo > hi {
-                    stack.push(Value::Bool(true));
+                    stack.push(Value::bool(true));
                     pc = *end_pc as usize;
                     continue;
                 }
@@ -1336,14 +1326,14 @@ pub fn vm_eval(
                     counter: 0,
                     fn_buf: Vec::new(),
                 });
-                locals.push(Value::Int(lo));
+                locals.push(Value::int(lo));
             }
             Op::ForallRangeStep { body_pc, end_pc } => {
                 let body_result = pop_bool(&mut stack)?;
                 if !body_result {
                     locals.pop();
                     loops.pop();
-                    stack.push(Value::Bool(false));
+                    stack.push(Value::bool(false));
                     pc = *end_pc as usize;
                     continue;
                 }
@@ -1352,11 +1342,11 @@ pub fn vm_eval(
                 if current >= hi {
                     locals.pop();
                     loops.pop();
-                    stack.push(Value::Bool(true));
+                    stack.push(Value::bool(true));
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::Int(current + 1);
+                *locals.last_mut().unwrap() = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -1365,7 +1355,7 @@ pub fn vm_eval(
                 let hi = pop_int(&mut stack)?;
                 let lo = pop_int(&mut stack)?;
                 if lo > hi {
-                    stack.push(Value::Bool(false));
+                    stack.push(Value::bool(false));
                     pc = *end_pc as usize;
                     continue;
                 }
@@ -1374,14 +1364,14 @@ pub fn vm_eval(
                     counter: 0,
                     fn_buf: Vec::new(),
                 });
-                locals.push(Value::Int(lo));
+                locals.push(Value::int(lo));
             }
             Op::ExistsRangeStep { body_pc, end_pc } => {
                 let body_result = pop_bool(&mut stack)?;
                 if body_result {
                     locals.pop();
                     loops.pop();
-                    stack.push(Value::Bool(true));
+                    stack.push(Value::bool(true));
                     pc = *end_pc as usize;
                     continue;
                 }
@@ -1390,11 +1380,11 @@ pub fn vm_eval(
                 if current >= hi {
                     locals.pop();
                     loops.pop();
-                    stack.push(Value::Bool(false));
+                    stack.push(Value::bool(false));
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::Int(current + 1);
+                *locals.last_mut().unwrap() = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -1404,7 +1394,7 @@ pub fn vm_eval(
                 let hi = pop_int(&mut stack)?;
                 let lo = pop_int(&mut stack)?;
                 if lo > hi {
-                    stack.push(Value::Int(0));
+                    stack.push(Value::int(0));
                     pc = *end_pc as usize;
                     continue;
                 }
@@ -1413,7 +1403,7 @@ pub fn vm_eval(
                     counter: 0,
                     fn_buf: Vec::new(),
                 });
-                locals.push(Value::Int(lo));
+                locals.push(Value::int(lo));
             }
             Op::CountRangeStep { body_pc, end_pc } => {
                 let pred = pop_bool(&mut stack)?;
@@ -1426,11 +1416,11 @@ pub fn vm_eval(
                     let count = loop_state.counter;
                     locals.pop();
                     loops.pop();
-                    stack.push(Value::Int(count));
+                    stack.push(Value::int(count));
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::Int(current + 1);
+                *locals.last_mut().unwrap() = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -1440,7 +1430,7 @@ pub fn vm_eval(
                 let hi = pop_int(&mut stack)?;
                 let lo = pop_int(&mut stack)?;
                 if lo > hi {
-                    stack.push(Value::Fn(Arc::new(Vec::new())));
+                    stack.push(Value::func(Arc::new(Vec::new())));
                     pc = *end_pc as usize;
                     continue;
                 }
@@ -1450,38 +1440,32 @@ pub fn vm_eval(
                     counter: 0,
                     fn_buf: Vec::with_capacity(cap),
                 });
-                locals.push(Value::Int(lo));
+                locals.push(Value::int(lo));
             }
             Op::FnLitRangeStep { body_pc, end_pc } => {
                 let body_val = stack.pop().unwrap();
                 let current = get_local_int(&locals)?;
                 let loop_state = loops.last_mut().unwrap();
-                loop_state.fn_buf.push((Value::Int(current), body_val));
+                loop_state.fn_buf.push((Value::int(current), body_val));
                 if current >= loop_state.hi {
                     let fn_buf = std::mem::take(&mut loop_state.fn_buf);
                     locals.pop();
                     loops.pop();
                     // Produce IntMap if keys start at 0 and all values are Int
-                    let lo_zero = fn_buf.first().is_none_or(|(k, _)| k == &Value::Int(0));
-                    if lo_zero && fn_buf.iter().all(|(_, v)| matches!(v, Value::Int(_))) {
+                    let lo_zero = fn_buf.first().is_none_or(|(k, _)| k == &Value::int(0));
+                    if lo_zero && fn_buf.iter().all(|(_, v)| v.is_int()) {
                         let arr: Vec<i64> = fn_buf
                             .iter()
-                            .map(|(_, v)| {
-                                if let Value::Int(n) = v {
-                                    *n
-                                } else {
-                                    unreachable!()
-                                }
-                            })
+                            .map(|(_, v)| v.as_int().unwrap())
                             .collect();
-                        stack.push(Value::IntMap(Arc::new(arr)));
+                        stack.push(Value::intmap(Arc::new(arr)));
                     } else {
-                        stack.push(Value::Fn(Arc::new(fn_buf)));
+                        stack.push(Value::func(Arc::new(fn_buf)));
                     }
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::Int(current + 1);
+                *locals.last_mut().unwrap() = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -1499,14 +1483,14 @@ pub fn vm_eval(
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_bool(expr, &mut ctx)?;
-                stack.push(Value::Bool(result));
+                stack.push(Value::bool(result));
             }
             Op::FallbackInt(idx) => {
                 let expr = &bytecode.fallbacks[*idx as usize];
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_int(expr, &mut ctx)?;
-                stack.push(Value::Int(result));
+                stack.push(Value::int(result));
             }
 
             Op::Halt => {
@@ -1525,46 +1509,38 @@ pub fn vm_eval(
 
 #[inline(always)]
 fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
-    match stack.pop().unwrap() {
-        Value::Int(n) => Ok(n),
-        other => Err(EvalError::TypeMismatch {
-            expected: "Int".to_string(),
-            actual: other.type_name().to_string(),
-        }),
-    }
+    let v = stack.pop().unwrap();
+    v.as_int().ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Int".to_string(),
+        actual: v.type_name().to_string(),
+    })
 }
 
 #[inline(always)]
 fn pop_bool(stack: &mut Vec<Value>) -> EvalResult<bool> {
-    match stack.pop().unwrap() {
-        Value::Bool(b) => Ok(b),
-        other => Err(EvalError::TypeMismatch {
-            expected: "Bool".to_string(),
-            actual: other.type_name().to_string(),
-        }),
-    }
+    let v = stack.pop().unwrap();
+    v.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Bool".to_string(),
+        actual: v.type_name().to_string(),
+    })
 }
 
 #[inline(always)]
 fn peek_bool(stack: &[Value]) -> EvalResult<bool> {
-    match stack.last().unwrap() {
-        Value::Bool(b) => Ok(*b),
-        other => Err(EvalError::TypeMismatch {
-            expected: "Bool".to_string(),
-            actual: other.type_name().to_string(),
-        }),
-    }
+    let v = stack.last().unwrap();
+    v.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Bool".to_string(),
+        actual: v.type_name().to_string(),
+    })
 }
 
 #[inline(always)]
 fn get_local_int(locals: &[Value]) -> EvalResult<i64> {
-    match locals.last().unwrap() {
-        Value::Int(n) => Ok(*n),
-        other => Err(EvalError::TypeMismatch {
-            expected: "Int".to_string(),
-            actual: other.type_name().to_string(),
-        }),
-    }
+    let v = locals.last().unwrap();
+    v.as_int().ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Int".to_string(),
+        actual: v.type_name().to_string(),
+    })
 }
 
 #[cfg(test)]
@@ -1581,7 +1557,7 @@ mod tests {
         };
         let bc = compile_expr(&expr);
         let result = vm_eval(&bc, &[], &[], &[], &[]).unwrap();
-        assert_eq!(result, Value::Int(5));
+        assert_eq!(result, Value::int(5));
     }
 
     #[test]
@@ -1615,21 +1591,21 @@ mod tests {
             }),
             index: Box::new(CompiledExpr::Int(1)),
         };
-        let inner0 = Value::Fn(Arc::new(vec![
-            (Value::Int(0), Value::Int(10)),
-            (Value::Int(1), Value::Int(20)),
+        let inner0 = Value::func(Arc::new(vec![
+            (Value::int(0), Value::int(10)),
+            (Value::int(1), Value::int(20)),
         ]));
-        let inner1 = Value::Fn(Arc::new(vec![
-            (Value::Int(0), Value::Int(30)),
-            (Value::Int(1), Value::Int(40)),
+        let inner1 = Value::func(Arc::new(vec![
+            (Value::int(0), Value::int(30)),
+            (Value::int(1), Value::int(40)),
         ]));
-        let dict = Value::Fn(Arc::new(vec![
-            (Value::Int(0), inner0),
-            (Value::Int(1), inner1),
+        let dict = Value::func(Arc::new(vec![
+            (Value::int(0), inner0),
+            (Value::int(1), inner1),
         ]));
         let bc = compile_expr(&expr);
         let result = vm_eval(&bc, &[dict], &[], &[], &[]).unwrap();
-        assert_eq!(result, Value::Int(20));
+        assert_eq!(result, Value::int(20));
     }
 
     #[test]
@@ -1733,17 +1709,17 @@ mod tests {
                 value: Box::new(CompiledExpr::Int(99)),
             }),
         };
-        let inner0 = Value::Fn(Arc::new(vec![
-            (Value::Int(0), Value::Int(10)),
-            (Value::Int(1), Value::Int(20)),
+        let inner0 = Value::func(Arc::new(vec![
+            (Value::int(0), Value::int(10)),
+            (Value::int(1), Value::int(20)),
         ]));
-        let inner1 = Value::Fn(Arc::new(vec![
-            (Value::Int(0), Value::Int(30)),
-            (Value::Int(1), Value::Int(40)),
+        let inner1 = Value::func(Arc::new(vec![
+            (Value::int(0), Value::int(30)),
+            (Value::int(1), Value::int(40)),
         ]));
-        let dict = Value::Fn(Arc::new(vec![
-            (Value::Int(0), inner0),
-            (Value::Int(1), inner1),
+        let dict = Value::func(Arc::new(vec![
+            (Value::int(0), inner0),
+            (Value::int(1), inner1),
         ]));
         let bc = compile_expr(&expr);
         // Should use NestedDictUpdate2 opcode
@@ -1751,22 +1727,22 @@ mod tests {
             bc.ops.iter().any(|op| matches!(op, Op::NestedDictUpdate2)),
             "expected NestedDictUpdate2 opcode"
         );
-        let result = vm_eval(&bc, &[dict], &[], &[], &[Value::Int(0), Value::Int(1)]).unwrap();
+        let result = vm_eval(&bc, &[dict], &[], &[], &[Value::int(0), Value::int(1)]).unwrap();
         // dict[0][1] should be 99 now
         let outer = result.as_fn().unwrap();
-        let inner = Value::fn_get(outer, &Value::Int(0))
+        let inner = Value::fn_get(outer, &Value::int(0))
             .unwrap()
             .as_fn()
             .unwrap();
-        assert_eq!(Value::fn_get(inner, &Value::Int(1)), Some(&Value::Int(99)));
+        assert_eq!(Value::fn_get(inner, &Value::int(1)), Some(&Value::int(99)));
         // dict[0][0] should be unchanged
-        assert_eq!(Value::fn_get(inner, &Value::Int(0)), Some(&Value::Int(10)));
+        assert_eq!(Value::fn_get(inner, &Value::int(0)), Some(&Value::int(10)));
         // dict[1] should be unchanged
-        let inner1 = Value::fn_get(outer, &Value::Int(1))
+        let inner1 = Value::fn_get(outer, &Value::int(1))
             .unwrap()
             .as_fn()
             .unwrap();
-        assert_eq!(Value::fn_get(inner1, &Value::Int(0)), Some(&Value::Int(30)));
+        assert_eq!(Value::fn_get(inner1, &Value::int(0)), Some(&Value::int(30)));
     }
 
     #[test]
@@ -1795,12 +1771,12 @@ mod tests {
                 }),
             }),
         };
-        let innermost = Value::Fn(Arc::new(vec![
-            (Value::Int(0), Value::Bool(false)),
-            (Value::Int(1), Value::Bool(false)),
+        let innermost = Value::func(Arc::new(vec![
+            (Value::int(0), Value::bool(false)),
+            (Value::int(1), Value::bool(false)),
         ]));
-        let middle = Value::Fn(Arc::new(vec![(Value::Int(0), innermost)]));
-        let dict = Value::Fn(Arc::new(vec![(Value::Int(0), middle)]));
+        let middle = Value::func(Arc::new(vec![(Value::int(0), innermost)]));
+        let dict = Value::func(Arc::new(vec![(Value::int(0), middle)]));
         let bc = compile_expr(&expr);
         assert!(
             bc.ops.iter().any(|op| matches!(op, Op::NestedDictUpdate3)),
@@ -1811,24 +1787,24 @@ mod tests {
             &[dict],
             &[],
             &[],
-            &[Value::Int(0), Value::Int(0), Value::Int(1)],
+            &[Value::int(0), Value::int(0), Value::int(1)],
         )
         .unwrap();
         // dict[0][0][1] should be true
         let outer = result.as_fn().unwrap();
-        let mid = Value::fn_get(outer, &Value::Int(0))
+        let mid = Value::fn_get(outer, &Value::int(0))
             .unwrap()
             .as_fn()
             .unwrap();
-        let inner = Value::fn_get(mid, &Value::Int(0)).unwrap().as_fn().unwrap();
+        let inner = Value::fn_get(mid, &Value::int(0)).unwrap().as_fn().unwrap();
         assert_eq!(
-            Value::fn_get(inner, &Value::Int(1)),
-            Some(&Value::Bool(true))
+            Value::fn_get(inner, &Value::int(1)),
+            Some(&Value::bool(true))
         );
         // dict[0][0][0] should still be false
         assert_eq!(
-            Value::fn_get(inner, &Value::Int(0)),
-            Some(&Value::Bool(false))
+            Value::fn_get(inner, &Value::int(0)),
+            Some(&Value::bool(false))
         );
     }
 }
