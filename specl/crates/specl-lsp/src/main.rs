@@ -151,7 +151,8 @@ impl SpeclLanguageServer {
         }
     }
 
-    /// Convert a Span to an LSP Range.
+    /// Convert a Span to an LSP Range (single-line: uses line/column + length).
+    /// Use `span_to_range_in` for multi-line spans (e.g. full declarations).
     fn span_to_range(span: Span) -> Range {
         let start_line = span.line.saturating_sub(1);
         let start_char = span.column.saturating_sub(1);
@@ -164,6 +165,24 @@ impl SpeclLanguageServer {
             end: Position {
                 line: start_line,
                 character: start_char + span_len,
+            },
+        }
+    }
+
+    /// Convert a Span to an LSP Range using source text for accurate end position.
+    /// Handles multi-line spans correctly by computing end line/column from byte offsets.
+    fn span_to_range_in(span: Span, source: &str) -> Range {
+        let start_line = span.line.saturating_sub(1);
+        let start_char = span.column.saturating_sub(1);
+        let (end_line, end_char) = Self::byte_offset_to_position(source, span.end);
+        Range {
+            start: Position {
+                line: start_line,
+                character: start_char,
+            },
+            end: Position {
+                line: end_line,
+                character: end_char,
             },
         }
     }
@@ -401,36 +420,37 @@ impl SpeclLanguageServer {
         let mut symbols = Vec::new();
 
         for decl in &module.decls {
-            let (name, kind, detail, range) = match decl {
+            let (name, kind, detail, span, name_span) = match decl {
                 Decl::Var(d) => {
                     let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                    (d.name.name.clone(), SymbolKind::VARIABLE, Some(type_str), d.span)
+                    (d.name.name.clone(), SymbolKind::VARIABLE, Some(type_str), d.span, d.name.span)
                 }
                 Decl::Const(d) => {
                     let val_str = specl_syntax::pretty::pretty_print_const_value(&d.value);
-                    (d.name.name.clone(), SymbolKind::CONSTANT, Some(val_str), d.span)
+                    (d.name.name.clone(), SymbolKind::CONSTANT, Some(val_str), d.span, d.name.span)
                 }
                 Decl::Action(d) => {
                     let params = format_action_params(&d.params);
                     let detail = if params.is_empty() { None } else { Some(format!("({params})")) };
-                    (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span)
+                    (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span, d.name.span)
                 }
                 Decl::Invariant(d) => {
-                    (d.name.name.clone(), SymbolKind::BOOLEAN, Some("invariant".into()), d.span)
+                    (d.name.name.clone(), SymbolKind::BOOLEAN, Some("invariant".into()), d.span, d.name.span)
                 }
                 Decl::Func(d) => {
                     let params = format_func_params(&d.params);
-                    (d.name.name.clone(), SymbolKind::FUNCTION, Some(format!("({params})")), d.span)
+                    (d.name.name.clone(), SymbolKind::FUNCTION, Some(format!("({params})")), d.span, d.name.span)
                 }
                 Decl::Type(d) => {
                     let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                    (d.name.name.clone(), SymbolKind::TYPE_PARAMETER, Some(type_str), d.span)
+                    (d.name.name.clone(), SymbolKind::TYPE_PARAMETER, Some(type_str), d.span, d.name.span)
                 }
                 Decl::Init(_) => {
-                    ("init".into(), SymbolKind::CONSTRUCTOR, None, decl.span())
+                    let s = decl.span();
+                    ("init".into(), SymbolKind::CONSTRUCTOR, None, s, s)
                 }
                 Decl::Property(d) => {
-                    (d.name.name.clone(), SymbolKind::PROPERTY, Some("property".into()), d.span)
+                    (d.name.name.clone(), SymbolKind::PROPERTY, Some("property".into()), d.span, d.name.span)
                 }
                 _ => continue,
             };
@@ -442,8 +462,8 @@ impl SpeclLanguageServer {
                 kind,
                 tags: None,
                 deprecated: None,
-                range: Self::span_to_range(range),
-                selection_range: Self::span_to_range(range),
+                range: Self::span_to_range_in(span, source),
+                selection_range: Self::span_to_range(name_span),
                 children: None,
             });
         }
@@ -473,6 +493,50 @@ impl SpeclLanguageServer {
         }
 
         locations
+    }
+
+    /// Get document highlights (all occurrences of symbol under cursor).
+    fn get_document_highlights(&self, source: &str, position: Position) -> Vec<DocumentHighlight> {
+        let word = match Self::word_at_position(source, position) {
+            Some(w) => w,
+            None => return vec![],
+        };
+
+        let module = parse(source).ok();
+        let is_write_target = |span: &Span| -> bool {
+            // Check if this occurrence is a declaration name (definition site)
+            if let Some(ref m) = module {
+                for decl in &m.decls {
+                    if let Some((name, ns)) = decl_name_span(decl) {
+                        if name == word && ns.start == span.start {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+
+        let tokens = Lexer::new(source).tokenize();
+        let mut highlights = Vec::new();
+
+        for token in &tokens {
+            if let TokenKind::Ident(name) = &token.kind {
+                if name == &word {
+                    let kind = if is_write_target(&token.span) {
+                        Some(DocumentHighlightKind::WRITE)
+                    } else {
+                        Some(DocumentHighlightKind::READ)
+                    };
+                    highlights.push(DocumentHighlight {
+                        range: Self::span_to_range(token.span),
+                        kind,
+                    });
+                }
+            }
+        }
+
+        highlights
     }
 
     /// Get signature help at the cursor position.
@@ -889,7 +953,7 @@ impl SpeclLanguageServer {
                 }
 
                 if let Some(decl) = best_decl {
-                    let decl_range = Self::span_to_range(decl.span());
+                    let decl_range = Self::span_to_range_in(decl.span(), source);
                     // Full file as outermost range
                     let file_range = Range {
                         start: Position { line: 0, character: 0 },
@@ -917,13 +981,22 @@ impl SpeclLanguageServer {
     }
 
     fn byte_offset_to_line(source: &str, byte_offset: usize) -> u32 {
+        let (line, _) = Self::byte_offset_to_position(source, byte_offset);
+        line + 1 // byte_offset_to_position returns 0-indexed, this returns 1-indexed
+    }
+
+    /// Convert a byte offset to an LSP Position (0-indexed line and character).
+    fn byte_offset_to_position(source: &str, byte_offset: usize) -> (u32, u32) {
         let line_starts: Vec<usize> = std::iter::once(0)
             .chain(source.match_indices('\n').map(|(i, _)| i + 1))
             .collect();
-        match line_starts.binary_search(&byte_offset) {
-            Ok(i) => i as u32 + 1,
-            Err(i) => i as u32,
-        }
+        let line_idx = match line_starts.binary_search(&byte_offset) {
+            Ok(i) => i,
+            Err(i) => i.saturating_sub(1),
+        };
+        let line_start = line_starts[line_idx];
+        let col = byte_offset.saturating_sub(line_start) as u32;
+        (line_idx as u32, col)
     }
 
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
@@ -1068,7 +1141,7 @@ impl SpeclLanguageServer {
                     deprecated: None,
                     location: Location {
                         uri: uri.clone(),
-                        range: Self::span_to_range(span),
+                        range: Self::span_to_range_in(span, &content),
                     },
                     container_name: None,
                 });
@@ -1244,6 +1317,7 @@ impl LanguageServer for SpeclLanguageServer {
                 ),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
+                document_highlight_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 ..Default::default()
             },
@@ -1365,6 +1439,21 @@ impl LanguageServer for SpeclLanguageServer {
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         let refs = self.get_references(&content, position, uri);
         Ok(if refs.is_empty() { None } else { Some(refs) })
+    }
+
+    async fn document_highlight(
+        &self,
+        params: DocumentHighlightParams,
+    ) -> Result<Option<Vec<DocumentHighlight>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let highlights = self.get_document_highlights(&content, position);
+        Ok(if highlights.is_empty() {
+            None
+        } else {
+            Some(highlights)
+        })
     }
 
     async fn document_symbol(
@@ -1807,5 +1896,64 @@ var x: 0..10
             .collect();
         assert!(!titles.contains(&"Add init block"), "should NOT offer init when present");
         assert!(titles.contains(&"Add invariant"), "should still offer 'Add invariant'");
+    }
+
+    #[test]
+    fn byte_offset_to_position_basic() {
+        let src = "line0\nline1\nline2";
+        // 'l' of line0 is at (0, 0)
+        assert_eq!(SpeclLanguageServer::byte_offset_to_position(src, 0), (0, 0));
+        // 'l' of line1 is at byte 6 -> (1, 0)
+        assert_eq!(SpeclLanguageServer::byte_offset_to_position(src, 6), (1, 0));
+        // 'n' of line1 is at byte 8 -> (1, 2)
+        assert_eq!(SpeclLanguageServer::byte_offset_to_position(src, 8), (1, 2));
+        // 'l' of line2 is at byte 12 -> (2, 0)
+        assert_eq!(SpeclLanguageServer::byte_offset_to_position(src, 12), (2, 0));
+    }
+
+    #[test]
+    fn span_to_range_in_multiline() {
+        let src = "module Test\naction Foo() {\n    require true\n}\n";
+        // "module Test\n" = 12 bytes (0..12)
+        // "action Foo() {\n" = 15 bytes (12..27)
+        // "    require true\n" = 16 bytes (27..43)
+        // "}\n" = 2 bytes (43..45)
+        // Span covering the action declaration: bytes 12..45
+        let span = Span { start: 12, end: 45, line: 2, column: 1 };
+        let range = SpeclLanguageServer::span_to_range_in(span, src);
+        assert_eq!(range.start.line, 1); // 0-indexed
+        assert_eq!(range.start.character, 0);
+        assert_eq!(range.end.line, 3); // closing brace line (0-indexed: 3)
+        assert!(range.end.line > range.start.line, "multi-line span end should be on later line");
+    }
+
+    #[test]
+    fn document_highlights_find_all() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        // 'x' on line 4 (0-indexed), char 4 in SAMPLE_SPEC
+        let highlights = server.get_document_highlights(SAMPLE_SPEC, Position { line: 4, character: 4 });
+        assert!(
+            highlights.len() >= 3,
+            "x should be highlighted at least 3 times, found {}",
+            highlights.len()
+        );
+        // Declaration site should be WRITE
+        let write_count = highlights.iter().filter(|h| h.kind == Some(DocumentHighlightKind::WRITE)).count();
+        assert!(write_count >= 1, "should have at least one WRITE highlight for declaration");
+    }
+
+    #[test]
+    fn document_symbols_multiline_range() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let symbols = server.get_document_symbols(SAMPLE_SPEC);
+        // Find the "Step" action symbol — it spans multiple lines
+        let step = symbols.iter().find(|s| s.name == "Step").unwrap();
+        assert!(
+            step.range.end.line > step.range.start.line,
+            "multi-line action should have range spanning multiple lines: start={}, end={}",
+            step.range.start.line, step.range.end.line
+        );
     }
 }
