@@ -11,7 +11,7 @@ use serde::Serialize;
 use specl_eval::Value;
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
-use specl_mc::{CheckConfig, CheckOutcome, Explorer, ProgressCounters, SimulateOutcome, State};
+use specl_mc::{CheckConfig, CheckOutcome, Explorer, Fingerprint, ProgressCounters, SimulateOutcome, State, StateStore};
 use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
@@ -34,6 +34,8 @@ enum OutputFormat {
     Itf,
     /// Mermaid sequence diagram (for trace visualization)
     Mermaid,
+    /// Graphviz DOT state graph (BFS exploration tree)
+    Dot,
 }
 
 /// Top-level JSON output for `specl check --output json`.
@@ -972,8 +974,9 @@ fn cmd_check(
     // Parse constants
     let consts = parse_constants(constants, &spec)?;
 
-    // Extract variable names for trace formatting
+    // Extract variable and action names for trace formatting
     let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
+    let action_names: Vec<String> = spec.actions.iter().map(|a| a.name.clone()).collect();
 
     // Spec analysis, recommendations, and auto-enable
     let spec_profile = analyze(&spec);
@@ -1136,7 +1139,46 @@ fn cmd_check(
 
     let secs = elapsed.as_secs_f64();
 
-    if output_format == OutputFormat::Itf || output_format == OutputFormat::Mermaid {
+    if output_format == OutputFormat::Dot {
+        // DOT state graph output (BFS exploration tree)
+        let store = explorer.store();
+        if !store.has_full_tracking() {
+            eprintln!("Error: --output dot requires full tracking (incompatible with --fast and --bloom)");
+            std::process::exit(1);
+        }
+        let max_dot_states = 10_000;
+        let n_states = store.len();
+        if n_states > max_dot_states {
+            eprintln!(
+                "Error: state graph has {} states (max {} for DOT output). Use smaller constants.",
+                n_states, max_dot_states
+            );
+            std::process::exit(1);
+        }
+
+        // Determine violation fingerprint (if any) for highlighting
+        let violation_fp = match &result {
+            CheckOutcome::InvariantViolation { trace, .. }
+            | CheckOutcome::Deadlock { trace } => {
+                trace.last().map(|(s, _)| s.fingerprint())
+            }
+            _ => None,
+        };
+
+        println!("{}", store_to_dot(store, &var_names, &action_names, violation_fp.as_ref()));
+
+        match result {
+            CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
+                std::process::exit(1);
+            }
+            CheckOutcome::StateLimitReached { .. }
+            | CheckOutcome::MemoryLimitReached { .. }
+            | CheckOutcome::TimeLimitReached { .. } => {
+                std::process::exit(2);
+            }
+            _ => {}
+        }
+    } else if output_format == OutputFormat::Itf || output_format == OutputFormat::Mermaid {
         // Structured trace output (ITF or Mermaid)
         match result {
             CheckOutcome::InvariantViolation { invariant, trace } => {
@@ -1454,6 +1496,11 @@ fn cmd_check_swarm(
                                 .with_invariant(invariant)
                                 .with_trace(trace_to_json(&trace, var_names));
                             println!("{}", serde_json::to_string(&out).unwrap());
+                        }
+                        OutputFormat::Dot => {
+                            // DOT output not meaningful for swarm (no full store)
+                            eprintln!("Error: --output dot is not supported with --swarm");
+                            std::process::exit(1);
                         }
                         OutputFormat::Text => {
                             println!();
@@ -2147,6 +2194,150 @@ fn print_text_trace(trace: &[(State, Option<String>)], var_names: &[String], dif
             println!("    {}: {} -> {}", i, action_str, state_str);
         }
         prev_state = Some(state);
+    }
+}
+
+/// Generate a Graphviz DOT graph from the BFS exploration tree.
+///
+/// Each state is a node, each transition (predecessor → state via action) is an edge.
+/// Initial states have a double circle, violation states are colored red.
+fn store_to_dot(
+    store: &StateStore,
+    var_names: &[String],
+    action_names: &[String],
+    violation_fp: Option<&Fingerprint>,
+) -> String {
+    let mut lines = Vec::new();
+    lines.push("digraph states {".to_string());
+    lines.push("    rankdir=TB;".to_string());
+    lines.push("    node [shape=box, fontname=\"monospace\", fontsize=10];".to_string());
+    lines.push("    edge [fontname=\"monospace\", fontsize=9];".to_string());
+
+    let fps = store.seen_fingerprints();
+
+    // Assign compact numeric IDs to fingerprints
+    let mut fp_list: Vec<Fingerprint> = fps.into_iter().collect();
+    fp_list.sort_by_key(|fp| fp.as_u64());
+    let fp_to_id: std::collections::HashMap<Fingerprint, usize> = fp_list
+        .iter()
+        .enumerate()
+        .map(|(i, fp)| (*fp, i))
+        .collect();
+
+    // Emit nodes
+    for &fp in &fp_list {
+        let info = match store.get(&fp) {
+            Some(i) => i,
+            None => continue,
+        };
+        let id = fp_to_id[&fp];
+        let is_initial = info.predecessor.is_none();
+        let is_violation = violation_fp.is_some_and(|vfp| *vfp == fp);
+
+        // Build compact label: "var1=val1\nvar2=val2"
+        let label: String = info
+            .state
+            .vars
+            .iter()
+            .enumerate()
+            .map(|(i, v)| {
+                let name = var_names.get(i).map(|s| s.as_str()).unwrap_or("?");
+                format!("{}={}", name, format_value_compact(v))
+            })
+            .collect::<Vec<_>>()
+            .join("\\n");
+
+        let mut attrs = vec![format!("label=\"S{}\\n{}\"", id, label)];
+        if is_initial {
+            attrs.push("shape=doubleoctagon".to_string());
+            attrs.push("style=filled".to_string());
+            attrs.push("fillcolor=\"#e8f5e9\"".to_string());
+        }
+        if is_violation {
+            attrs.push("style=filled".to_string());
+            attrs.push("fillcolor=\"#ffcdd2\"".to_string());
+            attrs.push("penwidth=2".to_string());
+        }
+
+        lines.push(format!("    s{} [{}];", id, attrs.join(", ")));
+    }
+
+    // Emit edges (predecessor → state)
+    for &fp in &fp_list {
+        let info = match store.get(&fp) {
+            Some(i) => i,
+            None => continue,
+        };
+        let dst_id = fp_to_id[&fp];
+
+        if let Some(pred_fp) = info.predecessor {
+            if let Some(&src_id) = fp_to_id.get(&pred_fp) {
+                let edge_label = info
+                    .action_idx
+                    .map(|idx| {
+                        let base = action_names
+                            .get(idx)
+                            .cloned()
+                            .unwrap_or_else(|| format!("action_{}", idx));
+                        if let Some(ref params) = info.param_values {
+                            if params.is_empty() {
+                                base
+                            } else {
+                                let ps: Vec<String> = params.iter().map(|v| v.to_string()).collect();
+                                format!("{}({})", base, ps.join(","))
+                            }
+                        } else {
+                            base
+                        }
+                    })
+                    .unwrap_or_default();
+                lines.push(format!("    s{} -> s{} [label=\"{}\"];", src_id, dst_id, edge_label));
+            }
+        }
+    }
+
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+/// Format a Value compactly for DOT node labels.
+fn format_value_compact(v: &Value) -> String {
+    match v {
+        Value::Int(n) => n.to_string(),
+        Value::Bool(b) => if *b { "T" } else { "F" }.to_string(),
+        Value::String(s) => format!("\"{}\"", s),
+        Value::Set(s) => {
+            let inner: Vec<String> = s.iter().map(format_value_compact).collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        Value::Seq(s) => {
+            let inner: Vec<String> = s.iter().map(format_value_compact).collect();
+            format!("[{}]", inner.join(","))
+        }
+        Value::Fn(f) => {
+            let inner: Vec<String> = f
+                .iter()
+                .map(|(k, v)| format!("{}:{}", format_value_compact(k), format_value_compact(v)))
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        Value::IntMap(m) => {
+            let inner: Vec<String> = m.iter().enumerate().map(|(i, v)| format!("{}:{}", i, v)).collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        Value::Record(r) => {
+            let inner: Vec<String> = r
+                .iter()
+                .map(|(k, v)| format!("{}:{}", k, format_value_compact(v)))
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
+        Value::Tuple(t) => {
+            let inner: Vec<String> = t.iter().map(format_value_compact).collect();
+            format!("({})", inner.join(","))
+        }
+        Value::None => "None".to_string(),
+        Value::Some(v) => format!("Some({})", format_value_compact(v)),
     }
 }
 
