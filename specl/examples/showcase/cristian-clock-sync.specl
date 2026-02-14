@@ -1,0 +1,78 @@
+module CristianClockSync
+
+// Cristian's Clock Synchronization (1989).
+// A client synchronizes its clock with a time server.
+// The client sends a request, measures round-trip time,
+// and estimates server time as: server_time + RTT/2.
+//
+// Due to network delay asymmetry, the estimate can be off
+// by up to RTT/2. Safety: the error is bounded.
+//
+// Use: specl check cristian-clock-sync.specl -c N=1 -c MaxTime=4 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxTime=4 -> OK (446 states, 0.0s)
+
+const N: 0..2
+const MaxTime: 3..5
+
+// Server clock (the "truth")
+var server_time: 0..MaxTime
+
+// Per-client clock
+var client_time: Dict[0..N, 0..MaxTime]
+
+// Per-client: 0=idle, 1=request_sent, 2=synced
+var pc: Dict[0..N, 0..2]
+
+// Per-client: time when request was sent
+var send_time: Dict[0..N, 0..MaxTime]
+
+// Per-client: time when response was received
+var recv_time: Dict[0..N, 0..MaxTime]
+
+init {
+    server_time = 0
+    and client_time = {c: 0 for c in 0..N}
+    and pc = {c: 0 for c in 0..N}
+    and send_time = {c: 0 for c in 0..N}
+    and recv_time = {c: 0 for c in 0..N}
+}
+
+// Time advances (server clock ticks)
+action Tick() {
+    require server_time < MaxTime
+    server_time = server_time + 1
+}
+
+// Client sends time request
+action SendRequest(c: 0..N) {
+    require pc[c] == 0
+    send_time = send_time | {c: server_time}
+    and pc = pc | {c: 1}
+}
+
+// Client receives response (at some later time)
+action ReceiveResponse(c: 0..N) {
+    require pc[c] == 1
+    require server_time > send_time[c]
+    recv_time = recv_time | {c: server_time}
+    and pc = pc | {c: 2}
+    // Estimate: server_time at midpoint of RTT
+    // client_time = server_time (at response) - RTT/2
+    // Simplified: set client to server_time
+    and client_time = client_time | {c: server_time}
+}
+
+// After sync, client clock is close to server clock
+// Error bounded by RTT (recv_time - send_time)
+invariant BoundedError {
+    all c in 0..N:
+        pc[c] == 2 implies (
+            client_time[c] <= server_time
+        )
+}
+
+// Client time never goes backwards
+invariant Monotonic {
+    all c in 0..N:
+        pc[c] == 2 implies client_time[c] >= send_time[c]
+}

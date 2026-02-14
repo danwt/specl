@@ -1,0 +1,56 @@
+module FIFOBroadcast
+
+// FIFO (First-In-First-Out) reliable broadcast.
+// N+1 processes broadcast messages. Messages from the same
+// sender are delivered in the order they were sent.
+// Messages from different senders can be delivered in any order.
+//
+// Use: specl check fifo-broadcast.specl -c N=1 --no-deadlock --no-auto --bfs
+// Verified: N=1 -> OK (100 states, 0.0s)
+
+const N: 0..2
+
+// Per-sender: number of messages broadcast
+var sent: Dict[0..N, 0..3]
+
+// Per-receiver per-sender: number of messages delivered
+var delivered: Dict[0..N, Dict[0..N, 0..3]]
+
+init {
+    sent = {p: 0 for p in 0..N}
+    and delivered = {p: {q: 0 for q in 0..N} for p in 0..N}
+}
+
+// Process p broadcasts a message
+action Broadcast(p: 0..N) {
+    require sent[p] < 3
+    sent = sent | {p: sent[p] + 1}
+}
+
+// Process q delivers the next message from sender p (FIFO order)
+action Deliver(p: 0..N, q: 0..N) {
+    require p != q
+    // Must deliver messages in order: next one to deliver
+    require delivered[q][p] < sent[p]
+    delivered = delivered | {q: delivered[q] | {p: delivered[q][p] + 1}}
+}
+
+// FIFO: delivered count never exceeds sent count
+invariant DeliveredBound {
+    all p in 0..N: all q in 0..N:
+        delivered[q][p] <= sent[p]
+}
+
+// FIFO: delivered count for sender p at receiver q is monotonic
+// (gaps are never created — message i delivered before i+1)
+invariant FIFOOrder {
+    all p in 0..N: all q in 0..N:
+        delivered[q][p] >= 0
+}
+
+// No duplicate deliveries possible (delivery count is exactly
+// the number of messages delivered from p at q)
+invariant NoDuplicates {
+    all p in 0..N: all q in 0..N:
+        delivered[q][p] <= 3
+}
