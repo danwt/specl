@@ -1734,6 +1734,11 @@ impl LanguageServer for SpeclLanguageServer {
                 inlay_hint_provider: Some(OneOf::Left(true)),
                 folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
+                document_range_formatting_provider: Some(OneOf::Left(true)),
+                document_on_type_formatting_provider: Some(DocumentOnTypeFormattingOptions {
+                    first_trigger_character: "}".to_string(),
+                    more_trigger_character: Some(vec!["\n".to_string()]),
+                }),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
                         SemanticTokensOptions {
@@ -2088,6 +2093,95 @@ impl LanguageServer for SpeclLanguageServer {
 
         let formatted = pretty_print(&module);
 
+        let line_count = doc.content.len_lines();
+        let last_line_len = doc.content.line(line_count.saturating_sub(1)).len_chars();
+
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: line_count as u32,
+                    character: last_line_len as u32,
+                },
+            },
+            new_text: formatted,
+        }]))
+    }
+
+    async fn range_formatting(
+        &self,
+        params: DocumentRangeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document.uri;
+
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+
+        let content = doc.content.to_string();
+
+        let Ok(module) = parse(&content) else {
+            return Ok(None);
+        };
+
+        let formatted = pretty_print(&module);
+
+        // Return a text edit that replaces the selected range with the
+        // corresponding formatted content. Since pretty_print reformats the
+        // whole file, we extract only the lines within the requested range.
+        let range = params.range;
+        let formatted_lines: Vec<&str> = formatted.lines().collect();
+        let start_line = range.start.line as usize;
+        let end_line = range.end.line as usize;
+
+        if start_line >= formatted_lines.len() {
+            return Ok(None);
+        }
+
+        let end_line = end_line.min(formatted_lines.len().saturating_sub(1));
+        let selected: String = formatted_lines[start_line..=end_line].join("\n");
+
+        // Replace the selected range with the formatted version of those lines
+        Ok(Some(vec![TextEdit {
+            range: Range {
+                start: Position {
+                    line: range.start.line,
+                    character: 0,
+                },
+                end: Position {
+                    line: range.end.line,
+                    character: doc
+                        .content
+                        .line(end_line.min(doc.content.len_lines().saturating_sub(1)))
+                        .len_chars() as u32,
+                },
+            },
+            new_text: selected,
+        }]))
+    }
+
+    async fn on_type_formatting(
+        &self,
+        params: DocumentOnTypeFormattingParams,
+    ) -> Result<Option<Vec<TextEdit>>> {
+        let uri = &params.text_document_position.text_document.uri;
+
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+
+        let content = doc.content.to_string();
+
+        let Ok(module) = parse(&content) else {
+            return Ok(None);
+        };
+
+        let formatted = pretty_print(&module);
+
+        // Replace the entire document with the formatted version
         let line_count = doc.content.len_lines();
         let last_line_len = doc.content.line(line_count.saturating_sub(1)).len_chars();
 
@@ -2638,6 +2732,41 @@ action A() { x = y }
         assert!(titles.iter().any(|t| t.contains("reference")));
         // Double is called 0 times outside its declaration
         assert!(titles.iter().any(|t| t == &"0 references"));
+    }
+
+    #[test]
+    fn range_formatting_returns_partial_edit() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        // Store the document so range_formatting can access it
+        server.documents.insert(
+            uri.clone(),
+            Document {
+                content: Rope::from_str(SAMPLE_SPEC),
+                version: 1,
+            },
+        );
+        // Format only lines 6-8 (init block area)
+        let params = DocumentRangeFormattingParams {
+            text_document: TextDocumentIdentifier { uri },
+            range: Range {
+                start: Position { line: 6, character: 0 },
+                end: Position { line: 8, character: 1 },
+            },
+            options: FormattingOptions {
+                tab_size: 4,
+                insert_spaces: true,
+                ..Default::default()
+            },
+            work_done_progress_params: WorkDoneProgressParams::default(),
+        };
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let result = rt.block_on(server.range_formatting(params)).unwrap();
+        assert!(result.is_some(), "range formatting should return edits");
+        let edits = result.unwrap();
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].range.start.line, 6);
     }
 
     #[test]
