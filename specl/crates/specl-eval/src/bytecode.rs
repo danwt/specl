@@ -3,7 +3,7 @@
 //! Compiles CompiledExpr trees to flat bytecode and executes them in a tight
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
-use crate::eval::{eval, eval_bool, eval_int, expect_int, type_mismatch};
+use crate::eval::{eval, eval_bool, eval_int, expect_int, sorted_vec_diff, sorted_vec_union, type_mismatch};
 use crate::value::{Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
@@ -120,6 +120,16 @@ pub enum Op {
         body_pc: u32,
         end_pc: u32,
     },
+
+    // === Set/Seq construction ===
+    /// Pop N values → push Set (sorted, deduped).
+    SetLit(u16),
+    /// Pop N values → push Seq.
+    SeqLit(u16),
+    /// Pop two sets → push set union.
+    SetUnion,
+    /// Pop two sets → push set difference.
+    SetDiff,
 
     // === Superinstructions (fused sequences) ===
     /// Fused Var(i) + DictGet: var is the key, base dict is on stack.
@@ -308,6 +318,20 @@ impl Compiler {
                 self.compile_fn_lit(domain, body);
             }
 
+            CompiledExpr::SetLit(elems) => {
+                for e in elems {
+                    self.compile(e);
+                }
+                self.emit(Op::SetLit(elems.len() as u16));
+            }
+
+            CompiledExpr::SeqLit(elems) => {
+                for e in elems {
+                    self.compile(e);
+                }
+                self.emit(Op::SeqLit(elems.len() as u16));
+            }
+
             // Fallback for everything else
             _ => {
                 let idx = self.add_fallback(expr);
@@ -455,18 +479,20 @@ impl Compiler {
                         self.emit(Op::DictUpdateN(entries.len() as u16));
                     }
                 } else {
-                    // General set union → fallback
-                    let expr = CompiledExpr::Binary {
-                        op,
-                        left: Box::new(left.clone()),
-                        right: Box::new(right.clone()),
-                    };
-                    let idx = self.add_fallback(&expr);
-                    self.emit(Op::Fallback(idx));
+                    // General set union
+                    self.compile(left);
+                    self.compile(right);
+                    self.emit(Op::SetUnion);
                 }
             }
-            // Set/sequence operations → fallback
-            BinOp::Intersect | BinOp::Diff | BinOp::SubsetOf | BinOp::Concat => {
+            // Set difference
+            BinOp::Diff => {
+                self.compile(left);
+                self.compile(right);
+                self.emit(Op::SetDiff);
+            }
+            // Remaining set/sequence operations → fallback
+            BinOp::Intersect | BinOp::SubsetOf | BinOp::Concat => {
                 let expr = CompiledExpr::Binary {
                     op,
                     left: Box::new(left.clone()),
@@ -1543,6 +1569,59 @@ fn vm_eval_inner(
                 continue;
             }
 
+            // === Set/Seq construction ===
+            Op::SetLit(n) => {
+                let n = *n as usize;
+                let start = stack.len() - n;
+                let mut elems: Vec<Value> = stack.drain(start..).collect();
+                elems.sort();
+                elems.dedup();
+                stack.push(Value::set(Arc::new(elems)));
+            }
+            Op::SeqLit(n) => {
+                let n = *n as usize;
+                let start = stack.len() - n;
+                let elems: Vec<Value> = stack.drain(start..).collect();
+                stack.push(Value::seq(elems));
+            }
+            Op::SetUnion => {
+                let right_val = stack.pop().unwrap();
+                let left_val = stack.pop().unwrap();
+                if left_val.is_set_v() && right_val.is_set_v() {
+                    let a = left_val.into_set_arc();
+                    let b = right_val.into_set_arc();
+                    if b.len() <= 4 {
+                        let mut result = a;
+                        let inner = Arc::make_mut(&mut result);
+                        for v in b.iter() {
+                            Value::set_insert(inner, v.clone());
+                        }
+                        stack.push(Value::from_set_arc(result));
+                    } else if a.len() <= 4 {
+                        let mut result = b;
+                        let inner = Arc::make_mut(&mut result);
+                        for v in a.iter() {
+                            Value::set_insert(inner, v.clone());
+                        }
+                        stack.push(Value::from_set_arc(result));
+                    } else {
+                        stack.push(Value::set(Arc::new(sorted_vec_union(&a, &b))));
+                    }
+                } else {
+                    return Err(type_mismatch("Set", &left_val));
+                }
+            }
+            Op::SetDiff => {
+                let right_val = stack.pop().unwrap();
+                let left_val = stack.pop().unwrap();
+                match (left_val.kind(), right_val.kind()) {
+                    (VK::Set(a), VK::Set(b)) => {
+                        stack.push(Value::set(Arc::new(sorted_vec_diff(a, b))));
+                    }
+                    _ => return Err(type_mismatch("Set", &left_val)),
+                }
+            }
+
             // === Fallback to tree-walk ===
             Op::Fallback(idx) => {
                 let expr = &fallbacks[*idx as usize];
@@ -1580,7 +1659,6 @@ fn vm_eval_inner(
 // Helper functions
 // ============================================================================
 
-#[inline(always)]
 #[inline(always)]
 fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
     let v = stack.pop().unwrap();
