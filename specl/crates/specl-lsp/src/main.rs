@@ -767,6 +767,83 @@ impl SpeclLanguageServer {
         }
     }
 
+    /// Get folding ranges for declarations (blocks that can be collapsed).
+    fn get_folding_ranges(&self, source: &str) -> Vec<FoldingRange> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        // Pre-compute line start offsets for byte-to-line conversion
+        let line_starts: Vec<usize> = std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect();
+
+        let byte_to_line = |byte_offset: usize| -> u32 {
+            match line_starts.binary_search(&byte_offset) {
+                Ok(i) => i as u32,
+                Err(i) => (i - 1) as u32,
+            }
+        };
+
+        let mut ranges = Vec::new();
+        for decl in &module.decls {
+            let span = decl.span();
+            let start_line = span.line.saturating_sub(1);
+            let end_line = byte_to_line(span.end.saturating_sub(1));
+            if end_line > start_line {
+                ranges.push(FoldingRange {
+                    start_line,
+                    start_character: None,
+                    end_line,
+                    end_character: None,
+                    kind: Some(FoldingRangeKind::Region),
+                    collapsed_text: None,
+                });
+            }
+        }
+
+        // Also fold comment blocks (consecutive // lines)
+        let mut comment_start: Option<u32> = None;
+        for (i, line) in source.lines().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.starts_with("//") {
+                if comment_start.is_none() {
+                    comment_start = Some(i as u32);
+                }
+            } else if let Some(start) = comment_start {
+                let end = (i as u32).saturating_sub(1);
+                if end > start {
+                    ranges.push(FoldingRange {
+                        start_line: start,
+                        start_character: None,
+                        end_line: end,
+                        end_character: None,
+                        kind: Some(FoldingRangeKind::Comment),
+                        collapsed_text: None,
+                    });
+                }
+                comment_start = None;
+            }
+        }
+        // Handle trailing comment block
+        if let Some(start) = comment_start {
+            let end = source.lines().count() as u32 - 1;
+            if end > start {
+                ranges.push(FoldingRange {
+                    start_line: start,
+                    start_character: None,
+                    end_line: end,
+                    end_character: None,
+                    kind: Some(FoldingRangeKind::Comment),
+                    collapsed_text: None,
+                });
+            }
+        }
+
+        ranges
+    }
+
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
     const TT_KEYWORD: u32 = 0;
     const TT_TYPE: u32 = 1;
@@ -892,6 +969,7 @@ impl LanguageServer for SpeclLanguageServer {
                 rename_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 inlay_hint_provider: Some(OneOf::Left(true)),
+                folding_range_provider: Some(FoldingRangeProviderCapability::Simple(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -1045,6 +1123,13 @@ impl LanguageServer for SpeclLanguageServer {
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         let hints = self.get_inlay_hints(&content);
         Ok(if hints.is_empty() { None } else { Some(hints) })
+    }
+
+    async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let ranges = self.get_folding_ranges(&content);
+        Ok(if ranges.is_empty() { None } else { Some(ranges) })
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
