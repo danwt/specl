@@ -1,0 +1,80 @@
+module NBAC
+
+// Non-Blocking Atomic Commit (Guerraoui, 2002).
+// Unlike 2PC, NBAC never blocks waiting for a failed coordinator.
+// All processes vote yes/no. If all vote yes, commit; if any votes
+// no, abort. A failure detector ensures progress even if processes crash.
+//
+// N+1 participants. Each votes, then a decision is reached.
+//
+// Use: specl check nbac.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (189 states)
+
+const N: 0..3
+
+// Per-process: 0=undecided, 1=voted_yes, 2=voted_no, 3=committed, 4=aborted, 5=crashed
+var pc: Dict[0..N, 0..5]
+var decision: 0..2
+
+init {
+    pc = {p: 0 for p in 0..N}
+    and decision = 0
+}
+
+// Process votes yes
+action VoteYes(p: 0..N) {
+    require pc[p] == 0
+    pc = pc | {p: 1}
+}
+
+// Process votes no
+action VoteNo(p: 0..N) {
+    require pc[p] == 0
+    pc = pc | {p: 2}
+}
+
+// Process crashes before voting
+action CrashBeforeVote(p: 0..N) {
+    require pc[p] == 0
+    pc = pc | {p: 5}
+}
+
+// Decide commit: all non-crashed processes voted yes
+action DecideCommit() {
+    require decision == 0
+    require all p in 0..N: pc[p] == 1 or pc[p] == 5
+    require all p in 0..N: pc[p] != 2
+    require any p in 0..N: pc[p] == 1
+    require not (any p in 0..N: pc[p] == 5)
+    decision = 1
+}
+
+// Decide abort: someone voted no or crashed
+action DecideAbort() {
+    require decision == 0
+    require (any p in 0..N: pc[p] == 2 or pc[p] == 5)
+    decision = 2
+}
+
+// Process learns decision
+action LearnCommit(p: 0..N) {
+    require decision == 1
+    require pc[p] == 1
+    pc = pc | {p: 3}
+}
+
+action LearnAbort(p: 0..N) {
+    require decision == 2
+    require pc[p] == 1 or pc[p] == 2
+    pc = pc | {p: 4}
+}
+
+// Agreement: all decided processes agree
+invariant Agreement {
+    not (any i in 0..N: any j in 0..N: pc[i] == 3 and pc[j] == 4)
+}
+
+// Validity: commit only if all voted yes
+invariant CommitValidity {
+    decision == 1 implies (all p in 0..N: pc[p] != 2 and pc[p] != 5)
+}
