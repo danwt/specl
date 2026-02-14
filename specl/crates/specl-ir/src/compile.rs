@@ -103,7 +103,7 @@ impl Compiler {
                     let ty = self.lookup_const_type(&d.name.name);
                     let default_value = match &d.value {
                         ConstValue::Scalar(n) => Some(*n),
-                        ConstValue::Type(_) => None,
+                        ConstValue::Type(_) => d.default_value,
                     };
                     consts.push(IrConstDecl {
                         name: d.name.name.clone(),

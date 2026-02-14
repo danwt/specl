@@ -89,11 +89,13 @@ pub enum ConstValue {
     Scalar(i64),
 }
 
-/// `const NAME: Type` or `const NAME: value`
+/// `const NAME: Type` or `const NAME: value` or `const NAME: Type = value`
 #[derive(Debug, Clone)]
 pub struct ConstDecl {
     pub name: Ident,
     pub value: ConstValue,
+    /// Default value: `const N: Int = 5` — overridden by `-c N=3`.
+    pub default_value: Option<i64>,
     pub span: Span,
 }
 
