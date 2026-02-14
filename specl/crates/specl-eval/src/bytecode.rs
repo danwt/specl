@@ -845,6 +845,7 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
 // ============================================================================
 
 /// Execute bytecode and return the result as a bool.
+/// Execute bytecode and return the result as a bool.
 pub fn vm_eval_bool(
     bytecode: &Bytecode,
     vars: &[Value],
@@ -859,6 +860,64 @@ pub fn vm_eval_bool(
     })
 }
 
+/// Reusable VM evaluation buffers.
+///
+/// Pre-allocate once per thread, reuse across all `vm_eval_reuse` calls.
+/// Eliminates per-evaluation Vec allocations in the hot path.
+pub struct VmBufs {
+    stack: Vec<Value>,
+    locals: Vec<Value>,
+    loops: Vec<LoopState>,
+}
+
+impl VmBufs {
+    pub fn new() -> Self {
+        Self {
+            stack: Vec::with_capacity(16),
+            locals: Vec::new(),
+            loops: Vec::new(),
+        }
+    }
+}
+
+impl Default for VmBufs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Execute bytecode using reusable buffers. Returns the result as a Value.
+/// Buffers are cleared before use and left in a clean state on return.
+pub fn vm_eval_reuse(
+    bytecode: &Bytecode,
+    vars: &[Value],
+    next_vars: &[Value],
+    consts: &[Value],
+    params: &[Value],
+    bufs: &mut VmBufs,
+) -> EvalResult<Value> {
+    bufs.stack.clear();
+    bufs.locals.clear();
+    bufs.loops.clear();
+    vm_eval_inner(&bytecode.ops, &bytecode.fallbacks, vars, next_vars, consts, params, &mut bufs.stack, &mut bufs.locals, &mut bufs.loops)
+}
+
+/// Execute bytecode using reusable buffers. Returns the result as a bool.
+pub fn vm_eval_bool_reuse(
+    bytecode: &Bytecode,
+    vars: &[Value],
+    next_vars: &[Value],
+    consts: &[Value],
+    params: &[Value],
+    bufs: &mut VmBufs,
+) -> EvalResult<bool> {
+    let result = vm_eval_reuse(bytecode, vars, next_vars, consts, params, bufs)?;
+    result.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+        expected: "Bool".to_string(),
+        actual: result.type_name().to_string(),
+    })
+}
+
 /// Execute bytecode and return the result as a Value.
 pub fn vm_eval(
     bytecode: &Bytecode,
@@ -867,10 +926,24 @@ pub fn vm_eval(
     consts: &[Value],
     params: &[Value],
 ) -> EvalResult<Value> {
-    let ops = &bytecode.ops;
     let mut stack: Vec<Value> = Vec::with_capacity(16);
     let mut locals: Vec<Value> = Vec::new();
     let mut loops: Vec<LoopState> = Vec::new();
+    vm_eval_inner(&bytecode.ops, &bytecode.fallbacks, vars, next_vars, consts, params, &mut stack, &mut locals, &mut loops)
+}
+
+/// Core VM execution loop. Shared by `vm_eval` and `vm_eval_reuse`.
+fn vm_eval_inner(
+    ops: &[Op],
+    fallbacks: &[CompiledExpr],
+    vars: &[Value],
+    next_vars: &[Value],
+    consts: &[Value],
+    params: &[Value],
+    stack: &mut Vec<Value>,
+    locals: &mut Vec<Value>,
+    loops: &mut Vec<LoopState>,
+) -> EvalResult<Value> {
     let mut pc: usize = 0;
 
     loop {
@@ -891,44 +964,44 @@ pub fn vm_eval(
 
             // Arithmetic
             Op::Add => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::int(a + b));
             }
             Op::Sub => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::int(a - b));
             }
             Op::Mul => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::int(a * b));
             }
             Op::Div => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
                 stack.push(Value::int(a / b));
             }
             Op::Mod => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
                 stack.push(Value::int(a % b));
             }
             Op::Neg => {
-                let a = pop_int(&mut stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::int(-a));
             }
 
             // Boolean
             Op::Not => {
-                let a = pop_bool(&mut stack)?;
+                let a = pop_bool(stack)?;
                 stack.push(Value::bool(!a));
             }
 
@@ -946,33 +1019,33 @@ pub fn vm_eval(
 
             // Integer comparison
             Op::IntEq => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::bool(a == b));
             }
             Op::IntNe => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::bool(a != b));
             }
             Op::IntLt => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::bool(a < b));
             }
             Op::IntLe => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::bool(a <= b));
             }
             Op::IntGt => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::bool(a > b));
             }
             Op::IntGe => {
-                let b = pop_int(&mut stack)?;
-                let a = pop_int(&mut stack)?;
+                let b = pop_int(stack)?;
+                let a = pop_int(stack)?;
                 stack.push(Value::bool(a >= b));
             }
 
@@ -1314,8 +1387,8 @@ pub fn vm_eval(
 
             // === Range quantifiers ===
             Op::ForallRangeInit(end_pc) => {
-                let hi = pop_int(&mut stack)?;
-                let lo = pop_int(&mut stack)?;
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
                 if lo > hi {
                     stack.push(Value::bool(true));
                     pc = *end_pc as usize;
@@ -1329,7 +1402,7 @@ pub fn vm_eval(
                 locals.push(Value::int(lo));
             }
             Op::ForallRangeStep { body_pc, end_pc } => {
-                let body_result = pop_bool(&mut stack)?;
+                let body_result = pop_bool(stack)?;
                 if !body_result {
                     locals.pop();
                     loops.pop();
@@ -1352,8 +1425,8 @@ pub fn vm_eval(
             }
 
             Op::ExistsRangeInit(end_pc) => {
-                let hi = pop_int(&mut stack)?;
-                let lo = pop_int(&mut stack)?;
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
                 if lo > hi {
                     stack.push(Value::bool(false));
                     pc = *end_pc as usize;
@@ -1367,7 +1440,7 @@ pub fn vm_eval(
                 locals.push(Value::int(lo));
             }
             Op::ExistsRangeStep { body_pc, end_pc } => {
-                let body_result = pop_bool(&mut stack)?;
+                let body_result = pop_bool(stack)?;
                 if body_result {
                     locals.pop();
                     loops.pop();
@@ -1391,8 +1464,8 @@ pub fn vm_eval(
 
             // === Count filtered ===
             Op::CountRangeInit(end_pc) => {
-                let hi = pop_int(&mut stack)?;
-                let lo = pop_int(&mut stack)?;
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
                 if lo > hi {
                     stack.push(Value::int(0));
                     pc = *end_pc as usize;
@@ -1406,7 +1479,7 @@ pub fn vm_eval(
                 locals.push(Value::int(lo));
             }
             Op::CountRangeStep { body_pc, end_pc } => {
-                let pred = pop_bool(&mut stack)?;
+                let pred = pop_bool(stack)?;
                 let loop_state = loops.last_mut().unwrap();
                 if pred {
                     loop_state.counter += 1;
@@ -1427,8 +1500,8 @@ pub fn vm_eval(
 
             // === FnLit range ===
             Op::FnLitRangeInit(end_pc) => {
-                let hi = pop_int(&mut stack)?;
-                let lo = pop_int(&mut stack)?;
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
                 if lo > hi {
                     stack.push(Value::func(Arc::new(Vec::new())));
                     pc = *end_pc as usize;
@@ -1472,21 +1545,21 @@ pub fn vm_eval(
 
             // === Fallback to tree-walk ===
             Op::Fallback(idx) => {
-                let expr = &bytecode.fallbacks[*idx as usize];
+                let expr = &fallbacks[*idx as usize];
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval(expr, &mut ctx)?;
                 stack.push(result);
             }
             Op::FallbackBool(idx) => {
-                let expr = &bytecode.fallbacks[*idx as usize];
+                let expr = &fallbacks[*idx as usize];
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_bool(expr, &mut ctx)?;
                 stack.push(Value::bool(result));
             }
             Op::FallbackInt(idx) => {
-                let expr = &bytecode.fallbacks[*idx as usize];
+                let expr = &fallbacks[*idx as usize];
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_int(expr, &mut ctx)?;
