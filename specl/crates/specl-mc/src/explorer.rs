@@ -1037,9 +1037,20 @@ impl Explorer {
         };
 
         // Compute which invariants are active (empty check_only = all active)
+        // Compute which invariants are active (empty check_only = all active)
         let active_invariants: Vec<bool> = if config.check_only_invariants.is_empty() {
             vec![true; spec.invariants.len()]
         } else {
+            let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+            for name in &config.check_only_invariants {
+                if !inv_names.contains(&name.as_str()) {
+                    error!(
+                        name,
+                        available = ?inv_names,
+                        "unknown invariant in --check-only"
+                    );
+                }
+            }
             spec.invariants
                 .iter()
                 .map(|inv| config.check_only_invariants.contains(&inv.name))
