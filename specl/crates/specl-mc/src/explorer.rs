@@ -124,6 +124,24 @@ enum AmpleResult {
     Instances(Vec<(usize, Vec<Value>)>),
 }
 
+/// Extract i64 parameter values from Value slice for trace storage.
+fn params_to_i64s(params: &[Value]) -> Vec<i64> {
+    params
+        .iter()
+        .map(|v| match v {
+            Value::Int(n) => *n,
+            Value::Bool(b) => {
+                if *b {
+                    1
+                } else {
+                    0
+                }
+            }
+            _ => 0,
+        })
+        .collect()
+}
+
 /// Lock-free progress counters shared between the explorer and the CLI spinner.
 pub struct ProgressCounters {
     pub states: AtomicUsize,
@@ -1560,7 +1578,7 @@ impl Explorer {
             for state in initial_states {
                 let canonical = self.maybe_canonicalize(state);
                 let fp = canonical.fingerprint();
-                if self.store.insert(canonical.clone(), None, None, 0) {
+                if self.store.insert(canonical.clone(), None, None, None, 0) {
                     queue.push_back((fp, canonical, 0, u64::MAX, 0));
                 }
             }
@@ -1574,7 +1592,7 @@ impl Explorer {
             for state in initial_states {
                 let canonical = self.maybe_canonicalize(state);
                 let fp = canonical.fingerprint();
-                if self.store.insert(canonical.clone(), None, None, 0) {
+                if self.store.insert(canonical.clone(), None, None, None, 0) {
                     queue.push_back((fp, canonical, 0, u64::MAX, 0));
                 }
             }
@@ -1623,7 +1641,7 @@ impl Explorer {
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
             let fp = canonical.fingerprint();
-            if self.store.insert(canonical.clone(), None, None, 0) {
+            if self.store.insert(canonical.clone(), None, None, None, 0) {
                 let h = self.invariant_heuristic(&canonical);
                 queue.push(PQEntry { score: h, fp, state: canonical, depth: 0 });
             }
@@ -1698,7 +1716,7 @@ impl Explorer {
             }
 
             // Insert successors with heuristic priority
-            for (succ, action_idx) in successors {
+            for (succ, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(succ);
                 let succ_fp = canonical.fingerprint();
                 if self.store.insert_with_fp(
@@ -1706,6 +1724,7 @@ impl Explorer {
                     canonical.clone(),
                     Some(fp),
                     Some(action_idx),
+                    Some(pvals),
                     depth + 1,
                 ) {
                     if let Some(ref p) = self.config.progress {
@@ -1796,7 +1815,7 @@ impl Explorer {
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
             let fp = canonical.fingerprint();
-            if self.store.insert(canonical.clone(), None, None, 0) {
+            if self.store.insert(canonical.clone(), None, None, None, 0) {
                 queue.push_back((fp, canonical, 0, u64::MAX, 0));
             }
         }
@@ -1867,10 +1886,10 @@ impl Explorer {
             }
 
             // Add successors to queue
-            for (next_state, action_idx) in successors {
+            for (next_state, action_idx, _pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self.store.insert(canonical.clone(), None, None, depth + 1) {
+                if self.store.insert(canonical.clone(), None, None, None, depth + 1) {
                     max_depth = max_depth.max(depth + 1);
                     queue.push_back((
                         next_fp,
@@ -1921,7 +1940,7 @@ impl Explorer {
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
             let fp = canonical.fingerprint();
-            if self.store.insert(canonical, None, None, 0) {
+            if self.store.insert(canonical, None, None, None, 0) {
                 queue.push_back(fp);
             }
         }
@@ -1945,12 +1964,12 @@ impl Explorer {
             // Generate successors
             let mut successors = Vec::new();
             self.generate_successors(state, &mut successors, &mut next_vars_buf, 0)?;
-            for (next_state, action_idx) in successors {
+            for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
                 if self
                     .store
-                    .insert(canonical, Some(fp), Some(action_idx), depth + 1)
+                    .insert(canonical, Some(fp), Some(action_idx), Some(pvals), depth + 1)
                 {
                     queue.push_back(next_fp);
                 }
@@ -1976,7 +1995,7 @@ impl Explorer {
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
             let fp = canonical.fingerprint();
-            if self.store.insert(canonical, None, None, 0) {
+            if self.store.insert(canonical, None, None, None, 0) {
                 queue.push_back(fp);
             }
         }
@@ -1998,12 +2017,12 @@ impl Explorer {
             }
 
             // Generate successors
-            for (next_state, action_idx) in successors {
+            for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
                 if self
                     .store
-                    .insert(canonical, Some(fp), Some(action_idx), depth + 1)
+                    .insert(canonical, Some(fp), Some(action_idx), Some(pvals), depth + 1)
                 {
                     queue.push_back(next_fp);
                 }
@@ -2129,7 +2148,7 @@ impl Explorer {
             let t2 = if profiling { Instant::now() } else { Instant::now() };
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
-            for (next_state, action_idx) in successors {
+            for (next_state, action_idx, pvals) in successors {
                 if profiling { prof_action_counts[action_idx] += 1; }
                 let successor_sleep = if use_sleep {
                     accumulated_sleep & self.independent_masks[action_idx]
@@ -2140,7 +2159,7 @@ impl Explorer {
                 let next_fp = canonical.fingerprint();
                 if self
                     .store
-                    .insert(canonical.clone(), Some(fp), Some(action_idx), depth + 1)
+                    .insert(canonical.clone(), Some(fp), Some(action_idx), Some(pvals), depth + 1)
                 {
                     *max_depth = (*max_depth).max(depth + 1);
                     queue.push_back((
@@ -2303,7 +2322,7 @@ impl Explorer {
                             // Insert successors into store directly (parallel)
                             let mut new_entries = Vec::new();
                             let mut batch_max_depth = 0;
-                            for (next_state, action_idx) in successors {
+                            for (next_state, action_idx, pvals) in successors {
                                 let canonical = self.maybe_canonicalize(next_state);
                                 let next_fp = canonical.fingerprint();
                                 if self.store.contains(&next_fp) {
@@ -2314,6 +2333,7 @@ impl Explorer {
                                     canonical.clone(),
                                     Some(*fp),
                                     Some(action_idx),
+                                    Some(pvals),
                                     depth + 1,
                                 ) {
                                     batch_max_depth = batch_max_depth.max(depth + 1);
@@ -2741,7 +2761,7 @@ impl Explorer {
     fn generate_successors(
         &self,
         state: &State,
-        buf: &mut Vec<(State, usize)>,
+        buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
     ) -> CheckResult<()> {
@@ -2796,7 +2816,7 @@ impl Explorer {
         &self,
         state: &State,
         actions: &[usize],
-        buf: &mut Vec<(State, usize)>,
+        buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
     ) -> CheckResult<()> {
@@ -3250,10 +3270,12 @@ impl Explorer {
         state: &State,
         action_idx: usize,
         params: &[Value],
-        buf: &mut Vec<(State, usize)>,
+        buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
+
+        let pvals = params_to_i64s(params);
 
         // Try bytecode effect path first
         if let Some(cached) = &self.cached_effects[action_idx] {
@@ -3267,7 +3289,7 @@ impl Explorer {
                 &action.effect,
             ) {
                 if let Some(next_state) = result {
-                    buf.push((next_state, action_idx));
+                    buf.push((next_state, action_idx, pvals));
                 }
                 return Ok(());
             }
@@ -3276,7 +3298,7 @@ impl Explorer {
         // Fallback: full eval path
         if let Ok(next_states) = self.find_next_states(state, action, params) {
             for next_state in next_states {
-                buf.push((next_state, action_idx));
+                buf.push((next_state, action_idx, pvals.clone()));
             }
         }
         Ok(())
@@ -3289,7 +3311,7 @@ impl Explorer {
         &self,
         state: &State,
         action_idx: usize,
-        buf: &mut Vec<(State, usize)>,
+        buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
         cache: &mut OpCache,
         orbit_reps: &SmallVec<[Vec<usize>; 4]>,
@@ -3388,7 +3410,7 @@ impl Explorer {
                             ) {
                                 if let Some(next_state) = result {
                                     cache.store(key, xor_hash_vars(&next_state.vars, changes));
-                                    buf.push((next_state, action_idx));
+                                    buf.push((next_state, action_idx, params_to_i64s(params)));
                                 } else {
                                     cache.store(key, OP_NO_SUCCESSOR);
                                 }
@@ -3408,7 +3430,7 @@ impl Explorer {
                                 &action.effect,
                             ) {
                                 if let Some(next_state) = result {
-                                    buf.push((next_state, action_idx));
+                                    buf.push((next_state, action_idx, params_to_i64s(params)));
                                 } else {
                                     // Guard reverification failed, no successor
                                 }
@@ -3418,8 +3440,9 @@ impl Explorer {
                     }
 
                     if let Ok(next_states) = self.find_next_states(state, action, params) {
+                        let pvals = params_to_i64s(params);
                         for next_state in next_states {
-                            buf.push((next_state, action_idx));
+                            buf.push((next_state, action_idx, pvals.clone()));
                         }
                     }
                 },
@@ -3459,7 +3482,7 @@ impl Explorer {
                         ) {
                             if let Some(next_state) = result {
                                 cache.store(key, xor_hash_vars(&next_state.vars, changes));
-                                buf.push((next_state, action_idx));
+                                buf.push((next_state, action_idx, params_to_i64s(params)));
                             } else {
                                 cache.store(key, OP_NO_SUCCESSOR);
                             }
@@ -3485,7 +3508,7 @@ impl Explorer {
                             &action.effect,
                         ) {
                             if let Some(next_state) = result {
-                                buf.push((next_state, action_idx));
+                                buf.push((next_state, action_idx, params_to_i64s(params)));
                             }
                             return;
                         }
@@ -3494,8 +3517,9 @@ impl Explorer {
 
                 // Fallback: full eval path
                 if let Ok(next_states) = self.find_next_states(state, action, params) {
+                    let pvals = params_to_i64s(params);
                     for next_state in next_states {
-                        buf.push((next_state, action_idx));
+                        buf.push((next_state, action_idx, pvals.clone()));
                     }
                 }
             });
@@ -3727,7 +3751,7 @@ impl Explorer {
         }
 
         let mut current = state;
-        let mut successors_buf: Vec<(State, usize)> = Vec::new();
+        let mut successors_buf: Vec<(State, usize, Vec<i64>)> = Vec::new();
         let mut next_vars_buf: Vec<Value> = Vec::new();
 
         for _step in 0..max_steps {
@@ -3739,9 +3763,15 @@ impl Explorer {
             }
 
             // Pick a random successor
-            let (next_state, action_idx) = successors_buf.choose(&mut rng).unwrap().clone();
+            let (next_state, action_idx, pvals) = successors_buf.choose(&mut rng).unwrap().clone();
 
-            let action_name = self.action_names[action_idx].clone();
+            let base_name = self.action_names[action_idx].clone();
+            let action_name = if pvals.is_empty() {
+                base_name
+            } else {
+                let param_str: Vec<String> = pvals.iter().map(|v| v.to_string()).collect();
+                format!("{}({})", base_name, param_str.join(", "))
+            };
             trace.push((next_state.clone(), Some(action_name)));
 
             // Check invariants

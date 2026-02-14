@@ -18,6 +18,8 @@ pub struct StateInfo {
     pub predecessor: Option<Fingerprint>,
     /// Index of the action that led to this state (None for initial states).
     pub action_idx: Option<usize>,
+    /// Parameter values used when firing the action (for trace display).
+    pub param_values: Option<Vec<i64>>,
     /// Depth from initial state.
     pub depth: usize,
 }
@@ -112,10 +114,11 @@ impl StateStore {
         state: State,
         predecessor: Option<Fingerprint>,
         action_idx: Option<usize>,
+        param_values: Option<Vec<i64>>,
         depth: usize,
     ) -> bool {
         let fp = state.fingerprint();
-        self.insert_with_fp(fp, state, predecessor, action_idx, depth)
+        self.insert_with_fp(fp, state, predecessor, action_idx, param_values, depth)
     }
 
     /// Try to insert with a pre-computed fingerprint. Returns true if the state was new.
@@ -125,6 +128,7 @@ impl StateStore {
         state: State,
         predecessor: Option<Fingerprint>,
         action_idx: Option<usize>,
+        param_values: Option<Vec<i64>>,
         depth: usize,
     ) -> bool {
         match &self.backend {
@@ -148,6 +152,7 @@ impl StateStore {
                             state,
                             predecessor,
                             action_idx,
+                            param_values,
                             depth,
                         });
                         true
@@ -240,6 +245,7 @@ impl StateStore {
 
     /// Reconstruct a trace from an initial state to the given fingerprint.
     /// Action names are resolved using the provided action name list.
+    /// Parameter values are appended to action names when available.
     /// Returns empty trace if full tracking is disabled.
     pub fn trace_to(
         &self,
@@ -256,10 +262,21 @@ impl StateStore {
         while let Some(cfp) = current {
             if let Some(info) = self.get(&cfp) {
                 let name = info.action_idx.map(|idx| {
-                    action_names
+                    let base = action_names
                         .get(idx)
                         .cloned()
-                        .unwrap_or_else(|| format!("action_{}", idx))
+                        .unwrap_or_else(|| format!("action_{}", idx));
+                    if let Some(ref params) = info.param_values {
+                        if params.is_empty() {
+                            base
+                        } else {
+                            let param_str: Vec<String> =
+                                params.iter().map(|v| v.to_string()).collect();
+                            format!("{}({})", base, param_str.join(", "))
+                        }
+                    } else {
+                        base
+                    }
                 });
                 trace.push((info.state, name));
                 current = info.predecessor;
@@ -312,9 +329,9 @@ mod tests {
         let s1 = State::new(vec![Value::Int(1)]);
         let s2 = State::new(vec![Value::Int(2)]);
 
-        assert!(store.insert(s1.clone(), None, None, 0));
-        assert!(!store.insert(s1.clone(), None, None, 0)); // duplicate
-        assert!(store.insert(s2, None, None, 0));
+        assert!(store.insert(s1.clone(), None, None, None, 0));
+        assert!(!store.insert(s1.clone(), None, None, None, 0)); // duplicate
+        assert!(store.insert(s2, None, None, None, 0));
 
         assert_eq!(store.len(), 2);
     }
@@ -331,9 +348,9 @@ mod tests {
         let fp1 = s1.fingerprint();
         let fp2 = s2.fingerprint();
 
-        store.insert(s0, None, Some(0), 0);
-        store.insert(s1, Some(fp0), Some(1), 1);
-        store.insert(s2, Some(fp1), Some(2), 2);
+        store.insert(s0, None, Some(0), None, 0);
+        store.insert(s1, Some(fp0), Some(1), Some(vec![1]), 1);
+        store.insert(s2, Some(fp1), Some(2), Some(vec![2]), 2);
 
         let action_names = vec!["init".to_string(), "step1".to_string(), "step2".to_string()];
         let trace = store.trace_to(&fp2, &action_names);
@@ -350,9 +367,9 @@ mod tests {
         let s2 = State::new(vec![Value::Int(2)]);
 
         // Should still track uniqueness
-        assert!(store.insert(s1.clone(), None, None, 0));
-        assert!(!store.insert(s1.clone(), None, None, 0)); // duplicate
-        assert!(store.insert(s2, None, None, 0));
+        assert!(store.insert(s1.clone(), None, None, None, 0));
+        assert!(!store.insert(s1.clone(), None, None, None, 0)); // duplicate
+        assert!(store.insert(s2, None, None, None, 0));
         assert_eq!(store.len(), 2);
 
         // But shouldn't be able to get state info
@@ -369,10 +386,10 @@ mod tests {
         let s1 = State::new(vec![Value::Int(1)]);
         let s2 = State::new(vec![Value::Int(2)]);
 
-        assert!(store.insert(s1.clone(), None, None, 0));
+        assert!(store.insert(s1.clone(), None, None, None, 0));
         // Bloom filter: second insert should return false (probably seen)
-        assert!(!store.insert(s1.clone(), None, None, 0));
-        assert!(store.insert(s2, None, None, 0));
+        assert!(!store.insert(s1.clone(), None, None, None, 0));
+        assert!(store.insert(s2, None, None, None, 0));
         assert_eq!(store.len(), 2);
         assert!(store.is_bloom());
         assert!(!store.has_full_tracking());
@@ -397,7 +414,7 @@ mod tests {
                 for i in 0..100 {
                     let value = (t * 1000 + i) as i64;
                     let state = State::new(vec![Value::Int(value)]);
-                    store.insert(state, None, None, 0);
+                    store.insert(state, None, None, None, 0);
                 }
             }));
         }
