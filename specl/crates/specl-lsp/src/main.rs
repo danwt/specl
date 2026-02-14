@@ -25,12 +25,99 @@ struct SpeclLanguageServer {
     documents: DashMap<Url, Document>,
 }
 
+fn format_action_params(params: &[specl_syntax::Param]) -> String {
+    let parts: Vec<_> = params
+        .iter()
+        .map(|p| {
+            format!(
+                "{}: {}",
+                p.name.name,
+                specl_syntax::pretty::pretty_print_type(&p.ty)
+            )
+        })
+        .collect();
+    parts.join(", ")
+}
+
+fn format_func_params(params: &[specl_syntax::FuncParam]) -> String {
+    let parts: Vec<_> = params.iter().map(|p| p.name.name.as_str()).collect();
+    parts.join(", ")
+}
+
+fn decl_hover_text(decl: &Decl) -> Option<String> {
+    match decl {
+        Decl::Var(d) => {
+            let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+            Some(format!("**var** `{}`: `{}`", d.name.name, type_str))
+        }
+        Decl::Const(d) => {
+            let value_str = specl_syntax::pretty::pretty_print_const_value(&d.value);
+            Some(format!("**const** `{}`: `{}`", d.name.name, value_str))
+        }
+        Decl::Action(d) => Some(format!(
+            "**action** `{}({})`",
+            d.name.name,
+            format_action_params(&d.params)
+        )),
+        Decl::Invariant(d) => Some(format!("**invariant** `{}`", d.name.name)),
+        Decl::Func(d) => Some(format!(
+            "**func** `{}({})`",
+            d.name.name,
+            format_func_params(&d.params)
+        )),
+        Decl::Type(d) => {
+            let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+            Some(format!("**type** `{}` = `{}`", d.name.name, type_str))
+        }
+        Decl::Property(d) => Some(format!("**property** `{}`", d.name.name)),
+        _ => None,
+    }
+}
+
+fn decl_name_span(decl: &Decl) -> Option<(&str, Span)> {
+    match decl {
+        Decl::Var(d) => Some((&d.name.name, d.name.span)),
+        Decl::Const(d) => Some((&d.name.name, d.name.span)),
+        Decl::Action(d) => Some((&d.name.name, d.name.span)),
+        Decl::Invariant(d) => Some((&d.name.name, d.name.span)),
+        Decl::Func(d) => Some((&d.name.name, d.name.span)),
+        Decl::Type(d) => Some((&d.name.name, d.name.span)),
+        Decl::Property(d) => Some((&d.name.name, d.name.span)),
+        _ => None,
+    }
+}
+
+fn make_hover(text: String, range: Option<Range>) -> Hover {
+    Hover {
+        contents: HoverContents::Markup(MarkupContent {
+            kind: MarkupKind::Markdown,
+            value: text,
+        }),
+        range,
+    }
+}
+
+fn make_diagnostic(span: Span, message: String) -> Diagnostic {
+    Diagnostic {
+        range: SpeclLanguageServer::span_to_range(span),
+        severity: Some(DiagnosticSeverity::ERROR),
+        source: Some("specl".to_string()),
+        message,
+        ..Default::default()
+    }
+}
+
 impl SpeclLanguageServer {
     fn new(client: Client) -> Self {
         Self {
             client,
             documents: DashMap::new(),
         }
+    }
+
+    /// Get document content by URI.
+    fn get_content(&self, uri: &Url) -> Option<String> {
+        self.documents.get(uri).map(|doc| doc.content.to_string())
     }
 
     /// Analyze a document and publish diagnostics.
@@ -43,7 +130,7 @@ impl SpeclLanguageServer {
         let version = doc.version;
         drop(doc);
 
-        let diagnostics = self.get_diagnostics(&content);
+        let diagnostics = Self::get_diagnostics(&content);
 
         self.client
             .publish_diagnostics(uri.clone(), diagnostics, Some(version))
@@ -51,44 +138,20 @@ impl SpeclLanguageServer {
     }
 
     /// Get diagnostics for source code.
-    fn get_diagnostics(&self, source: &str) -> Vec<Diagnostic> {
-        let mut diagnostics = Vec::new();
-
-        // Parse
+    fn get_diagnostics(source: &str) -> Vec<Diagnostic> {
         let module = match parse(source) {
             Ok(m) => m,
-            Err(e) => {
-                let msg = e.to_string();
-                let span = e.span();
-                diagnostics.push(Diagnostic {
-                    range: Self::span_to_range(span),
-                    severity: Some(DiagnosticSeverity::ERROR),
-                    source: Some("specl".to_string()),
-                    message: msg,
-                    ..Default::default()
-                });
-                return diagnostics;
-            }
+            Err(e) => return vec![make_diagnostic(e.span(), e.to_string())],
         };
 
-        // Type check
         if let Err(e) = check_module(&module) {
-            let msg = e.to_string();
-            let span = e.span();
-            diagnostics.push(Diagnostic {
-                range: Self::span_to_range(span),
-                severity: Some(DiagnosticSeverity::ERROR),
-                source: Some("specl".to_string()),
-                message: msg,
-                ..Default::default()
-            });
+            vec![make_diagnostic(e.span(), e.to_string())]
+        } else {
+            vec![]
         }
-
-        diagnostics
     }
 
     /// Convert a Span to an LSP Range.
-    /// Note: Span only tracks start position, so we extend the range by the byte length.
     fn span_to_range(span: Span) -> Range {
         let start_line = span.line.saturating_sub(1);
         let start_char = span.column.saturating_sub(1);
@@ -108,204 +171,26 @@ impl SpeclLanguageServer {
     /// Get hover information at a position.
     fn get_hover(&self, source: &str, position: Position) -> Option<Hover> {
         let module = parse(source).ok()?;
-
-        // Find what's at the position
         let line = position.line + 1;
         let col = position.character + 1;
 
-        // Check declarations
+        // Check if cursor is on a declaration name
         for decl in &module.decls {
-            match decl {
-                Decl::Var(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**var** `{}`: `{}`", d.name.name, type_str),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
+            if let Some((_, span)) = decl_name_span(decl) {
+                if Self::position_in_span(line, col, &span) {
+                    let text = decl_hover_text(decl)?;
+                    return Some(make_hover(text, Some(Self::span_to_range(span))));
                 }
-                Decl::Const(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        let value_str = specl_syntax::pretty::pretty_print_const_value(&d.value);
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**const** `{}`: `{}`", d.name.name, value_str),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
-                }
-                Decl::Action(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        let params: Vec<_> = d
-                            .params
-                            .iter()
-                            .map(|p| {
-                                format!(
-                                    "{}: {}",
-                                    p.name.name,
-                                    specl_syntax::pretty::pretty_print_type(&p.ty)
-                                )
-                            })
-                            .collect();
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!(
-                                    "**action** `{}({})`",
-                                    d.name.name,
-                                    params.join(", ")
-                                ),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
-                }
-                Decl::Invariant(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**invariant** `{}`", d.name.name),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
-                }
-                Decl::Func(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        let params: Vec<_> =
-                            d.params.iter().map(|p| p.name.name.as_str()).collect();
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!(
-                                    "**func** `{}({})`",
-                                    d.name.name,
-                                    params.join(", ")
-                                ),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
-                }
-                Decl::Type(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**type** `{}` = `{}`", d.name.name, type_str),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
-                }
-                Decl::Property(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**property** `{}`", d.name.name),
-                            }),
-                            range: Some(Self::span_to_range(d.name.span)),
-                        });
-                    }
-                }
-                _ => {}
             }
         }
 
-        // If not on a declaration name, try to find the identifier at cursor
-        // and show the declaration's hover info
-        if let Some(word) = Self::word_at_position(source, position) {
-            for decl in &module.decls {
-                match decl {
-                    Decl::Var(d) if d.name.name == word => {
-                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**var** `{}`: `{}`", d.name.name, type_str),
-                            }),
-                            range: None,
-                        });
-                    }
-                    Decl::Const(d) if d.name.name == word => {
-                        let value_str =
-                            specl_syntax::pretty::pretty_print_const_value(&d.value);
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**const** `{}`: `{}`", d.name.name, value_str),
-                            }),
-                            range: None,
-                        });
-                    }
-                    Decl::Action(d) if d.name.name == word => {
-                        let params: Vec<_> = d
-                            .params
-                            .iter()
-                            .map(|p| {
-                                format!(
-                                    "{}: {}",
-                                    p.name.name,
-                                    specl_syntax::pretty::pretty_print_type(&p.ty)
-                                )
-                            })
-                            .collect();
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!(
-                                    "**action** `{}({})`",
-                                    d.name.name,
-                                    params.join(", ")
-                                ),
-                            }),
-                            range: None,
-                        });
-                    }
-                    Decl::Func(d) if d.name.name == word => {
-                        let params: Vec<_> =
-                            d.params.iter().map(|p| p.name.name.as_str()).collect();
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!(
-                                    "**func** `{}({})`",
-                                    d.name.name,
-                                    params.join(", ")
-                                ),
-                            }),
-                            range: None,
-                        });
-                    }
-                    Decl::Invariant(d) if d.name.name == word => {
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**invariant** `{}`", d.name.name),
-                            }),
-                            range: None,
-                        });
-                    }
-                    Decl::Type(d) if d.name.name == word => {
-                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                        return Some(Hover {
-                            contents: HoverContents::Markup(MarkupContent {
-                                kind: MarkupKind::Markdown,
-                                value: format!("**type** `{}` = `{}`", d.name.name, type_str),
-                            }),
-                            range: None,
-                        });
-                    }
-                    _ => {}
+        // If not on a declaration name, find matching declaration by word
+        let word = Self::word_at_position(source, position)?;
+        for decl in &module.decls {
+            if let Some((name, _)) = decl_name_span(decl) {
+                if name == word {
+                    let text = decl_hover_text(decl)?;
+                    return Some(make_hover(text, None));
                 }
             }
         }
@@ -314,7 +199,6 @@ impl SpeclLanguageServer {
     }
 
     fn position_in_span(line: u32, col: u32, span: &Span) -> bool {
-        // Span only has start position, so check if position is within the span length
         if line != span.line {
             return false;
         }
@@ -326,7 +210,6 @@ impl SpeclLanguageServer {
     fn get_completions(&self, source: &str, _position: Position) -> Vec<CompletionItem> {
         let mut items = Vec::new();
 
-        // Keywords
         let keywords = [
             ("module", "Module declaration"),
             ("const", "Constant declaration"),
@@ -364,7 +247,6 @@ impl SpeclLanguageServer {
             });
         }
 
-        // Types
         let types = [
             ("Bool", "Boolean type"),
             ("Nat", "Natural number type"),
@@ -385,7 +267,6 @@ impl SpeclLanguageServer {
             });
         }
 
-        // Add declarations from the current file
         if let Ok(module) = parse(source) {
             for decl in &module.decls {
                 match decl {
@@ -438,38 +319,21 @@ impl SpeclLanguageServer {
     /// Find definition at a position.
     fn get_definition(&self, source: &str, position: Position, uri: &Url) -> Option<Location> {
         let module = parse(source).ok()?;
-
-        // Extract the identifier word at cursor position from source text
         let word = Self::word_at_position(source, position)?;
 
-        // Build declaration name → definition span map
-        let mut defs: Vec<(&str, Span)> = Vec::new();
         for decl in &module.decls {
-            match decl {
-                Decl::Var(d) => defs.push((&d.name.name, d.name.span)),
-                Decl::Const(d) => defs.push((&d.name.name, d.name.span)),
-                Decl::Action(d) => defs.push((&d.name.name, d.name.span)),
-                Decl::Invariant(d) => defs.push((&d.name.name, d.name.span)),
-                Decl::Func(d) => defs.push((&d.name.name, d.name.span)),
-                Decl::Type(d) => defs.push((&d.name.name, d.name.span)),
-                Decl::Property(d) => defs.push((&d.name.name, d.name.span)),
-                _ => {}
-            }
-        }
-
-        // Look up the word
-        for (name, span) in &defs {
-            if *name == word {
-                // Don't jump if already at the definition
-                let line = position.line + 1;
-                let col = position.character + 1;
-                if Self::position_in_span(line, col, span) {
-                    return None;
+            if let Some((name, span)) = decl_name_span(decl) {
+                if name == word {
+                    let line = position.line + 1;
+                    let col = position.character + 1;
+                    if Self::position_in_span(line, col, &span) {
+                        return None;
+                    }
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: Self::span_to_range(span),
+                    });
                 }
-                return Some(Location {
-                    uri: uri.clone(),
-                    range: Self::span_to_range(*span),
-                });
             }
         }
 
@@ -485,19 +349,16 @@ impl SpeclLanguageServer {
             return None;
         }
 
-        // Check if cursor is on an identifier character
         let bytes = line.as_bytes();
         if col < bytes.len() && !Self::is_ident_char(bytes[col]) {
             return None;
         }
 
-        // Expand left
         let mut start = col;
         while start > 0 && Self::is_ident_char(bytes[start - 1]) {
             start -= 1;
         }
 
-        // Expand right
         let mut end = col;
         while end < bytes.len() && Self::is_ident_char(bytes[end]) {
             end += 1;
@@ -534,32 +395,16 @@ impl SpeclLanguageServer {
                     (d.name.name.clone(), SymbolKind::CONSTANT, Some(val_str), d.span)
                 }
                 Decl::Action(d) => {
-                    let params: Vec<_> = d
-                        .params
-                        .iter()
-                        .map(|p| {
-                            format!(
-                                "{}: {}",
-                                p.name.name,
-                                specl_syntax::pretty::pretty_print_type(&p.ty)
-                            )
-                        })
-                        .collect();
-                    let detail = if params.is_empty() {
-                        None
-                    } else {
-                        Some(format!("({})", params.join(", ")))
-                    };
+                    let params = format_action_params(&d.params);
+                    let detail = if params.is_empty() { None } else { Some(format!("({params})")) };
                     (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span)
                 }
                 Decl::Invariant(d) => {
                     (d.name.name.clone(), SymbolKind::BOOLEAN, Some("invariant".into()), d.span)
                 }
                 Decl::Func(d) => {
-                    let params: Vec<_> =
-                        d.params.iter().map(|p| p.name.name.as_str()).collect();
-                    let detail = Some(format!("({})", params.join(", ")));
-                    (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span)
+                    let params = format_func_params(&d.params);
+                    (d.name.name.clone(), SymbolKind::FUNCTION, Some(format!("({params})")), d.span)
                 }
                 Decl::Type(d) => {
                     let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
@@ -628,7 +473,6 @@ impl SpeclLanguageServer {
     fn get_semantic_tokens(&self, source: &str) -> Vec<SemanticToken> {
         let tokens = Lexer::new(source).tokenize();
 
-        // Collect declaration names for distinguishing variables from other identifiers
         let mut var_names = std::collections::HashSet::new();
         let mut func_names = std::collections::HashSet::new();
         if let Ok(module) = parse(source) {
@@ -649,7 +493,6 @@ impl SpeclLanguageServer {
 
         for token in &tokens {
             let token_type = match &token.kind {
-                // Keywords
                 TokenKind::Module | TokenKind::Use | TokenKind::Const | TokenKind::Var
                 | TokenKind::Type | TokenKind::Init | TokenKind::Action | TokenKind::Invariant
                 | TokenKind::Property | TokenKind::Fairness | TokenKind::Func
@@ -661,25 +504,19 @@ impl SpeclLanguageServer {
                 | TokenKind::LeadsTo | TokenKind::Enabled | TokenKind::WeakFair
                 | TokenKind::StrongFair | TokenKind::True | TokenKind::False => Self::TT_KEYWORD,
 
-                // Built-in types
                 TokenKind::Nat | TokenKind::Int | TokenKind::Bool | TokenKind::String_
                 | TokenKind::Set | TokenKind::Seq | TokenKind::Dict | TokenKind::Option_
                 | TokenKind::Some_ | TokenKind::None_ => Self::TT_TYPE,
 
-                // Built-in functions (operators)
                 TokenKind::Union | TokenKind::Intersect | TokenKind::Diff
                 | TokenKind::SubsetOf | TokenKind::Head | TokenKind::Tail
                 | TokenKind::Len | TokenKind::Keys | TokenKind::Values
                 | TokenKind::Powerset | TokenKind::UnionAll => Self::TT_OPERATOR,
 
-                // Literals
                 TokenKind::Integer(_) => Self::TT_NUMBER,
                 TokenKind::StringLit(_) => Self::TT_STRING,
-
-                // Comments
                 TokenKind::Comment(_) | TokenKind::DocComment(_) => Self::TT_COMMENT,
 
-                // Identifiers — classify based on declaration context
                 TokenKind::Ident(name) => {
                     if func_names.contains(name.as_str()) {
                         Self::TT_FUNCTION
@@ -690,7 +527,6 @@ impl SpeclLanguageServer {
                     }
                 }
 
-                // Skip punctuation, operators, EOF, errors
                 _ => continue,
             };
 
@@ -765,8 +601,6 @@ impl LanguageServer for SpeclLanguageServer {
                         },
                     ),
                 ),
-                // Note: We use push-based diagnostics via publish_diagnostics
-                // rather than pull-based textDocument/diagnostic
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -817,24 +651,14 @@ impl LanguageServer for SpeclLanguageServer {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let content = doc.content.to_string();
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
         Ok(self.get_hover(&content, position))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let content = doc.content.to_string();
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
         let items = self.get_completions(&content, position);
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -845,34 +669,18 @@ impl LanguageServer for SpeclLanguageServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let content = doc.content.to_string();
-        if let Some(location) = self.get_definition(&content, position, uri) {
-            Ok(Some(GotoDefinitionResponse::Scalar(location)))
-        } else {
-            Ok(None)
-        }
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        Ok(self
+            .get_definition(&content, position, uri)
+            .map(GotoDefinitionResponse::Scalar))
     }
 
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let content = doc.content.to_string();
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
         let refs = self.get_references(&content, position, uri);
-        if refs.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(refs))
-        }
+        Ok(if refs.is_empty() { None } else { Some(refs) })
     }
 
     async fn document_symbol(
@@ -880,10 +688,7 @@ impl LanguageServer for SpeclLanguageServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-        let content = doc.content.to_string();
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
         let symbols = self.get_document_symbols(&content);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
@@ -897,14 +702,12 @@ impl LanguageServer for SpeclLanguageServer {
 
         let content = doc.content.to_string();
 
-        // Parse and pretty print
         let Ok(module) = parse(&content) else {
             return Ok(None);
         };
 
         let formatted = pretty_print(&module);
 
-        // Replace entire document
         let line_count = doc.content.len_lines();
         let last_line_len = doc.content.line(line_count.saturating_sub(1)).len_chars();
 
@@ -928,14 +731,8 @@ impl LanguageServer for SpeclLanguageServer {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-
-        let Some(doc) = self.documents.get(uri) else {
-            return Ok(None);
-        };
-
-        let content = doc.content.to_string();
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
         let tokens = self.get_semantic_tokens(&content);
-
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
             data: tokens,
