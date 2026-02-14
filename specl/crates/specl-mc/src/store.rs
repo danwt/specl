@@ -1,5 +1,6 @@
 //! State storage for model checking.
 
+use crate::bloom::BloomFilter;
 use crate::fpset::AtomicFPSet;
 use crate::state::{Fingerprint, State};
 use dashmap::DashMap;
@@ -21,24 +22,34 @@ pub struct StateInfo {
     pub depth: usize,
 }
 
+/// Storage mode for state deduplication.
+enum StorageBackend {
+    /// Full tracking: DashMap stores complete state info for trace reconstruction.
+    Full,
+    /// Fingerprint-only: lockless AtomicFPSet for minimal memory (8 bytes/state).
+    /// Wrapped in UnsafeCell to allow grow() from &self between batches.
+    Fingerprint(UnsafeCell<AtomicFPSet>),
+    /// Bloom filter: fixed memory, probabilistic deduplication for bug finding.
+    Bloom(BloomFilter),
+}
+
 /// Thread-safe state storage using a single sharded hash map.
 ///
-/// Supports two modes:
+/// Supports three modes:
 /// - Full tracking: Stores complete state info for trace reconstruction
 /// - Fingerprint-only: Uses lockless AtomicFPSet for minimal memory and zero contention
+/// - Bloom filter: Fixed memory probabilistic deduplication for bug finding
 pub struct StateStore {
     /// Full tracking mode: map from fingerprint to state info.
     states: DashMap<Fingerprint, StateInfo>,
-    /// Fingerprint-only mode: lockless atomic fingerprint set.
-    /// Wrapped in UnsafeCell to allow grow() from &self between batches.
-    seen: Option<UnsafeCell<AtomicFPSet>>,
+    /// Storage backend for deduplication.
+    backend: StorageBackend,
     /// Number of hash collisions detected (different states, same fingerprint).
     collisions: AtomicUsize,
-    /// Whether to store full state info (true) or just fingerprints (false).
-    full_tracking: bool,
 }
 
 // SAFETY: AtomicFPSet uses AtomicU64 internally, which is Sync.
+// BloomFilter uses AtomicU64 internally, which is Sync.
 // The UnsafeCell is only mutated via maybe_grow_fpset() which is called
 // between parallel batches when no concurrent access is happening.
 unsafe impl Sync for StateStore {}
@@ -54,13 +65,21 @@ impl StateStore {
     pub fn with_tracking(full_tracking: bool) -> Self {
         Self {
             states: DashMap::new(),
-            seen: if full_tracking {
-                None
+            backend: if full_tracking {
+                StorageBackend::Full
             } else {
-                Some(UnsafeCell::new(AtomicFPSet::new(1 << 23)))
+                StorageBackend::Fingerprint(UnsafeCell::new(AtomicFPSet::new(1 << 23)))
             },
             collisions: AtomicUsize::new(0),
-            full_tracking,
+        }
+    }
+
+    /// Create a state store using a bloom filter with specified bit count and hash functions.
+    pub fn with_bloom(log2_bits: u32, num_hashes: u32) -> Self {
+        Self {
+            states: DashMap::new(),
+            backend: StorageBackend::Bloom(BloomFilter::from_log2_bits(log2_bits, num_hashes)),
+            collisions: AtomicUsize::new(0),
         }
     }
 
@@ -68,20 +87,21 @@ impl StateStore {
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
             states: DashMap::with_capacity(capacity),
-            seen: None,
+            backend: StorageBackend::Full,
             collisions: AtomicUsize::new(0),
-            full_tracking: true,
         }
     }
 
     /// Check if a state has been seen before.
     #[inline]
     pub fn contains(&self, fp: &Fingerprint) -> bool {
-        if self.full_tracking {
-            self.states.contains_key(fp)
-        } else {
-            // SAFETY: contains() only reads AtomicU64 slots, safe with concurrent inserts
-            unsafe { &*self.seen.as_ref().unwrap().get() }.contains(*fp)
+        match &self.backend {
+            StorageBackend::Full => self.states.contains_key(fp),
+            StorageBackend::Fingerprint(cell) => {
+                // SAFETY: contains() only reads AtomicU64 slots, safe with concurrent inserts
+                unsafe { &*cell.get() }.contains(*fp)
+            }
+            StorageBackend::Bloom(bloom) => bloom.contains(*fp),
         }
     }
 
@@ -107,44 +127,48 @@ impl StateStore {
         action_idx: Option<usize>,
         depth: usize,
     ) -> bool {
-        if self.full_tracking {
-            use dashmap::mapref::entry::Entry;
-            match self.states.entry(fp) {
-                Entry::Occupied(occupied) => {
-                    if occupied.get().state != state {
-                        let n = self.collisions.fetch_add(1, Ordering::Relaxed);
-                        if n == 0 {
-                            error!(
-                                fingerprint = %fp,
-                                "hash collision detected: different states share fingerprint, results may be unsound"
-                            );
+        match &self.backend {
+            StorageBackend::Full => {
+                use dashmap::mapref::entry::Entry;
+                match self.states.entry(fp) {
+                    Entry::Occupied(occupied) => {
+                        if occupied.get().state != state {
+                            let n = self.collisions.fetch_add(1, Ordering::Relaxed);
+                            if n == 0 {
+                                error!(
+                                    fingerprint = %fp,
+                                    "hash collision detected: different states share fingerprint, results may be unsound"
+                                );
+                            }
                         }
+                        false
                     }
-                    false
-                }
-                Entry::Vacant(entry) => {
-                    entry.insert(StateInfo {
-                        state,
-                        predecessor,
-                        action_idx,
-                        depth,
-                    });
-                    true
+                    Entry::Vacant(entry) => {
+                        entry.insert(StateInfo {
+                            state,
+                            predecessor,
+                            action_idx,
+                            depth,
+                        });
+                        true
+                    }
                 }
             }
-        } else {
-            // SAFETY: insert() uses atomic CAS, safe with concurrent inserts
-            unsafe { &*self.seen.as_ref().unwrap().get() }.insert(fp)
+            StorageBackend::Fingerprint(cell) => {
+                // SAFETY: insert() uses atomic CAS, safe with concurrent inserts
+                unsafe { &*cell.get() }.insert(fp)
+            }
+            StorageBackend::Bloom(bloom) => bloom.insert(fp),
         }
     }
 
     /// Get the number of states stored.
     #[inline]
     pub fn len(&self) -> usize {
-        if self.full_tracking {
-            self.states.len()
-        } else {
-            unsafe { &*self.seen.as_ref().unwrap().get() }.len()
+        match &self.backend {
+            StorageBackend::Full => self.states.len(),
+            StorageBackend::Fingerprint(cell) => unsafe { &*cell.get() }.len(),
+            StorageBackend::Bloom(bloom) => bloom.len(),
         }
     }
 
@@ -154,14 +178,14 @@ impl StateStore {
         self.len() == 0
     }
 
-    /// Grow the fingerprint set if load factor exceeds 50%.
-    /// Only applicable in fingerprint-only mode.
+    /// Grow the fingerprint set if load factor exceeds threshold.
+    /// Only applicable in fingerprint-only mode (no-op for bloom and full tracking).
     ///
     /// # Safety contract
     /// Must be called when no concurrent inserts are happening (e.g., between
     /// parallel batches, or in single-threaded mode). The caller guarantees this.
     pub fn maybe_grow_fpset(&self) {
-        if let Some(ref cell) = self.seen {
+        if let StorageBackend::Fingerprint(ref cell) = self.backend {
             // SAFETY: should_grow() only reads an atomic counter
             let fpset = unsafe { &*cell.get() };
             if fpset.should_grow() {
@@ -175,7 +199,31 @@ impl StateStore {
     /// Check if full tracking is enabled.
     #[inline]
     pub fn has_full_tracking(&self) -> bool {
-        self.full_tracking
+        matches!(self.backend, StorageBackend::Full)
+    }
+
+    /// Check if bloom filter mode is enabled.
+    #[inline]
+    pub fn is_bloom(&self) -> bool {
+        matches!(self.backend, StorageBackend::Bloom(_))
+    }
+
+    /// Get bloom filter false positive rate estimate (None if not in bloom mode).
+    pub fn bloom_fp_rate(&self) -> Option<f64> {
+        if let StorageBackend::Bloom(ref bloom) = self.backend {
+            Some(bloom.estimated_fp_rate())
+        } else {
+            None
+        }
+    }
+
+    /// Get bloom filter memory usage in bytes (None if not in bloom mode).
+    pub fn bloom_memory_bytes(&self) -> Option<usize> {
+        if let StorageBackend::Bloom(ref bloom) = self.backend {
+            Some(bloom.memory_bytes())
+        } else {
+            None
+        }
     }
 
     /// Get the number of hash collisions detected.
@@ -198,7 +246,7 @@ impl StateStore {
         fp: &Fingerprint,
         action_names: &[String],
     ) -> Vec<(State, Option<String>)> {
-        if !self.full_tracking {
+        if !self.has_full_tracking() {
             return vec![];
         }
 
@@ -226,10 +274,10 @@ impl StateStore {
 
     /// Get all seen fingerprints.
     pub fn seen_fingerprints(&self) -> HashSet<Fingerprint> {
-        if self.full_tracking {
+        if self.has_full_tracking() {
             self.states.iter().map(|r| *r.key()).collect()
         } else {
-            // Not supported for AtomicFPSet (no iteration)
+            // Not supported for AtomicFPSet or BloomFilter (no iteration)
             HashSet::new()
         }
     }
@@ -238,11 +286,11 @@ impl StateStore {
     pub fn clear(&mut self, full_tracking: bool) {
         self.states.clear();
         self.collisions.store(0, Ordering::Relaxed);
-        self.full_tracking = full_tracking;
         if full_tracking {
-            self.seen = None;
+            self.backend = StorageBackend::Full;
         } else {
-            self.seen = Some(UnsafeCell::new(AtomicFPSet::new(1 << 23)));
+            self.backend =
+                StorageBackend::Fingerprint(UnsafeCell::new(AtomicFPSet::new(1 << 23)));
         }
     }
 }
@@ -312,6 +360,25 @@ mod tests {
         assert!(store.get(&fp1).is_none());
 
         // Trace should be empty
+        assert!(store.trace_to(&fp1, &[]).is_empty());
+    }
+
+    #[test]
+    fn test_bloom_mode() {
+        let store = StateStore::with_bloom(20, 3); // 1M bits
+        let s1 = State::new(vec![Value::Int(1)]);
+        let s2 = State::new(vec![Value::Int(2)]);
+
+        assert!(store.insert(s1.clone(), None, None, 0));
+        // Bloom filter: second insert should return false (probably seen)
+        assert!(!store.insert(s1.clone(), None, None, 0));
+        assert!(store.insert(s2, None, None, 0));
+        assert_eq!(store.len(), 2);
+        assert!(store.is_bloom());
+        assert!(!store.has_full_tracking());
+
+        // Trace not supported
+        let fp1 = State::new(vec![Value::Int(1)]).fingerprint();
         assert!(store.trace_to(&fp1, &[]).is_empty());
     }
 

@@ -218,6 +218,14 @@ enum Commands {
         #[arg(long, help_heading = "Explicit-State")]
         fast: bool,
 
+        /// Use bloom filter for state storage (fixed memory, probabilistic dedup)
+        #[arg(long, help_heading = "Explicit-State")]
+        bloom: bool,
+
+        /// Bloom filter size as log2(bits) (default: 30 = 128 MiB). Only with --bloom.
+        #[arg(long, default_value = "30", help_heading = "Explicit-State")]
+        bloom_bits: u32,
+
         /// Swarm verification: run N parallel instances with shuffled action orders
         #[arg(long, value_name = "N", help_heading = "Explicit-State")]
         swarm: Option<usize>,
@@ -409,6 +417,8 @@ fn main() {
             por,
             symmetry,
             fast,
+            bloom,
+            bloom_bits,
             swarm,
             bmc,
             bmc_depth,
@@ -429,6 +439,7 @@ fn main() {
             let specific_explicit = por
                 || symmetry
                 || fast
+                || bloom
                 || swarm.is_some()
                 || max_states > 0
                 || max_depth > 0
@@ -485,6 +496,8 @@ fn main() {
                     por,
                     symmetry,
                     fast,
+                    bloom,
+                    bloom_bits,
                     verbose,
                     quiet,
                     no_auto,
@@ -515,6 +528,8 @@ fn main() {
                         por,
                         symmetry,
                         fast,
+                        bloom,
+                        bloom_bits,
                         verbose,
                         quiet,
                         no_auto,
@@ -818,6 +833,8 @@ fn cmd_check(
     use_por: bool,
     use_symmetry: bool,
     fast_check: bool,
+    bloom: bool,
+    bloom_bits: u32,
     _verbose: bool,
     quiet: bool,
     no_auto: bool,
@@ -986,10 +1003,12 @@ fn cmd_check(
         num_threads,
         use_por: actual_por,
         use_symmetry: actual_symmetry,
-        fast_check,
+        fast_check: fast_check || bloom,
         progress: Some(progress),
         action_shuffle_seed: None,
         profile,
+        bloom,
+        bloom_bits,
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -1139,7 +1158,9 @@ fn cmd_check(
                 if actual_symmetry {
                     opts.push("symmetry");
                 }
-                if fast_check {
+                if bloom {
+                    opts.push("bloom");
+                } else if fast_check {
                     opts.push("fast");
                 }
                 if !opts.is_empty() {
@@ -1251,6 +1272,8 @@ fn cmd_check_swarm(
                     progress: None,
                     action_shuffle_seed: Some(i as u64),
                     profile: false,
+                    bloom: false,
+                    bloom_bits: 30,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1315,6 +1338,8 @@ fn cmd_check_swarm(
                     progress: None,
                     action_shuffle_seed: None,
                     profile: false,
+                    bloom: false,
+                    bloom_bits: 30,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {

@@ -173,6 +173,10 @@ pub struct CheckConfig {
     pub action_shuffle_seed: Option<u64>,
     /// Enable profiling: collect per-action firing counts and phase timing.
     pub profile: bool,
+    /// Use bloom filter for state storage (fixed memory, probabilistic dedup).
+    pub bloom: bool,
+    /// Bloom filter size as log2(bits). Default 30 = 128 MiB.
+    pub bloom_bits: u32,
 }
 
 impl Default for CheckConfig {
@@ -190,6 +194,8 @@ impl Default for CheckConfig {
             progress: None,
             action_shuffle_seed: None,
             profile: false,
+            bloom: false,
+            bloom_bits: 30,
         }
     }
 }
@@ -209,6 +215,8 @@ impl Clone for CheckConfig {
             progress: self.progress.clone(),
             action_shuffle_seed: self.action_shuffle_seed,
             profile: self.profile,
+            bloom: self.bloom,
+            bloom_bits: self.bloom_bits,
         }
     }
 }
@@ -228,6 +236,8 @@ impl std::fmt::Debug for CheckConfig {
             .field("progress", &self.progress.as_ref().map(|_| "..."))
             .field("action_shuffle_seed", &self.action_shuffle_seed)
             .field("profile", &self.profile)
+            .field("bloom", &self.bloom)
+            .field("bloom_bits", &self.bloom_bits)
             .finish()
     }
 }
@@ -830,8 +840,12 @@ fn enumerate_params_indexed<F>(
 impl Explorer {
     /// Create a new explorer.
     pub fn new(spec: CompiledSpec, consts: Vec<Value>, config: CheckConfig) -> Self {
-        // In fast_check mode, only track fingerprints (not full states)
-        let store = StateStore::with_tracking(!config.fast_check);
+        // Choose storage backend: bloom > fast_check > full tracking
+        let store = if config.bloom {
+            StateStore::with_bloom(config.bloom_bits, 3)
+        } else {
+            StateStore::with_tracking(!config.fast_check)
+        };
 
         // Precompute effect assignments for each action
         let cached_effects = spec
