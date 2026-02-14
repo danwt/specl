@@ -1859,10 +1859,15 @@ fn cmd_check_symbolic(
                 } else {
                     println!("Result: INVARIANT VIOLATION");
                     println!("  Invariant: {}", invariant);
-                    println!(
-                        "  Trace: {} steps (use BFS for detailed trace — symbolic trace reconstruction is not yet reliable)",
-                        trace.len()
-                    );
+                    println!("  Trace ({} steps):", trace.len());
+                    for (i, step) in trace.iter().enumerate() {
+                        let action_str = step.action.as_deref().unwrap_or("?");
+                        let state_str = step.state.iter()
+                            .map(|(name, val)| format!("{}={}", name, val))
+                            .collect::<Vec<_>>()
+                            .join(", ");
+                        println!("    {}: {} -> {}", i, action_str, state_str);
+                    }
                     std::process::exit(1);
                 }
             }
