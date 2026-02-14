@@ -261,7 +261,7 @@ specl/crates/
 
 ## Language Server (LSP)
 
-The `specl-lsp` binary provides IDE support via the Language Server Protocol (36 unit tests):
+The `specl-lsp` binary provides IDE support via the Language Server Protocol (37 unit tests):
 
 - **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
 - **Completion**: Keywords, types, and symbols (vars, consts, actions, funcs, invariants) from the current file
@@ -280,10 +280,10 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (36
 - **Code actions**: Insert templates for init blocks, actions, invariants; quick fix for undefined variables
 - **Code lens**: Reference counts above action and func declarations (click to find all references)
 - **Folding ranges**: Collapse declaration blocks and comment groups
-- **Formatting**: Pretty-print the document
+- **Formatting**: Pretty-print the document (full, range, and on-type formatting)
 - **Semantic tokens**: Syntax highlighting (keywords, types, variables, functions, etc.)
 - **Diagnostics**: Parse and type errors shown inline
 
 ## Examples
 
-See `specl/examples/showcase/` (61 curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, SWIM, Narwhal-Tusk, Simplex, Redlock, Chandy-Lamport, G-Counter CRDT, PN-Counter CRDT, OR-Set CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, RW Write Preference, Leader Election, ABD Register, CAS Register, Lamport Mutex, Ricart-Agrawala, Ticket Lock, Byzantine Generals, RCU, Seqlock, Barrier, Two-Phase Locking, Two-Phase Commit, Three-Phase Commit, Bounded Buffer, WAL, Group Commit, Michael-Scott Queue, Treiber Stack, Work-Stealing Deque, Snapshot Isolation, Hazard Pointers, Epoch Reclamation, ABA Problem, Sleeping Barber, Dining Savages, Cigarette Smokers, Priority Inversion, Double-Checked Locking, Crash Consensus, Token Bucket, Circuit Breaker, Gossip Protocol, Map-Reduce, Reactor, Lease, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (73 curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, SWIM, Narwhal-Tusk, Simplex, Redlock, Chandy-Lamport, G-Counter CRDT, PN-Counter CRDT, OR-Set CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, RW Write Preference, Leader Election, ABD Register, CAS Register, Lamport Mutex, Ricart-Agrawala, Ticket Lock, Byzantine Generals, RCU, Seqlock, Barrier, Two-Phase Locking, Two-Phase Commit, Three-Phase Commit, Bounded Buffer, WAL, Group Commit, Michael-Scott Queue, Treiber Stack, Work-Stealing Deque, Snapshot Isolation, Hazard Pointers, Epoch Reclamation, ABA Problem, Sleeping Barber, Dining Savages, Cigarette Smokers, Priority Inversion, Double-Checked Locking, Crash Consensus, Token Bucket, Circuit Breaker, Gossip Protocol, Map-Reduce, Reactor, Lease, Chain Replication, Causal Broadcast, FIFO Broadcast, OCC, CLH Lock, Termination Detection, Flat Combining, Cristian Clock Sync, Berkeley Clock Sync, STM, Weighted Voting, Bully Election, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
