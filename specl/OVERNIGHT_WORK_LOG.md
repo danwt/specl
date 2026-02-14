@@ -76,18 +76,5 @@ Working through milestones from `/Users/danwt/Documents/repos/demo-state-enumera
 - Extracted `print_check_profile()` helper to avoid duplication
 - Works with sequential BFS (parallel mode doesn't profile yet — lower priority)
 
-### Task 8: LLM discovery harness
-- Status: DONE
-- `tools/discover/` — Python tool for LLM-guided algorithm discovery
-- `specl_runner.py`: invokes specl CLI (lint, check, simulate), parses JSON output
-- `llm.py`: OpenRouter API client, extracts specl code blocks from LLM responses
-- `population.py`: evolutionary population management with selection strategies
-- `main.py`: CLI orchestrator with evolutionary loop (fresh/refine/vary strategies)
-- `prompts/specl_reference.md`: condensed Specl language reference for LLM context
-- `prompts/crdt_task.md`: CRDT design task template with placeholder substitution
-- Three built-in tasks: crdt_counter, crdt_set, crdt_register
-- Usage: `uv run main.py --task crdt_counter --generations 10 --candidates 5`
-- Requires: OPENROUTER_API_KEY env var, specl binary on PATH (or --specl flag)
-
 ### Blockers / Questions for Daniel
 (None yet)
