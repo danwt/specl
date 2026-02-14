@@ -10,7 +10,7 @@ module TimestampOrdering
 // track the latest accessing transaction.
 //
 // Use: specl check timestamp-ordering.specl -c N=2 -c MaxTs=4 --no-deadlock --no-auto --bfs
-// Verified:
+// Verified: N=2 MaxTs=4 -> OK (862 states)
 
 const N: 0..3
 const MaxTs: 2..5

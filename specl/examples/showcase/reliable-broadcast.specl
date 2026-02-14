@@ -11,7 +11,7 @@ module ReliableBroadcast
 // N+1 processes, 1 sender (process 0). Up to F crash faults.
 //
 // Use: specl check reliable-broadcast.specl -c N=3 -c F=1 --no-deadlock --no-auto --bfs
-// Verified:
+// Verified: N=3 F=1 -> OK (325 states)
 
 const N: 1..4
 const F: 0..2

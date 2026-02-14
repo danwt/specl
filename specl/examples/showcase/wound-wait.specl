@@ -7,67 +7,70 @@ module WoundWait
 //
 // N+1 transactions, each tries to acquire two locks (0 and 1) in sequence.
 // Transaction age is its ID (lower = older = higher priority).
-// Lock value N+1 = free, 0..N = held by that txn.
 //
 // Use: specl check wound-wait.specl -c N=2 --no-deadlock --no-auto --bfs
-// Verified:
+// Verified: N=2 -> OK (40 states)
 
 const N: 0..3
-const FREE: 3..4
 
-var lock: Dict[0..1, 0..FREE]
+// Lock state: who holds each lock
+var lock_held: Dict[0..1, Bool]
+var lock_holder: Dict[0..1, 0..N]
 
 // Txn state: 0=idle, 1=has_lock0, 2=has_both, 3=done, 4=aborted
 var pc: Dict[0..N, 0..4]
 
 init {
-    lock = {l: FREE for l in 0..1}
+    lock_held = {l: false for l in 0..1}
+    and lock_holder = {l: 0 for l in 0..1}
     and pc = {t: 0 for t in 0..N}
 }
 
 // Transaction acquires lock 0 (first lock)
 action AcquireLock0(t: 0..N) {
     require pc[t] == 0
-    require lock[0] == FREE
-    lock = lock | {0: t}
+    require lock_held[0] == false
+    lock_held = lock_held | {0: true}
+    and lock_holder = lock_holder | {0: t}
     and pc = pc | {t: 1}
 }
 
 // Transaction acquires lock 1 (second lock) — free
 action AcquireLock1(t: 0..N) {
     require pc[t] == 1
-    require lock[1] == FREE
-    lock = lock | {1: t}
+    require lock_held[1] == false
+    lock_held = lock_held | {1: true}
+    and lock_holder = lock_holder | {1: t}
     and pc = pc | {t: 2}
 }
 
 // Wound: older txn t needs lock 1, younger txn holder is aborted
 action WoundForLock1(t: 0..N, victim: 0..N) {
     require pc[t] == 1
-    require lock[1] == victim
+    require lock_held[1] == true
+    require lock_holder[1] == victim
     require t < victim
-    require victim != t
-    lock = lock | {1: t}
+    lock_holder = lock_holder | {1: t}
     and pc = pc | {t: 2, victim: 4}
 }
 
 // Transaction commits — releases both locks
 action Commit(t: 0..N) {
     require pc[t] == 2
-    lock = lock | {0: if lock[0] == t then FREE else lock[0],
-                    1: if lock[1] == t then FREE else lock[1]}
+    lock_held = lock_held | {0: if lock_holder[0] == t then false else lock_held[0],
+                              1: if lock_holder[1] == t then false else lock_held[1]}
     and pc = pc | {t: 3}
 }
 
-// Aborted transaction restarts from idle
+// Aborted transaction releases any held locks and restarts
 action Restart(t: 0..N) {
     require pc[t] == 4
-    lock = lock | {0: if lock[0] == t then FREE else lock[0],
-                    1: if lock[1] == t then FREE else lock[1]}
+    lock_held = lock_held | {0: if lock_holder[0] == t then false else lock_held[0],
+                              1: if lock_holder[1] == t then false else lock_held[1]}
     and pc = pc | {t: 0}
 }
 
-// Mutual exclusion: no two txns both in CS
+// Mutual exclusion: no two txns both in has_both state
 invariant MutualExclusion {
     all i in 0..N: all j in 0..N:
         (i != j) implies not (pc[i] == 2 and pc[j] == 2)

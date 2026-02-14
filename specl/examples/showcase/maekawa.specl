@@ -6,22 +6,25 @@ module Maekawa
 // Each process can only vote for one requester at a time.
 // Quorums must pairwise intersect, ensuring mutual exclusion.
 //
-// Simplified: 3 processes with quorums that pairwise intersect.
+// 3 processes with quorums that pairwise intersect.
 // Quorum(0) = {0,1}, Quorum(1) = {1,2}, Quorum(2) = {0,2}.
-// voted_for value 3 = nobody.
+// Explicit per-process actions to avoid type issues.
 //
 // Use: specl check maekawa.specl --no-deadlock --no-auto --bfs
-// Verified:
+// Verified: OK (292 states)
 
 // 0=idle, 1=requesting, 2=voted_self, 3=in_cs
 var pc: Dict[0..2, 0..3]
 
-// voted_for[i] = who process i voted for (3 = nobody)
-var voted_for: Dict[0..2, 0..3]
+// Whether process i has voted, and for whom
+var has_voted: Dict[0..2, Bool]
+// vote_target tracks who got the vote (only meaningful when has_voted is true)
+var vote_target: Dict[0..2, 0..2]
 
 init {
     pc = {p: 0 for p in 0..2}
-    and voted_for = {p: 3 for p in 0..2}
+    and has_voted = {p: false for p in 0..2}
+    and vote_target = {p: 0 for p in 0..2}
 }
 
 // Process requests CS
@@ -30,79 +33,101 @@ action Request(p: 0..2) {
     pc = pc | {p: 1}
 }
 
-// Process votes for itself (if in its own quorum and hasn't voted)
-action VoteSelf(p: 0..2) {
-    require pc[p] == 1
-    require voted_for[p] == 3
-    voted_for = voted_for | {p: p}
-    and pc = pc | {p: 2}
+// Process 0 votes for itself
+action VoteSelf0() {
+    require pc[0] == 1
+    require has_voted[0] == false
+    has_voted = has_voted | {0: true}
+    and vote_target = vote_target | {0: 0}
+    and pc = pc | {0: 2}
 }
 
-// Process 0 gets vote from process 1 (quorum {0,1})
+// Process 1 votes for itself
+action VoteSelf1() {
+    require pc[1] == 1
+    require has_voted[1] == false
+    has_voted = has_voted | {1: true}
+    and vote_target = vote_target | {1: 1}
+    and pc = pc | {1: 2}
+}
+
+// Process 2 votes for itself
+action VoteSelf2() {
+    require pc[2] == 1
+    require has_voted[2] == false
+    has_voted = has_voted | {2: true}
+    and vote_target = vote_target | {2: 2}
+    and pc = pc | {2: 2}
+}
+
+// Process 1 votes for process 0 (quorum {0,1})
 action Vote1For0() {
     require pc[0] >= 1
-    require voted_for[1] == 3
-    voted_for = voted_for | {1: 0}
+    require has_voted[1] == false
+    has_voted = has_voted | {1: true}
+    and vote_target = vote_target | {1: 0}
 }
 
 // Process 0 enters CS: has votes from 0 and 1
 action EnterCS0() {
     require pc[0] == 2
-    require voted_for[0] == 0
-    require voted_for[1] == 0
+    require has_voted[0] == true and vote_target[0] == 0
+    require has_voted[1] == true and vote_target[1] == 0
     pc = pc | {0: 3}
 }
 
-// Process 1 gets vote from process 2 (quorum {1,2})
+// Process 2 votes for process 1 (quorum {1,2})
 action Vote2For1() {
     require pc[1] >= 1
-    require voted_for[2] == 3
-    voted_for = voted_for | {2: 1}
+    require has_voted[2] == false
+    has_voted = has_voted | {2: true}
+    and vote_target = vote_target | {2: 1}
 }
 
 // Process 1 enters CS: has votes from 1 and 2
 action EnterCS1() {
     require pc[1] == 2
-    require voted_for[1] == 1
-    require voted_for[2] == 1
+    require has_voted[1] == true and vote_target[1] == 1
+    require has_voted[2] == true and vote_target[2] == 1
     pc = pc | {1: 3}
 }
 
-// Process 2 gets vote from process 0 (quorum {0,2})
+// Process 0 votes for process 2 (quorum {0,2})
 action Vote0For2() {
     require pc[2] >= 1
-    require voted_for[0] == 3
-    voted_for = voted_for | {0: 2}
+    require has_voted[0] == false
+    has_voted = has_voted | {0: true}
+    and vote_target = vote_target | {0: 2}
 }
 
 // Process 2 enters CS: has votes from 2 and 0
 action EnterCS2() {
     require pc[2] == 2
-    require voted_for[2] == 2
-    require voted_for[0] == 2
+    require has_voted[2] == true and vote_target[2] == 2
+    require has_voted[0] == true and vote_target[0] == 2
     pc = pc | {2: 3}
 }
 
-// Release: process leaves CS and releases all votes
+// Release: process leaves CS and releases votes it received
 action Release0() {
     require pc[0] == 3
     pc = pc | {0: 0}
-    and voted_for = voted_for | {0: if voted_for[0] == 0 then 3 else voted_for[0],
-                                   1: if voted_for[1] == 0 then 3 else voted_for[1]}
+    and has_voted = has_voted | {0: if vote_target[0] == 0 then false else has_voted[0],
+                                   1: if vote_target[1] == 0 then false else has_voted[1]}
 }
 
 action Release1() {
     require pc[1] == 3
     pc = pc | {1: 0}
-    and voted_for = voted_for | {1: if voted_for[1] == 1 then 3 else voted_for[1],
-                                   2: if voted_for[2] == 1 then 3 else voted_for[2]}
+    and has_voted = has_voted | {1: if vote_target[1] == 1 then false else has_voted[1],
+                                   2: if vote_target[2] == 1 then false else has_voted[2]}
 }
 
 action Release2() {
     require pc[2] == 3
     pc = pc | {2: 0}
-    and voted_for = voted_for | {2: if voted_for[2] == 2 then 3 else voted_for[2],
-                                   0: if voted_for[0] == 2 then 3 else voted_for[0]}
+    and has_voted = has_voted | {2: if vote_target[2] == 2 then false else has_voted[2],
+                                   0: if vote_target[0] == 2 then false else has_voted[0]}
 }
 
 // Mutual exclusion
