@@ -1,0 +1,96 @@
+module TreiberStack
+
+// Treiber's lock-free stack using compare-and-swap (CAS).
+// N+1 threads push/pop from a shared stack. Each CAS may fail
+// if another thread modified the top pointer concurrently.
+//
+// Stack modeled as a counter (depth). Threads snapshot the
+// depth, then CAS to push/pop. CAS fails if depth changed.
+//
+// Use: specl check treiber-stack.specl -c N=1 -c MaxDepth=3 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxDepth=3 -> OK (225 states, 0.0s)
+
+const N: 0..2
+const MaxDepth: 2..4
+
+// Stack depth (0 = empty)
+var depth: 0..MaxDepth
+
+// Per-thread: 0=idle, 1=pushing, 2=popping
+var pc: Dict[0..N, 0..2]
+
+// Per-thread: snapshot of depth at start of operation
+var snap: Dict[0..N, 0..MaxDepth]
+
+init {
+    depth = 0
+    and pc = {t: 0 for t in 0..N}
+    and snap = {t: 0 for t in 0..N}
+}
+
+// Begin push: read current depth
+action BeginPush(t: 0..N) {
+    require pc[t] == 0
+    require depth < MaxDepth
+    pc = pc | {t: 1}
+    and snap = snap | {t: depth}
+}
+
+// Push CAS succeeds: depth unchanged since snapshot
+action CompletePush(t: 0..N) {
+    require pc[t] == 1
+    require depth == snap[t]
+    require depth < MaxDepth
+    depth = depth + 1
+    and pc = pc | {t: 0}
+}
+
+// Push CAS fails: retry with fresh snapshot
+action RetryPush(t: 0..N) {
+    require pc[t] == 1
+    require depth != snap[t]
+    snap = snap | {t: depth}
+}
+
+// Begin pop: read current depth
+action BeginPop(t: 0..N) {
+    require pc[t] == 0
+    require depth > 0
+    pc = pc | {t: 2}
+    and snap = snap | {t: depth}
+}
+
+// Pop CAS succeeds: depth unchanged since snapshot
+action CompletePop(t: 0..N) {
+    require pc[t] == 2
+    require depth == snap[t]
+    require depth > 0
+    depth = depth - 1
+    and pc = pc | {t: 0}
+}
+
+// Pop CAS fails: retry with fresh snapshot
+action RetryPop(t: 0..N) {
+    require pc[t] == 2
+    require depth != snap[t]
+    require depth > 0
+    snap = snap | {t: depth}
+}
+
+// Pop CAS fails and stack empty: abort
+action AbortPop(t: 0..N) {
+    require pc[t] == 2
+    require depth != snap[t]
+    require depth == 0
+    pc = pc | {t: 0}
+}
+
+// Stack depth never goes negative
+invariant NonNegative {
+    depth >= 0
+}
+
+// At most MaxDepth items
+invariant Bounded {
+    depth <= MaxDepth
+}

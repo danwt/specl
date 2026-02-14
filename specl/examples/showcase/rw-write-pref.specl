@@ -1,0 +1,64 @@
+module RWWritePreference
+
+// Readers-Writers lock with writer preference.
+// Writers are not starved: when a writer is waiting, new readers
+// must wait. This prevents writer starvation at the cost of
+// potential reader starvation.
+//
+// N+1 threads can be readers or writers.
+//
+// Use: specl check rw-write-pref.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (39 states, 0.0s)
+
+const N: 0..3
+
+// Per-thread state: 0=idle, 1=reading, 2=waiting_write, 3=writing
+var state: Dict[0..N, 0..3]
+
+init {
+    state = {t: 0 for t in 0..N}
+}
+
+// Reader starts reading (no writer active AND no writer waiting)
+action StartRead(t: 0..N) {
+    require state[t] == 0
+    require all w in 0..N: state[w] != 3
+    require all w in 0..N: state[w] != 2
+    state = state | {t: 1}
+}
+
+// Reader finishes reading
+action EndRead(t: 0..N) {
+    require state[t] == 1
+    state = state | {t: 0}
+}
+
+// Writer requests write access (enters waiting state)
+action RequestWrite(t: 0..N) {
+    require state[t] == 0
+    state = state | {t: 2}
+}
+
+// Writer starts writing (no other reader or writer active)
+action StartWrite(t: 0..N) {
+    require state[t] == 2
+    require all r in 0..N: r == t or state[r] != 1
+    require all w in 0..N: w == t or state[w] != 3
+    state = state | {t: 3}
+}
+
+// Writer finishes writing
+action EndWrite(t: 0..N) {
+    require state[t] == 3
+    state = state | {t: 0}
+}
+
+// Mutual exclusion: no reader and writer simultaneously
+invariant NoReadWrite {
+    not (any r in 0..N: state[r] == 1) or not (any w in 0..N: state[w] == 3)
+}
+
+// At most one writer at a time
+invariant OneWriter {
+    len({w in 0..N if state[w] == 3}) <= 1
+}
