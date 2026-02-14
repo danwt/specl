@@ -1,0 +1,83 @@
+module MCSLock
+
+// Mellor-Crummey & Scott (MCS) Queue Lock (1991).
+// A fair, scalable spin lock using a linked list.
+// Each thread spins on its own local flag rather than a shared variable.
+// The qtail pointer tracks the end of the queue.
+// On acquire, a thread adds itself to the qtail and spins on its flag.
+// On release, the lock holder signals the next thread's flag.
+//
+// N+1 threads. States: 0=idle, 1=waiting, 2=in_cs, 3=releasing
+// qtail tracks who is at the end of the queue (N+1 = nobody)
+// next[i] tracks who thread i points to (N+1 = nobody)
+// locked[i] is the local spin flag
+//
+// Use: specl check mcs-lock.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (31 states, 0.0s)
+
+const N: 0..3
+
+var pc: Dict[0..N, 0..3]
+var qtail: 0..4          // N+1 = no qtail
+var next: Dict[0..N, 0..4]  // N+1 = no next
+var locked: Dict[0..N, Bool]
+
+init {
+    pc = {t: 0 for t in 0..N}
+    and qtail = N + 1
+    and next = {t: N + 1 for t in 0..N}
+    and locked = {t: false for t in 0..N}
+}
+
+// Thread i starts acquiring: atomically swap self into qtail
+action Acquire(i: 0..N) {
+    require pc[i] == 0
+    // If qtail is empty, go straight to CS
+    require qtail == N + 1
+    qtail = i
+    and pc = pc | {i: 2}
+    and locked = locked | {i: false}
+}
+
+// Thread i starts acquiring but queue not empty
+action AcquireEnqueue(i: 0..N) {
+    require pc[i] == 0
+    require qtail != N + 1
+    // Set predecessor's next to i
+    next = next | {qtail: i}
+    and locked = locked | {i: true}
+    and qtail = i
+    and pc = pc | {i: 1}
+}
+
+// Thread i gets signalled (locked becomes false)
+action WaitDone(i: 0..N) {
+    require pc[i] == 1
+    require locked[i] == false
+    pc = pc | {i: 2}
+}
+
+// Thread i releases: no successor
+action ReleaseNoSuccessor(i: 0..N) {
+    require pc[i] == 2
+    require qtail == i
+    require next[i] == N + 1
+    qtail = N + 1
+    and pc = pc | {i: 0}
+}
+
+// Thread i releases: has a successor
+action ReleaseSignal(i: 0..N) {
+    require pc[i] == 2
+    require next[i] != N + 1
+    // Signal successor
+    locked = locked | {next[i]: false}
+    and next = next | {i: N + 1}
+    and pc = pc | {i: 0}
+}
+
+// Mutual exclusion
+invariant MutualExclusion {
+    all i in 0..N: all j in 0..N:
+        (i != j) implies not (pc[i] == 2 and pc[j] == 2)
+}

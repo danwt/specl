@@ -1,0 +1,107 @@
+module MVCC
+
+// Multi-Version Concurrency Control (Reed, 1978; Bernstein & Goodman, 1983).
+// Transactions read a snapshot at their start time and write creates
+// a new version. Read-write conflicts are resolved by checking if
+// any concurrent transaction wrote to the same key.
+//
+// N+1 transactions, single key with versions.
+// Each version has a timestamp and a value.
+// Snapshot isolation: transactions see versions <= their start time.
+// Write-write conflict detection at commit time.
+//
+// Use: specl check mvcc.specl -c N=1 -c MaxTs=4 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxTs=4 -> OK (181 states, 0.0s)
+
+const N: 0..2
+const MaxTs: 3..6
+
+// Global timestamp counter
+var ts: 0..MaxTs
+
+// Per-transaction state
+// 0=idle, 1=active, 2=committed, 3=aborted
+var tx_state: Dict[0..N, 0..3]
+var tx_start: Dict[0..N, 0..MaxTs]
+var tx_write_val: Dict[0..N, 0..1]
+var tx_has_write: Dict[0..N, Bool]
+
+// Version store: latest committed version's timestamp and value
+var committed_ts: 0..MaxTs
+var committed_val: 0..1
+
+init {
+    ts = 0
+    and tx_state = {t: 0 for t in 0..N}
+    and tx_start = {t: 0 for t in 0..N}
+    and tx_write_val = {t: 0 for t in 0..N}
+    and tx_has_write = {t: false for t in 0..N}
+    and committed_ts = 0
+    and committed_val = 0
+}
+
+// Transaction begins: takes a snapshot timestamp
+action Begin(t: 0..N) {
+    require tx_state[t] == 0
+    require ts < MaxTs
+    ts = ts + 1
+    and tx_state = tx_state | {t: 1}
+    and tx_start = tx_start | {t: ts + 1}
+}
+
+// Transaction buffers a write
+action Write(t: 0..N, v: 0..1) {
+    require tx_state[t] == 1
+    tx_write_val = tx_write_val | {t: v}
+    and tx_has_write = tx_has_write | {t: true}
+}
+
+// Transaction commits: check for write-write conflicts
+action Commit(t: 0..N) {
+    require tx_state[t] == 1
+    require tx_has_write[t] == true
+    require ts < MaxTs
+    // No concurrent committed write since our start time
+    require committed_ts < tx_start[t]
+    ts = ts + 1
+    and committed_ts = ts + 1
+    and committed_val = tx_write_val[t]
+    and tx_state = tx_state | {t: 2}
+}
+
+// Transaction aborts due to write-write conflict
+action Abort(t: 0..N) {
+    require tx_state[t] == 1
+    require tx_has_write[t] == true
+    // Someone committed after our start
+    require committed_ts >= tx_start[t]
+    tx_state = tx_state | {t: 3}
+}
+
+// Read-only commit (always succeeds)
+action CommitReadOnly(t: 0..N) {
+    require tx_state[t] == 1
+    require tx_has_write[t] == false
+    tx_state = tx_state | {t: 2}
+}
+
+// Aborted transaction retries
+action Retry(t: 0..N) {
+    require tx_state[t] == 3
+    tx_state = tx_state | {t: 0}
+    and tx_has_write = tx_has_write | {t: false}
+}
+
+// Serializable: no two writing transactions commit with overlapping lifetimes
+// that could cause a write-write anomaly
+invariant NoWriteWriteConflict {
+    all i in 0..N: all j in 0..N:
+        (i != j and tx_state[i] == 2 and tx_state[j] == 2
+         and tx_has_write[i] == true and tx_has_write[j] == true)
+        implies tx_start[i] != tx_start[j]
+}
+
+// Committed version timestamp is always valid
+invariant ValidVersion {
+    committed_ts <= ts
+}

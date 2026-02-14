@@ -1,0 +1,55 @@
+module ConsistentHashing
+
+// Consistent Hashing (Karger et al., 1997).
+// N+1 nodes on a hash ring, K+1 keys. Each key is owned by one node.
+// When a node departs, its keys transfer to a specified alive successor.
+// When a node returns, it reclaims its natural keys.
+//
+// Key k's natural home is node (k % (N+1)).
+// Invariant: every key is always owned by an alive node.
+//
+// Use: specl check consistent-hashing.specl -c N=2 -c K=4 --no-deadlock --no-auto --bfs
+// Verified: N=2 K=4 -> OK (10 states, 0.0s)
+
+const N: 0..3
+const K: 1..5
+
+var alive: Dict[0..N, Bool]
+var owner: Dict[0..K, 0..N]
+
+init {
+    alive = {n: true for n in 0..N}
+    and owner = {k: k % (N + 1) for k in 0..K}
+}
+
+// Node n leaves, handing its keys to alive successor s
+action NodeLeave(n: 0..N, s: 0..N) {
+    require alive[n] == true
+    require alive[s] == true
+    require s != n
+    alive = alive | {n: false}
+    and owner = {k:
+        if owner[k] == n then s
+        else owner[k]
+    for k in 0..K}
+}
+
+// Node n rejoins: reclaim natural keys from whoever has them
+action NodeJoin(n: 0..N) {
+    require alive[n] == false
+    alive = alive | {n: true}
+    and owner = {k:
+        if k % (N + 1) == n then n
+        else owner[k]
+    for k in 0..K}
+}
+
+// Every key owned by an alive node
+invariant KeysAlive {
+    all k in 0..K: alive[owner[k]] == true
+}
+
+// At least one node is alive
+invariant SomeAlive {
+    any n in 0..N: alive[n] == true
+}
