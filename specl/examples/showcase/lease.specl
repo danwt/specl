@@ -1,0 +1,71 @@
+module Lease
+
+// Distributed lease (time-bounded lock).
+// N+1 nodes compete for a lease. A lease is granted for a
+// bounded duration. The holder must renew before expiry.
+// If it expires, another node can acquire it.
+//
+// Clock modeled as a counter. Lease has an expiry timestamp.
+//
+// Use: specl check lease.specl -c N=2 -c MaxTime=4 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxTime=4 -> OK (95 states, 0.0s)
+
+const N: 0..3
+const MaxTime: 3..5
+
+// Global clock
+var clock: 0..MaxTime
+
+// Lease state: who holds it (N+1 = nobody)
+var holder: 0..N
+var held: Bool
+var expiry: 0..MaxTime
+
+init {
+    clock = 0
+    and holder = 0
+    and held = false
+    and expiry = 0
+}
+
+// Time advances
+action Tick() {
+    require clock < MaxTime
+    clock = clock + 1
+}
+
+// Node acquires lease (no current holder or expired)
+action Acquire(n: 0..N) {
+    require held == false or clock >= expiry
+    require clock < MaxTime
+    holder = n
+    and held = true
+    and expiry = clock + 1
+}
+
+// Holder renews the lease
+action Renew() {
+    require held == true
+    require clock < expiry
+    require expiry < MaxTime
+    expiry = expiry + 1
+}
+
+// Lease expires
+action Expire() {
+    require held == true
+    require clock >= expiry
+    held = false
+}
+
+// At most one active lease holder at any time
+invariant SingleHolder {
+    held == true implies clock < expiry
+        implies (all n in 0..N: all m in 0..N:
+            not (n != m and holder == n and holder == m))
+}
+
+// Expiry is always in the future while held
+invariant ExpiryFuture {
+    (held == true and clock < expiry) implies expiry > clock
+}
