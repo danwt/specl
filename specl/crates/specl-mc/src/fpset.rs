@@ -76,7 +76,11 @@ impl AtomicFPSet {
     /// Remap fingerprint to avoid collision with EMPTY sentinel.
     #[inline]
     fn remap(fp: u64) -> u64 {
-        if fp == EMPTY { EMPTY - 1 } else { fp }
+        if fp == EMPTY {
+            EMPTY - 1
+        } else {
+            fp
+        }
     }
 
     /// Compute initial slot index from a value using secondary hash mix.

@@ -197,11 +197,23 @@ macro_rules! heap_methods {
 }
 
 impl Value {
-    heap_methods!(TAG_STRING, String, is_string, into_string_arc, from_string_arc);
+    heap_methods!(
+        TAG_STRING,
+        String,
+        is_string,
+        into_string_arc,
+        from_string_arc
+    );
     heap_methods!(TAG_SET, Vec<Value>, is_set_v, into_set_arc, from_set_arc);
     heap_methods!(TAG_SEQ, Vec<Value>, is_seq, into_seq_arc, from_seq_arc);
     heap_methods!(TAG_FN, Vec<(Value, Value)>, is_fn, into_fn_arc, from_fn_arc);
-    heap_methods!(TAG_INTMAP, Vec<i64>, is_intmap, into_intmap_arc, from_intmap_arc);
+    heap_methods!(
+        TAG_INTMAP,
+        Vec<i64>,
+        is_intmap,
+        into_intmap_arc,
+        from_intmap_arc
+    );
     heap_methods!(
         TAG_RECORD,
         BTreeMap<String, Value>,
@@ -209,7 +221,13 @@ impl Value {
         into_record_arc,
         from_record_arc
     );
-    heap_methods!(TAG_TUPLE, Vec<Value>, is_tuple, into_tuple_arc, from_tuple_arc);
+    heap_methods!(
+        TAG_TUPLE,
+        Vec<Value>,
+        is_tuple,
+        into_tuple_arc,
+        from_tuple_arc
+    );
     heap_methods!(TAG_SOME, Value, is_some_v, into_some_arc, from_some_arc);
 
     #[inline]
@@ -536,9 +554,7 @@ impl Clone for Value {
                 Value(self.0)
             }
             TAG_FN => {
-                unsafe {
-                    Arc::increment_strong_count(self.ptr() as *const Vec<(Value, Value)>)
-                };
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<(Value, Value)>) };
                 Value(self.0)
             }
             TAG_INTMAP => {
@@ -547,9 +563,7 @@ impl Clone for Value {
             }
             TAG_RECORD => {
                 unsafe {
-                    Arc::increment_strong_count(
-                        self.ptr() as *const BTreeMap<String, Value>,
-                    )
+                    Arc::increment_strong_count(self.ptr() as *const BTreeMap<String, Value>)
                 };
                 Value(self.0)
             }
@@ -806,9 +820,8 @@ impl Hash for Value {
                 // than individual i64.hash() calls.
                 10u8.hash(state);
                 arr.len().hash(state);
-                let bytes = unsafe {
-                    std::slice::from_raw_parts(arr.as_ptr() as *const u8, arr.len() * 8)
-                };
+                let bytes =
+                    unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, arr.len() * 8) };
                 state.write(bytes);
             }
             VK::Record(r) => {
@@ -988,7 +1001,10 @@ mod tests {
         assert_eq!(Value::int(42), Value::int(42));
         assert_ne!(Value::int(42), Value::int(43));
         assert_eq!(Value::bool(true), Value::bool(true));
-        assert_eq!(Value::string("hello".to_string()), Value::string("hello".to_string()));
+        assert_eq!(
+            Value::string("hello".to_string()),
+            Value::string("hello".to_string())
+        );
     }
 
     #[test]

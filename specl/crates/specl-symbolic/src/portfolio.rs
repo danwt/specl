@@ -152,7 +152,9 @@ pub fn check_portfolio(
 
     // Collect results: first definitive result wins
     let results = [
-        bmc_handle.join().unwrap_or(StrategyResult::Inconclusive("BMC thread panic".into())),
+        bmc_handle
+            .join()
+            .unwrap_or(StrategyResult::Inconclusive("BMC thread panic".into())),
         kind_handle
             .join()
             .unwrap_or(StrategyResult::Inconclusive("k-ind thread panic".into())),

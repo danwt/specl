@@ -11,7 +11,10 @@ use serde::Serialize;
 use specl_eval::{Value, VK};
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
-use specl_mc::{CheckConfig, CheckOutcome, Explorer, Fingerprint, ProgressCounters, SimulateOutcome, State, StateStore};
+use specl_mc::{
+    CheckConfig, CheckOutcome, Explorer, Fingerprint, ProgressCounters, SimulateOutcome, State,
+    StateStore,
+};
 use specl_symbolic::{SpacerProfile, SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
@@ -368,7 +371,11 @@ enum Commands {
         profile: bool,
 
         /// Only check specific invariants (repeatable, by name)
-        #[arg(long = "check-only", value_name = "INVARIANT", help_heading = "Explicit-State")]
+        #[arg(
+            long = "check-only",
+            value_name = "INVARIANT",
+            help_heading = "Explicit-State"
+        )]
         check_only: Vec<String>,
 
         /// Show only changed variables in traces (diff mode)
@@ -573,7 +580,8 @@ fn main() {
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
 
-            let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3 || portfolio || golem;
+            let specific_symbolic =
+                bmc || inductive || k_induction.is_some() || ic3 || portfolio || golem;
             let specific_explicit = por
                 || symmetry
                 || fast
@@ -594,8 +602,9 @@ fn main() {
 
             if use_symbolic && use_bfs {
                 if output != OutputFormat::Text {
-                    let out = JsonOutput::new("error", 0.0)
-                        .with_error("cannot combine --symbolic/--bfs flags or their sub-options".into());
+                    let out = JsonOutput::new("error", 0.0).with_error(
+                        "cannot combine --symbolic/--bfs flags or their sub-options".into(),
+                    );
                     println!("{}", serde_json::to_string(&out).unwrap());
                 } else {
                     eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
@@ -820,7 +829,11 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     println!("  Actions: {}", profile.num_actions);
     println!("  Invariants: {}", profile.num_invariants);
     if !spec.invariants.is_empty() {
-        let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+        let inv_names: Vec<&str> = spec
+            .invariants
+            .iter()
+            .map(|inv| inv.name.as_str())
+            .collect();
         println!("    Names: {}", inv_names.join(", "));
     }
 
@@ -1119,8 +1132,18 @@ fn cmd_check(
     }
 
     if directed && (fast_check || bloom || collapse || tree) {
-        let other = if fast_check { "--fast" } else if bloom { "--bloom" } else if collapse { "--collapse" } else { "--tree" };
-        let msg = format!("Error: --directed is incompatible with {other} (directed uses its own priority queue)");
+        let other = if fast_check {
+            "--fast"
+        } else if bloom {
+            "--bloom"
+        } else if collapse {
+            "--collapse"
+        } else {
+            "--tree"
+        };
+        let msg = format!(
+            "Error: --directed is incompatible with {other} (directed uses its own priority queue)"
+        );
         if output_format != OutputFormat::Text {
             let out = JsonOutput::new("error", 0.0).with_error(msg);
             println!("{}", serde_json::to_string(&out).unwrap());
@@ -1292,7 +1315,9 @@ fn cmd_check(
         // DOT state graph output (BFS exploration tree)
         let store = explorer.store();
         if !store.has_full_tracking() {
-            eprintln!("Error: --output dot requires full tracking (incompatible with --fast and --bloom)");
+            eprintln!(
+                "Error: --output dot requires full tracking (incompatible with --fast and --bloom)"
+            );
             std::process::exit(1);
         }
         let max_dot_states = 10_000;
@@ -1307,14 +1332,16 @@ fn cmd_check(
 
         // Determine violation fingerprint (if any) for highlighting
         let violation_fp = match &result {
-            CheckOutcome::InvariantViolation { trace, .. }
-            | CheckOutcome::Deadlock { trace } => {
+            CheckOutcome::InvariantViolation { trace, .. } | CheckOutcome::Deadlock { trace } => {
                 trace.last().map(|(s, _)| s.fingerprint())
             }
             _ => None,
         };
 
-        println!("{}", store_to_dot(store, &var_names, &action_names, violation_fp.as_ref()));
+        println!(
+            "{}",
+            store_to_dot(store, &var_names, &action_names, violation_fp.as_ref())
+        );
 
         match result {
             CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
@@ -1332,9 +1359,18 @@ fn cmd_check(
         match result {
             CheckOutcome::InvariantViolation { invariant, trace } => {
                 if output_format == OutputFormat::Mermaid {
-                    println!("{}", trace_to_mermaid(&trace, &var_names, "invariant_violation", Some(&invariant)));
+                    println!(
+                        "{}",
+                        trace_to_mermaid(
+                            &trace,
+                            &var_names,
+                            "invariant_violation",
+                            Some(&invariant)
+                        )
+                    );
                 } else {
-                    let itf = trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
+                    let itf =
+                        trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
                     println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                 }
                 std::process::exit(1);
@@ -1348,54 +1384,75 @@ fn cmd_check(
                 }
                 std::process::exit(1);
             }
-            CheckOutcome::Ok { states_explored, .. } => {
-                eprintln!("Result: OK ({} states, no trace to export)", states_explored);
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "Result: OK ({} states, no trace to export)",
+                    states_explored
+                );
             }
-            CheckOutcome::StateLimitReached { states_explored, .. } => {
-                eprintln!("Result: STATE LIMIT REACHED ({} states, no trace)", states_explored);
+            CheckOutcome::StateLimitReached {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "Result: STATE LIMIT REACHED ({} states, no trace)",
+                    states_explored
+                );
                 std::process::exit(2);
             }
-            CheckOutcome::MemoryLimitReached { states_explored, .. } => {
-                eprintln!("Result: MEMORY LIMIT REACHED ({} states, no trace)", states_explored);
+            CheckOutcome::MemoryLimitReached {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "Result: MEMORY LIMIT REACHED ({} states, no trace)",
+                    states_explored
+                );
                 std::process::exit(2);
             }
-            CheckOutcome::TimeLimitReached { states_explored, .. } => {
-                eprintln!("Result: TIME LIMIT REACHED ({} states, no trace)", states_explored);
+            CheckOutcome::TimeLimitReached {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "Result: TIME LIMIT REACHED ({} states, no trace)",
+                    states_explored
+                );
                 std::process::exit(2);
             }
         }
     } else if json {
-        let out = match result {
-            CheckOutcome::Ok {
-                states_explored,
-                max_depth,
-            } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
-            CheckOutcome::InvariantViolation { invariant, trace } => {
-                JsonOutput::new("invariant_violation", secs)
-                    .with_invariant(invariant)
-                    .with_trace(trace_to_json(&trace, &var_names))
-            }
-            CheckOutcome::Deadlock { trace } => {
-                JsonOutput::new("deadlock", secs).with_trace(trace_to_json(&trace, &var_names))
-            }
-            CheckOutcome::StateLimitReached {
-                states_explored,
-                max_depth,
-            } => JsonOutput::new("state_limit_reached", secs)
-                .with_states(states_explored, max_depth),
-            CheckOutcome::MemoryLimitReached {
-                states_explored,
-                max_depth,
-                memory_mb,
-            } => JsonOutput::new("memory_limit_reached", secs)
-                .with_states(states_explored, max_depth)
-                .with_memory(memory_mb),
-            CheckOutcome::TimeLimitReached {
-                states_explored,
-                max_depth,
-            } => JsonOutput::new("time_limit_reached", secs)
-                .with_states(states_explored, max_depth),
-        };
+        let out =
+            match result {
+                CheckOutcome::Ok {
+                    states_explored,
+                    max_depth,
+                } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
+                CheckOutcome::InvariantViolation { invariant, trace } => {
+                    JsonOutput::new("invariant_violation", secs)
+                        .with_invariant(invariant)
+                        .with_trace(trace_to_json(&trace, &var_names))
+                }
+                CheckOutcome::Deadlock { trace } => {
+                    JsonOutput::new("deadlock", secs).with_trace(trace_to_json(&trace, &var_names))
+                }
+                CheckOutcome::StateLimitReached {
+                    states_explored,
+                    max_depth,
+                } => JsonOutput::new("state_limit_reached", secs)
+                    .with_states(states_explored, max_depth),
+                CheckOutcome::MemoryLimitReached {
+                    states_explored,
+                    max_depth,
+                    memory_mb,
+                } => JsonOutput::new("memory_limit_reached", secs)
+                    .with_states(states_explored, max_depth)
+                    .with_memory(memory_mb),
+                CheckOutcome::TimeLimitReached {
+                    states_explored,
+                    max_depth,
+                } => JsonOutput::new("time_limit_reached", secs)
+                    .with_states(states_explored, max_depth),
+            };
         println!("{}", serde_json::to_string(&out).unwrap());
         let exit_code = match out.result {
             "ok" => 0,
@@ -1638,10 +1695,23 @@ fn cmd_check_swarm(
                 if let CheckOutcome::InvariantViolation { invariant, trace } = result {
                     match output_format {
                         OutputFormat::Mermaid => {
-                            println!("{}", trace_to_mermaid(&trace, var_names, "invariant_violation", Some(&invariant)));
+                            println!(
+                                "{}",
+                                trace_to_mermaid(
+                                    &trace,
+                                    var_names,
+                                    "invariant_violation",
+                                    Some(&invariant)
+                                )
+                            );
                         }
                         OutputFormat::Itf => {
-                            let itf = trace_to_itf(&trace, var_names, "invariant_violation", Some(&invariant));
+                            let itf = trace_to_itf(
+                                &trace,
+                                var_names,
+                                "invariant_violation",
+                                Some(&invariant),
+                            );
                             println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                         }
                         OutputFormat::Json => {
@@ -1768,9 +1838,10 @@ fn cmd_check_symbolic(
         "smart"
     };
     // Check for Seq variables and warn about seq-bound (#28)
-    let has_seq_vars = spec.vars.iter().any(|v| {
-        matches!(&v.ty, specl_types::Type::Seq(..))
-    });
+    let has_seq_vars = spec
+        .vars
+        .iter()
+        .any(|v| matches!(&v.ty, specl_types::Type::Seq(..)));
     if has_seq_vars && !json {
         eprintln!(
             "Note: Seq[T] variables bounded to length {}. Increase --seq-bound if sequences may be longer.",
@@ -1862,7 +1933,9 @@ fn cmd_check_symbolic(
                     println!("  Trace ({} steps):", trace.len());
                     for (i, step) in trace.iter().enumerate() {
                         let action_str = step.action.as_deref().unwrap_or("?");
-                        let state_str = step.state.iter()
+                        let state_str = step
+                            .state
+                            .iter()
                             .map(|(name, val)| format!("{}={}", name, val))
                             .collect::<Vec<_>>()
                             .join(", ");
@@ -1898,8 +1971,7 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
         Err(e) => {
             let secs = start.elapsed().as_secs_f64();
             if json {
-                let out = JsonOutput::new("error", secs)
-                    .with_error(format!("parse error: {}", e));
+                let out = JsonOutput::new("error", secs).with_error(format!("parse error: {}", e));
                 println!("{}", serde_json::to_string(&out).unwrap());
                 std::process::exit(1);
             }
@@ -1911,8 +1983,7 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
     if let Err(e) = specl_types::check_module(&module) {
         let secs = start.elapsed().as_secs_f64();
         if json {
-            let out = JsonOutput::new("error", secs)
-                .with_error(format!("type error: {}", e));
+            let out = JsonOutput::new("error", secs).with_error(format!("type error: {}", e));
             println!("{}", serde_json::to_string(&out).unwrap());
             std::process::exit(1);
         }
@@ -1925,8 +1996,8 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
         Err(e) => {
             let secs = start.elapsed().as_secs_f64();
             if json {
-                let out = JsonOutput::new("error", secs)
-                    .with_error(format!("compile error: {}", e));
+                let out =
+                    JsonOutput::new("error", secs).with_error(format!("compile error: {}", e));
                 println!("{}", serde_json::to_string(&out).unwrap());
                 std::process::exit(1);
             }
@@ -2005,18 +2076,26 @@ fn cmd_simulate(
     if output == OutputFormat::Itf || output == OutputFormat::Mermaid {
         // Structured trace output (ITF or Mermaid)
         let (trace, var_names, result_kind, invariant) = match &result {
-            SimulateOutcome::Ok { trace, var_names, .. } => {
-                (trace, var_names, "ok", None)
-            }
-            SimulateOutcome::InvariantViolation { invariant, trace, var_names } => {
-                (trace, var_names, "invariant_violation", Some(invariant.as_str()))
-            }
-            SimulateOutcome::Deadlock { trace, var_names } => {
-                (trace, var_names, "deadlock", None)
-            }
+            SimulateOutcome::Ok {
+                trace, var_names, ..
+            } => (trace, var_names, "ok", None),
+            SimulateOutcome::InvariantViolation {
+                invariant,
+                trace,
+                var_names,
+            } => (
+                trace,
+                var_names,
+                "invariant_violation",
+                Some(invariant.as_str()),
+            ),
+            SimulateOutcome::Deadlock { trace, var_names } => (trace, var_names, "deadlock", None),
         };
         if output == OutputFormat::Mermaid {
-            println!("{}", trace_to_mermaid(trace, var_names, result_kind, invariant));
+            println!(
+                "{}",
+                trace_to_mermaid(trace, var_names, result_kind, invariant)
+            );
         } else {
             let itf = trace_to_itf(trace, var_names, result_kind, invariant);
             println!("{}", serde_json::to_string_pretty(&itf).unwrap());
@@ -2163,7 +2242,11 @@ fn parse_constants_as_pairs(constants: &[String]) -> Vec<(String, i64)> {
         .filter_map(|c| {
             let parts: Vec<&str> = c.splitn(2, '=').collect();
             if parts.len() == 2 {
-                parts[1].trim().parse::<i64>().ok().map(|v| (parts[0].trim().to_string(), v))
+                parts[1]
+                    .trim()
+                    .parse::<i64>()
+                    .ok()
+                    .map(|v| (parts[0].trim().to_string(), v))
             } else {
                 None
             }
@@ -2266,9 +2349,7 @@ fn value_to_itf(v: &Value) -> serde_json::Value {
         VK::Set(elems) => {
             serde_json::json!({"#set": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
         }
-        VK::Seq(elems) => {
-            serde_json::Value::Array(elems.iter().map(value_to_itf).collect())
-        }
+        VK::Seq(elems) => serde_json::Value::Array(elems.iter().map(value_to_itf).collect()),
         VK::Fn(pairs) => {
             let entries: Vec<serde_json::Value> = pairs
                 .iter()
@@ -2421,11 +2502,8 @@ fn store_to_dot(
     // Assign compact numeric IDs to fingerprints
     let mut fp_list: Vec<Fingerprint> = raw_fps.into_iter().map(Fingerprint::from_u64).collect();
     fp_list.sort_by_key(|fp| fp.as_u64());
-    let fp_to_id: std::collections::HashMap<Fingerprint, usize> = fp_list
-        .iter()
-        .enumerate()
-        .map(|(i, fp)| (*fp, i))
-        .collect();
+    let fp_to_id: std::collections::HashMap<Fingerprint, usize> =
+        fp_list.iter().enumerate().map(|(i, fp)| (*fp, i)).collect();
 
     // Emit nodes
     for &fp in &fp_list {
@@ -2486,7 +2564,8 @@ fn store_to_dot(
                             if params.is_empty() {
                                 base
                             } else {
-                                let ps: Vec<String> = params.iter().map(|v| v.to_string()).collect();
+                                let ps: Vec<String> =
+                                    params.iter().map(|v| v.to_string()).collect();
                                 format!("{}({})", base, ps.join(","))
                             }
                         } else {
@@ -2494,7 +2573,10 @@ fn store_to_dot(
                         }
                     })
                     .unwrap_or_default();
-                lines.push(format!("    s{} -> s{} [label=\"{}\"];", src_id, dst_id, edge_label));
+                lines.push(format!(
+                    "    s{} -> s{} [label=\"{}\"];",
+                    src_id, dst_id, edge_label
+                ));
             }
         }
     }
@@ -2525,7 +2607,11 @@ fn format_value_compact(v: &Value) -> String {
             format!("{{{}}}", inner.join(","))
         }
         VK::IntMap(m) => {
-            let inner: Vec<String> = m.iter().enumerate().map(|(i, v)| format!("{}:{}", i, v)).collect();
+            let inner: Vec<String> = m
+                .iter()
+                .enumerate()
+                .map(|(i, v)| format!("{}:{}", i, v))
+                .collect();
             format!("{{{}}}", inner.join(","))
         }
         VK::Record(r) => {
@@ -2629,7 +2715,11 @@ fn trace_to_mermaid(
                 } else {
                     participants.iter().next().unwrap().clone()
                 };
-                lines.push(format!("    Note right of {}: {}", actor, changes.join(", ")));
+                lines.push(format!(
+                    "    Note right of {}: {}",
+                    actor,
+                    changes.join(", ")
+                ));
             }
         }
     }
@@ -2646,7 +2736,9 @@ fn trace_to_mermaid(
         lines.push("    rect rgb(255, 200, 200)".to_string());
         lines.push(format!(
             "        Note over {}: {} VIOLATION: {}",
-            actor, result_kind.to_uppercase(), inv
+            actor,
+            result_kind.to_uppercase(),
+            inv
         ));
         lines.push("    end".to_string());
     }
@@ -3181,7 +3273,12 @@ fn cmd_estimate(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     println!("  Variable breakdown:");
     for (name, ty, domain) in &profile.var_domain_sizes {
         match domain {
-            Some(size) => println!("    {}: {} ({} values)", name, ty, format_large_number(*size)),
+            Some(size) => println!(
+                "    {}: {} ({} values)",
+                name,
+                ty,
+                format_large_number(*size)
+            ),
             None => println!("    {}: {} (unbounded)", name, ty),
         }
     }
@@ -3324,7 +3421,11 @@ const TEST_SKIP: &[&str] = &[
     "sem-santa_claus.specl", // Use: params too small for invariant (NUM_ELVES=2 < 3)
 ];
 
-fn cmd_test(dir: Option<&PathBuf>, override_max_states: usize, max_time_per_spec: u64) -> CliResult<()> {
+fn cmd_test(
+    dir: Option<&PathBuf>,
+    override_max_states: usize,
+    max_time_per_spec: u64,
+) -> CliResult<()> {
     let test_dir = dir.cloned().unwrap_or_else(|| {
         // Default: look for examples/ relative to current dir
         PathBuf::from("examples")
@@ -3467,30 +3568,74 @@ fn cmd_test(dir: Option<&PathBuf>, override_max_states: usize, max_time_per_spec
         let secs = elapsed.as_secs_f64();
 
         match &result {
-            CheckOutcome::Ok { states_explored, .. } => {
-                println!("  PASS  {} ({} states, {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                println!(
+                    "  PASS  {} ({} states, {:.1}s)",
+                    file.display(),
+                    format_large_number(*states_explored as u128),
+                    secs
+                );
                 passed += 1;
             }
-            CheckOutcome::StateLimitReached { states_explored, .. } => {
-                println!("  PASS  {} ({} states [limit], {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+            CheckOutcome::StateLimitReached {
+                states_explored, ..
+            } => {
+                println!(
+                    "  PASS  {} ({} states [limit], {:.1}s)",
+                    file.display(),
+                    format_large_number(*states_explored as u128),
+                    secs
+                );
                 passed += 1;
             }
-            CheckOutcome::MemoryLimitReached { states_explored, .. } => {
-                println!("  PASS  {} ({} states [mem limit], {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+            CheckOutcome::MemoryLimitReached {
+                states_explored, ..
+            } => {
+                println!(
+                    "  PASS  {} ({} states [mem limit], {:.1}s)",
+                    file.display(),
+                    format_large_number(*states_explored as u128),
+                    secs
+                );
                 passed += 1;
             }
-            CheckOutcome::TimeLimitReached { states_explored, .. } => {
-                println!("  PASS  {} ({} states [time limit], {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+            CheckOutcome::TimeLimitReached {
+                states_explored, ..
+            } => {
+                println!(
+                    "  PASS  {} ({} states [time limit], {:.1}s)",
+                    file.display(),
+                    format_large_number(*states_explored as u128),
+                    secs
+                );
                 passed += 1;
             }
             CheckOutcome::InvariantViolation { invariant, .. } => {
                 // Some examples intentionally have bugs
-                if source.contains("intentional") || source.contains("bug") || source.contains("BUG") {
-                    println!("  PASS  {} (expected violation: {}, {:.1}s)", file.display(), invariant, secs);
+                if source.contains("intentional")
+                    || source.contains("bug")
+                    || source.contains("BUG")
+                {
+                    println!(
+                        "  PASS  {} (expected violation: {}, {:.1}s)",
+                        file.display(),
+                        invariant,
+                        secs
+                    );
                     passed += 1;
                 } else {
-                    println!("  FAIL  {} (invariant violation: {})", file.display(), invariant);
-                    failures.push(format!("{}: invariant violation: {}", file.display(), invariant));
+                    println!(
+                        "  FAIL  {} (invariant violation: {})",
+                        file.display(),
+                        invariant
+                    );
+                    failures.push(format!(
+                        "{}: invariant violation: {}",
+                        file.display(),
+                        invariant
+                    ));
                     failed += 1;
                 }
             }
@@ -3503,7 +3648,10 @@ fn cmd_test(dir: Option<&PathBuf>, override_max_states: usize, max_time_per_spec
 
     let total_secs = total_start.elapsed().as_secs_f64();
     println!();
-    println!("Results: {} passed, {} failed, {} skipped ({:.1}s)", passed, failed, skipped, total_secs);
+    println!(
+        "Results: {} passed, {} failed, {} skipped ({:.1}s)",
+        passed, failed, skipped, total_secs
+    );
 
     if !failures.is_empty() {
         println!();

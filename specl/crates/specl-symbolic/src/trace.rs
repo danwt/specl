@@ -74,7 +74,7 @@ fn identify_action(
 
         if param_ranges.is_empty() {
             // No parameters — just evaluate the guard
-            if action_matches(model, layout, step_vars, consts, action, step,&[]) {
+            if action_matches(model, layout, step_vars, consts, action, step, &[]) {
                 return Some(action.name.clone());
             }
         } else {
@@ -82,7 +82,7 @@ fn identify_action(
             let mut combos = Vec::new();
             enumerate_param_combos(&param_ranges, 0, &mut Vec::new(), &mut combos);
             for combo in &combos {
-                if action_matches(model, layout, step_vars, consts, action, step,combo) {
+                if action_matches(model, layout, step_vars, consts, action, step, combo) {
                     let params_str = combo
                         .iter()
                         .map(|v| v.to_string())
@@ -112,7 +112,9 @@ fn action_matches(
         .map(|v| Dynamic::from_ast(&Int::from_i64(*v)))
         .collect();
 
-    let Ok(constraint) = encode_action_instance(action, consts, layout, step_vars, step, &z3_params) else {
+    let Ok(constraint) =
+        encode_action_instance(action, consts, layout, step_vars, step, &z3_params)
+    else {
         return false;
     };
 

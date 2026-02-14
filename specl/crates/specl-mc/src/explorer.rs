@@ -11,9 +11,9 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 use specl_eval::bytecode::{compile_expr, vm_eval_bool, vm_eval_bool_reuse, Bytecode, VmBufs};
 use specl_eval::{eval, EvalContext, EvalError, Value};
-use std::cell::RefCell;
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
+use std::cell::RefCell;
 use std::collections::BinaryHeap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -138,7 +138,11 @@ fn params_to_i64s(params: &[Value]) -> Vec<i64> {
             if let Some(n) = v.as_int() {
                 n
             } else if let Some(b) = v.as_bool() {
-                if b { 1 } else { 0 }
+                if b {
+                    1
+                } else {
+                    0
+                }
             } else {
                 0
             }
@@ -480,9 +484,7 @@ fn op_cache_key(params: &[Value], read_xor: u64) -> u64 {
 /// Uses pre-computed hashes from State::var_hashes, avoiding rehashing entirely.
 #[inline]
 fn xor_hash_vars(var_hashes: &[u64], indices: &[usize]) -> u64 {
-    indices
-        .iter()
-        .fold(0u64, |acc, &i| acc ^ var_hashes[i])
+    indices.iter().fold(0u64, |acc, &i| acc ^ var_hashes[i])
 }
 
 /// Decompose a guard expression into top-level AND-conjuncts.
@@ -1077,7 +1079,11 @@ impl Explorer {
         let active_invariants: Vec<bool> = if config.check_only_invariants.is_empty() {
             vec![true; spec.invariants.len()]
         } else {
-            let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+            let inv_names: Vec<&str> = spec
+                .invariants
+                .iter()
+                .map(|inv| inv.name.as_str())
+                .collect();
             for name in &config.check_only_invariants {
                 if !inv_names.contains(&name.as_str()) {
                     error!(
@@ -1709,7 +1715,10 @@ impl Explorer {
             return Err(CheckError::NoInitialStates);
         }
 
-        info!(count = initial_states.len(), "generated initial states (directed)");
+        info!(
+            count = initial_states.len(),
+            "generated initial states (directed)"
+        );
 
         // Priority queue entry sorted by heuristic score (lower = closer to violation = higher priority)
         struct PQEntry {
@@ -1719,11 +1728,15 @@ impl Explorer {
             depth: usize,
         }
         impl PartialEq for PQEntry {
-            fn eq(&self, other: &Self) -> bool { self.score == other.score }
+            fn eq(&self, other: &Self) -> bool {
+                self.score == other.score
+            }
         }
         impl Eq for PQEntry {}
         impl PartialOrd for PQEntry {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
         }
         impl Ord for PQEntry {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -1740,11 +1753,19 @@ impl Explorer {
             let fp = canonical.fingerprint();
             if self.store.insert(canonical.clone(), None, None, None, 0) {
                 let h = self.invariant_heuristic(&canonical);
-                queue.push(PQEntry { score: h, fp, state: canonical, depth: 0 });
+                queue.push(PQEntry {
+                    score: h,
+                    fp,
+                    state: canonical,
+                    depth: 0,
+                });
             }
         }
 
-        while let Some(PQEntry { fp, state, depth, .. }) = queue.pop() {
+        while let Some(PQEntry {
+            fp, state, depth, ..
+        }) = queue.pop()
+        {
             // Check external stop flag
             if let Some(ref flag) = self.stop_flag {
                 if flag.load(Ordering::Relaxed) {
@@ -1790,7 +1811,10 @@ impl Explorer {
             }
 
             // Check time limit
-            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
+            if self.deadline.is_some()
+                && self.store.len().is_multiple_of(1000)
+                && self.past_deadline()
+            {
                 return Ok(CheckOutcome::TimeLimitReached {
                     states_explored: self.store.len(),
                     max_depth,
@@ -1840,7 +1864,12 @@ impl Explorer {
                         p.queue_len.store(queue.len(), Ordering::Relaxed);
                     }
                     let h = self.invariant_heuristic(&canonical);
-                    queue.push(PQEntry { score: h, fp: succ_fp, state: canonical, depth: depth + 1 });
+                    queue.push(PQEntry {
+                        score: h,
+                        fp: succ_fp,
+                        state: canonical,
+                        depth: depth + 1,
+                    });
                 }
             }
         }
@@ -1949,10 +1978,13 @@ impl Explorer {
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical, Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                if self.store.insert(
+                    canonical,
+                    Some(fp),
+                    Some(action_idx),
+                    Some(pvals),
+                    depth + 1,
+                ) {
                     queue.push_back(next_fp);
                 }
             }
@@ -2002,10 +2034,13 @@ impl Explorer {
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical, Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                if self.store.insert(
+                    canonical,
+                    Some(fp),
+                    Some(action_idx),
+                    Some(pvals),
+                    depth + 1,
+                ) {
                     queue.push_back(next_fp);
                 }
             }
@@ -2033,7 +2068,11 @@ impl Explorer {
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
         let n_actions = self.spec.actions.len();
-        let mut prof_action_counts = if profiling { vec![0usize; n_actions] } else { vec![] };
+        let mut prof_action_counts = if profiling {
+            vec![0usize; n_actions]
+        } else {
+            vec![]
+        };
         let mut prof_time_inv = Duration::ZERO;
         let mut prof_time_succ = Duration::ZERO;
         let mut prof_time_store = Duration::ZERO;
@@ -2080,7 +2119,10 @@ impl Explorer {
             }
 
             // Check time limit (every 1000 states to reduce overhead)
-            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
+            if self.deadline.is_some()
+                && self.store.len().is_multiple_of(1000)
+                && self.past_deadline()
+            {
                 info!("reached time limit");
                 hit_time_limit = true;
                 break;
@@ -2112,13 +2154,17 @@ impl Explorer {
                     });
                 }
             }
-            if profiling { prof_time_inv += t0.elapsed(); }
+            if profiling {
+                prof_time_inv += t0.elapsed();
+            }
 
             // --- Phase 2: Generate successor states ---
             let t1 = Instant::now();
             let mut successors = Vec::new();
             self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set)?;
-            if profiling { prof_time_succ += t1.elapsed(); }
+            if profiling {
+                prof_time_succ += t1.elapsed();
+            }
 
             if successors.is_empty() && self.config.check_deadlock {
                 // Check if any action is enabled (ignoring sleep set — sleep doesn't cause deadlock)
@@ -2143,7 +2189,9 @@ impl Explorer {
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
             for (next_state, action_idx, pvals) in successors {
-                if profiling { prof_action_counts[action_idx] += 1; }
+                if profiling {
+                    prof_action_counts[action_idx] += 1;
+                }
                 let successor_sleep = if use_sleep {
                     accumulated_sleep & self.independent_masks[action_idx]
                 } else {
@@ -2151,10 +2199,13 @@ impl Explorer {
                 };
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical.clone(), Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                if self.store.insert(
+                    canonical.clone(),
+                    Some(fp),
+                    Some(action_idx),
+                    Some(pvals),
+                    depth + 1,
+                ) {
                     *max_depth = (*max_depth).max(depth + 1);
                     queue.push_back((
                         next_fp,
@@ -2171,7 +2222,9 @@ impl Explorer {
 
             // Grow FPSet between batches if needed (no concurrent inserts at this point)
             self.store.maybe_grow_fpset();
-            if profiling { prof_time_store += t2.elapsed(); }
+            if profiling {
+                prof_time_store += t2.elapsed();
+            }
 
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
@@ -3430,7 +3483,8 @@ impl Explorer {
                                 &action.effect,
                             ) {
                                 if let Some(next_state) = result {
-                                    cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
+                                    cache
+                                        .store(key, xor_hash_vars(&next_state.var_hashes, changes));
                                     buf.push((next_state, action_idx, params_to_i64s(params)));
                                 } else {
                                     cache.store(key, OP_NO_SUCCESSOR);
@@ -3677,7 +3731,11 @@ impl Explorer {
             (*state.vars).clone(),
             &mut |next_vars: Vec<Value>| {
                 let mut ctx = EvalContext::new(&state.vars, &next_vars, &self.consts, params);
-                if eval(&action.effect, &mut ctx).ok().and_then(|v| v.as_bool()) == Some(true) {
+                if eval(&action.effect, &mut ctx)
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                {
                     next_states.push(State::new(next_vars));
                 }
             },

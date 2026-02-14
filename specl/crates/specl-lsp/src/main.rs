@@ -357,27 +357,26 @@ impl SpeclLanguageServer {
     /// Skips built-in type names (Bool, Int, Nat, String).
     fn first_named_type(ty: &TypeExpr) -> Option<&str> {
         match ty {
-            TypeExpr::Named(id) => {
-                match id.name.as_str() {
-                    "Bool" | "Int" | "Nat" | "String" => None,
-                    _ => Some(&id.name),
-                }
-            }
+            TypeExpr::Named(id) => match id.name.as_str() {
+                "Bool" | "Int" | "Nat" | "String" => None,
+                _ => Some(&id.name),
+            },
             TypeExpr::Set(inner, _) | TypeExpr::Seq(inner, _) | TypeExpr::Option(inner, _) => {
                 Self::first_named_type(inner)
             }
             TypeExpr::Dict(k, v, _) => {
                 Self::first_named_type(k).or_else(|| Self::first_named_type(v))
             }
-            TypeExpr::Tuple(types, _) => {
-                types.iter().find_map(|t| Self::first_named_type(t))
-            }
+            TypeExpr::Tuple(types, _) => types.iter().find_map(|t| Self::first_named_type(t)),
             TypeExpr::Range(_, _, _) => None,
         }
     }
 
     /// Find the type annotation for a given identifier (var, const, or action param).
-    fn find_type_for_ident<'a>(module: &'a specl_syntax::Module, name: &str) -> Option<&'a TypeExpr> {
+    fn find_type_for_ident<'a>(
+        module: &'a specl_syntax::Module,
+        name: &str,
+    ) -> Option<&'a TypeExpr> {
         for decl in &module.decls {
             match decl {
                 Decl::Var(d) if d.name.name == name => return Some(&d.ty),
@@ -495,35 +494,77 @@ impl SpeclLanguageServer {
             let (name, kind, detail, span, name_span) = match decl {
                 Decl::Var(d) => {
                     let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                    (d.name.name.clone(), SymbolKind::VARIABLE, Some(type_str), d.span, d.name.span)
+                    (
+                        d.name.name.clone(),
+                        SymbolKind::VARIABLE,
+                        Some(type_str),
+                        d.span,
+                        d.name.span,
+                    )
                 }
                 Decl::Const(d) => {
                     let val_str = specl_syntax::pretty::pretty_print_const_value(&d.value);
-                    (d.name.name.clone(), SymbolKind::CONSTANT, Some(val_str), d.span, d.name.span)
+                    (
+                        d.name.name.clone(),
+                        SymbolKind::CONSTANT,
+                        Some(val_str),
+                        d.span,
+                        d.name.span,
+                    )
                 }
                 Decl::Action(d) => {
                     let params = format_action_params(&d.params);
-                    let detail = if params.is_empty() { None } else { Some(format!("({params})")) };
-                    (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span, d.name.span)
+                    let detail = if params.is_empty() {
+                        None
+                    } else {
+                        Some(format!("({params})"))
+                    };
+                    (
+                        d.name.name.clone(),
+                        SymbolKind::FUNCTION,
+                        detail,
+                        d.span,
+                        d.name.span,
+                    )
                 }
-                Decl::Invariant(d) => {
-                    (d.name.name.clone(), SymbolKind::BOOLEAN, Some("invariant".into()), d.span, d.name.span)
-                }
+                Decl::Invariant(d) => (
+                    d.name.name.clone(),
+                    SymbolKind::BOOLEAN,
+                    Some("invariant".into()),
+                    d.span,
+                    d.name.span,
+                ),
                 Decl::Func(d) => {
                     let params = format_func_params(&d.params);
-                    (d.name.name.clone(), SymbolKind::FUNCTION, Some(format!("({params})")), d.span, d.name.span)
+                    (
+                        d.name.name.clone(),
+                        SymbolKind::FUNCTION,
+                        Some(format!("({params})")),
+                        d.span,
+                        d.name.span,
+                    )
                 }
                 Decl::Type(d) => {
                     let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
-                    (d.name.name.clone(), SymbolKind::TYPE_PARAMETER, Some(type_str), d.span, d.name.span)
+                    (
+                        d.name.name.clone(),
+                        SymbolKind::TYPE_PARAMETER,
+                        Some(type_str),
+                        d.span,
+                        d.name.span,
+                    )
                 }
                 Decl::Init(_) => {
                     let s = decl.span();
                     ("init".into(), SymbolKind::CONSTRUCTOR, None, s, s)
                 }
-                Decl::Property(d) => {
-                    (d.name.name.clone(), SymbolKind::PROPERTY, Some("property".into()), d.span, d.name.span)
-                }
+                Decl::Property(d) => (
+                    d.name.name.clone(),
+                    SymbolKind::PROPERTY,
+                    Some("property".into()),
+                    d.span,
+                    d.name.span,
+                ),
                 _ => continue,
             };
 
@@ -621,7 +662,11 @@ impl SpeclLanguageServer {
     }
 
     /// Get linked editing ranges (all occurrences of identifier for simultaneous edit).
-    fn get_linked_editing_ranges(&self, source: &str, position: Position) -> Option<LinkedEditingRanges> {
+    fn get_linked_editing_ranges(
+        &self,
+        source: &str,
+        position: Position,
+    ) -> Option<LinkedEditingRanges> {
         let word = Self::word_at_position(source, position)?;
 
         let tokens = Lexer::new(source).tokenize();
@@ -781,11 +826,7 @@ impl SpeclLanguageServer {
                             documentation: None,
                         })
                         .collect();
-                    let label = format!(
-                        "func {}({})",
-                        d.name.name,
-                        format_func_params(&d.params)
-                    );
+                    let label = format!("func {}({})", d.name.name, format_func_params(&d.params));
                     return Some(SignatureHelp {
                         signatures: vec![SignatureInformation {
                             label,
@@ -896,7 +937,11 @@ impl SpeclLanguageServer {
             ExprKind::Field { base, .. } => {
                 Self::walk_expr(base, visitor);
             }
-            ExprKind::If { cond, then_branch, else_branch } => {
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
                 Self::walk_expr(cond, visitor);
                 Self::walk_expr(then_branch, visitor);
                 Self::walk_expr(else_branch, visitor);
@@ -911,11 +956,18 @@ impl SpeclLanguageServer {
                 }
                 Self::walk_expr(body, visitor);
             }
-            ExprKind::Choose { domain, predicate, .. } => {
+            ExprKind::Choose {
+                domain, predicate, ..
+            } => {
                 Self::walk_expr(domain, visitor);
                 Self::walk_expr(predicate, visitor);
             }
-            ExprKind::SetComprehension { element, domain, filter, .. } => {
+            ExprKind::SetComprehension {
+                element,
+                domain,
+                filter,
+                ..
+            } => {
                 Self::walk_expr(element, visitor);
                 Self::walk_expr(domain, visitor);
                 if let Some(f) = filter {
@@ -935,7 +987,11 @@ impl SpeclLanguageServer {
             | ExprKind::Paren(e) => {
                 Self::walk_expr(e, visitor);
             }
-            ExprKind::LeadsTo { left, right } | ExprKind::Range { lo: left, hi: right } => {
+            ExprKind::LeadsTo { left, right }
+            | ExprKind::Range {
+                lo: left,
+                hi: right,
+            } => {
                 Self::walk_expr(left, visitor);
                 Self::walk_expr(right, visitor);
             }
@@ -1087,10 +1143,15 @@ impl SpeclLanguageServer {
     fn get_selection_ranges(&self, source: &str, positions: &[Position]) -> Vec<SelectionRange> {
         let module = match parse(source) {
             Ok(m) => m,
-            Err(_) => return positions.iter().map(|p| SelectionRange {
-                range: Range { start: *p, end: *p },
-                parent: None,
-            }).collect(),
+            Err(_) => {
+                return positions
+                    .iter()
+                    .map(|p| SelectionRange {
+                        range: Range { start: *p, end: *p },
+                        parent: None,
+                    })
+                    .collect()
+            }
         };
 
         positions
@@ -1104,7 +1165,8 @@ impl SpeclLanguageServer {
                 for decl in &module.decls {
                     let span = decl.span();
                     if line >= span.line {
-                        let end_line = Self::byte_offset_to_line(source, span.end.saturating_sub(1));
+                        let end_line =
+                            Self::byte_offset_to_line(source, span.end.saturating_sub(1));
                         if line <= end_line + 1 || (line == span.line && col >= span.column) {
                             best_decl = Some(decl);
                         }
@@ -1115,7 +1177,10 @@ impl SpeclLanguageServer {
                     let decl_range = Self::span_to_range_in(decl.span(), source);
                     // Full file as outermost range
                     let file_range = Range {
-                        start: Position { line: 0, character: 0 },
+                        start: Position {
+                            line: 0,
+                            character: 0,
+                        },
                         end: Position {
                             line: source.lines().count() as u32,
                             character: 0,
@@ -1131,7 +1196,10 @@ impl SpeclLanguageServer {
                     }
                 } else {
                     SelectionRange {
-                        range: Range { start: *pos, end: *pos },
+                        range: Range {
+                            start: *pos,
+                            end: *pos,
+                        },
                         parent: None,
                     }
                 }
@@ -1177,10 +1245,18 @@ impl SpeclLanguageServer {
         if let Ok(module) = parse(source) {
             for decl in &module.decls {
                 match decl {
-                    Decl::Var(d) => { var_names.insert(d.name.name.clone()); }
-                    Decl::Const(d) => { var_names.insert(d.name.name.clone()); }
-                    Decl::Action(d) => { func_names.insert(d.name.name.clone()); }
-                    Decl::Func(d) => { func_names.insert(d.name.name.clone()); }
+                    Decl::Var(d) => {
+                        var_names.insert(d.name.name.clone());
+                    }
+                    Decl::Const(d) => {
+                        var_names.insert(d.name.name.clone());
+                    }
+                    Decl::Action(d) => {
+                        func_names.insert(d.name.name.clone());
+                    }
+                    Decl::Func(d) => {
+                        func_names.insert(d.name.name.clone());
+                    }
                     _ => {}
                 }
             }
@@ -1192,25 +1268,65 @@ impl SpeclLanguageServer {
 
         for token in &tokens {
             let token_type = match &token.kind {
-                TokenKind::Module | TokenKind::Use | TokenKind::Const | TokenKind::Var
-                | TokenKind::Type | TokenKind::Init | TokenKind::Action | TokenKind::Invariant
-                | TokenKind::Property | TokenKind::Fairness | TokenKind::Func
-                | TokenKind::And | TokenKind::Or | TokenKind::Not | TokenKind::Implies
-                | TokenKind::Iff | TokenKind::All | TokenKind::Any | TokenKind::Choose
-                | TokenKind::In | TokenKind::For | TokenKind::If | TokenKind::Then
-                | TokenKind::Else | TokenKind::Let | TokenKind::With | TokenKind::Require
-                | TokenKind::Changes | TokenKind::Always | TokenKind::Eventually
-                | TokenKind::LeadsTo | TokenKind::Enabled | TokenKind::WeakFair
-                | TokenKind::StrongFair | TokenKind::True | TokenKind::False => Self::TT_KEYWORD,
+                TokenKind::Module
+                | TokenKind::Use
+                | TokenKind::Const
+                | TokenKind::Var
+                | TokenKind::Type
+                | TokenKind::Init
+                | TokenKind::Action
+                | TokenKind::Invariant
+                | TokenKind::Property
+                | TokenKind::Fairness
+                | TokenKind::Func
+                | TokenKind::And
+                | TokenKind::Or
+                | TokenKind::Not
+                | TokenKind::Implies
+                | TokenKind::Iff
+                | TokenKind::All
+                | TokenKind::Any
+                | TokenKind::Choose
+                | TokenKind::In
+                | TokenKind::For
+                | TokenKind::If
+                | TokenKind::Then
+                | TokenKind::Else
+                | TokenKind::Let
+                | TokenKind::With
+                | TokenKind::Require
+                | TokenKind::Changes
+                | TokenKind::Always
+                | TokenKind::Eventually
+                | TokenKind::LeadsTo
+                | TokenKind::Enabled
+                | TokenKind::WeakFair
+                | TokenKind::StrongFair
+                | TokenKind::True
+                | TokenKind::False => Self::TT_KEYWORD,
 
-                TokenKind::Nat | TokenKind::Int | TokenKind::Bool | TokenKind::String_
-                | TokenKind::Set | TokenKind::Seq | TokenKind::Dict | TokenKind::Option_
-                | TokenKind::Some_ | TokenKind::None_ => Self::TT_TYPE,
+                TokenKind::Nat
+                | TokenKind::Int
+                | TokenKind::Bool
+                | TokenKind::String_
+                | TokenKind::Set
+                | TokenKind::Seq
+                | TokenKind::Dict
+                | TokenKind::Option_
+                | TokenKind::Some_
+                | TokenKind::None_ => Self::TT_TYPE,
 
-                TokenKind::Union | TokenKind::Intersect | TokenKind::Diff
-                | TokenKind::SubsetOf | TokenKind::Head | TokenKind::Tail
-                | TokenKind::Len | TokenKind::Keys | TokenKind::Values
-                | TokenKind::Powerset | TokenKind::UnionAll => Self::TT_OPERATOR,
+                TokenKind::Union
+                | TokenKind::Intersect
+                | TokenKind::Diff
+                | TokenKind::SubsetOf
+                | TokenKind::Head
+                | TokenKind::Tail
+                | TokenKind::Len
+                | TokenKind::Keys
+                | TokenKind::Values
+                | TokenKind::Powerset
+                | TokenKind::UnionAll => Self::TT_OPERATOR,
 
                 TokenKind::Integer(_) => Self::TT_NUMBER,
                 TokenKind::StringLit(_) => Self::TT_STRING,
@@ -1356,7 +1472,10 @@ impl SpeclLanguageServer {
                 changes.insert(
                     uri.clone(),
                     vec![TextEdit {
-                        range: Range { start: pos, end: pos },
+                        range: Range {
+                            start: pos,
+                            end: pos,
+                        },
                         new_text: snippet,
                     }],
                 );
@@ -1478,11 +1597,7 @@ impl SpeclLanguageServer {
     }
 
     /// Build a CallHierarchyItem for an action or func declaration.
-    fn make_call_hierarchy_item(
-        decl: &Decl,
-        source: &str,
-        uri: &Url,
-    ) -> Option<CallHierarchyItem> {
+    fn make_call_hierarchy_item(decl: &Decl, source: &str, uri: &Url) -> Option<CallHierarchyItem> {
         let (name, kind, detail, span, name_span) = match decl {
             Decl::Action(d) => {
                 let params = format_action_params(&d.params);
@@ -1680,14 +1795,11 @@ impl SpeclLanguageServer {
         let mut result = Vec::new();
         for (callee_name, from_ranges) in grouped {
             // Find the decl for this callee
-            if let Some(callee_decl) = known_decls
-                .iter()
-                .find(|d| match d {
-                    Decl::Action(ad) => ad.name.name == callee_name,
-                    Decl::Func(fd) => fd.name.name == callee_name,
-                    _ => false,
-                })
-            {
+            if let Some(callee_decl) = known_decls.iter().find(|d| match d {
+                Decl::Action(ad) => ad.name.name == callee_name,
+                Decl::Func(fd) => fd.name.name == callee_name,
+                _ => false,
+            }) {
                 if let Some(item) = Self::make_call_hierarchy_item(callee_decl, source, uri) {
                     result.push(CallHierarchyOutgoingCall {
                         to: item,
@@ -1781,14 +1893,14 @@ impl LanguageServer for SpeclLanguageServer {
                         SemanticTokensOptions {
                             legend: SemanticTokensLegend {
                                 token_types: vec![
-                                    SemanticTokenType::KEYWORD,    // 0
-                                    SemanticTokenType::TYPE,       // 1
-                                    SemanticTokenType::VARIABLE,   // 2
-                                    SemanticTokenType::FUNCTION,   // 3
-                                    SemanticTokenType::NUMBER,     // 4
-                                    SemanticTokenType::STRING,     // 5
-                                    SemanticTokenType::COMMENT,    // 6
-                                    SemanticTokenType::OPERATOR,   // 7
+                                    SemanticTokenType::KEYWORD,  // 0
+                                    SemanticTokenType::TYPE,     // 1
+                                    SemanticTokenType::VARIABLE, // 2
+                                    SemanticTokenType::FUNCTION, // 3
+                                    SemanticTokenType::NUMBER,   // 4
+                                    SemanticTokenType::STRING,   // 5
+                                    SemanticTokenType::COMMENT,  // 6
+                                    SemanticTokenType::OPERATOR, // 7
                                 ],
                                 token_modifiers: vec![],
                             },
@@ -1806,9 +1918,9 @@ impl LanguageServer for SpeclLanguageServer {
                 document_highlight_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
                 call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
-                linked_editing_range_provider: Some(
-                    LinkedEditingRangeServerCapabilities::Simple(true),
-                ),
+                linked_editing_range_provider: Some(LinkedEditingRangeServerCapabilities::Simple(
+                    true,
+                )),
                 document_link_provider: Some(DocumentLinkOptions {
                     resolve_provider: Some(false),
                     work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -1870,14 +1982,18 @@ impl LanguageServer for SpeclLanguageServer {
     async fn hover(&self, params: HoverParams) -> Result<Option<Hover>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         Ok(self.get_hover(&content, position))
     }
 
     async fn completion(&self, params: CompletionParams) -> Result<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let items = self.get_completions(&content, position);
         Ok(Some(CompletionResponse::Array(items)))
     }
@@ -1885,7 +2001,9 @@ impl LanguageServer for SpeclLanguageServer {
     async fn signature_help(&self, params: SignatureHelpParams) -> Result<Option<SignatureHelp>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         Ok(self.get_signature_help(&content, position))
     }
 
@@ -1894,7 +2012,9 @@ impl LanguageServer for SpeclLanguageServer {
         params: SelectionRangeParams,
     ) -> Result<Option<Vec<SelectionRange>>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let ranges = self.get_selection_ranges(&content, &params.positions);
         Ok(Some(ranges))
     }
@@ -1913,7 +2033,9 @@ impl LanguageServer for SpeclLanguageServer {
 
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let actions = self.get_code_actions(&content, uri, &params.context.diagnostics);
         Ok(if actions.is_empty() {
             None
@@ -1924,7 +2046,9 @@ impl LanguageServer for SpeclLanguageServer {
 
     async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let lenses = self.get_code_lenses(&content, uri);
         Ok(if lenses.is_empty() {
             None
@@ -1939,7 +2063,9 @@ impl LanguageServer for SpeclLanguageServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         Ok(self
             .get_definition(&content, position, uri)
             .map(GotoDefinitionResponse::Scalar))
@@ -1951,7 +2077,9 @@ impl LanguageServer for SpeclLanguageServer {
     ) -> Result<Option<GotoDefinitionResponse>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         Ok(self
             .get_type_definition(&content, position, uri)
             .map(GotoDefinitionResponse::Scalar))
@@ -1960,7 +2088,9 @@ impl LanguageServer for SpeclLanguageServer {
     async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let refs = self.get_references(&content, position, uri);
         Ok(if refs.is_empty() { None } else { Some(refs) })
     }
@@ -1971,7 +2101,9 @@ impl LanguageServer for SpeclLanguageServer {
     ) -> Result<Option<Vec<DocumentHighlight>>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let highlights = self.get_document_highlights(&content, position);
         Ok(if highlights.is_empty() {
             None
@@ -1986,7 +2118,9 @@ impl LanguageServer for SpeclLanguageServer {
     ) -> Result<Option<LinkedEditingRanges>> {
         let uri = &params.text_document_position_params.text_document.uri;
         let position = params.text_document_position_params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         Ok(self.get_linked_editing_ranges(&content, position))
     }
 
@@ -1995,7 +2129,9 @@ impl LanguageServer for SpeclLanguageServer {
         params: DocumentSymbolParams,
     ) -> Result<Option<DocumentSymbolResponse>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let symbols = self.get_document_symbols(&content);
         Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
@@ -2003,7 +2139,9 @@ impl LanguageServer for SpeclLanguageServer {
     async fn rename(&self, params: RenameParams) -> Result<Option<WorkspaceEdit>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
 
         let refs = self.get_references(&content, position, uri);
         if refs.is_empty() {
@@ -2032,7 +2170,9 @@ impl LanguageServer for SpeclLanguageServer {
     ) -> Result<Option<PrepareRenameResponse>> {
         let uri = &params.text_document.uri;
         let position = params.position;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
 
         // Check the cursor is on a valid identifier
         let word = match Self::word_at_position(&content, position) {
@@ -2114,16 +2254,24 @@ impl LanguageServer for SpeclLanguageServer {
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let hints = self.get_inlay_hints(&content);
         Ok(if hints.is_empty() { None } else { Some(hints) })
     }
 
     async fn folding_range(&self, params: FoldingRangeParams) -> Result<Option<Vec<FoldingRange>>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let ranges = self.get_folding_ranges(&content);
-        Ok(if ranges.is_empty() { None } else { Some(ranges) })
+        Ok(if ranges.is_empty() {
+            None
+        } else {
+            Some(ranges)
+        })
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
@@ -2248,10 +2396,7 @@ impl LanguageServer for SpeclLanguageServer {
         }]))
     }
 
-    async fn document_link(
-        &self,
-        params: DocumentLinkParams,
-    ) -> Result<Option<Vec<DocumentLink>>> {
+    async fn document_link(&self, params: DocumentLinkParams) -> Result<Option<Vec<DocumentLink>>> {
         let uri = &params.text_document.uri;
         let Some(content) = self.get_content(uri) else {
             return Ok(None);
@@ -2297,7 +2442,9 @@ impl LanguageServer for SpeclLanguageServer {
         params: SemanticTokensParams,
     ) -> Result<Option<SemanticTokensResult>> {
         let uri = &params.text_document.uri;
-        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
         let tokens = self.get_semantic_tokens(&content);
         Ok(Some(SemanticTokensResult::Tokens(SemanticTokens {
             result_id: None,
@@ -2381,27 +2528,48 @@ init { x = 0 }
 action A() { x = y }
 "#;
         let diags = SpeclLanguageServer::get_diagnostics(src);
-        assert!(!diags.is_empty(), "undefined variable should produce diagnostics");
+        assert!(
+            !diags.is_empty(),
+            "undefined variable should produce diagnostics"
+        );
     }
 
     #[test]
     fn word_at_position_identifier() {
         let src = "var hello: Bool";
-        let word = SpeclLanguageServer::word_at_position(src, Position { line: 0, character: 5 });
+        let word = SpeclLanguageServer::word_at_position(
+            src,
+            Position {
+                line: 0,
+                character: 5,
+            },
+        );
         assert_eq!(word, Some("hello".to_string()));
     }
 
     #[test]
     fn word_at_position_at_boundary() {
         let src = "var x: Bool";
-        let word = SpeclLanguageServer::word_at_position(src, Position { line: 0, character: 4 });
+        let word = SpeclLanguageServer::word_at_position(
+            src,
+            Position {
+                line: 0,
+                character: 4,
+            },
+        );
         assert_eq!(word, Some("x".to_string()));
     }
 
     #[test]
     fn word_at_position_whitespace() {
         let src = "var x: Bool";
-        let word = SpeclLanguageServer::word_at_position(src, Position { line: 0, character: 3 });
+        let word = SpeclLanguageServer::word_at_position(
+            src,
+            Position {
+                line: 0,
+                character: 3,
+            },
+        );
         assert_eq!(word, None);
     }
 
@@ -2448,33 +2616,61 @@ action A() { x = y }
     #[test]
     fn decl_hover_text_var() {
         let module = parse(SAMPLE_SPEC).unwrap();
-        let var_decl = module.decls.iter().find(|d| matches!(d, Decl::Var(v) if v.name.name == "x")).unwrap();
+        let var_decl = module
+            .decls
+            .iter()
+            .find(|d| matches!(d, Decl::Var(v) if v.name.name == "x"))
+            .unwrap();
         let text = decl_hover_text(var_decl).unwrap();
-        assert!(text.contains("**var**") && text.contains("x"), "got: {text}");
+        assert!(
+            text.contains("**var**") && text.contains("x"),
+            "got: {text}"
+        );
     }
 
     #[test]
     fn decl_hover_text_action() {
         let module = parse(SAMPLE_SPEC).unwrap();
-        let action_decl = module.decls.iter().find(|d| matches!(d, Decl::Action(a) if a.name.name == "Step")).unwrap();
+        let action_decl = module
+            .decls
+            .iter()
+            .find(|d| matches!(d, Decl::Action(a) if a.name.name == "Step"))
+            .unwrap();
         let text = decl_hover_text(action_decl).unwrap();
-        assert!(text.contains("**action**") && text.contains("Step"), "got: {text}");
+        assert!(
+            text.contains("**action**") && text.contains("Step"),
+            "got: {text}"
+        );
     }
 
     #[test]
     fn decl_hover_text_func() {
         let module = parse(SAMPLE_SPEC).unwrap();
-        let func_decl = module.decls.iter().find(|d| matches!(d, Decl::Func(f) if f.name.name == "Double")).unwrap();
+        let func_decl = module
+            .decls
+            .iter()
+            .find(|d| matches!(d, Decl::Func(f) if f.name.name == "Double"))
+            .unwrap();
         let text = decl_hover_text(func_decl).unwrap();
-        assert!(text.contains("**func**") && text.contains("Double"), "got: {text}");
+        assert!(
+            text.contains("**func**") && text.contains("Double"),
+            "got: {text}"
+        );
     }
 
     #[test]
     fn decl_hover_text_invariant() {
         let module = parse(SAMPLE_SPEC).unwrap();
-        let inv_decl = module.decls.iter().find(|d| matches!(d, Decl::Invariant(i) if i.name.name == "Safe")).unwrap();
+        let inv_decl = module
+            .decls
+            .iter()
+            .find(|d| matches!(d, Decl::Invariant(i) if i.name.name == "Safe"))
+            .unwrap();
         let text = decl_hover_text(inv_decl).unwrap();
-        assert!(text.contains("**invariant**") && text.contains("Safe"), "got: {text}");
+        assert!(
+            text.contains("**invariant**") && text.contains("Safe"),
+            "got: {text}"
+        );
     }
 
     #[test]
@@ -2496,11 +2692,23 @@ action A() { x = y }
     fn completions_include_keywords_and_symbols() {
         let (service, _) = LspService::new(SpeclLanguageServer::new);
         let server = service.inner();
-        let items = server.get_completions(SAMPLE_SPEC, Position { line: 0, character: 0 });
+        let items = server.get_completions(
+            SAMPLE_SPEC,
+            Position {
+                line: 0,
+                character: 0,
+            },
+        );
         let labels: Vec<&str> = items.iter().map(|i| i.label.as_str()).collect();
         // Should include keywords
-        assert!(labels.contains(&"action"), "should contain keyword 'action'");
-        assert!(labels.contains(&"invariant"), "should contain keyword 'invariant'");
+        assert!(
+            labels.contains(&"action"),
+            "should contain keyword 'action'"
+        );
+        assert!(
+            labels.contains(&"invariant"),
+            "should contain keyword 'invariant'"
+        );
         // Should include user-defined symbols
         assert!(labels.contains(&"x"), "should contain var 'x'");
         assert!(labels.contains(&"Step"), "should contain action 'Step'");
@@ -2519,8 +2727,17 @@ action Bar() { Foo(1, 2) }
         let server = service.inner();
         // Position inside the Foo(1, 2) call — on the '1' after 'Foo('
         // Line 4 (0-indexed): "action Bar() { Foo(1, 2) }"
-        let help = server.get_signature_help(src, Position { line: 4, character: 19 });
-        assert!(help.is_some(), "should get signature help inside Foo() call");
+        let help = server.get_signature_help(
+            src,
+            Position {
+                line: 4,
+                character: 19,
+            },
+        );
+        assert!(
+            help.is_some(),
+            "should get signature help inside Foo() call"
+        );
         let help = help.unwrap();
         assert_eq!(help.signatures.len(), 1);
         assert!(help.signatures[0].label.contains("Foo"));
@@ -2547,8 +2764,16 @@ invariant Check { Add(1, 2) > 0 }
                 }
             })
             .collect();
-        assert!(labels.contains(&"a: ".to_string()), "should hint 'a: ', got: {:?}", labels);
-        assert!(labels.contains(&"b: ".to_string()), "should hint 'b: ', got: {:?}", labels);
+        assert!(
+            labels.contains(&"a: ".to_string()),
+            "should hint 'a: ', got: {:?}",
+            labels
+        );
+        assert!(
+            labels.contains(&"b: ".to_string()),
+            "should hint 'b: ', got: {:?}",
+            labels
+        );
     }
 
     #[test]
@@ -2578,7 +2803,14 @@ invariant Check { Add(1, 2) > 0 }
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
         // Position on 'x' in "require x < 10" — line 13 (0-indexed), char ~12
-        let loc = server.get_definition(SAMPLE_SPEC, Position { line: 13, character: 12 }, &uri);
+        let loc = server.get_definition(
+            SAMPLE_SPEC,
+            Position {
+                line: 13,
+                character: 12,
+            },
+            &uri,
+        );
         assert!(loc.is_some(), "should find definition of x");
     }
 
@@ -2588,7 +2820,14 @@ invariant Check { Add(1, 2) > 0 }
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
         // Position on 'x' in "var x: 0..10" — line 4 (0-indexed), char 4
-        let refs = server.get_references(SAMPLE_SPEC, Position { line: 4, character: 4 }, &uri);
+        let refs = server.get_references(
+            SAMPLE_SPEC,
+            Position {
+                line: 4,
+                character: 4,
+            },
+            &uri,
+        );
         assert!(
             refs.len() >= 3,
             "x should be referenced at least 3 times, found {}",
@@ -2629,8 +2868,14 @@ var x: 0..10
                 _ => None,
             })
             .collect();
-        assert!(titles.contains(&"Add init block"), "should offer 'Add init block'");
-        assert!(titles.contains(&"Add invariant"), "should offer 'Add invariant'");
+        assert!(
+            titles.contains(&"Add init block"),
+            "should offer 'Add init block'"
+        );
+        assert!(
+            titles.contains(&"Add invariant"),
+            "should offer 'Add invariant'"
+        );
         assert!(titles.contains(&"Add action"), "should offer 'Add action'");
     }
 
@@ -2647,8 +2892,14 @@ var x: 0..10
                 _ => None,
             })
             .collect();
-        assert!(!titles.contains(&"Add init block"), "should NOT offer init when present");
-        assert!(titles.contains(&"Add invariant"), "should still offer 'Add invariant'");
+        assert!(
+            !titles.contains(&"Add init block"),
+            "should NOT offer init when present"
+        );
+        assert!(
+            titles.contains(&"Add invariant"),
+            "should still offer 'Add invariant'"
+        );
     }
 
     #[test]
@@ -2661,7 +2912,10 @@ var x: 0..10
         // 'n' of line1 is at byte 8 -> (1, 2)
         assert_eq!(SpeclLanguageServer::byte_offset_to_position(src, 8), (1, 2));
         // 'l' of line2 is at byte 12 -> (2, 0)
-        assert_eq!(SpeclLanguageServer::byte_offset_to_position(src, 12), (2, 0));
+        assert_eq!(
+            SpeclLanguageServer::byte_offset_to_position(src, 12),
+            (2, 0)
+        );
     }
 
     #[test]
@@ -2672,12 +2926,20 @@ var x: 0..10
         // "    require true\n" = 16 bytes (27..43)
         // "}\n" = 2 bytes (43..45)
         // Span covering the action declaration: bytes 12..45
-        let span = Span { start: 12, end: 45, line: 2, column: 1 };
+        let span = Span {
+            start: 12,
+            end: 45,
+            line: 2,
+            column: 1,
+        };
         let range = SpeclLanguageServer::span_to_range_in(span, src);
         assert_eq!(range.start.line, 1); // 0-indexed
         assert_eq!(range.start.character, 0);
         assert_eq!(range.end.line, 3); // closing brace line (0-indexed: 3)
-        assert!(range.end.line > range.start.line, "multi-line span end should be on later line");
+        assert!(
+            range.end.line > range.start.line,
+            "multi-line span end should be on later line"
+        );
     }
 
     #[test]
@@ -2685,15 +2947,27 @@ var x: 0..10
         let (service, _) = LspService::new(SpeclLanguageServer::new);
         let server = service.inner();
         // 'x' on line 4 (0-indexed), char 4 in SAMPLE_SPEC
-        let highlights = server.get_document_highlights(SAMPLE_SPEC, Position { line: 4, character: 4 });
+        let highlights = server.get_document_highlights(
+            SAMPLE_SPEC,
+            Position {
+                line: 4,
+                character: 4,
+            },
+        );
         assert!(
             highlights.len() >= 3,
             "x should be highlighted at least 3 times, found {}",
             highlights.len()
         );
         // Declaration site should be WRITE
-        let write_count = highlights.iter().filter(|h| h.kind == Some(DocumentHighlightKind::WRITE)).count();
-        assert!(write_count >= 1, "should have at least one WRITE highlight for declaration");
+        let write_count = highlights
+            .iter()
+            .filter(|h| h.kind == Some(DocumentHighlightKind::WRITE))
+            .count();
+        assert!(
+            write_count >= 1,
+            "should have at least one WRITE highlight for declaration"
+        );
     }
 
     #[test]
@@ -2706,7 +2980,8 @@ var x: 0..10
         assert!(
             step.range.end.line > step.range.start.line,
             "multi-line action should have range spanning multiple lines: start={}, end={}",
-            step.range.start.line, step.range.end.line
+            step.range.start.line,
+            step.range.end.line
         );
     }
 
@@ -2724,8 +2999,14 @@ action A() { x = y }
         // Simulate the diagnostic that the type checker would produce
         let diag = Diagnostic {
             range: Range {
-                start: Position { line: 3, character: 17 },
-                end: Position { line: 3, character: 18 },
+                start: Position {
+                    line: 3,
+                    character: 17,
+                },
+                end: Position {
+                    line: 3,
+                    character: 18,
+                },
             },
             severity: Some(DiagnosticSeverity::ERROR),
             source: Some("specl".to_string()),
@@ -2755,7 +3036,14 @@ action A() { x = y }
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
         // Position on "F" in "func F"
-        let items = server.get_call_hierarchy_items(src, Position { line: 1, character: 5 }, &uri);
+        let items = server.get_call_hierarchy_items(
+            src,
+            Position {
+                line: 1,
+                character: 5,
+            },
+            &uri,
+        );
         assert_eq!(items.len(), 1);
         assert_eq!(items[0].name, "F");
         assert_eq!(items[0].kind, SymbolKind::FUNCTION);
@@ -2769,7 +3057,11 @@ action A() { x = y }
         let uri = Url::parse("file:///test.specl").unwrap();
         let calls = server.get_incoming_calls_for(src, "F", &uri);
         // A calls F, but invariant I also calls F — only action/func are returned as callers
-        assert_eq!(calls.len(), 1, "only action A should appear as caller (invariants not in hierarchy)");
+        assert_eq!(
+            calls.len(),
+            1,
+            "only action A should appear as caller (invariants not in hierarchy)"
+        );
         assert_eq!(calls[0].from.name, "A");
         assert_eq!(calls[0].from_ranges.len(), 1);
     }
@@ -2793,8 +3085,18 @@ action A() { x = y }
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
         // Cursor on 'state' in "require state < 3" — line 4, char 21
-        let loc = server.get_type_definition(src, Position { line: 4, character: 21 }, &uri);
-        assert!(loc.is_some(), "should find type definition for var with named type");
+        let loc = server.get_type_definition(
+            src,
+            Position {
+                line: 4,
+                character: 21,
+            },
+            &uri,
+        );
+        assert!(
+            loc.is_some(),
+            "should find type definition for var with named type"
+        );
         // Should point to the 'Status' type declaration on line 1
         let loc = loc.unwrap();
         assert_eq!(loc.range.start.line, 1);
@@ -2807,8 +3109,18 @@ action A() { x = y }
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
         // 'x' has type 0..10 (range, no named type)
-        let loc = server.get_type_definition(SAMPLE_SPEC, Position { line: 13, character: 12 }, &uri);
-        assert!(loc.is_none(), "range type should not have a type definition");
+        let loc = server.get_type_definition(
+            SAMPLE_SPEC,
+            Position {
+                line: 13,
+                character: 12,
+            },
+            &uri,
+        );
+        assert!(
+            loc.is_none(),
+            "range type should not have a type definition"
+        );
     }
 
     #[test]
@@ -2818,8 +3130,16 @@ action A() { x = y }
         let uri = Url::parse("file:///test.specl").unwrap();
         let lenses = server.get_code_lenses(SAMPLE_SPEC, &uri);
         // Should have lenses for Step, Toggle, Double
-        assert_eq!(lenses.len(), 3, "expected 3 code lenses, got {}", lenses.len());
-        let titles: Vec<&str> = lenses.iter().map(|l| l.command.as_ref().unwrap().title.as_str()).collect();
+        assert_eq!(
+            lenses.len(),
+            3,
+            "expected 3 code lenses, got {}",
+            lenses.len()
+        );
+        let titles: Vec<&str> = lenses
+            .iter()
+            .map(|l| l.command.as_ref().unwrap().title.as_str())
+            .collect();
         // Step is called 0 times outside its declaration
         assert!(titles.iter().any(|t| t.contains("reference")));
         // Double is called 0 times outside its declaration
@@ -2843,8 +3163,14 @@ action A() { x = y }
         let params = DocumentRangeFormattingParams {
             text_document: TextDocumentIdentifier { uri },
             range: Range {
-                start: Position { line: 6, character: 0 },
-                end: Position { line: 8, character: 1 },
+                start: Position {
+                    line: 6,
+                    character: 0,
+                },
+                end: Position {
+                    line: 8,
+                    character: 1,
+                },
             },
             options: FormattingOptions {
                 tab_size: 4,
@@ -2866,10 +3192,20 @@ action A() { x = y }
         let (service, _) = LspService::new(SpeclLanguageServer::new);
         let server = service.inner();
         // Cursor on 'x' in "var x: 0..10" — line 4, char 4
-        let result = server.get_linked_editing_ranges(SAMPLE_SPEC, Position { line: 4, character: 4 });
+        let result = server.get_linked_editing_ranges(
+            SAMPLE_SPEC,
+            Position {
+                line: 4,
+                character: 4,
+            },
+        );
         assert!(result.is_some(), "should find linked editing ranges for x");
         let ranges = result.unwrap().ranges;
-        assert!(ranges.len() >= 3, "x appears at least 3 times, found {}", ranges.len());
+        assert!(
+            ranges.len() >= 3,
+            "x appears at least 3 times, found {}",
+            ranges.len()
+        );
     }
 
     #[test]
@@ -2907,12 +3243,18 @@ init { x = 0 }
     #[test]
     fn pull_diagnostics_returns_errors() {
         let diags = SpeclLanguageServer::get_diagnostics("module Test\nvar x:");
-        assert!(!diags.is_empty(), "pull diagnostics should find parse errors");
+        assert!(
+            !diags.is_empty(),
+            "pull diagnostics should find parse errors"
+        );
     }
 
     #[test]
     fn pull_diagnostics_returns_empty_for_valid() {
         let diags = SpeclLanguageServer::get_diagnostics(SAMPLE_SPEC);
-        assert!(diags.is_empty(), "pull diagnostics should be empty for valid spec");
+        assert!(
+            diags.is_empty(),
+            "pull diagnostics should be empty for valid spec"
+        );
     }
 }

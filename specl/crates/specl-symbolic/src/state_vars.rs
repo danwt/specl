@@ -502,9 +502,7 @@ fn extract_range_bounds(expr: &CompiledExpr, consts: &[Value]) -> Option<(i64, i
 fn eval_const_int(expr: &CompiledExpr, consts: &[Value]) -> Option<i64> {
     match expr {
         CompiledExpr::Int(n) => Some(*n),
-        CompiledExpr::Const(idx) => {
-            consts[*idx].as_int()
-        }
+        CompiledExpr::Const(idx) => consts[*idx].as_int(),
         _ => None,
     }
 }

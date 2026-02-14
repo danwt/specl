@@ -123,24 +123,30 @@ impl Parser {
         };
 
         // Optional default value: const N: Int = 5
-        let default_value = if matches!(value, ConstValue::Type(_)) && self.peek_kind() == TokenKind::Assign {
-            self.advance();
-            if let TokenKind::Integer(n) = self.peek_kind() {
+        let default_value =
+            if matches!(value, ConstValue::Type(_)) && self.peek_kind() == TokenKind::Assign {
                 self.advance();
-                Some(n)
+                if let TokenKind::Integer(n) = self.peek_kind() {
+                    self.advance();
+                    Some(n)
+                } else {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "integer literal".to_string(),
+                        found: format!("{:?}", self.peek_kind()),
+                        span: self.current_span(),
+                    });
+                }
             } else {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "integer literal".to_string(),
-                    found: format!("{:?}", self.peek_kind()),
-                    span: self.current_span(),
-                });
-            }
-        } else {
-            None
-        };
+                None
+            };
 
         let span = start.merge(self.prev_span());
-        Ok(ConstDecl { name, value, default_value, span })
+        Ok(ConstDecl {
+            name,
+            value,
+            default_value,
+            span,
+        })
     }
 
     fn parse_var_decl(&mut self) -> ParseResult<VarDecl> {
