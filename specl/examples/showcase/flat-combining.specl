@@ -1,0 +1,92 @@
+module FlatCombining
+
+// Flat Combining (Hendler, Incze, Shavit, Tzafrir, 2010).
+// Synchronization technique where the lock holder executes
+// pending operations on behalf of all waiting threads.
+//
+// N+1 threads post operations to a publication list.
+// When a thread acquires the lock, it scans the list
+// and applies all pending operations, then releases.
+//
+// Reduces lock contention: one thread does all the work,
+// others just wait for results.
+//
+// Use: specl check flat-combining.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (200 states, 0.0s)
+
+const N: 0..3
+
+// Shared counter (the data structure being protected)
+var counter: 0..6
+
+// Lock: 0=free, 1=held
+var lock: 0..1
+
+// Who holds the lock
+var holder: 0..N
+
+// Per-thread: 0=idle, 1=pending (posted request), 2=done (result ready)
+var pc: Dict[0..N, 0..2]
+
+// Per-thread: has this thread's operation been applied?
+var applied: Dict[0..N, Bool]
+
+init {
+    counter = 0
+    and lock = 0
+    and holder = 0
+    and pc = {t: 0 for t in 0..N}
+    and applied = {t: false for t in 0..N}
+}
+
+// Thread t posts an operation to the publication list
+action Post(t: 0..N) {
+    require pc[t] == 0
+    require counter < 6
+    pc = pc | {t: 1}
+    and applied = applied | {t: false}
+}
+
+// Thread t acquires the lock (becomes combiner)
+action AcquireLock(t: 0..N) {
+    require lock == 0
+    require pc[t] == 1
+    lock = 1
+    and holder = t
+}
+
+// Combiner applies a pending operation for thread t
+action Combine(t: 0..N) {
+    require lock == 1
+    require pc[t] == 1
+    require applied[t] == false
+    require counter < 6
+    counter = counter + 1
+    and applied = applied | {t: true}
+}
+
+// Combiner releases lock; all applied threads get results
+action ReleaseLock() {
+    require lock == 1
+    // Combiner's own operation must be applied
+    require applied[holder] == true
+    lock = 0
+}
+
+// Thread t sees its result is ready
+action CollectResult(t: 0..N) {
+    require pc[t] == 1
+    require applied[t] == true
+    require lock == 0
+    pc = pc | {t: 2}
+}
+
+// Consistency: applied threads' operations are reflected in counter
+invariant CounterConsistency {
+    counter >= len({t in 0..N if applied[t] == true})
+}
+
+// No result before application
+invariant NoEarlyResult {
+    all t in 0..N: pc[t] == 2 implies applied[t] == true
+}

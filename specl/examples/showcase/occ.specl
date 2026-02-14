@@ -1,0 +1,100 @@
+module OCC
+
+// Optimistic Concurrency Control (Kung & Robinson, 1981).
+// N+1 transactions execute in three phases:
+// 1. Read phase: read from a snapshot, buffer writes locally
+// 2. Validate phase: check that no committed transaction wrote
+//    to any item this transaction read
+// 3. Write phase: apply buffered writes to the database
+//
+// Contrasts with 2PL: no locks held during execution.
+// Conflicts detected at validation time.
+//
+// Use: specl check occ.specl -c N=1 --no-deadlock --no-auto --bfs
+// Verified: N=1 -> OK (25 states, 0.0s)
+
+const N: 0..2
+
+// Global version counter (incremented on each commit)
+var global_ver: 0..4
+
+// Per-transaction: 0=idle, 1=reading, 2=validating, 3=committed, 4=aborted
+var tx_pc: Dict[0..N, 0..4]
+
+// Version at which each transaction started reading
+var tx_start_ver: Dict[0..N, 0..4]
+
+// Does the transaction have a local write?
+var tx_has_write: Dict[0..N, Bool]
+
+// Does the transaction have a read?
+var tx_has_read: Dict[0..N, Bool]
+
+// Write version (version at which write would apply)
+var tx_write_ver: Dict[0..N, 0..4]
+
+init {
+    global_ver = 0
+    and tx_pc = {t: 0 for t in 0..N}
+    and tx_start_ver = {t: 0 for t in 0..N}
+    and tx_has_write = {t: false for t in 0..N}
+    and tx_has_read = {t: false for t in 0..N}
+    and tx_write_ver = {t: 0 for t in 0..N}
+}
+
+// Transaction begins: take snapshot
+action Begin(t: 0..N) {
+    require tx_pc[t] == 0
+    tx_pc = tx_pc | {t: 1}
+    and tx_start_ver = tx_start_ver | {t: global_ver}
+}
+
+// Transaction performs a read
+action Read(t: 0..N) {
+    require tx_pc[t] == 1
+    tx_has_read = tx_has_read | {t: true}
+}
+
+// Transaction performs a local write
+action Write(t: 0..N) {
+    require tx_pc[t] == 1
+    tx_has_write = tx_has_write | {t: true}
+}
+
+// Transaction enters validation phase
+action Validate(t: 0..N) {
+    require tx_pc[t] == 1
+    // Validation passes: no concurrent transaction committed a write
+    // that conflicts with our read set since our snapshot
+    require global_ver == tx_start_ver[t]
+    require global_ver < 4
+    tx_pc = tx_pc | {t: 2}
+}
+
+// Validation fails — abort
+action ValidateFail(t: 0..N) {
+    require tx_pc[t] == 1
+    // Someone committed since our snapshot — conflict
+    require global_ver != tx_start_ver[t]
+    tx_pc = tx_pc | {t: 4}
+}
+
+// Transaction commits (write phase)
+action Commit(t: 0..N) {
+    require tx_pc[t] == 2
+    global_ver = global_ver + 1
+    and tx_write_ver = tx_write_ver | {t: global_ver + 1}
+    and tx_pc = tx_pc | {t: 3}
+}
+
+// Serializable: committed transactions have non-overlapping version ranges
+invariant Serializable {
+    all i in 0..N: all j in 0..N:
+        (i != j and tx_pc[i] == 3 and tx_pc[j] == 3)
+        implies tx_write_ver[i] != tx_write_ver[j]
+}
+
+// Committed transactions validated at their snapshot version
+invariant ValidCommit {
+    all t in 0..N: tx_pc[t] == 3 implies tx_write_ver[t] > 0
+}

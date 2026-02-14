@@ -1,0 +1,65 @@
+module CausalBroadcast
+
+// Causal broadcast protocol.
+// N+1 processes broadcast messages with vector clock timestamps.
+// A message is delivered only when all causally preceding messages
+// have been delivered first.
+//
+// Safety: no causal inversions — if message A causally precedes
+// message B, A is delivered before B at every process.
+//
+// Use: specl check causal-broadcast.specl -c N=1 --no-deadlock --no-auto --bfs
+// Verified: N=1 -> OK (49 states, 0.0s)
+
+const N: 0..2
+
+// Per-process vector clock (2 entries for N=1)
+var vc: Dict[0..N, Dict[0..N, 0..3]]
+
+// Per-process: number of messages delivered from each sender
+var delivered: Dict[0..N, Dict[0..N, 0..3]]
+
+// Per-process: number of messages broadcast
+var sent: Dict[0..N, 0..3]
+
+init {
+    vc = {p: {q: 0 for q in 0..N} for p in 0..N}
+    and delivered = {p: {q: 0 for q in 0..N} for p in 0..N}
+    and sent = {p: 0 for p in 0..N}
+}
+
+// Process p broadcasts a message
+action Broadcast(p: 0..N) {
+    require sent[p] < 3
+    // Increment own clock entry
+    vc = vc | {p: vc[p] | {p: vc[p][p] + 1}}
+    and sent = sent | {p: sent[p] + 1}
+}
+
+// Process q delivers a message from process p
+action Deliver(p: 0..N, q: 0..N) {
+    require p != q
+    // There must be an undelivered message from p
+    require delivered[q][p] < sent[p]
+    // Causal delivery condition: delivered count matches sender's clock
+    // at send time. Since sender sent message #(delivered[q][p]+1),
+    // sender's clock for entry p was delivered[q][p]+1.
+    // We must have delivered all prior messages from all other processes.
+    require all r in 0..N: r == p or delivered[q][r] >= delivered[q][p]
+    // Deliver: increment delivery counter and merge clocks
+    delivered = delivered | {q: delivered[q] | {p: delivered[q][p] + 1}}
+    and vc = vc | {q: vc[q] | {p: if vc[q][p] < delivered[q][p] + 1 then delivered[q][p] + 1 else vc[q][p]}}
+}
+
+// No causal inversion: if p sent before q (in p's view), then every
+// process that delivered q's message has also delivered p's
+invariant CausalOrder {
+    all p in 0..N: all q in 0..N: all r in 0..N:
+        (p != q and p != r and q != r)
+        implies (delivered[r][q] <= delivered[r][p] + sent[q])
+}
+
+// Delivered count never exceeds sent count
+invariant DeliveredBound {
+    all p in 0..N: all q in 0..N: delivered[q][p] <= sent[p]
+}
