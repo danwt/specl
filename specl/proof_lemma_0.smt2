@@ -1,35 +1,24 @@
 ; lemma
 (set-info :status unsat)
 (set-logic AUFLIRA)
-(declare-fun Reach_13_n () Int)
-(declare-fun Reach_12_n () Int)
 (declare-fun Reach_22_n () Int)
+(declare-fun Reach_24_n () Int)
+(declare-fun Reach_7_n () Int)
 (assert
- (let ((?x36674 (* (- 1) Reach_13_n)))
- (let ((?x6482 (+ Reach_12_n ?x36674)))
- (<= ?x6482 0))))
+ (let ((?x202079 (* Reach_24_n Reach_22_n)))
+ (let ((?x202086 (* (- 1) ?x202079)))
+ (let ((?x207080 (+ Reach_7_n ?x202086)))
+ (<= ?x207080 0)))))
 (assert
- (>= Reach_22_n 2))
+ (>= Reach_7_n 0))
 (assert
- (<= Reach_22_n 2))
+ (let (($x33809 (>= Reach_22_n 0)))
+ (not $x33809)))
 (assert
- (let ((?x39506 (mod Reach_12_n Reach_22_n)))
- (let ((?x39508 (div Reach_12_n Reach_22_n)))
- (let ((?x39525 (* Reach_22_n ?x39508)))
- (let ((?x39526 (+ ?x39525 ?x39506)))
- (let ((?x39455 (* (- 1) ?x39526)))
- (let ((?x39456 (+ Reach_12_n ?x39455)))
- (>= ?x39456 0))))))))
+ (>= Reach_24_n 1))
 (assert
- (>= Reach_13_n 1))
-(assert
- (let ((?x39506 (mod Reach_12_n Reach_22_n)))
- (>= ?x39506 0)))
-(assert
- (let ((?x39508 (div Reach_12_n Reach_22_n)))
- (let ((?x39565 (* (- 1) ?x39508)))
- (let ((?x39566 (+ Reach_13_n ?x39565)))
- (<= ?x39566 0)))))
+ (let (($x1912 (>= Reach_24_n 2)))
+ (not $x1912)))
 (assert
  (not false))
 (check-sat)
