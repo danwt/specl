@@ -177,7 +177,136 @@ impl SpeclLanguageServer {
                         });
                     }
                 }
+                Decl::Func(d) => {
+                    if Self::position_in_span(line, col, &d.name.span) {
+                        let params: Vec<_> =
+                            d.params.iter().map(|p| p.name.name.as_str()).collect();
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!(
+                                    "**func** `{}({})`",
+                                    d.name.name,
+                                    params.join(", ")
+                                ),
+                            }),
+                            range: Some(Self::span_to_range(d.name.span)),
+                        });
+                    }
+                }
+                Decl::Type(d) => {
+                    if Self::position_in_span(line, col, &d.name.span) {
+                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**type** `{}` = `{}`", d.name.name, type_str),
+                            }),
+                            range: Some(Self::span_to_range(d.name.span)),
+                        });
+                    }
+                }
+                Decl::Property(d) => {
+                    if Self::position_in_span(line, col, &d.name.span) {
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**property** `{}`", d.name.name),
+                            }),
+                            range: Some(Self::span_to_range(d.name.span)),
+                        });
+                    }
+                }
                 _ => {}
+            }
+        }
+
+        // If not on a declaration name, try to find the identifier at cursor
+        // and show the declaration's hover info
+        if let Some(word) = Self::word_at_position(source, position) {
+            for decl in &module.decls {
+                match decl {
+                    Decl::Var(d) if d.name.name == word => {
+                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**var** `{}`: `{}`", d.name.name, type_str),
+                            }),
+                            range: None,
+                        });
+                    }
+                    Decl::Const(d) if d.name.name == word => {
+                        let value_str =
+                            specl_syntax::pretty::pretty_print_const_value(&d.value);
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**const** `{}`: `{}`", d.name.name, value_str),
+                            }),
+                            range: None,
+                        });
+                    }
+                    Decl::Action(d) if d.name.name == word => {
+                        let params: Vec<_> = d
+                            .params
+                            .iter()
+                            .map(|p| {
+                                format!(
+                                    "{}: {}",
+                                    p.name.name,
+                                    specl_syntax::pretty::pretty_print_type(&p.ty)
+                                )
+                            })
+                            .collect();
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!(
+                                    "**action** `{}({})`",
+                                    d.name.name,
+                                    params.join(", ")
+                                ),
+                            }),
+                            range: None,
+                        });
+                    }
+                    Decl::Func(d) if d.name.name == word => {
+                        let params: Vec<_> =
+                            d.params.iter().map(|p| p.name.name.as_str()).collect();
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!(
+                                    "**func** `{}({})`",
+                                    d.name.name,
+                                    params.join(", ")
+                                ),
+                            }),
+                            range: None,
+                        });
+                    }
+                    Decl::Invariant(d) if d.name.name == word => {
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**invariant** `{}`", d.name.name),
+                            }),
+                            range: None,
+                        });
+                    }
+                    Decl::Type(d) if d.name.name == word => {
+                        let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+                        return Some(Hover {
+                            contents: HoverContents::Markup(MarkupContent {
+                                kind: MarkupKind::Markdown,
+                                value: format!("**type** `{}` = `{}`", d.name.name, type_str),
+                            }),
+                            range: None,
+                        });
+                    }
+                    _ => {}
+                }
             }
         }
 
@@ -307,44 +436,82 @@ impl SpeclLanguageServer {
     }
 
     /// Find definition at a position.
-    fn get_definition(&self, source: &str, position: Position) -> Option<Location> {
+    fn get_definition(&self, source: &str, position: Position, uri: &Url) -> Option<Location> {
         let module = parse(source).ok()?;
-        let line = position.line + 1;
-        let col = position.character + 1;
 
-        // First, find what identifier we're looking at
-        // Then find its definition
+        // Extract the identifier word at cursor position from source text
+        let word = Self::word_at_position(source, position)?;
 
-        // For simplicity, search through all identifiers in the AST
-        // and match against the position
-
-        // Check for variable/constant/action references
+        // Build declaration name → definition span map
+        let mut defs: Vec<(&str, Span)> = Vec::new();
         for decl in &module.decls {
             match decl {
-                Decl::Var(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        // Already at definition
-                        return None;
-                    }
-                }
-                Decl::Const(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        return None;
-                    }
-                }
-                Decl::Action(d) => {
-                    if Self::position_in_span(line, col, &d.name.span) {
-                        return None;
-                    }
-                }
+                Decl::Var(d) => defs.push((&d.name.name, d.name.span)),
+                Decl::Const(d) => defs.push((&d.name.name, d.name.span)),
+                Decl::Action(d) => defs.push((&d.name.name, d.name.span)),
+                Decl::Invariant(d) => defs.push((&d.name.name, d.name.span)),
+                Decl::Func(d) => defs.push((&d.name.name, d.name.span)),
+                Decl::Type(d) => defs.push((&d.name.name, d.name.span)),
+                Decl::Property(d) => defs.push((&d.name.name, d.name.span)),
                 _ => {}
             }
         }
 
-        // TODO: More sophisticated definition lookup
-        // Would need to traverse expressions and match identifiers
+        // Look up the word
+        for (name, span) in &defs {
+            if *name == word {
+                // Don't jump if already at the definition
+                let line = position.line + 1;
+                let col = position.character + 1;
+                if Self::position_in_span(line, col, span) {
+                    return None;
+                }
+                return Some(Location {
+                    uri: uri.clone(),
+                    range: Self::span_to_range(*span),
+                });
+            }
+        }
 
         None
+    }
+
+    /// Extract the identifier word at a cursor position from source text.
+    fn word_at_position(source: &str, position: Position) -> Option<String> {
+        let lines: Vec<&str> = source.lines().collect();
+        let line = lines.get(position.line as usize)?;
+        let col = position.character as usize;
+        if col >= line.len() {
+            return None;
+        }
+
+        // Check if cursor is on an identifier character
+        let bytes = line.as_bytes();
+        if col < bytes.len() && !Self::is_ident_char(bytes[col]) {
+            return None;
+        }
+
+        // Expand left
+        let mut start = col;
+        while start > 0 && Self::is_ident_char(bytes[start - 1]) {
+            start -= 1;
+        }
+
+        // Expand right
+        let mut end = col;
+        while end < bytes.len() && Self::is_ident_char(bytes[end]) {
+            end += 1;
+        }
+
+        if start == end {
+            return None;
+        }
+
+        Some(line[start..end].to_string())
+    }
+
+    fn is_ident_char(b: u8) -> bool {
+        b.is_ascii_alphanumeric() || b == b'_'
     }
 }
 
@@ -450,7 +617,7 @@ impl LanguageServer for SpeclLanguageServer {
         };
 
         let content = doc.content.to_string();
-        if let Some(location) = self.get_definition(&content, position) {
+        if let Some(location) = self.get_definition(&content, position, uri) {
             Ok(Some(GotoDefinitionResponse::Scalar(location)))
         } else {
             Ok(None)
