@@ -2,7 +2,9 @@
 
 use dashmap::DashMap;
 use ropey::Rope;
-use specl_syntax::{parse, pretty_print, Decl, Expr, ExprKind, Lexer, Span, TokenKind};
+use specl_syntax::{
+    parse, pretty_print, ConstValue, Decl, Expr, ExprKind, Lexer, Span, TokenKind, TypeExpr,
+};
 use specl_types::check_module;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
@@ -349,6 +351,76 @@ impl SpeclLanguageServer {
         }
 
         items
+    }
+
+    /// Extract the first user-defined named type from a type expression.
+    /// Skips built-in type names (Bool, Int, Nat, String).
+    fn first_named_type(ty: &TypeExpr) -> Option<&str> {
+        match ty {
+            TypeExpr::Named(id) => {
+                match id.name.as_str() {
+                    "Bool" | "Int" | "Nat" | "String" => None,
+                    _ => Some(&id.name),
+                }
+            }
+            TypeExpr::Set(inner, _) | TypeExpr::Seq(inner, _) | TypeExpr::Option(inner, _) => {
+                Self::first_named_type(inner)
+            }
+            TypeExpr::Dict(k, v, _) => {
+                Self::first_named_type(k).or_else(|| Self::first_named_type(v))
+            }
+            TypeExpr::Tuple(types, _) => {
+                types.iter().find_map(|t| Self::first_named_type(t))
+            }
+            TypeExpr::Range(_, _, _) => None,
+        }
+    }
+
+    /// Find the type annotation for a given identifier (var, const, or action param).
+    fn find_type_for_ident<'a>(module: &'a specl_syntax::Module, name: &str) -> Option<&'a TypeExpr> {
+        for decl in &module.decls {
+            match decl {
+                Decl::Var(d) if d.name.name == name => return Some(&d.ty),
+                Decl::Const(d) if d.name.name == name => {
+                    if let ConstValue::Type(ref ty) = d.value {
+                        return Some(ty);
+                    }
+                }
+                Decl::Action(d) => {
+                    for p in &d.params {
+                        if p.name.name == name {
+                            return Some(&p.ty);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
+    /// Find the type definition for the identifier at position (goto type definition).
+    fn get_type_definition(&self, source: &str, position: Position, uri: &Url) -> Option<Location> {
+        let module = parse(source).ok()?;
+        let word = Self::word_at_position(source, position)?;
+
+        // Find the type annotation for this identifier
+        let ty = Self::find_type_for_ident(&module, &word)?;
+        let type_name = Self::first_named_type(ty)?;
+
+        // Find the matching type declaration
+        for decl in &module.decls {
+            if let Decl::Type(d) = decl {
+                if d.name.name == type_name {
+                    return Some(Location {
+                        uri: uri.clone(),
+                        range: Self::span_to_range(d.name.span),
+                    });
+                }
+            }
+        }
+
+        None
     }
 
     /// Find definition at a position.
@@ -1572,6 +1644,7 @@ impl LanguageServer for SpeclLanguageServer {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                type_definition_provider: Some(TypeDefinitionProviderCapability::Simple(true)),
                 references_provider: Some(OneOf::Left(true)),
                 rename_provider: Some(OneOf::Right(RenameOptions {
                     prepare_provider: Some(true),
@@ -1719,6 +1792,18 @@ impl LanguageServer for SpeclLanguageServer {
         let Some(content) = self.get_content(uri) else { return Ok(None) };
         Ok(self
             .get_definition(&content, position, uri)
+            .map(GotoDefinitionResponse::Scalar))
+    }
+
+    async fn goto_type_definition(
+        &self,
+        params: GotoDefinitionParams,
+    ) -> Result<Option<GotoDefinitionResponse>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        Ok(self
+            .get_type_definition(&content, position, uri)
             .map(GotoDefinitionResponse::Scalar))
     }
 
@@ -2406,5 +2491,30 @@ action A() { x = y }
         assert_eq!(calls.len(), 1, "F calls G");
         assert_eq!(calls[0].to.name, "G");
         assert_eq!(calls[0].from_ranges.len(), 2, "F calls G twice");
+    }
+
+    #[test]
+    fn type_definition_for_var() {
+        let src = "module M\ntype Status = 0..3\nvar state: Status\ninit { state = 0 }\naction A() { require state < 3\nstate = state + 1 }";
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        // Cursor on 'state' in "require state < 3" — line 4, char 21
+        let loc = server.get_type_definition(src, Position { line: 4, character: 21 }, &uri);
+        assert!(loc.is_some(), "should find type definition for var with named type");
+        // Should point to the 'Status' type declaration on line 1
+        let loc = loc.unwrap();
+        assert_eq!(loc.range.start.line, 1);
+    }
+
+    #[test]
+    fn type_definition_none_for_builtin() {
+        // var with built-in type should return None
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        // 'x' has type 0..10 (range, no named type)
+        let loc = server.get_type_definition(SAMPLE_SPEC, Position { line: 13, character: 12 }, &uri);
+        assert!(loc.is_none(), "range type should not have a type definition");
     }
 }
