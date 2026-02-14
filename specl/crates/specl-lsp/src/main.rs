@@ -1321,6 +1321,341 @@ impl SpeclLanguageServer {
 
         actions
     }
+
+    /// Build a CallHierarchyItem for an action or func declaration.
+    fn make_call_hierarchy_item(
+        decl: &Decl,
+        source: &str,
+        uri: &Url,
+    ) -> Option<CallHierarchyItem> {
+        let (name, kind, detail, span, name_span) = match decl {
+            Decl::Action(d) => {
+                let params = format_action_params(&d.params);
+                let detail = if params.is_empty() {
+                    None
+                } else {
+                    Some(format!("({params})"))
+                };
+                (
+                    d.name.name.clone(),
+                    SymbolKind::FUNCTION,
+                    detail,
+                    d.span,
+                    d.name.span,
+                )
+            }
+            Decl::Func(d) => {
+                let params = format_func_params(&d.params);
+                (
+                    d.name.name.clone(),
+                    SymbolKind::FUNCTION,
+                    Some(format!("({params})")),
+                    d.span,
+                    d.name.span,
+                )
+            }
+            _ => return None,
+        };
+
+        Some(CallHierarchyItem {
+            name: name.clone(),
+            kind,
+            tags: None,
+            detail,
+            uri: uri.clone(),
+            range: Self::span_to_range_in(span, source),
+            selection_range: Self::span_to_range(name_span),
+            data: Some(serde_json::Value::String(name)),
+        })
+    }
+
+    /// Collect all function call sites in an expression.
+    /// Returns (called_name, call_span) pairs.
+    fn collect_call_sites(expr: &Expr, sites: &mut Vec<(String, Span)>) {
+        match &expr.kind {
+            ExprKind::Call { func, args } => {
+                if let ExprKind::Ident(name) = &func.kind {
+                    sites.push((name.clone(), func.span));
+                }
+                Self::collect_call_sites(func, sites);
+                for arg in args {
+                    Self::collect_call_sites(arg, sites);
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                Self::collect_call_sites(left, sites);
+                Self::collect_call_sites(right, sites);
+            }
+            ExprKind::Unary { operand, .. } => {
+                Self::collect_call_sites(operand, sites);
+            }
+            ExprKind::Index { base, index } => {
+                Self::collect_call_sites(base, sites);
+                Self::collect_call_sites(index, sites);
+            }
+            ExprKind::Slice { base, lo, hi } => {
+                Self::collect_call_sites(base, sites);
+                Self::collect_call_sites(lo, sites);
+                Self::collect_call_sites(hi, sites);
+            }
+            ExprKind::Field { base, .. } => {
+                Self::collect_call_sites(base, sites);
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                Self::collect_call_sites(cond, sites);
+                Self::collect_call_sites(then_branch, sites);
+                Self::collect_call_sites(else_branch, sites);
+            }
+            ExprKind::Let { value, body, .. } => {
+                Self::collect_call_sites(value, sites);
+                Self::collect_call_sites(body, sites);
+            }
+            ExprKind::Quantifier {
+                body, bindings, ..
+            } => {
+                for b in bindings {
+                    Self::collect_call_sites(&b.domain, sites);
+                }
+                Self::collect_call_sites(body, sites);
+            }
+            ExprKind::Choose {
+                domain, predicate, ..
+            } => {
+                Self::collect_call_sites(domain, sites);
+                Self::collect_call_sites(predicate, sites);
+            }
+            ExprKind::SetComprehension {
+                element,
+                domain,
+                filter,
+                ..
+            } => {
+                Self::collect_call_sites(element, sites);
+                Self::collect_call_sites(domain, sites);
+                if let Some(f) = filter {
+                    Self::collect_call_sites(f, sites);
+                }
+            }
+            ExprKind::Require(e)
+            | ExprKind::SeqHead(e)
+            | ExprKind::SeqTail(e)
+            | ExprKind::Len(e)
+            | ExprKind::Keys(e)
+            | ExprKind::Values(e)
+            | ExprKind::BigUnion(e)
+            | ExprKind::Powerset(e)
+            | ExprKind::Always(e)
+            | ExprKind::Eventually(e)
+            | ExprKind::Paren(e) => {
+                Self::collect_call_sites(e, sites);
+            }
+            ExprKind::LeadsTo { left, right } | ExprKind::Range { lo: left, hi: right } => {
+                Self::collect_call_sites(left, sites);
+                Self::collect_call_sites(right, sites);
+            }
+            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) | ExprKind::TupleLit(exprs) => {
+                for e in exprs {
+                    Self::collect_call_sites(e, sites);
+                }
+            }
+            ExprKind::DictLit(pairs) => {
+                for (k, v) in pairs {
+                    Self::collect_call_sites(k, sites);
+                    Self::collect_call_sites(v, sites);
+                }
+            }
+            ExprKind::RecordUpdate { base, updates } => {
+                Self::collect_call_sites(base, sites);
+                for u in updates {
+                    match u {
+                        specl_syntax::RecordFieldUpdate::Field { value, .. } => {
+                            Self::collect_call_sites(value, sites);
+                        }
+                        specl_syntax::RecordFieldUpdate::Dynamic { key, value } => {
+                            Self::collect_call_sites(key, sites);
+                            Self::collect_call_sites(value, sites);
+                        }
+                    }
+                }
+            }
+            ExprKind::FnLit { domain, body, .. } => {
+                Self::collect_call_sites(domain, sites);
+                Self::collect_call_sites(body, sites);
+            }
+            ExprKind::Fix { predicate, .. } => {
+                Self::collect_call_sites(predicate, sites);
+            }
+            _ => {}
+        }
+    }
+
+    /// Collect all call sites within a declaration's body.
+    fn collect_decl_call_sites(decl: &Decl) -> Vec<(String, Span)> {
+        let mut sites = Vec::new();
+        match decl {
+            Decl::Action(d) => {
+                for req in &d.body.requires {
+                    Self::collect_call_sites(req, &mut sites);
+                }
+                if let Some(eff) = &d.body.effect {
+                    Self::collect_call_sites(eff, &mut sites);
+                }
+            }
+            Decl::Func(d) => {
+                Self::collect_call_sites(&d.body, &mut sites);
+            }
+            Decl::Invariant(d) => {
+                Self::collect_call_sites(&d.body, &mut sites);
+            }
+            Decl::Init(d) => {
+                Self::collect_call_sites(&d.body, &mut sites);
+            }
+            Decl::Property(d) => {
+                Self::collect_call_sites(&d.body, &mut sites);
+            }
+            _ => {}
+        }
+        sites
+    }
+
+    /// Get call hierarchy items at a position (prepare step).
+    fn get_call_hierarchy_items(
+        &self,
+        source: &str,
+        position: Position,
+        uri: &Url,
+    ) -> Vec<CallHierarchyItem> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        let word = match Self::word_at_position(source, position) {
+            Some(w) => w,
+            None => return vec![],
+        };
+
+        let mut items = Vec::new();
+        for decl in &module.decls {
+            let name = match decl {
+                Decl::Action(d) => &d.name.name,
+                Decl::Func(d) => &d.name.name,
+                _ => continue,
+            };
+            if name == &word {
+                if let Some(item) = Self::make_call_hierarchy_item(decl, source, uri) {
+                    items.push(item);
+                }
+            }
+        }
+
+        items
+    }
+
+    /// Get incoming calls for a call hierarchy item.
+    fn get_incoming_calls_for(
+        &self,
+        source: &str,
+        target_name: &str,
+        uri: &Url,
+    ) -> Vec<CallHierarchyIncomingCall> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        let mut result = Vec::new();
+
+        for decl in &module.decls {
+            let sites = Self::collect_decl_call_sites(decl);
+            let matching_ranges: Vec<Range> = sites
+                .iter()
+                .filter(|(name, _)| name == target_name)
+                .map(|(_, span)| Self::span_to_range(*span))
+                .collect();
+
+            if !matching_ranges.is_empty() {
+                if let Some(item) = Self::make_call_hierarchy_item(decl, source, uri) {
+                    result.push(CallHierarchyIncomingCall {
+                        from: item,
+                        from_ranges: matching_ranges,
+                    });
+                }
+            }
+        }
+
+        result
+    }
+
+    /// Get outgoing calls from a call hierarchy item.
+    fn get_outgoing_calls_for(
+        &self,
+        source: &str,
+        caller_name: &str,
+        uri: &Url,
+    ) -> Vec<CallHierarchyOutgoingCall> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        // Find the declaration for caller_name
+        let caller_decl = module.decls.iter().find(|decl| match decl {
+            Decl::Action(d) => d.name.name == caller_name,
+            Decl::Func(d) => d.name.name == caller_name,
+            _ => false,
+        });
+
+        let caller_decl = match caller_decl {
+            Some(d) => d,
+            None => return vec![],
+        };
+
+        let sites = Self::collect_decl_call_sites(caller_decl);
+
+        // Build map of known action/func names to their decls
+        let known_decls: Vec<&Decl> = module
+            .decls
+            .iter()
+            .filter(|d| matches!(d, Decl::Action(_) | Decl::Func(_)))
+            .collect();
+
+        // Group call sites by callee name
+        let mut grouped: std::collections::HashMap<String, Vec<Range>> =
+            std::collections::HashMap::new();
+        for (name, span) in &sites {
+            grouped
+                .entry(name.clone())
+                .or_default()
+                .push(Self::span_to_range(*span));
+        }
+
+        let mut result = Vec::new();
+        for (callee_name, from_ranges) in grouped {
+            // Find the decl for this callee
+            if let Some(callee_decl) = known_decls
+                .iter()
+                .find(|d| match d {
+                    Decl::Action(ad) => ad.name.name == callee_name,
+                    Decl::Func(fd) => fd.name.name == callee_name,
+                    _ => false,
+                })
+            {
+                if let Some(item) = Self::make_call_hierarchy_item(callee_decl, source, uri) {
+                    result.push(CallHierarchyOutgoingCall {
+                        to: item,
+                        from_ranges,
+                    });
+                }
+            }
+        }
+
+        result
+    }
 }
 
 #[tower_lsp::async_trait]
@@ -1377,6 +1712,7 @@ impl LanguageServer for SpeclLanguageServer {
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
+                call_hierarchy_provider: Some(CallHierarchyServerCapability::Simple(true)),
                 ..Default::default()
             },
             server_info: Some(ServerInfo {
@@ -1589,6 +1925,51 @@ impl LanguageServer for SpeclLanguageServer {
         }
 
         Ok(None)
+    }
+
+    async fn prepare_call_hierarchy(
+        &self,
+        params: CallHierarchyPrepareParams,
+    ) -> Result<Option<Vec<CallHierarchyItem>>> {
+        let uri = &params.text_document_position_params.text_document.uri;
+        let position = params.text_document_position_params.position;
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
+        let items = self.get_call_hierarchy_items(&content, position, uri);
+        Ok(if items.is_empty() { None } else { Some(items) })
+    }
+
+    async fn incoming_calls(
+        &self,
+        params: CallHierarchyIncomingCallsParams,
+    ) -> Result<Option<Vec<CallHierarchyIncomingCall>>> {
+        let uri = &params.item.uri;
+        let target_name = match &params.item.data {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            _ => params.item.name.clone(),
+        };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
+        let calls = self.get_incoming_calls_for(&content, &target_name, uri);
+        Ok(if calls.is_empty() { None } else { Some(calls) })
+    }
+
+    async fn outgoing_calls(
+        &self,
+        params: CallHierarchyOutgoingCallsParams,
+    ) -> Result<Option<Vec<CallHierarchyOutgoingCall>>> {
+        let uri = &params.item.uri;
+        let caller_name = match &params.item.data {
+            Some(serde_json::Value::String(s)) => s.clone(),
+            _ => params.item.name.clone(),
+        };
+        let Some(content) = self.get_content(uri) else {
+            return Ok(None);
+        };
+        let calls = self.get_outgoing_calls_for(&content, &caller_name, uri);
+        Ok(if calls.is_empty() { None } else { Some(calls) })
     }
 
     async fn inlay_hint(&self, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
@@ -2092,5 +2473,43 @@ action A() { x = y }
             "should offer to declare undefined variable 'y', got: {:?}",
             titles
         );
+    }
+
+    #[test]
+    fn call_hierarchy_prepare() {
+        let src = "module M\nfunc F(x) { x + 1 }\naction A(p: 0..1) { require F(p) > 0 }";
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        // Position on "F" in "func F"
+        let items = server.get_call_hierarchy_items(src, Position { line: 1, character: 5 }, &uri);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].name, "F");
+        assert_eq!(items[0].kind, SymbolKind::FUNCTION);
+    }
+
+    #[test]
+    fn call_hierarchy_incoming() {
+        let src = "module M\nfunc F(x) { x + 1 }\naction A(p: 0..1) { require F(p) > 0 }\ninvariant I { F(0) > 0 }";
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        let calls = server.get_incoming_calls_for(src, "F", &uri);
+        // A calls F, but invariant I also calls F — only action/func are returned as callers
+        assert_eq!(calls.len(), 1, "only action A should appear as caller (invariants not in hierarchy)");
+        assert_eq!(calls[0].from.name, "A");
+        assert_eq!(calls[0].from_ranges.len(), 1);
+    }
+
+    #[test]
+    fn call_hierarchy_outgoing() {
+        let src = "module M\nfunc G(x) { x }\nfunc F(x) { G(x) + G(x + 1) }\naction A(p: 0..1) { require F(p) > 0 }";
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        let calls = server.get_outgoing_calls_for(src, "F", &uri);
+        assert_eq!(calls.len(), 1, "F calls G");
+        assert_eq!(calls[0].to.name, "G");
+        assert_eq!(calls[0].from_ranges.len(), 2, "F calls G twice");
     }
 }
