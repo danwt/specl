@@ -714,6 +714,43 @@ impl Ord for Value {
 
 // === Hash ===
 
+/// Hash a slice of Values that are known to all be Int, skipping discriminant per element.
+#[inline]
+fn hash_int_elements<H: Hasher>(values: &[Value], state: &mut H) {
+    for v in values {
+        if let VK::Int(n) = v.kind() {
+            n.hash(state);
+        } else {
+            v.hash(state);
+        }
+    }
+}
+
+/// Hash key-value pairs where keys are known to all be Int, skipping discriminant per element.
+#[inline]
+fn hash_int_keyed_pairs<H: Hasher>(pairs: &[(Value, Value)], state: &mut H) {
+    for (k, v) in pairs {
+        if let VK::Int(n) = k.kind() {
+            n.hash(state);
+        } else {
+            k.hash(state);
+        }
+        v.hash(state);
+    }
+}
+
+/// Check if all Values in a slice are Int.
+#[inline]
+fn all_int(values: &[Value]) -> bool {
+    values.iter().all(|v| v.is_int())
+}
+
+/// Check if all keys in a slice of pairs are Int.
+#[inline]
+fn all_int_keys(pairs: &[(Value, Value)]) -> bool {
+    pairs.iter().all(|(k, _)| k.is_int())
+}
+
 impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
         match self.kind() {
@@ -732,31 +769,47 @@ impl Hash for Value {
             VK::Set(s) => {
                 3u8.hash(state);
                 s.len().hash(state);
-                for v in s {
-                    v.hash(state);
+                if all_int(s) {
+                    hash_int_elements(s, state);
+                } else {
+                    for v in s {
+                        v.hash(state);
+                    }
                 }
             }
             VK::Seq(s) => {
                 4u8.hash(state);
                 s.len().hash(state);
-                for v in s {
-                    v.hash(state);
+                if all_int(s) {
+                    hash_int_elements(s, state);
+                } else {
+                    for v in s {
+                        v.hash(state);
+                    }
                 }
             }
             VK::Fn(f) => {
                 5u8.hash(state);
                 f.len().hash(state);
-                for (k, v) in f {
-                    k.hash(state);
-                    v.hash(state);
+                if all_int_keys(f) {
+                    hash_int_keyed_pairs(f, state);
+                } else {
+                    for (k, v) in f {
+                        k.hash(state);
+                        v.hash(state);
+                    }
                 }
             }
             VK::IntMap(arr) => {
+                // Batch-hash: write the entire i64 slice as contiguous bytes.
+                // AHasher can process 16 bytes at a time with AES-NI, much faster
+                // than individual i64.hash() calls.
                 10u8.hash(state);
                 arr.len().hash(state);
-                for v in arr {
-                    v.hash(state);
-                }
+                let bytes = unsafe {
+                    std::slice::from_raw_parts(arr.as_ptr() as *const u8, arr.len() * 8)
+                };
+                state.write(bytes);
             }
             VK::Record(r) => {
                 6u8.hash(state);
@@ -769,8 +822,12 @@ impl Hash for Value {
             VK::Tuple(t) => {
                 7u8.hash(state);
                 t.len().hash(state);
-                for v in t {
-                    v.hash(state);
+                if all_int(t) {
+                    hash_int_elements(t, state);
+                } else {
+                    for v in t {
+                        v.hash(state);
+                    }
                 }
             }
             VK::None => {
