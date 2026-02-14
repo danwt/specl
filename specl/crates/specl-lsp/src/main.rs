@@ -590,6 +590,30 @@ impl SpeclLanguageServer {
         symbols
     }
 
+    /// Find all references to the identifier at the given position.
+    fn get_references(&self, source: &str, position: Position, uri: &Url) -> Vec<Location> {
+        let word = match Self::word_at_position(source, position) {
+            Some(w) => w,
+            None => return vec![],
+        };
+
+        let tokens = Lexer::new(source).tokenize();
+        let mut locations = Vec::new();
+
+        for token in &tokens {
+            if let TokenKind::Ident(name) = &token.kind {
+                if name == &word {
+                    locations.push(Location {
+                        uri: uri.clone(),
+                        range: Self::span_to_range(token.span),
+                    });
+                }
+            }
+        }
+
+        locations
+    }
+
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
     const TT_KEYWORD: u32 = 0;
     const TT_TYPE: u32 = 1;
@@ -716,6 +740,7 @@ impl LanguageServer for SpeclLanguageServer {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                references_provider: Some(OneOf::Left(true)),
                 document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
@@ -830,6 +855,23 @@ impl LanguageServer for SpeclLanguageServer {
             Ok(Some(GotoDefinitionResponse::Scalar(location)))
         } else {
             Ok(None)
+        }
+    }
+
+    async fn references(&self, params: ReferenceParams) -> Result<Option<Vec<Location>>> {
+        let uri = &params.text_document_position.text_document.uri;
+        let position = params.text_document_position.position;
+
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+
+        let content = doc.content.to_string();
+        let refs = self.get_references(&content, position, uri);
+        if refs.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(refs))
         }
     }
 
