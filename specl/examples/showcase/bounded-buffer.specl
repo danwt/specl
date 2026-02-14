@@ -1,0 +1,40 @@
+module BoundedBuffer
+
+// Bounded buffer (producer-consumer) with N+1 producers and N+1 consumers.
+// Buffer has capacity Cap. Producers add items, consumers remove items.
+// The buffer is modeled as a count (not individual items) since we only
+// care about overflow/underflow, not ordering.
+//
+// Use: specl check bounded-buffer.specl -c N=2 -c Cap=3 --no-deadlock --no-auto
+// Verified: N=2 Cap=3 -> OK (inductive, 0.0s)
+
+const N: 0..4
+const Cap: 1..8
+
+var count: 0..Cap
+
+init {
+    count = 0
+}
+
+// Producer adds an item (if buffer not full)
+action Produce(p: 0..N) {
+    require count < Cap
+    count = count + 1
+}
+
+// Consumer removes an item (if buffer not empty)
+action Consume(c: 0..N) {
+    require count > 0
+    count = count - 1
+}
+
+// Buffer never overflows
+invariant NoOverflow {
+    count <= Cap
+}
+
+// Buffer never underflows
+invariant NoUnderflow {
+    count >= 0
+}
