@@ -261,16 +261,18 @@ specl/crates/
 
 ## Language Server (LSP)
 
-The `specl-lsp` binary provides IDE support via the Language Server Protocol (24 unit tests):
+The `specl-lsp` binary provides IDE support via the Language Server Protocol (28 unit tests):
 
 - **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
 - **Completion**: Keywords, types, and symbols (vars, consts, actions, funcs, invariants) from the current file
 - **Signature help**: Parameter info when typing inside `action()` or `func()` calls
 - **Go-to-definition**: Jump to declaration of any identifier
 - **Find all references**: Locate all uses of an identifier
+- **Document highlight**: Highlight all occurrences of symbol under cursor (WRITE for declarations, READ for uses)
 - **Rename**: Rename an identifier across the file
-- **Document symbols**: Outline view of all declarations
+- **Document symbols**: Outline view of all declarations (with accurate multi-line ranges)
 - **Workspace symbols**: Cross-file symbol search (`Ctrl+T` in VSCode)
+- **Selection ranges**: Smart expand/shrink selection (declaration → file)
 - **Inlay hints**: Parameter names shown inline at call sites (e.g. `Recovery(leader: 0, other: 2)`)
 - **Code actions**: Insert templates for init blocks, actions, and invariants
 - **Folding ranges**: Collapse declaration blocks and comment groups
@@ -280,4 +282,4 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (24
 
 ## Examples
 
-See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, G-Counter CRDT, PN-Counter CRDT, Vector Clocks, Lamport Clocks, Peterson, Token Ring, Dining Philosophers, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, G-Counter CRDT, PN-Counter CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Bakery, Reader-Writer, Leader Election, ABD Register, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
