@@ -715,14 +715,122 @@ impl SpeclLanguageServer {
         hints
     }
 
+    /// Walk an expression tree, calling `visitor` on every node, then recursing into children.
+    fn walk_expr(expr: &Expr, visitor: &mut impl FnMut(&Expr)) {
+        visitor(expr);
+        match &expr.kind {
+            ExprKind::Call { func, args } => {
+                Self::walk_expr(func, visitor);
+                for arg in args {
+                    Self::walk_expr(arg, visitor);
+                }
+            }
+            ExprKind::Binary { left, right, .. } => {
+                Self::walk_expr(left, visitor);
+                Self::walk_expr(right, visitor);
+            }
+            ExprKind::Unary { operand, .. } => {
+                Self::walk_expr(operand, visitor);
+            }
+            ExprKind::Index { base, index } => {
+                Self::walk_expr(base, visitor);
+                Self::walk_expr(index, visitor);
+            }
+            ExprKind::Slice { base, lo, hi } => {
+                Self::walk_expr(base, visitor);
+                Self::walk_expr(lo, visitor);
+                Self::walk_expr(hi, visitor);
+            }
+            ExprKind::Field { base, .. } => {
+                Self::walk_expr(base, visitor);
+            }
+            ExprKind::If { cond, then_branch, else_branch } => {
+                Self::walk_expr(cond, visitor);
+                Self::walk_expr(then_branch, visitor);
+                Self::walk_expr(else_branch, visitor);
+            }
+            ExprKind::Let { value, body, .. } => {
+                Self::walk_expr(value, visitor);
+                Self::walk_expr(body, visitor);
+            }
+            ExprKind::Quantifier { body, bindings, .. } => {
+                for b in bindings {
+                    Self::walk_expr(&b.domain, visitor);
+                }
+                Self::walk_expr(body, visitor);
+            }
+            ExprKind::Choose { domain, predicate, .. } => {
+                Self::walk_expr(domain, visitor);
+                Self::walk_expr(predicate, visitor);
+            }
+            ExprKind::SetComprehension { element, domain, filter, .. } => {
+                Self::walk_expr(element, visitor);
+                Self::walk_expr(domain, visitor);
+                if let Some(f) = filter {
+                    Self::walk_expr(f, visitor);
+                }
+            }
+            ExprKind::Require(e)
+            | ExprKind::SeqHead(e)
+            | ExprKind::SeqTail(e)
+            | ExprKind::Len(e)
+            | ExprKind::Keys(e)
+            | ExprKind::Values(e)
+            | ExprKind::BigUnion(e)
+            | ExprKind::Powerset(e)
+            | ExprKind::Always(e)
+            | ExprKind::Eventually(e)
+            | ExprKind::Paren(e) => {
+                Self::walk_expr(e, visitor);
+            }
+            ExprKind::LeadsTo { left, right } | ExprKind::Range { lo: left, hi: right } => {
+                Self::walk_expr(left, visitor);
+                Self::walk_expr(right, visitor);
+            }
+            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) | ExprKind::TupleLit(exprs) => {
+                for e in exprs {
+                    Self::walk_expr(e, visitor);
+                }
+            }
+            ExprKind::DictLit(pairs) => {
+                for (k, v) in pairs {
+                    Self::walk_expr(k, visitor);
+                    Self::walk_expr(v, visitor);
+                }
+            }
+            ExprKind::RecordUpdate { base, updates } => {
+                Self::walk_expr(base, visitor);
+                for u in updates {
+                    match u {
+                        specl_syntax::RecordFieldUpdate::Field { value, .. } => {
+                            Self::walk_expr(value, visitor);
+                        }
+                        specl_syntax::RecordFieldUpdate::Dynamic { key, value } => {
+                            Self::walk_expr(key, visitor);
+                            Self::walk_expr(value, visitor);
+                        }
+                    }
+                }
+            }
+            ExprKind::FnLit { domain, body, .. } => {
+                Self::walk_expr(domain, visitor);
+                Self::walk_expr(body, visitor);
+            }
+            ExprKind::Fix { predicate, .. } => {
+                Self::walk_expr(predicate, visitor);
+            }
+            _ => {}
+        }
+    }
+
     /// Recursively walk an expression tree and collect inlay hints for call sites.
     fn collect_call_hints(
         expr: &Expr,
         param_names: &std::collections::HashMap<String, Vec<String>>,
         hints: &mut Vec<InlayHint>,
     ) {
-        match &expr.kind {
-            ExprKind::Call { func, args } => {
+        Self::walk_expr(expr, &mut |e| {
+            if let ExprKind::Call { func, args } = &e.kind {
                 if let ExprKind::Ident(name) = &func.kind {
                     if let Some(names) = param_names.get(name.as_str()) {
                         for (arg, pname) in args.iter().zip(names.iter()) {
@@ -742,109 +850,8 @@ impl SpeclLanguageServer {
                         }
                     }
                 }
-                // Also recurse into func expr and args
-                Self::collect_call_hints(func, param_names, hints);
-                for arg in args {
-                    Self::collect_call_hints(arg, param_names, hints);
-                }
             }
-            ExprKind::Binary { left, right, .. } => {
-                Self::collect_call_hints(left, param_names, hints);
-                Self::collect_call_hints(right, param_names, hints);
-            }
-            ExprKind::Unary { operand, .. } => {
-                Self::collect_call_hints(operand, param_names, hints);
-            }
-            ExprKind::Index { base, index } => {
-                Self::collect_call_hints(base, param_names, hints);
-                Self::collect_call_hints(index, param_names, hints);
-            }
-            ExprKind::Slice { base, lo, hi } => {
-                Self::collect_call_hints(base, param_names, hints);
-                Self::collect_call_hints(lo, param_names, hints);
-                Self::collect_call_hints(hi, param_names, hints);
-            }
-            ExprKind::Field { base, .. } => {
-                Self::collect_call_hints(base, param_names, hints);
-            }
-            ExprKind::If { cond, then_branch, else_branch } => {
-                Self::collect_call_hints(cond, param_names, hints);
-                Self::collect_call_hints(then_branch, param_names, hints);
-                Self::collect_call_hints(else_branch, param_names, hints);
-            }
-            ExprKind::Let { value, body, .. } => {
-                Self::collect_call_hints(value, param_names, hints);
-                Self::collect_call_hints(body, param_names, hints);
-            }
-            ExprKind::Quantifier { body, bindings, .. } => {
-                for b in bindings {
-                    Self::collect_call_hints(&b.domain, param_names, hints);
-                }
-                Self::collect_call_hints(body, param_names, hints);
-            }
-            ExprKind::Choose { domain, predicate, .. } => {
-                Self::collect_call_hints(domain, param_names, hints);
-                Self::collect_call_hints(predicate, param_names, hints);
-            }
-            ExprKind::SetComprehension { element, domain, filter, .. } => {
-                Self::collect_call_hints(element, param_names, hints);
-                Self::collect_call_hints(domain, param_names, hints);
-                if let Some(f) = filter {
-                    Self::collect_call_hints(f, param_names, hints);
-                }
-            }
-            ExprKind::Require(e)
-            | ExprKind::SeqHead(e)
-            | ExprKind::SeqTail(e)
-            | ExprKind::Len(e)
-            | ExprKind::Keys(e)
-            | ExprKind::Values(e)
-            | ExprKind::BigUnion(e)
-            | ExprKind::Powerset(e)
-            | ExprKind::Always(e)
-            | ExprKind::Eventually(e)
-            | ExprKind::Paren(e) => {
-                Self::collect_call_hints(e, param_names, hints);
-            }
-            ExprKind::LeadsTo { left, right } | ExprKind::Range { lo: left, hi: right } => {
-                Self::collect_call_hints(left, param_names, hints);
-                Self::collect_call_hints(right, param_names, hints);
-            }
-            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) | ExprKind::TupleLit(exprs) => {
-                for e in exprs {
-                    Self::collect_call_hints(e, param_names, hints);
-                }
-            }
-            ExprKind::DictLit(pairs) => {
-                for (k, v) in pairs {
-                    Self::collect_call_hints(k, param_names, hints);
-                    Self::collect_call_hints(v, param_names, hints);
-                }
-            }
-            ExprKind::RecordUpdate { base, updates } => {
-                Self::collect_call_hints(base, param_names, hints);
-                for u in updates {
-                    match u {
-                        specl_syntax::RecordFieldUpdate::Field { value, .. } => {
-                            Self::collect_call_hints(value, param_names, hints);
-                        }
-                        specl_syntax::RecordFieldUpdate::Dynamic { key, value } => {
-                            Self::collect_call_hints(key, param_names, hints);
-                            Self::collect_call_hints(value, param_names, hints);
-                        }
-                    }
-                }
-            }
-            ExprKind::FnLit { domain, body, .. } => {
-                Self::collect_call_hints(domain, param_names, hints);
-                Self::collect_call_hints(body, param_names, hints);
-            }
-            ExprKind::Fix { predicate, .. } => {
-                Self::collect_call_hints(predicate, param_names, hints);
-            }
-            // Leaf nodes: no children to recurse into
-            _ => {}
-        }
+        });
     }
 
     /// Get folding ranges for declarations (blocks that can be collapsed).
@@ -1372,125 +1379,13 @@ impl SpeclLanguageServer {
     /// Collect all function call sites in an expression.
     /// Returns (called_name, call_span) pairs.
     fn collect_call_sites(expr: &Expr, sites: &mut Vec<(String, Span)>) {
-        match &expr.kind {
-            ExprKind::Call { func, args } => {
+        Self::walk_expr(expr, &mut |e| {
+            if let ExprKind::Call { func, .. } = &e.kind {
                 if let ExprKind::Ident(name) = &func.kind {
                     sites.push((name.clone(), func.span));
                 }
-                Self::collect_call_sites(func, sites);
-                for arg in args {
-                    Self::collect_call_sites(arg, sites);
-                }
             }
-            ExprKind::Binary { left, right, .. } => {
-                Self::collect_call_sites(left, sites);
-                Self::collect_call_sites(right, sites);
-            }
-            ExprKind::Unary { operand, .. } => {
-                Self::collect_call_sites(operand, sites);
-            }
-            ExprKind::Index { base, index } => {
-                Self::collect_call_sites(base, sites);
-                Self::collect_call_sites(index, sites);
-            }
-            ExprKind::Slice { base, lo, hi } => {
-                Self::collect_call_sites(base, sites);
-                Self::collect_call_sites(lo, sites);
-                Self::collect_call_sites(hi, sites);
-            }
-            ExprKind::Field { base, .. } => {
-                Self::collect_call_sites(base, sites);
-            }
-            ExprKind::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                Self::collect_call_sites(cond, sites);
-                Self::collect_call_sites(then_branch, sites);
-                Self::collect_call_sites(else_branch, sites);
-            }
-            ExprKind::Let { value, body, .. } => {
-                Self::collect_call_sites(value, sites);
-                Self::collect_call_sites(body, sites);
-            }
-            ExprKind::Quantifier {
-                body, bindings, ..
-            } => {
-                for b in bindings {
-                    Self::collect_call_sites(&b.domain, sites);
-                }
-                Self::collect_call_sites(body, sites);
-            }
-            ExprKind::Choose {
-                domain, predicate, ..
-            } => {
-                Self::collect_call_sites(domain, sites);
-                Self::collect_call_sites(predicate, sites);
-            }
-            ExprKind::SetComprehension {
-                element,
-                domain,
-                filter,
-                ..
-            } => {
-                Self::collect_call_sites(element, sites);
-                Self::collect_call_sites(domain, sites);
-                if let Some(f) = filter {
-                    Self::collect_call_sites(f, sites);
-                }
-            }
-            ExprKind::Require(e)
-            | ExprKind::SeqHead(e)
-            | ExprKind::SeqTail(e)
-            | ExprKind::Len(e)
-            | ExprKind::Keys(e)
-            | ExprKind::Values(e)
-            | ExprKind::BigUnion(e)
-            | ExprKind::Powerset(e)
-            | ExprKind::Always(e)
-            | ExprKind::Eventually(e)
-            | ExprKind::Paren(e) => {
-                Self::collect_call_sites(e, sites);
-            }
-            ExprKind::LeadsTo { left, right } | ExprKind::Range { lo: left, hi: right } => {
-                Self::collect_call_sites(left, sites);
-                Self::collect_call_sites(right, sites);
-            }
-            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) | ExprKind::TupleLit(exprs) => {
-                for e in exprs {
-                    Self::collect_call_sites(e, sites);
-                }
-            }
-            ExprKind::DictLit(pairs) => {
-                for (k, v) in pairs {
-                    Self::collect_call_sites(k, sites);
-                    Self::collect_call_sites(v, sites);
-                }
-            }
-            ExprKind::RecordUpdate { base, updates } => {
-                Self::collect_call_sites(base, sites);
-                for u in updates {
-                    match u {
-                        specl_syntax::RecordFieldUpdate::Field { value, .. } => {
-                            Self::collect_call_sites(value, sites);
-                        }
-                        specl_syntax::RecordFieldUpdate::Dynamic { key, value } => {
-                            Self::collect_call_sites(key, sites);
-                            Self::collect_call_sites(value, sites);
-                        }
-                    }
-                }
-            }
-            ExprKind::FnLit { domain, body, .. } => {
-                Self::collect_call_sites(domain, sites);
-                Self::collect_call_sites(body, sites);
-            }
-            ExprKind::Fix { predicate, .. } => {
-                Self::collect_call_sites(predicate, sites);
-            }
-            _ => {}
-        }
+        });
     }
 
     /// Collect all call sites within a declaration's body.
