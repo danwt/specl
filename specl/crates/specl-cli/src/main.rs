@@ -706,6 +706,10 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     println!("  Variables: {}", profile.num_vars);
     println!("  Actions: {}", profile.num_actions);
     println!("  Invariants: {}", profile.num_invariants);
+    if !spec.invariants.is_empty() {
+        let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+        println!("    Names: {}", inv_names.join(", "));
+    }
 
     // Constants
     if !spec.consts.is_empty() {
