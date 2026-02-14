@@ -6,6 +6,10 @@
 //!     transitions hold between all, and ¬I at step K — must be UNSAT.
 //!
 //! Both UNSAT → proven for all reachable states.
+//!
+//! CTI learning: when the inductive step fails (SAT), extract the counterexample
+//! state, block it as an auxiliary lemma, and retry. This strengthens the invariant
+//! until either proven or iteration limit reached.
 
 use crate::encoder::{assert_range_constraints, create_step_vars, EncoderCtx};
 use crate::state_vars::VarLayout;
@@ -15,7 +19,11 @@ use crate::{SymbolicOutcome, SymbolicResult};
 use specl_eval::Value;
 use specl_ir::CompiledSpec;
 use tracing::info;
+use z3::ast::{Bool, Dynamic};
 use z3::{SatResult, Solver};
+
+/// Maximum number of CTI learning iterations per invariant.
+const MAX_CTI_ITERATIONS: usize = 50;
 
 /// Run k-induction checking with the given strengthening depth.
 pub fn check_k_induction(
@@ -34,7 +42,7 @@ pub fn check_k_induction(
         return Ok(outcome);
     }
 
-    // === Inductive step ===
+    // === Inductive step with CTI learning ===
     info!(k, "k-induction inductive step");
     check_inductive_step(spec, consts, &layout, k)
 }
@@ -112,7 +120,11 @@ fn check_base_case(
     Ok(None)
 }
 
-/// Inductive step: K+1 states (0..=K), assert I at 0..K-1, transitions, ¬I at K.
+/// Inductive step with CTI learning.
+///
+/// K+1 states (0..=K), assert I at 0..K-1, transitions, ¬I at K.
+/// When SAT (CTI found), extract the counterexample state, add it as
+/// a blocking clause (lemma), and retry.
 fn check_inductive_step(
     spec: &CompiledSpec,
     consts: &[Value],
@@ -174,26 +186,78 @@ fn check_inductive_step(
         let inv_at_k = enc_k.encode_bool(&inv.body)?;
         solver.assert(inv_at_k.not());
 
-        match solver.check() {
-            SatResult::Sat => {
-                // CTI (counterexample to induction) — not a real bug, just not provable at K
-                info!(invariant = inv.name, k, "inductive step failed (CTI)");
-                solver.pop(1);
-                return Ok(SymbolicOutcome::Unknown {
-                    reason: format!("invariant '{}' not k-inductive at k={}", inv.name, k),
-                });
-            }
-            SatResult::Unsat => {
-                info!(invariant = inv.name, k, "invariant is k-inductive");
-            }
-            SatResult::Unknown => {
-                solver.pop(1);
-                return Ok(SymbolicOutcome::Unknown {
-                    reason: format!(
-                        "Z3 returned unknown for k-induction step for invariant '{}'",
-                        inv.name
-                    ),
-                });
+        // CTI learning loop
+        let mut cti_count = 0;
+        loop {
+            match solver.check() {
+                SatResult::Sat => {
+                    cti_count += 1;
+                    if cti_count > MAX_CTI_ITERATIONS {
+                        info!(
+                            invariant = inv.name,
+                            k,
+                            cti_count,
+                            "CTI learning limit reached"
+                        );
+                        solver.pop(1);
+                        return Ok(SymbolicOutcome::Unknown {
+                            reason: format!(
+                                "invariant '{}' not provable after {} CTI iterations at k={}",
+                                inv.name, cti_count, k
+                            ),
+                        });
+                    }
+
+                    let model = solver.get_model().unwrap();
+                    info!(
+                        invariant = inv.name,
+                        k,
+                        cti_count,
+                        "CTI found, extracting blocking clause"
+                    );
+
+                    // Extract CTI state at step K and block it at all steps
+                    let blocking = extract_blocking_clause(&model, layout, &all_step_vars, k);
+                    if let Some(clause) = blocking {
+                        // Block this state at step K (strengthen the goal)
+                        solver.assert(&clause.at_k);
+                        // Block at assumption steps 0..K-1 (strengthen the hypothesis)
+                        for lemma in &clause.at_assumptions {
+                            solver.assert(lemma);
+                        }
+                    } else {
+                        // Could not extract blocking clause — give up
+                        solver.pop(1);
+                        return Ok(SymbolicOutcome::Unknown {
+                            reason: format!(
+                                "invariant '{}' not k-inductive at k={} (CTI extraction failed)",
+                                inv.name, k
+                            ),
+                        });
+                    }
+                }
+                SatResult::Unsat => {
+                    if cti_count > 0 {
+                        info!(
+                            invariant = inv.name,
+                            k,
+                            lemmas = cti_count,
+                            "invariant proved with CTI strengthening"
+                        );
+                    } else {
+                        info!(invariant = inv.name, k, "invariant is k-inductive");
+                    }
+                    break;
+                }
+                SatResult::Unknown => {
+                    solver.pop(1);
+                    return Ok(SymbolicOutcome::Unknown {
+                        reason: format!(
+                            "Z3 returned unknown for k-induction step for invariant '{}'",
+                            inv.name
+                        ),
+                    });
+                }
             }
         }
 
@@ -203,5 +267,63 @@ fn check_inductive_step(
     info!(k, "all invariants are k-inductive");
     Ok(SymbolicOutcome::Ok {
         method: "k-induction",
+    })
+}
+
+/// A blocking clause that prevents a CTI state from appearing in the trace.
+struct BlockingClause {
+    /// Clause blocking the CTI at step K.
+    at_k: Bool,
+    /// Clauses blocking the CTI at assumption steps 0..K-1.
+    at_assumptions: Vec<Bool>,
+}
+
+/// Extract a blocking clause from a CTI model.
+///
+/// For each Z3 variable at step K, evaluate its model value and create
+/// an equality. The blocking clause is the negation of the conjunction
+/// (= at least one variable must differ from the CTI).
+fn extract_blocking_clause(
+    model: &z3::Model,
+    _layout: &VarLayout,
+    all_step_vars: &[Vec<Vec<Dynamic>>],
+    k: usize,
+) -> Option<BlockingClause> {
+    // Collect equalities: each variable at step K equals its CTI model value
+    let mut equalities_at_k = Vec::new();
+    for (var_idx, var_z3s) in all_step_vars[k].iter().enumerate() {
+        for (sub_idx, z3_var) in var_z3s.iter().enumerate() {
+            if let Some(val) = model.eval(z3_var, true) {
+                let eq = z3_var.eq(&val);
+                equalities_at_k.push((var_idx, sub_idx, eq, val));
+            }
+        }
+    }
+
+    if equalities_at_k.is_empty() {
+        return None;
+    }
+
+    // Blocking clause at step K: NOT(all variables match CTI)
+    let eq_refs: Vec<&Bool> = equalities_at_k.iter().map(|(_, _, eq, _)| eq).collect();
+    let conjunction = Bool::and(&eq_refs);
+    let at_k = conjunction.not();
+
+    // Blocking clauses at assumption steps 0..K-1: same state is blocked
+    let mut at_assumptions = Vec::new();
+    for step in 0..k {
+        let mut step_eqs = Vec::new();
+        for (var_idx, sub_idx, _, val) in &equalities_at_k {
+            let step_var = &all_step_vars[step][*var_idx][*sub_idx];
+            step_eqs.push(step_var.eq(val));
+        }
+        let eq_refs: Vec<&Bool> = step_eqs.iter().collect();
+        let conjunction = Bool::and(&eq_refs);
+        at_assumptions.push(conjunction.not());
+    }
+
+    Some(BlockingClause {
+        at_k,
+        at_assumptions,
     })
 }
