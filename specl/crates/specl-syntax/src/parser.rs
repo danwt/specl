@@ -190,7 +190,19 @@ impl Parser {
         let start = self.current_span();
         self.expect(TokenKind::Init)?;
         self.expect(TokenKind::LBrace)?;
-        let body = self.parse_expr()?;
+
+        // Parse semicolon-separated statements (also accepts old 'and' syntax
+        // since parse_expr() consumes 'and' chains as binary AND).
+        let mut stmts = Vec::new();
+        while !self.check(TokenKind::RBrace) {
+            stmts.push(self.parse_expr()?);
+            if !self.match_token(TokenKind::Semicolon) {
+                break;
+            }
+        }
+
+        let body = Self::combine_with_and(stmts, start);
+
         self.expect(TokenKind::RBrace)?;
         let span = start.merge(self.prev_span());
         Ok(InitDecl { body, span })
@@ -241,18 +253,28 @@ impl Parser {
         let start = self.current_span();
         let mut requires = Vec::new();
 
-        // Parse require statements
+        // Parse require statements (must come before effects)
         while self.check(TokenKind::Require) {
             self.advance();
             let expr = self.parse_expr()?;
+            self.match_token(TokenKind::Semicolon); // accept optional trailing ;
             requires.push(expr);
         }
 
-        // Parse effect (optional, the rest of the expression)
-        let effect = if !self.check(TokenKind::RBrace) {
-            Some(self.parse_expr()?)
-        } else {
+        // Parse effect statements separated by ; (also accepts old 'and' syntax
+        // since parse_expr() consumes 'and' chains as binary AND).
+        let mut effects = Vec::new();
+        while !self.check(TokenKind::RBrace) {
+            effects.push(self.parse_expr()?);
+            if !self.match_token(TokenKind::Semicolon) {
+                break;
+            }
+        }
+
+        let effect = if effects.is_empty() {
             None
+        } else {
+            Some(Self::combine_with_and(effects, start))
         };
 
         let span = start.merge(self.prev_span());
@@ -261,6 +283,25 @@ impl Parser {
             effect,
             span,
         })
+    }
+
+    /// Combine multiple expressions into a single AND chain.
+    /// Produces the same AST shape as the old `x = 1 and y = 2` syntax.
+    fn combine_with_and(stmts: Vec<Expr>, fallback_span: Span) -> Expr {
+        stmts
+            .into_iter()
+            .reduce(|a, b| {
+                let span = a.span.merge(b.span);
+                Expr::new(
+                    ExprKind::Binary {
+                        op: BinOp::And,
+                        left: Box::new(a),
+                        right: Box::new(b),
+                    },
+                    span,
+                )
+            })
+            .unwrap_or_else(|| Expr::new(ExprKind::Bool(true), fallback_span))
     }
 
     fn parse_invariant_decl(&mut self) -> ParseResult<InvariantDecl> {

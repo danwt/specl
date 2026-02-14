@@ -1396,11 +1396,7 @@ impl SpeclLanguageServer {
                     .collect();
                 let init_body = var_names
                     .iter()
-                    .enumerate()
-                    .map(|(i, name)| {
-                        let prefix = if i == 0 { "    " } else { "    and " };
-                        format!("{prefix}{name} = ???")
-                    })
+                    .map(|name| format!("    {name} = ???;"))
                     .collect::<Vec<_>>()
                     .join("\n");
                 let snippet = format!("\ninit {{\n{init_body}\n}}\n");
@@ -1455,7 +1451,7 @@ impl SpeclLanguageServer {
 
         // Offer "Add action" template
         {
-            let snippet = "\naction Name() {\n    require true\n}\n".to_string();
+            let snippet = "\naction Name() {\n    require true;\n}\n".to_string();
             let mut changes = std::collections::HashMap::new();
             changes.insert(
                 uri.clone(),

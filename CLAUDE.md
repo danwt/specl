@@ -68,7 +68,8 @@ invariant Safe { x >= 0 and x <= C }
 
 - **`=`** assigns next-state value (inside actions). **`==`** compares values.
 - Variables not mentioned in an action stay unchanged (implicit frame — no UNCHANGED needed).
-- Use `and` to update multiple variables in one action.
+- Use `;` to separate multiple statements in init/action blocks.
+- `and` is a boolean operator only (use in guards, invariants, expressions).
 - `require` is a guard/precondition. If false, the action cannot fire.
 - The checker explores ALL actions in ALL reachable states with ALL parameter combinations.
 
@@ -95,8 +96,8 @@ Model N processes with state via dicts. Create with comprehension, update with `
 
 ```specl
 var role: Dict[Int, Int]
-init { role = {p: 0 for p in 0..N} }
-action Promote(i: 0..N) { role = role | {i: 2} }
+init { role = {p: 0 for p in 0..N}; }
+action Promote(i: 0..N) { role = role | {i: 2}; }
 ```
 
 Multi-key update: `balance = balance | { from: balance[from] - amt, to: balance[to] + amt }`
@@ -109,9 +110,9 @@ The checker tries all valid parameter combinations:
 
 ```specl
 action Transfer(from: 0..N, to: 0..N, amount: 1..MAX) {
-    require from != to
-    require balance[from] >= amount
-    balance = balance | { from: balance[from] - amount, to: balance[to] + amount }
+    require from != to;
+    require balance[from] >= amount;
+    balance = balance | { from: balance[from] - amount, to: balance[to] + amount };
 }
 ```
 
@@ -169,9 +170,9 @@ A spec defines a state machine: initial state + actions (transitions) + invarian
 
 ### Common Patterns
 
-**Process ensemble:** `var state: Dict[Int, Int]` with `action Act(p: 0..N) { ... state = state | {p: newVal} }`
+**Process ensemble:** `var state: Dict[Int, Int]` with `action Act(p: 0..N) { ... state = state | {p: newVal}; }`
 
-**Message passing:** Model message sets as `var msgs: Set[Seq[Int]]` (sequences encode message fields). Add with `msgs = msgs union {[type, src, dest, payload]}`, consume with `require [type, src, dest, payload] in msgs`.
+**Message passing:** Model message sets as `var msgs: Set[Seq[Int]]` (sequences encode message fields). Add with `msgs = msgs union {[type, src, dest, payload]};`, consume with `require [type, src, dest, payload] in msgs;`.
 
 **Nondeterministic choice:** Use action parameters: `action Choose(v: 0..3)` — checker explores all values.
 

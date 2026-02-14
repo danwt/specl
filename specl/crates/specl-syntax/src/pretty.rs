@@ -124,9 +124,7 @@ impl PrettyPrinter {
     fn print_init_decl(&mut self, decl: &InitDecl) {
         self.writeln("init {");
         self.indent += 1;
-        self.write_indent();
-        self.print_expr(&decl.body);
-        self.newline();
+        self.print_semicolon_statements(&decl.body);
         self.indent -= 1;
         self.writeln("}");
     }
@@ -169,46 +167,41 @@ impl PrettyPrinter {
             self.write_indent();
             self.write("require ");
             self.print_expr(req);
-            self.newline();
+            self.writeln(";");
         }
 
         if let Some(effect) = &decl.body.effect {
-            self.print_effect_statements(effect);
+            self.print_semicolon_statements(effect);
         }
 
         self.indent -= 1;
         self.writeln("}");
     }
 
-    /// Print effect statements, splitting conjunctions of assignments into separate lines.
-    fn print_effect_statements(&mut self, effect: &Expr) {
-        // Collect all the assignments from the conjunction
-        let mut assignments = Vec::new();
-        Self::collect_effect_assignments(effect, &mut assignments);
+    /// Print statements separated by semicolons, splitting AND conjunctions into separate lines.
+    fn print_semicolon_statements(&mut self, expr: &Expr) {
+        let mut stmts = Vec::new();
+        Self::collect_and_leaves(expr, &mut stmts);
 
-        // Print them with proper formatting
-        for (i, assignment) in assignments.iter().enumerate() {
+        for stmt in &stmts {
             self.write_indent();
-            if i > 0 {
-                self.write("and ");
-            }
-            self.print_expr(assignment);
-            self.newline();
+            self.print_expr(stmt);
+            self.writeln(";");
         }
     }
 
-    /// Collect leaf assignments from a conjunction tree.
-    fn collect_effect_assignments<'a>(effect: &'a Expr, assignments: &mut Vec<&'a Expr>) {
+    /// Collect leaf expressions from a conjunction (AND) tree.
+    fn collect_and_leaves<'a>(expr: &'a Expr, leaves: &mut Vec<&'a Expr>) {
         if let ExprKind::Binary {
             op: BinOp::And,
             left,
             right,
-        } = &effect.kind
+        } = &expr.kind
         {
-            Self::collect_effect_assignments(left, assignments);
-            Self::collect_effect_assignments(right, assignments);
+            Self::collect_and_leaves(left, leaves);
+            Self::collect_and_leaves(right, leaves);
         } else {
-            assignments.push(effect);
+            leaves.push(expr);
         }
     }
 
