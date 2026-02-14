@@ -567,6 +567,59 @@ impl SpeclLanguageServer {
         locations
     }
 
+    /// Get code lenses: reference counts for actions and funcs.
+    fn get_code_lenses(&self, source: &str, uri: &Url) -> Vec<CodeLens> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        let tokens = Lexer::new(source).tokenize();
+        let mut lenses = Vec::new();
+
+        for decl in &module.decls {
+            let (name, span) = match decl {
+                Decl::Action(d) => (d.name.name.clone(), d.name.span),
+                Decl::Func(d) => (d.name.name.clone(), d.name.span),
+                _ => continue,
+            };
+
+            // Count references (exclude declaration itself)
+            let ref_count = tokens
+                .iter()
+                .filter(|t| {
+                    if let TokenKind::Ident(n) = &t.kind {
+                        n == &name && t.span.start != span.start
+                    } else {
+                        false
+                    }
+                })
+                .count();
+
+            let range = Self::span_to_range(span);
+            let title = if ref_count == 1 {
+                "1 reference".to_string()
+            } else {
+                format!("{} references", ref_count)
+            };
+
+            lenses.push(CodeLens {
+                range,
+                command: Some(Command {
+                    title,
+                    command: "editor.action.findReferences".to_string(),
+                    arguments: Some(vec![
+                        serde_json::to_value(uri.as_str()).unwrap(),
+                        serde_json::to_value(range.start).unwrap(),
+                    ]),
+                }),
+                data: None,
+            });
+        }
+
+        lenses
+    }
+
     /// Get linked editing ranges (all occurrences of identifier for simultaneous edit).
     fn get_linked_editing_ranges(&self, source: &str, position: Position) -> Option<LinkedEditingRanges> {
         let word = Self::word_at_position(source, position)?;
@@ -1704,6 +1757,9 @@ impl LanguageServer for SpeclLanguageServer {
                     ),
                 ),
                 code_action_provider: Some(CodeActionProviderCapability::Simple(true)),
+                code_lens_provider: Some(CodeLensOptions {
+                    resolve_provider: Some(false),
+                }),
                 workspace_symbol_provider: Some(OneOf::Left(true)),
                 document_highlight_provider: Some(OneOf::Left(true)),
                 selection_range_provider: Some(SelectionRangeProviderCapability::Simple(true)),
@@ -1810,6 +1866,17 @@ impl LanguageServer for SpeclLanguageServer {
             None
         } else {
             Some(actions)
+        })
+    }
+
+    async fn code_lens(&self, params: CodeLensParams) -> Result<Option<Vec<CodeLens>>> {
+        let uri = &params.text_document.uri;
+        let Some(content) = self.get_content(uri) else { return Ok(None) };
+        let lenses = self.get_code_lenses(&content, uri);
+        Ok(if lenses.is_empty() {
+            None
+        } else {
+            Some(lenses)
         })
     }
 
@@ -2556,6 +2623,21 @@ action A() { x = y }
         // 'x' has type 0..10 (range, no named type)
         let loc = server.get_type_definition(SAMPLE_SPEC, Position { line: 13, character: 12 }, &uri);
         assert!(loc.is_none(), "range type should not have a type definition");
+    }
+
+    #[test]
+    fn code_lenses_for_actions_and_funcs() {
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+        let lenses = server.get_code_lenses(SAMPLE_SPEC, &uri);
+        // Should have lenses for Step, Toggle, Double
+        assert_eq!(lenses.len(), 3, "expected 3 code lenses, got {}", lenses.len());
+        let titles: Vec<&str> = lenses.iter().map(|l| l.command.as_ref().unwrap().title.as_str()).collect();
+        // Step is called 0 times outside its declaration
+        assert!(titles.iter().any(|t| t.contains("reference")));
+        // Double is called 0 times outside its declaration
+        assert!(titles.iter().any(|t| t == &"0 references"));
     }
 
     #[test]
