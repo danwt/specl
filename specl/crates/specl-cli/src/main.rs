@@ -56,6 +56,59 @@ struct JsonOutput {
     duration_secs: f64,
 }
 
+impl JsonOutput {
+    fn new(result: &'static str, duration_secs: f64) -> Self {
+        Self {
+            result,
+            invariant: None,
+            trace: None,
+            states_explored: None,
+            max_depth: None,
+            memory_mb: None,
+            method: None,
+            reason: None,
+            error: None,
+            duration_secs,
+        }
+    }
+
+    fn with_states(mut self, states: usize, depth: usize) -> Self {
+        self.states_explored = Some(states);
+        self.max_depth = Some(depth);
+        self
+    }
+
+    fn with_invariant(mut self, inv: String) -> Self {
+        self.invariant = Some(inv);
+        self
+    }
+
+    fn with_trace(mut self, trace: Vec<JsonTraceStep>) -> Self {
+        self.trace = Some(trace);
+        self
+    }
+
+    fn with_memory(mut self, mb: usize) -> Self {
+        self.memory_mb = Some(mb);
+        self
+    }
+
+    fn with_method(mut self, method: String) -> Self {
+        self.method = Some(method);
+        self
+    }
+
+    fn with_reason(mut self, reason: String) -> Self {
+        self.reason = Some(reason);
+        self
+    }
+
+    fn with_error(mut self, error: String) -> Self {
+        self.error = Some(error);
+        self
+    }
+}
+
 /// A single trace step in JSON output.
 #[derive(Serialize)]
 struct JsonTraceStep {
@@ -503,20 +556,8 @@ fn main() {
 
             if use_symbolic && use_bfs {
                 if output != OutputFormat::Text {
-                    let out = JsonOutput {
-                        result: "error",
-                        error: Some(
-                            "cannot combine --symbolic/--bfs flags or their sub-options".into(),
-                        ),
-                        duration_secs: 0.0,
-                        invariant: None,
-                        trace: None,
-                        states_explored: None,
-                        max_depth: None,
-                        memory_mb: None,
-                        method: None,
-                        reason: None,
-                    };
+                    let out = JsonOutput::new("error", 0.0)
+                        .with_error("cannot combine --symbolic/--bfs flags or their sub-options".into());
                     println!("{}", serde_json::to_string(&out).unwrap());
                 } else {
                     eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
@@ -603,18 +644,7 @@ fn main() {
             // In non-text mode, emit errors as JSON instead of miette
             if output != OutputFormat::Text {
                 if let Err(e) = inner {
-                    let out = JsonOutput {
-                        result: "error",
-                        error: Some(e.to_string()),
-                        duration_secs: 0.0,
-                        invariant: None,
-                        trace: None,
-                        states_explored: None,
-                        max_depth: None,
-                        memory_mb: None,
-                        method: None,
-                        reason: None,
-                    };
+                    let out = JsonOutput::new("error", 0.0).with_error(e.to_string());
                     println!("{}", serde_json::to_string(&out).unwrap());
                     std::process::exit(1);
                 }
@@ -1145,88 +1175,32 @@ fn cmd_check(
             CheckOutcome::Ok {
                 states_explored,
                 max_depth,
-            } => JsonOutput {
-                result: "ok",
-                states_explored: Some(states_explored),
-                max_depth: Some(max_depth),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
-            CheckOutcome::InvariantViolation { invariant, trace } => JsonOutput {
-                result: "invariant_violation",
-                invariant: Some(invariant),
-                trace: Some(trace_to_json(&trace, &var_names)),
-                duration_secs: secs,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
-            CheckOutcome::Deadlock { trace } => JsonOutput {
-                result: "deadlock",
-                trace: Some(trace_to_json(&trace, &var_names)),
-                duration_secs: secs,
-                invariant: None,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
+            } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                JsonOutput::new("invariant_violation", secs)
+                    .with_invariant(invariant)
+                    .with_trace(trace_to_json(&trace, &var_names))
+            }
+            CheckOutcome::Deadlock { trace } => {
+                JsonOutput::new("deadlock", secs).with_trace(trace_to_json(&trace, &var_names))
+            }
             CheckOutcome::StateLimitReached {
                 states_explored,
                 max_depth,
-            } => JsonOutput {
-                result: "state_limit_reached",
-                states_explored: Some(states_explored),
-                max_depth: Some(max_depth),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
+            } => JsonOutput::new("state_limit_reached", secs)
+                .with_states(states_explored, max_depth),
             CheckOutcome::MemoryLimitReached {
                 states_explored,
                 max_depth,
                 memory_mb,
-            } => JsonOutput {
-                result: "memory_limit_reached",
-                states_explored: Some(states_explored),
-                max_depth: Some(max_depth),
-                memory_mb: Some(memory_mb),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
+            } => JsonOutput::new("memory_limit_reached", secs)
+                .with_states(states_explored, max_depth)
+                .with_memory(memory_mb),
             CheckOutcome::TimeLimitReached {
                 states_explored,
                 max_depth,
-            } => JsonOutput {
-                result: "time_limit_reached",
-                states_explored: Some(states_explored),
-                max_depth: Some(max_depth),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
+            } => JsonOutput::new("time_limit_reached", secs)
+                .with_states(states_explored, max_depth),
         };
         println!("{}", serde_json::to_string(&out).unwrap());
         let exit_code = match out.result {
@@ -1473,18 +1447,9 @@ fn cmd_check_swarm(
                             println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                         }
                         OutputFormat::Json => {
-                            let out = JsonOutput {
-                                result: "invariant_violation",
-                                invariant: Some(invariant),
-                                trace: Some(trace_to_json(&trace, var_names)),
-                                duration_secs: total_secs,
-                                states_explored: None,
-                                max_depth: None,
-                                memory_mb: None,
-                                method: None,
-                                reason: None,
-                                error: None,
-                            };
+                            let out = JsonOutput::new("invariant_violation", total_secs)
+                                .with_invariant(invariant)
+                                .with_trace(trace_to_json(&trace, var_names));
                             println!("{}", serde_json::to_string(&out).unwrap());
                         }
                         OutputFormat::Text => {
@@ -1504,18 +1469,7 @@ fn cmd_check_swarm(
             CheckOutcome::Deadlock { .. } => {
                 // Similar for deadlock — simplified: just report
                 if json {
-                    let out = JsonOutput {
-                        result: "deadlock",
-                        trace: None,
-                        duration_secs: secs,
-                        invariant: None,
-                        states_explored: None,
-                        max_depth: None,
-                        memory_mb: None,
-                        method: None,
-                        reason: None,
-                        error: None,
-                    };
+                    let out = JsonOutput::new("deadlock", secs);
                     println!("{}", serde_json::to_string(&out).unwrap());
                 } else {
                     println!("Result: DEADLOCK (found by swarm in {:.1}s)", secs);
@@ -1528,18 +1482,7 @@ fn cmd_check_swarm(
 
     if all_ok {
         if json {
-            let out = JsonOutput {
-                result: "ok",
-                duration_secs: secs,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                invariant: None,
-                trace: None,
-                method: None,
-                reason: None,
-                error: None,
-            };
+            let out = JsonOutput::new("ok", secs);
             println!("{}", serde_json::to_string(&out).unwrap());
         } else {
             println!();
@@ -1623,18 +1566,9 @@ fn cmd_check_symbolic(
 
     if json {
         let out = match result {
-            SymbolicOutcome::Ok { method } => JsonOutput {
-                result: "ok",
-                method: Some(method.to_string()),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                reason: None,
-                error: None,
-            },
+            SymbolicOutcome::Ok { method } => {
+                JsonOutput::new("ok", secs).with_method(method.to_string())
+            }
             SymbolicOutcome::InvariantViolation { invariant, trace } => {
                 let json_trace: Vec<JsonTraceStep> = trace
                     .iter()
@@ -1651,35 +1585,18 @@ fn cmd_check_symbolic(
                         }
                     })
                     .collect();
-                JsonOutput {
-                    result: if inductive {
-                        "not_inductive"
-                    } else {
-                        "invariant_violation"
-                    },
-                    invariant: Some(invariant),
-                    trace: Some(json_trace),
-                    duration_secs: secs,
-                    states_explored: None,
-                    max_depth: None,
-                    memory_mb: None,
-                    method: None,
-                    reason: None,
-                    error: None,
-                }
+                let result = if inductive {
+                    "not_inductive"
+                } else {
+                    "invariant_violation"
+                };
+                JsonOutput::new(result, secs)
+                    .with_invariant(invariant)
+                    .with_trace(json_trace)
             }
-            SymbolicOutcome::Unknown { reason } => JsonOutput {
-                result: "unknown",
-                reason: Some(reason),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                error: None,
-            },
+            SymbolicOutcome::Unknown { reason } => {
+                JsonOutput::new("unknown", secs).with_reason(reason)
+            }
         };
         println!("{}", serde_json::to_string(&out).unwrap());
         let exit_code = match out.result {
@@ -1744,18 +1661,8 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
         Err(e) => {
             let secs = start.elapsed().as_secs_f64();
             if json {
-                let out = JsonOutput {
-                    result: "error",
-                    error: Some(format!("parse error: {}", e)),
-                    duration_secs: secs,
-                    invariant: None,
-                    trace: None,
-                    states_explored: None,
-                    max_depth: None,
-                    memory_mb: None,
-                    method: None,
-                    reason: None,
-                };
+                let out = JsonOutput::new("error", secs)
+                    .with_error(format!("parse error: {}", e));
                 println!("{}", serde_json::to_string(&out).unwrap());
                 std::process::exit(1);
             }
@@ -1767,18 +1674,8 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
     if let Err(e) = specl_types::check_module(&module) {
         let secs = start.elapsed().as_secs_f64();
         if json {
-            let out = JsonOutput {
-                result: "error",
-                error: Some(format!("type error: {}", e)),
-                duration_secs: secs,
-                invariant: None,
-                trace: None,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-            };
+            let out = JsonOutput::new("error", secs)
+                .with_error(format!("type error: {}", e));
             println!("{}", serde_json::to_string(&out).unwrap());
             std::process::exit(1);
         }
@@ -1791,18 +1688,8 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
         Err(e) => {
             let secs = start.elapsed().as_secs_f64();
             if json {
-                let out = JsonOutput {
-                    result: "error",
-                    error: Some(format!("compile error: {}", e)),
-                    duration_secs: secs,
-                    invariant: None,
-                    trace: None,
-                    states_explored: None,
-                    max_depth: None,
-                    memory_mb: None,
-                    method: None,
-                    reason: None,
-                };
+                let out = JsonOutput::new("error", secs)
+                    .with_error(format!("compile error: {}", e));
                 println!("{}", serde_json::to_string(&out).unwrap());
                 std::process::exit(1);
             }
@@ -1817,18 +1704,7 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
         if let Err(e) = parse_constants(constants, &spec) {
             let secs = start.elapsed().as_secs_f64();
             if json {
-                let out = JsonOutput {
-                    result: "error",
-                    error: Some(e.to_string()),
-                    duration_secs: secs,
-                    invariant: None,
-                    trace: None,
-                    states_explored: None,
-                    max_depth: None,
-                    memory_mb: None,
-                    method: None,
-                    reason: None,
-                };
+                let out = JsonOutput::new("error", secs).with_error(e.to_string());
                 println!("{}", serde_json::to_string(&out).unwrap());
                 std::process::exit(1);
             }
@@ -1838,18 +1714,7 @@ fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliRe
 
     let secs = start.elapsed().as_secs_f64();
     if json {
-        let out = JsonOutput {
-            result: "ok",
-            duration_secs: secs,
-            invariant: None,
-            trace: None,
-            states_explored: None,
-            max_depth: None,
-            memory_mb: None,
-            method: None,
-            reason: None,
-            error: None,
-        };
+        let out = JsonOutput::new("ok", secs);
         println!("{}", serde_json::to_string(&out).unwrap());
     } else {
         let num_vars = spec.vars.len();
@@ -1932,46 +1797,19 @@ fn cmd_simulate(
                 steps,
                 trace,
                 var_names,
-            } => JsonOutput {
-                result: "ok",
-                states_explored: Some(*steps),
-                trace: Some(trace_to_json(trace, var_names)),
-                duration_secs: secs,
-                invariant: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
+            } => JsonOutput::new("ok", secs)
+                .with_states(*steps, 0)
+                .with_trace(trace_to_json(trace, var_names)),
             SimulateOutcome::InvariantViolation {
                 invariant,
                 trace,
                 var_names,
-            } => JsonOutput {
-                result: "invariant_violation",
-                invariant: Some(invariant.clone()),
-                trace: Some(trace_to_json(trace, var_names)),
-                duration_secs: secs,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
-            SimulateOutcome::Deadlock { trace, var_names } => JsonOutput {
-                result: "deadlock",
-                trace: Some(trace_to_json(trace, var_names)),
-                duration_secs: secs,
-                invariant: None,
-                states_explored: None,
-                max_depth: None,
-                memory_mb: None,
-                method: None,
-                reason: None,
-                error: None,
-            },
+            } => JsonOutput::new("invariant_violation", secs)
+                .with_invariant(invariant.clone())
+                .with_trace(trace_to_json(trace, var_names)),
+            SimulateOutcome::Deadlock { trace, var_names } => {
+                JsonOutput::new("deadlock", secs).with_trace(trace_to_json(trace, var_names))
+            }
         };
         println!("{}", serde_json::to_string(&out).unwrap());
     } else {
