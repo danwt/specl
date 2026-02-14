@@ -196,6 +196,10 @@ enum Commands {
         #[arg(long, default_value = "0", help_heading = "Explicit-State")]
         memory_limit: usize,
 
+        /// Maximum time in seconds (0 = unlimited)
+        #[arg(long, default_value = "0", help_heading = "Explicit-State")]
+        max_time: u64,
+
         /// Disable deadlock checking
         #[arg(long, help_heading = "Explicit-State")]
         no_deadlock: bool,
@@ -428,6 +432,7 @@ fn main() {
             max_states,
             max_depth,
             memory_limit,
+            max_time,
             no_deadlock,
             no_parallel,
             threads,
@@ -462,7 +467,8 @@ fn main() {
                 || swarm.is_some()
                 || max_states > 0
                 || max_depth > 0
-                || memory_limit > 0;
+                || memory_limit > 0
+                || max_time > 0;
 
             let use_symbolic = symbolic || specific_symbolic;
             let use_bfs = bfs || specific_explicit;
@@ -509,6 +515,7 @@ fn main() {
                     max_states,
                     max_depth,
                     memory_limit,
+                    max_time,
                     !no_deadlock,
                     !no_parallel,
                     threads,
@@ -542,6 +549,7 @@ fn main() {
                         max_states,
                         max_depth,
                         memory_limit,
+                        max_time,
                         !no_deadlock,
                         !no_parallel,
                         threads,
@@ -849,6 +857,7 @@ fn cmd_check(
     max_states: usize,
     max_depth: usize,
     memory_limit_mb: usize,
+    max_time_secs: u64,
     check_deadlock: bool,
     parallel: bool,
     num_threads: usize,
@@ -1033,6 +1042,7 @@ fn cmd_check(
         bloom,
         bloom_bits,
         directed,
+        max_time_secs,
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -1078,6 +1088,10 @@ fn cmd_check(
             }
             CheckOutcome::MemoryLimitReached { states_explored, .. } => {
                 eprintln!("Result: MEMORY LIMIT REACHED ({} states, no trace)", states_explored);
+                std::process::exit(2);
+            }
+            CheckOutcome::TimeLimitReached { states_explored, .. } => {
+                eprintln!("Result: TIME LIMIT REACHED ({} states, no trace)", states_explored);
                 std::process::exit(2);
             }
         }
@@ -1149,6 +1163,21 @@ fn cmd_check(
                 duration_secs: secs,
                 invariant: None,
                 trace: None,
+                method: None,
+                reason: None,
+                error: None,
+            },
+            CheckOutcome::TimeLimitReached {
+                states_explored,
+                max_depth,
+            } => JsonOutput {
+                result: "time_limit_reached",
+                states_explored: Some(states_explored),
+                max_depth: Some(max_depth),
+                duration_secs: secs,
+                invariant: None,
+                trace: None,
+                memory_mb: None,
                 method: None,
                 reason: None,
                 error: None,
@@ -1250,6 +1279,17 @@ fn cmd_check(
                 println!("  Time: {:.2}s", secs);
                 2
             }
+            CheckOutcome::TimeLimitReached {
+                states_explored,
+                max_depth,
+            } => {
+                println!();
+                println!("Result: TIME LIMIT REACHED");
+                println!("  States explored: {}", states_explored);
+                println!("  Max depth: {}", max_depth);
+                println!("  Time: {:.2}s", secs);
+                2
+            }
         };
         if exit_code != 0 {
             print_check_profile(&explorer);
@@ -1310,6 +1350,7 @@ fn cmd_check_swarm(
                     bloom: false,
                     bloom_bits: 30,
                     directed: false,
+                    max_time_secs: 0,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1377,6 +1418,7 @@ fn cmd_check_swarm(
                     bloom: false,
                     bloom_bits: 30,
                     directed: false,
+                    max_time_secs: 0,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {
@@ -2714,6 +2756,15 @@ fn run_check_iteration(
         } => {
             println!("Result: MEMORY LIMIT REACHED");
             println!("  Memory usage: {} MB", memory_mb);
+            println!("  States explored: {}", states_explored);
+            println!("  Max depth: {}", max_depth);
+            println!("  Time: {:.2}s", elapsed.as_secs_f64());
+        }
+        CheckOutcome::TimeLimitReached {
+            states_explored,
+            max_depth,
+        } => {
+            println!("Result: TIME LIMIT REACHED");
             println!("  States explored: {}", states_explored);
             println!("  Max depth: {}", max_depth);
             println!("  Time: {:.2}s", elapsed.as_secs_f64());

@@ -73,6 +73,11 @@ pub enum CheckOutcome {
         max_depth: usize,
         memory_mb: usize,
     },
+    /// Exploration stopped due to time limit.
+    TimeLimitReached {
+        states_explored: usize,
+        max_depth: usize,
+    },
 }
 
 /// Result of simulation.
@@ -198,6 +203,8 @@ pub struct CheckConfig {
     pub bloom_bits: u32,
     /// Use directed model checking (priority BFS with heuristic distance to violation).
     pub directed: bool,
+    /// Maximum time in seconds (0 = unlimited).
+    pub max_time_secs: u64,
 }
 
 impl Default for CheckConfig {
@@ -218,6 +225,7 @@ impl Default for CheckConfig {
             bloom: false,
             bloom_bits: 30,
             directed: false,
+            max_time_secs: 0,
         }
     }
 }
@@ -240,6 +248,7 @@ impl Clone for CheckConfig {
             bloom: self.bloom,
             bloom_bits: self.bloom_bits,
             directed: self.directed,
+            max_time_secs: self.max_time_secs,
         }
     }
 }
@@ -262,6 +271,7 @@ impl std::fmt::Debug for CheckConfig {
             .field("bloom", &self.bloom)
             .field("bloom_bits", &self.bloom_bits)
             .field("directed", &self.directed)
+            .field("max_time_secs", &self.max_time_secs)
             .finish()
     }
 }
@@ -328,6 +338,8 @@ pub struct Explorer {
     action_has_refinable: Vec<bool>,
     /// Profile data accumulated during checking (only when config.profile is true).
     profile_data: Option<ProfileData>,
+    /// Deadline for time-limited checking (None = unlimited).
+    deadline: Option<Instant>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -1011,6 +1023,12 @@ impl Explorer {
             );
         }
 
+        let deadline = if config.max_time_secs > 0 {
+            Some(Instant::now() + Duration::from_secs(config.max_time_secs))
+        } else {
+            None
+        };
+
         let mut explorer = Self {
             spec,
             consts,
@@ -1033,6 +1051,7 @@ impl Explorer {
             has_refinable_pairs,
             action_has_refinable,
             profile_data: None,
+            deadline,
         };
 
         // Precompute action names for trace reconstruction
@@ -1692,6 +1711,14 @@ impl Explorer {
                 }
             }
 
+            // Check time limit
+            if self.deadline.is_some() && self.store.len() % 1000 == 0 && self.past_deadline() {
+                return Ok(CheckOutcome::TimeLimitReached {
+                    states_explored: self.store.len(),
+                    max_depth,
+                });
+            }
+
             // Check invariants
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
                 if !self.check_invariant_bc(inv_idx, &state)? {
@@ -1782,7 +1809,8 @@ impl Explorer {
         match &result {
             CheckOutcome::Ok { .. }
             | CheckOutcome::StateLimitReached { .. }
-            | CheckOutcome::MemoryLimitReached { .. } => Ok(result),
+            | CheckOutcome::MemoryLimitReached { .. }
+            | CheckOutcome::TimeLimitReached { .. } => Ok(result),
             CheckOutcome::InvariantViolation { invariant, .. } => {
                 // Phase 2: Re-explore with full tracking to get trace
                 info!(invariant = %invariant, "violation found, re-exploring for trace");
@@ -1857,6 +1885,14 @@ impl Explorer {
                         });
                     }
                 }
+            }
+
+            // Check time limit (every 1000 states to reduce overhead)
+            if self.deadline.is_some() && self.store.len() % 1000 == 0 && self.past_deadline() {
+                return Ok(CheckOutcome::TimeLimitReached {
+                    states_explored: self.store.len(),
+                    max_depth,
+                });
             }
 
             // Check invariants (skip if no relevant variables changed)
@@ -2043,6 +2079,7 @@ impl Explorer {
     ) -> CheckResult<CheckOutcome> {
         let mut hit_state_limit = false;
         let mut hit_memory_limit = false;
+        let mut hit_time_limit = false;
         let mut memory_at_limit = 0usize;
         let mut next_vars_buf = Vec::new();
 
@@ -2093,6 +2130,13 @@ impl Explorer {
                         break;
                     }
                 }
+            }
+
+            // Check time limit (every 1000 states to reduce overhead)
+            if self.deadline.is_some() && self.store.len() % 1000 == 0 && self.past_deadline() {
+                info!("reached time limit");
+                hit_time_limit = true;
+                break;
             }
 
             // --- Phase 1: Check invariants ---
@@ -2210,6 +2254,11 @@ impl Explorer {
                 max_depth: *max_depth,
                 memory_mb: memory_at_limit,
             })
+        } else if hit_time_limit {
+            Ok(CheckOutcome::TimeLimitReached {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
+            })
         } else if hit_state_limit {
             Ok(CheckOutcome::StateLimitReached {
                 states_explored: self.store.len(),
@@ -2238,6 +2287,7 @@ impl Explorer {
         };
         let mut hit_state_limit = false;
         let mut hit_memory_limit = false;
+        let mut hit_time_limit = false;
         let mut memory_at_limit = 0usize;
 
         while !queue.is_empty() && !found_violation.load(Ordering::Relaxed) {
@@ -2262,6 +2312,13 @@ impl Explorer {
                         break;
                     }
                 }
+            }
+
+            // Check time limit
+            if self.past_deadline() {
+                info!("reached time limit");
+                hit_time_limit = true;
+                break;
             }
 
             // Take a batch of states from the queue
@@ -2405,6 +2462,11 @@ impl Explorer {
                 states_explored: self.store.len(),
                 max_depth: *max_depth,
                 memory_mb: memory_at_limit,
+            })
+        } else if hit_time_limit {
+            Ok(CheckOutcome::TimeLimitReached {
+                states_explored: self.store.len(),
+                max_depth: *max_depth,
             })
         } else if hit_state_limit {
             Ok(CheckOutcome::StateLimitReached {
@@ -3793,6 +3855,12 @@ impl Explorer {
             trace,
             var_names,
         })
+    }
+
+    /// Check if the time limit has been exceeded.
+    #[inline]
+    fn past_deadline(&self) -> bool {
+        self.deadline.map_or(false, |d| Instant::now() >= d)
     }
 
     /// Set an external stop flag (for swarm verification cancellation).

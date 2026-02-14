@@ -191,7 +191,7 @@ fn examples_with_constants_check() {
                     checked += 1;
                 }
             }
-            Ok(CheckOutcome::Deadlock { .. }) => {
+            Ok(CheckOutcome::Deadlock { .. }) | Ok(CheckOutcome::TimeLimitReached { .. }) => {
                 checked += 1;
             }
             Err(e) => {
