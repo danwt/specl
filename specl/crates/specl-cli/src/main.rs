@@ -288,6 +288,10 @@ enum Commands {
         /// Only check specific invariants (repeatable, by name)
         #[arg(long = "check-only", value_name = "INVARIANT", help_heading = "Explicit-State")]
         check_only: Vec<String>,
+
+        /// Show only changed variables in traces (diff mode)
+        #[arg(long)]
+        diff: bool,
     },
 
     /// Format a Specl file
@@ -476,6 +480,7 @@ fn main() {
             output,
             profile,
             check_only,
+            diff,
         } => {
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
@@ -555,6 +560,7 @@ fn main() {
                     swarm,
                     profile,
                     check_only.clone(),
+                    diff,
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
@@ -590,6 +596,7 @@ fn main() {
                         swarm,
                         profile,
                         check_only,
+                        diff,
                     )
                 }
             };
@@ -908,6 +915,7 @@ fn cmd_check(
     swarm: Option<usize>,
     profile: bool,
     check_only_invariants: Vec<String>,
+    diff_traces: bool,
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     let filename = file.display().to_string();
@@ -1011,6 +1019,7 @@ fn cmd_check(
             actual_por,
             actual_symmetry,
             output_format,
+            diff_traces,
         );
     }
 
@@ -1272,23 +1281,13 @@ fn cmd_check(
                 println!();
                 println!("Result: INVARIANT VIOLATION");
                 println!("  Invariant: {}", invariant);
-                println!("  Trace ({} steps):", trace.len());
-                for (i, (state, action)) in trace.iter().enumerate() {
-                    let action_str = action.as_deref().unwrap_or("init");
-                    let state_str = format_state_with_names(state, &var_names);
-                    println!("    {}: {} -> {}", i, action_str, state_str);
-                }
+                print_text_trace(&trace, &var_names, diff_traces);
                 1
             }
             CheckOutcome::Deadlock { trace } => {
                 println!();
                 println!("Result: DEADLOCK");
-                println!("  Trace ({} steps):", trace.len());
-                for (i, (state, action)) in trace.iter().enumerate() {
-                    let action_str = action.as_deref().unwrap_or("init");
-                    let state_str = format_state_with_names(state, &var_names);
-                    println!("    {}: {} -> {}", i, action_str, state_str);
-                }
+                print_text_trace(&trace, &var_names, diff_traces);
                 1
             }
             CheckOutcome::StateLimitReached {
@@ -1350,6 +1349,7 @@ fn cmd_check_swarm(
     use_por: bool,
     use_symmetry: bool,
     output_format: OutputFormat,
+    diff_traces: bool,
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     use std::sync::atomic::AtomicBool;
@@ -1494,12 +1494,7 @@ fn cmd_check_swarm(
                                 secs
                             );
                             println!("  Invariant: {}", invariant);
-                            println!("  Trace ({} steps):", trace.len());
-                            for (i, (state, action)) in trace.iter().enumerate() {
-                                let action_str = action.as_deref().unwrap_or("init");
-                                let state_str = format_state_with_names(state, var_names);
-                                println!("    {}: {} -> {}", i, action_str, state_str);
-                            }
+                            print_text_trace(&trace, var_names, diff_traces);
                             println!("  Total time: {:.1}s", total_secs);
                         }
                     }
@@ -2284,6 +2279,35 @@ fn format_state_with_names(state: &State, var_names: &[String]) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// Print a text trace to stdout.
+/// In diff mode, only shows variables that changed from the previous step.
+fn print_text_trace(trace: &[(State, Option<String>)], var_names: &[String], diff: bool) {
+    println!("  Trace ({} steps):", trace.len());
+    let mut prev_state: Option<&State> = None;
+    for (i, (state, action)) in trace.iter().enumerate() {
+        let action_str = action.as_deref().unwrap_or("init");
+        if diff && prev_state.is_some() {
+            let prev = prev_state.unwrap();
+            let mut changes = Vec::new();
+            for (idx, v) in state.vars.iter().enumerate() {
+                if idx >= prev.vars.len() || *v != prev.vars[idx] {
+                    let name = var_names.get(idx).map(|s| s.as_str()).unwrap_or("?");
+                    changes.push(format!("{}={}", name, v));
+                }
+            }
+            if changes.is_empty() {
+                println!("    {}: {} -> (no change)", i, action_str);
+            } else {
+                println!("    {}: {} -> {}", i, action_str, changes.join(", "));
+            }
+        } else {
+            let state_str = format_state_with_names(state, var_names);
+            println!("    {}: {} -> {}", i, action_str, state_str);
+        }
+        prev_state = Some(state);
+    }
 }
 
 /// Generate a Mermaid sequence diagram from a trace.
