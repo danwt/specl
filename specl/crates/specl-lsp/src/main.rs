@@ -514,6 +514,82 @@ impl SpeclLanguageServer {
         b.is_ascii_alphanumeric() || b == b'_'
     }
 
+    /// Get document symbols for the outline view.
+    fn get_document_symbols(&self, source: &str) -> Vec<DocumentSymbol> {
+        let module = match parse(source) {
+            Ok(m) => m,
+            Err(_) => return vec![],
+        };
+
+        let mut symbols = Vec::new();
+
+        for decl in &module.decls {
+            let (name, kind, detail, range) = match decl {
+                Decl::Var(d) => {
+                    let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+                    (d.name.name.clone(), SymbolKind::VARIABLE, Some(type_str), d.span)
+                }
+                Decl::Const(d) => {
+                    let val_str = specl_syntax::pretty::pretty_print_const_value(&d.value);
+                    (d.name.name.clone(), SymbolKind::CONSTANT, Some(val_str), d.span)
+                }
+                Decl::Action(d) => {
+                    let params: Vec<_> = d
+                        .params
+                        .iter()
+                        .map(|p| {
+                            format!(
+                                "{}: {}",
+                                p.name.name,
+                                specl_syntax::pretty::pretty_print_type(&p.ty)
+                            )
+                        })
+                        .collect();
+                    let detail = if params.is_empty() {
+                        None
+                    } else {
+                        Some(format!("({})", params.join(", ")))
+                    };
+                    (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span)
+                }
+                Decl::Invariant(d) => {
+                    (d.name.name.clone(), SymbolKind::BOOLEAN, Some("invariant".into()), d.span)
+                }
+                Decl::Func(d) => {
+                    let params: Vec<_> =
+                        d.params.iter().map(|p| p.name.name.as_str()).collect();
+                    let detail = Some(format!("({})", params.join(", ")));
+                    (d.name.name.clone(), SymbolKind::FUNCTION, detail, d.span)
+                }
+                Decl::Type(d) => {
+                    let type_str = specl_syntax::pretty::pretty_print_type(&d.ty);
+                    (d.name.name.clone(), SymbolKind::TYPE_PARAMETER, Some(type_str), d.span)
+                }
+                Decl::Init(_) => {
+                    ("init".into(), SymbolKind::CONSTRUCTOR, None, decl.span())
+                }
+                Decl::Property(d) => {
+                    (d.name.name.clone(), SymbolKind::PROPERTY, Some("property".into()), d.span)
+                }
+                _ => continue,
+            };
+
+            #[allow(deprecated)]
+            symbols.push(DocumentSymbol {
+                name,
+                detail,
+                kind,
+                tags: None,
+                deprecated: None,
+                range: Self::span_to_range(range),
+                selection_range: Self::span_to_range(range),
+                children: None,
+            });
+        }
+
+        symbols
+    }
+
     /// Semantic token type indices (must match SEMANTIC_TOKEN_TYPES order).
     const TT_KEYWORD: u32 = 0;
     const TT_TYPE: u32 = 1;
@@ -640,6 +716,7 @@ impl LanguageServer for SpeclLanguageServer {
                     ..Default::default()
                 }),
                 definition_provider: Some(OneOf::Left(true)),
+                document_symbol_provider: Some(OneOf::Left(true)),
                 document_formatting_provider: Some(OneOf::Left(true)),
                 semantic_tokens_provider: Some(
                     SemanticTokensServerCapabilities::SemanticTokensOptions(
@@ -754,6 +831,19 @@ impl LanguageServer for SpeclLanguageServer {
         } else {
             Ok(None)
         }
+    }
+
+    async fn document_symbol(
+        &self,
+        params: DocumentSymbolParams,
+    ) -> Result<Option<DocumentSymbolResponse>> {
+        let uri = &params.text_document.uri;
+        let Some(doc) = self.documents.get(uri) else {
+            return Ok(None);
+        };
+        let content = doc.content.to_string();
+        let symbols = self.get_document_symbols(&content);
+        Ok(Some(DocumentSymbolResponse::Nested(symbols)))
     }
 
     async fn formatting(&self, params: DocumentFormattingParams) -> Result<Option<Vec<TextEdit>>> {
