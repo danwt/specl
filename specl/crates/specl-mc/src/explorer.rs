@@ -1858,8 +1858,8 @@ impl Explorer {
     /// Only stores fingerprints during exploration. If a violation is found,
     /// re-explores with full tracking to reconstruct the trace.
     fn check_fast(&mut self) -> CheckResult<CheckOutcome> {
-        // Phase 1: Fast check with minimal memory
-        let result = self.check_fast_phase1()?;
+        // Phase 1: BFS with fingerprint-only storage (parallel or sequential)
+        let result = self.check_full()?;
 
         match &result {
             CheckOutcome::Ok { .. }
@@ -1877,144 +1877,6 @@ impl Explorer {
                 self.check_fast_phase2_deadlock()
             }
         }
-    }
-
-    /// Phase 1: Fast exploration storing only fingerprints.
-    /// Returns violation type (with empty trace) or Ok.
-    fn check_fast_phase1(&mut self) -> CheckResult<CheckOutcome> {
-        let mut queue: VecDeque<QueueEntry> = VecDeque::new();
-        let mut max_depth = 0;
-        let mut next_vars_buf = Vec::new();
-
-        // Generate initial states
-        let initial_states = self.generate_initial_states()?;
-        if initial_states.is_empty() {
-            return Err(CheckError::NoInitialStates);
-        }
-
-        info!(count = initial_states.len(), "generated initial states");
-
-        // Add initial states
-        for state in initial_states {
-            let canonical = self.maybe_canonicalize(state);
-            let fp = canonical.fingerprint();
-            if self.store.insert(canonical.clone(), None, None, None, 0) {
-                queue.push_back((fp, canonical, 0, u64::MAX, 0));
-            }
-        }
-
-        while let Some((fp, state, depth, change_mask, _sleep)) = queue.pop_front() {
-            if let Some(ref p) = self.config.progress {
-                p.checked.fetch_add(1, Ordering::Relaxed);
-            }
-
-            trace!(depth, fp = %fp, "exploring state");
-
-            // Check depth limit
-            if self.config.max_depth > 0 && depth >= self.config.max_depth {
-                continue;
-            }
-
-            // Check state limit
-            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
-                info!(states = self.store.len(), "reached state limit");
-                return Ok(CheckOutcome::StateLimitReached {
-                    states_explored: self.store.len(),
-                    max_depth,
-                });
-            }
-
-            // Check memory limit (every 1000 states to reduce overhead)
-            if self.config.memory_limit_mb > 0 && self.store.len().is_multiple_of(1000) {
-                if let Some(mem_mb) = current_memory_mb() {
-                    if mem_mb >= self.config.memory_limit_mb {
-                        info!(
-                            memory_mb = mem_mb,
-                            limit_mb = self.config.memory_limit_mb,
-                            "reached memory limit"
-                        );
-                        return Ok(CheckOutcome::MemoryLimitReached {
-                            states_explored: self.store.len(),
-                            max_depth,
-                            memory_mb: mem_mb,
-                        });
-                    }
-                }
-            }
-
-            // Check time limit (every 1000 states to reduce overhead)
-            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
-                return Ok(CheckOutcome::TimeLimitReached {
-                    states_explored: self.store.len(),
-                    max_depth,
-                });
-            }
-
-            // Check invariants (skip if no relevant variables changed)
-            for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
-                if !self.active_invariants[inv_idx] {
-                    continue;
-                }
-                if change_mask & self.inv_dep_masks[inv_idx] == 0 {
-                    continue;
-                }
-                if !self.check_invariant_bc(inv_idx, &state)? {
-                    // Return violation with empty trace (phase 2 will find it)
-                    return Ok(CheckOutcome::InvariantViolation {
-                        invariant: inv.name.clone(),
-                        trace: vec![],
-                    });
-                }
-            }
-
-            // Generate successor states
-            let mut successors = Vec::new();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0)?;
-
-            if successors.is_empty() && self.config.check_deadlock {
-                let any_enabled = self.any_action_enabled(&state)?;
-                if !any_enabled {
-                    // Return deadlock with empty trace (phase 2 will find it)
-                    return Ok(CheckOutcome::Deadlock { trace: vec![] });
-                }
-            }
-
-            // Add successors to queue
-            for (next_state, action_idx, _pvals) in successors {
-                let canonical = self.maybe_canonicalize(next_state);
-                let next_fp = canonical.fingerprint();
-                if self.store.insert(canonical.clone(), None, None, None, depth + 1) {
-                    max_depth = max_depth.max(depth + 1);
-                    queue.push_back((
-                        next_fp,
-                        canonical,
-                        depth + 1,
-                        self.action_write_masks[action_idx],
-                        0, // sleep sets not used in fast check
-                    ));
-                }
-            }
-
-            // Grow FPSet if load factor too high (between states, no concurrent access)
-            self.store.maybe_grow_fpset();
-
-            // Update progress counters (lock-free, near-zero overhead)
-            if let Some(ref p) = self.config.progress {
-                p.states.store(self.store.len(), Ordering::Relaxed);
-                p.depth.store(max_depth, Ordering::Relaxed);
-                p.queue_len.store(queue.len(), Ordering::Relaxed);
-            }
-        }
-
-        info!(
-            states = self.store.len(),
-            max_depth, "model checking complete"
-        );
-
-        Ok(CheckOutcome::Ok {
-            states_explored: self.store.len(),
-            max_depth,
-        })
     }
 
     /// Phase 2: Re-explore with full tracking to find invariant violation trace.

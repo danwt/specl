@@ -1149,10 +1149,7 @@ fn cmd_check(
     // bloom is a storage backend, not a checking strategy
     // do NOT silently force fast_check when bloom is set
 
-    // --- Warn that --fast and --directed are always sequential (#21) ---
-    if fast_check && parallel && !quiet {
-        eprintln!("Note: --fast uses two-phase sequential BFS (parallel not yet supported)");
-    }
+    // --- Warn that --directed is always sequential (#21) ---
     if directed && parallel && !quiet {
         eprintln!("Note: --directed uses priority BFS which is sequential");
     }
