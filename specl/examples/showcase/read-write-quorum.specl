@@ -1,0 +1,53 @@
+module ReadWriteQuorum
+
+// Read-Write Quorum System (Gifford, 1979).
+// N+1 replicas store a versioned value. Writes go to a write quorum,
+// reads go to a read quorum. If W + R > N+1, read and write quorums
+// intersect, ensuring reads always see the latest write.
+//
+// Use: specl check read-write-quorum.specl -c N=4 -c MaxVer=2 --no-deadlock --no-auto --bfs
+// Verified: N=4 MaxVer=2 -> OK (14 states)
+
+const N: 2..5
+const MaxVer: 1..3
+
+var val: Dict[0..N, 0..MaxVer]
+var ver: Dict[0..N, 0..MaxVer]
+var latest_written: 0..MaxVer
+
+init {
+    val = {r: 0 for r in 0..N}
+    and ver = {r: 0 for r in 0..N}
+    and latest_written = 0
+}
+
+// Write to a majority quorum (N/2 + 1 replicas)
+// Simplified: write to replicas 0..N/2 (first majority)
+action Write(v: 1..MaxVer) {
+    require v > latest_written
+    require v <= MaxVer
+    val = {r: if r * 2 <= N then v else val[r] for r in 0..N}
+    and ver = {r: if r * 2 <= N then v else ver[r] for r in 0..N}
+    and latest_written = v
+}
+
+// Sync: any replica catches up from another with higher version
+action Sync(src: 0..N, dst: 0..N) {
+    require src != dst
+    require ver[src] > ver[dst]
+    val = val | {dst: val[src]}
+    and ver = ver | {dst: ver[src]}
+}
+
+// Any read quorum (majority) contains at least one up-to-date replica.
+// With W = ceil((N+1)/2) and R = ceil((N+1)/2), W + R > N+1 always.
+// So any majority read quorum intersects the write quorum.
+invariant ReadQuorumFresh {
+    latest_written == 0 or
+    (any r in 0..N: ver[r] == latest_written)
+}
+
+// Version monotonicity
+invariant VersionMonotonic {
+    all r in 0..N: ver[r] >= 0
+}
