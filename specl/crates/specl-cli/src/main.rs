@@ -14,7 +14,7 @@ use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -390,6 +390,21 @@ enum Commands {
         #[arg(short, long, value_name = "CONST=VALUE")]
         constant: Vec<String>,
     },
+
+    /// Batch check all .specl files in a directory using their // Use: comments
+    Test {
+        /// Directory containing .specl files (default: examples/)
+        #[arg(value_name = "DIR")]
+        dir: Option<PathBuf>,
+
+        /// Maximum states per spec (overrides // Use: comment, 0 = use comment value)
+        #[arg(long, default_value = "0")]
+        max_states: usize,
+
+        /// Maximum time per spec in seconds (0 = unlimited)
+        #[arg(long, default_value = "60")]
+        max_time: u64,
+    },
 }
 
 fn main() {
@@ -413,6 +428,8 @@ fn main() {
         Commands::Parse { verbose: true, .. } | Commands::Check { verbose: true, .. }
     ) {
         EnvFilter::new("debug")
+    } else if matches!(&cli.command, Commands::Test { .. }) {
+        EnvFilter::new("error")
     } else {
         EnvFilter::new("info")
     };
@@ -622,6 +639,11 @@ fn main() {
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
         Commands::Techniques { verbose } => cmd_techniques(verbose),
         Commands::Estimate { file, constant } => cmd_estimate(&file, &constant),
+        Commands::Test {
+            dir,
+            max_states,
+            max_time,
+        } => cmd_test(dir.as_ref(), max_states, max_time),
     };
 
     if let Err(e) = result {
@@ -2938,6 +2960,304 @@ fn cmd_estimate(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     }
 
     println!();
+    Ok(())
+}
+
+/// Parse a `// Use:` comment line from a specl file to extract check arguments.
+struct UseComment {
+    constants: Vec<String>,
+    no_deadlock: bool,
+    fast: bool,
+    max_states: usize,
+}
+
+fn parse_use_comment(source: &str) -> Option<UseComment> {
+    for line in source.lines() {
+        if !line.starts_with("// Use:") {
+            continue;
+        }
+        let rest = line.trim_start_matches("// Use:").trim();
+
+        // "No constants needed" case
+        if rest.contains("No constants needed") {
+            return Some(UseComment {
+                constants: Vec::new(),
+                no_deadlock: false,
+                fast: false,
+                max_states: 0,
+            });
+        }
+
+        let mut constants = Vec::new();
+        let mut no_deadlock = false;
+        let mut fast = false;
+        let mut max_states: usize = 0;
+
+        let parts: Vec<&str> = rest.split_whitespace().collect();
+        let mut i = 0;
+        while i < parts.len() {
+            match parts[i] {
+                "-c" => {
+                    if i + 1 < parts.len() {
+                        constants.push(parts[i + 1].to_string());
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                "--no-deadlock" => {
+                    no_deadlock = true;
+                    i += 1;
+                }
+                "--fast" => {
+                    fast = true;
+                    i += 1;
+                }
+                "--max-states" => {
+                    if i + 1 < parts.len() {
+                        max_states = parts[i + 1].parse().unwrap_or(0);
+                        i += 2;
+                    } else {
+                        i += 1;
+                    }
+                }
+                p if p.starts_with("-c") => {
+                    // Handle -cN=3 style (no space)
+                    constants.push(p.trim_start_matches("-c").to_string());
+                    i += 1;
+                }
+                _ => {
+                    i += 1;
+                }
+            }
+        }
+
+        return Some(UseComment {
+            constants,
+            no_deadlock,
+            fast,
+            max_states,
+        });
+    }
+    None
+}
+
+fn find_specl_files(dir: &Path) -> Vec<PathBuf> {
+    let mut files = Vec::new();
+    if dir.is_dir() {
+        if let Ok(entries) = fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_dir() {
+                    files.extend(find_specl_files(&path));
+                } else if path.extension().map_or(false, |e| e == "specl") {
+                    files.push(path);
+                }
+            }
+        }
+    }
+    files.sort();
+    files
+}
+
+/// Skip specs that are known to be too large for quick testing
+/// or have Use: comments with intentionally small parameters.
+const TEST_SKIP: &[&str] = &[
+    "RaftMongo.specl",
+    "ChainReplication.specl",
+    "sem-santa_claus.specl", // Use: params too small for invariant (NUM_ELVES=2 < 3)
+];
+
+fn cmd_test(dir: Option<&PathBuf>, override_max_states: usize, max_time_per_spec: u64) -> CliResult<()> {
+    let test_dir = dir.cloned().unwrap_or_else(|| {
+        // Default: look for examples/ relative to current dir
+        PathBuf::from("examples")
+    });
+
+    if !test_dir.is_dir() {
+        return Err(CliError::IoError {
+            message: format!("directory not found: {}", test_dir.display()),
+        });
+    }
+
+    let files = find_specl_files(&test_dir);
+    if files.is_empty() {
+        println!("No .specl files found in {}", test_dir.display());
+        return Ok(());
+    }
+
+    println!("Testing {} specs in {}", files.len(), test_dir.display());
+    println!();
+
+    let mut passed = 0;
+    let mut failed = 0;
+    let mut skipped = 0;
+    let mut failures: Vec<String> = Vec::new();
+    let total_start = Instant::now();
+
+    for file in &files {
+        let filename = file.file_name().unwrap().to_str().unwrap();
+
+        // Skip known large specs
+        if TEST_SKIP.contains(&filename) {
+            println!("  SKIP  {}", file.display());
+            skipped += 1;
+            continue;
+        }
+
+        let source = match fs::read_to_string(file) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("  FAIL  {} (read error: {})", file.display(), e);
+                failures.push(format!("{}: read error: {}", file.display(), e));
+                failed += 1;
+                continue;
+            }
+        };
+
+        // Parse Use: comment for constants and flags
+        let use_comment = parse_use_comment(&source);
+        let (constants, no_deadlock, fast, comment_max_states) = match &use_comment {
+            Some(uc) => (uc.constants.clone(), uc.no_deadlock, uc.fast, uc.max_states),
+            None => {
+                // No Use: comment — skip (can't know constants)
+                println!("  SKIP  {} (no // Use: comment)", file.display());
+                skipped += 1;
+                continue;
+            }
+        };
+
+        // Parse
+        let module = match parse(&source) {
+            Ok(m) => m,
+            Err(e) => {
+                println!("  FAIL  {} (parse: {})", file.display(), e);
+                failures.push(format!("{}: parse error: {}", file.display(), e));
+                failed += 1;
+                continue;
+            }
+        };
+
+        // Type check
+        if let Err(e) = specl_types::check_module(&module) {
+            println!("  FAIL  {} (typecheck: {})", file.display(), e);
+            failures.push(format!("{}: typecheck error: {}", file.display(), e));
+            failed += 1;
+            continue;
+        }
+
+        // Compile
+        let spec = match compile(&module) {
+            Ok(s) => s,
+            Err(e) => {
+                println!("  FAIL  {} (compile: {})", file.display(), e);
+                failures.push(format!("{}: compile error: {}", file.display(), e));
+                failed += 1;
+                continue;
+            }
+        };
+
+        // Resolve constants (default unspecified ones to 1)
+        let mut const_values = vec![Value::None; spec.consts.len()];
+        for const_decl in &spec.consts {
+            let mut found = false;
+            for c in &constants {
+                if let Some((name, val)) = c.split_once('=') {
+                    if name == const_decl.name {
+                        if let Ok(v) = val.parse::<i64>() {
+                            const_values[const_decl.index] = Value::Int(v);
+                            found = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !found {
+                const_values[const_decl.index] = Value::Int(1);
+            }
+        }
+        let consts = const_values;
+
+        let effective_max_states = if override_max_states > 0 {
+            override_max_states
+        } else if comment_max_states > 0 {
+            comment_max_states
+        } else {
+            1_000_000 // Default limit for testing
+        };
+
+        let config = CheckConfig {
+            check_deadlock: !no_deadlock,
+            max_states: effective_max_states,
+            max_depth: 0,
+            fast_check: fast,
+            max_time_secs: max_time_per_spec,
+            ..Default::default()
+        };
+
+        let start = Instant::now();
+        let mut explorer = Explorer::new(spec, consts, config);
+        let result = match explorer.check() {
+            Ok(r) => r,
+            Err(e) => {
+                println!("  FAIL  {} (check error: {})", file.display(), e);
+                failures.push(format!("{}: check error: {}", file.display(), e));
+                failed += 1;
+                continue;
+            }
+        };
+
+        let elapsed = start.elapsed();
+        let secs = elapsed.as_secs_f64();
+
+        match &result {
+            CheckOutcome::Ok { states_explored, .. } => {
+                println!("  PASS  {} ({} states, {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+                passed += 1;
+            }
+            CheckOutcome::StateLimitReached { states_explored, .. } => {
+                println!("  PASS  {} ({} states [limit], {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+                passed += 1;
+            }
+            CheckOutcome::MemoryLimitReached { states_explored, .. } => {
+                println!("  PASS  {} ({} states [mem limit], {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+                passed += 1;
+            }
+            CheckOutcome::TimeLimitReached { states_explored, .. } => {
+                println!("  PASS  {} ({} states [time limit], {:.1}s)", file.display(), format_large_number(*states_explored as u128), secs);
+                passed += 1;
+            }
+            CheckOutcome::InvariantViolation { invariant, .. } => {
+                // Some examples intentionally have bugs
+                if source.contains("intentional") || source.contains("bug") || source.contains("BUG") {
+                    println!("  PASS  {} (expected violation: {}, {:.1}s)", file.display(), invariant, secs);
+                    passed += 1;
+                } else {
+                    println!("  FAIL  {} (invariant violation: {})", file.display(), invariant);
+                    failures.push(format!("{}: invariant violation: {}", file.display(), invariant));
+                    failed += 1;
+                }
+            }
+            CheckOutcome::Deadlock { .. } => {
+                println!("  PASS  {} (deadlock found, {:.1}s)", file.display(), secs);
+                passed += 1;
+            }
+        }
+    }
+
+    let total_secs = total_start.elapsed().as_secs_f64();
+    println!();
+    println!("Results: {} passed, {} failed, {} skipped ({:.1}s)", passed, failed, skipped, total_secs);
+
+    if !failures.is_empty() {
+        println!();
+        println!("Failures:");
+        for f in &failures {
+            println!("  {}", f);
+        }
+        std::process::exit(1);
+    }
+
     Ok(())
 }
 
