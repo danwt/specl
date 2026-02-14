@@ -17,6 +17,7 @@ pub fn check_smart(
     consts: &[Value],
     bmc_depth: usize,
     seq_bound: usize,
+    spacer_profile: crate::SpacerProfile,
 ) -> SymbolicResult<SymbolicOutcome> {
     // 1. Try simple induction
     info!("smart: trying inductive checking");
@@ -56,7 +57,7 @@ pub fn check_smart(
 
     // 3. Try IC3/CHC
     info!("smart: trying IC3/CHC");
-    match crate::ic3::check_ic3(spec, consts, seq_bound)? {
+    match crate::ic3::check_ic3(spec, consts, seq_bound, spacer_profile)? {
         SymbolicOutcome::Ok { .. } => {
             return Ok(SymbolicOutcome::Ok {
                 method: "smart(IC3)",

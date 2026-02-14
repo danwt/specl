@@ -19,12 +19,13 @@ pub fn check_ic3(
     spec: &CompiledSpec,
     consts: &[Value],
     seq_bound: usize,
+    spacer_profile: crate::SpacerProfile,
 ) -> SymbolicResult<SymbolicOutcome> {
-    info!("starting IC3/CHC verification");
+    info!(?spacer_profile, "starting IC3/CHC verification");
 
     let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let ctx = Context::thread_local().get_z3_context();
-    let fp = Fixedpoint::new();
+    let fp = Fixedpoint::with_profile(spacer_profile);
 
     // Collect sorts for all flattened state variables
     let sorts = collect_sorts(&layout, ctx);

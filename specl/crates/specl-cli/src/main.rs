@@ -12,7 +12,7 @@ use specl_eval::Value;
 use specl_ir::analyze::analyze;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer, Fingerprint, ProgressCounters, SimulateOutcome, State, StateStore};
-use specl_symbolic::{SymbolicConfig, SymbolicMode, SymbolicOutcome};
+use specl_symbolic::{SpacerProfile, SymbolicConfig, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
 use std::fs;
@@ -327,6 +327,10 @@ enum Commands {
         #[arg(long, default_value = "5", help_heading = "Symbolic (Z3)")]
         seq_bound: usize,
 
+        /// Spacer parameter profile for IC3/CHC {default, fast, thorough}
+        #[arg(long, default_value = "default", help_heading = "Symbolic (Z3)")]
+        spacer_profile: String,
+
         /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -537,6 +541,7 @@ fn main() {
             ic3,
             portfolio,
             seq_bound,
+            spacer_profile,
             verbose,
             quiet,
             no_auto,
@@ -575,6 +580,12 @@ fn main() {
                 std::process::exit(1);
             }
 
+            let sp = match spacer_profile.as_str() {
+                "fast" => SpacerProfile::Fast,
+                "thorough" => SpacerProfile::Thorough,
+                _ => SpacerProfile::Default,
+            };
+
             let inner = if use_symbolic {
                 cmd_check_symbolic(
                     &file,
@@ -586,6 +597,7 @@ fn main() {
                     ic3,
                     portfolio,
                     seq_bound,
+                    sp,
                     json,
                 )
             } else if use_bfs {
@@ -623,7 +635,7 @@ fn main() {
                     }
                     cmd_check_symbolic(
                         &file, &constant, bmc_depth, false, false, None, false, false, seq_bound,
-                        json,
+                        sp, json,
                     )
                 } else {
                     cmd_check(
@@ -1561,6 +1573,7 @@ fn cmd_check_symbolic(
     ic3: bool,
     portfolio: bool,
     seq_bound: usize,
+    spacer_profile: SpacerProfile,
     json: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
@@ -1599,6 +1612,7 @@ fn cmd_check_symbolic(
         },
         depth: bmc_depth,
         seq_bound,
+        spacer_profile,
     };
 
     let mode_str = if portfolio {

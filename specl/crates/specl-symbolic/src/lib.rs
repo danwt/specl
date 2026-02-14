@@ -15,6 +15,7 @@ pub mod state_vars;
 pub mod trace;
 pub mod transition;
 
+pub use fixedpoint::SpacerProfile;
 use specl_eval::Value;
 use specl_ir::CompiledSpec;
 use thiserror::Error;
@@ -67,6 +68,8 @@ pub struct SymbolicConfig {
     pub depth: usize,
     /// Maximum sequence length for Seq[T] variables (default: 5).
     pub seq_bound: usize,
+    /// Spacer parameter profile for IC3/CHC solving.
+    pub spacer_profile: SpacerProfile,
 }
 
 /// Symbolic checking mode.
@@ -97,8 +100,8 @@ pub fn check(
         SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth, sb),
         SymbolicMode::Inductive => inductive::check_inductive(spec, consts, sb),
         SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k, sb),
-        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb),
-        SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth, sb),
-        SymbolicMode::Portfolio => portfolio::check_portfolio(spec, consts, config.depth, sb),
+        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb, config.spacer_profile),
+        SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile),
+        SymbolicMode::Portfolio => portfolio::check_portfolio(spec, consts, config.depth, sb, config.spacer_profile),
     }
 }

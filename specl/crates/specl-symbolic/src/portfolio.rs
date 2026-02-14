@@ -27,6 +27,7 @@ pub fn check_portfolio(
     consts: &[Value],
     bmc_depth: usize,
     seq_bound: usize,
+    spacer_profile: crate::SpacerProfile,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!("portfolio: launching parallel symbolic strategies");
 
@@ -104,7 +105,7 @@ pub fn check_portfolio(
         if done_ic3.load(Ordering::Relaxed) {
             return StrategyResult::Inconclusive("cancelled".into());
         }
-        match crate::ic3::check_ic3(&spec_ic3, &consts_ic3, seq_bound) {
+        match crate::ic3::check_ic3(&spec_ic3, &consts_ic3, seq_bound, spacer_profile) {
             Ok(SymbolicOutcome::Ok { .. }) => {
                 done_ic3.store(true, Ordering::Relaxed);
                 StrategyResult::Done(SymbolicOutcome::Ok {
