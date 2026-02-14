@@ -319,6 +319,10 @@ enum Commands {
         #[arg(long, help_heading = "Symbolic (Z3)")]
         ic3: bool,
 
+        /// Portfolio: run BMC, k-induction, and IC3 in parallel (first result wins)
+        #[arg(long, help_heading = "Symbolic (Z3)")]
+        portfolio: bool,
+
         /// Max sequence length for symbolic Seq[T] encoding
         #[arg(long, default_value = "5", help_heading = "Symbolic (Z3)")]
         seq_bound: usize,
@@ -531,6 +535,7 @@ fn main() {
             inductive,
             k_induction,
             ic3,
+            portfolio,
             seq_bound,
             verbose,
             quiet,
@@ -543,7 +548,7 @@ fn main() {
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
 
-            let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3;
+            let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3 || portfolio;
             let specific_explicit = por
                 || symmetry
                 || fast
@@ -579,6 +584,7 @@ fn main() {
                     inductive,
                     k_induction,
                     ic3,
+                    portfolio,
                     seq_bound,
                     json,
                 )
@@ -616,7 +622,8 @@ fn main() {
                         println!("Auto-selected: symbolic checking (unbounded types detected)");
                     }
                     cmd_check_symbolic(
-                        &file, &constant, bmc_depth, false, false, None, false, seq_bound, json,
+                        &file, &constant, bmc_depth, false, false, None, false, false, seq_bound,
+                        json,
                     )
                 } else {
                     cmd_check(
@@ -1552,6 +1559,7 @@ fn cmd_check_symbolic(
     inductive: bool,
     k_induction: Option<usize>,
     ic3: bool,
+    portfolio: bool,
     seq_bound: usize,
     json: bool,
 ) -> CliResult<()> {
@@ -1576,7 +1584,9 @@ fn cmd_check_symbolic(
     let consts = parse_constants(constants, &spec)?;
 
     let config = SymbolicConfig {
-        mode: if ic3 {
+        mode: if portfolio {
+            SymbolicMode::Portfolio
+        } else if ic3 {
             SymbolicMode::Ic3
         } else if let Some(k) = k_induction {
             SymbolicMode::KInduction(k)
@@ -1591,7 +1601,9 @@ fn cmd_check_symbolic(
         seq_bound,
     };
 
-    let mode_str = if ic3 {
+    let mode_str = if portfolio {
+        "portfolio"
+    } else if ic3 {
         "IC3"
     } else if k_induction.is_some() {
         "k-induction"
