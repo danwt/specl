@@ -371,6 +371,17 @@ enum Commands {
         #[arg(short, long)]
         verbose: bool,
     },
+
+    /// Estimate state space size and resource requirements before checking
+    Estimate {
+        /// Input file
+        #[arg(value_name = "FILE")]
+        file: PathBuf,
+
+        /// Constant assignments (name=value)
+        #[arg(short, long, value_name = "CONST=VALUE")]
+        constant: Vec<String>,
+    },
 }
 
 fn main() {
@@ -594,6 +605,7 @@ fn main() {
         } => cmd_watch(&file, &constant, max_states, max_depth, !no_deadlock),
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
         Commands::Techniques { verbose } => cmd_techniques(verbose),
+        Commands::Estimate { file, constant } => cmd_estimate(&file, &constant),
     };
 
     if let Err(e) = result {
@@ -2710,6 +2722,184 @@ fn run_check_iteration(
 
     println!();
     println!("Watching for changes...");
+}
+
+fn cmd_estimate(file: &PathBuf, constants: &[String]) -> CliResult<()> {
+    let filename = file.display().to_string();
+    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?);
+
+    let module =
+        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
+    specl_types::check_module(&module)
+        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
+    let spec = compile(&module).map_err(|e| CliError::CompileError {
+        message: e.to_string(),
+    })?;
+    let consts = parse_constants(constants, &spec)?;
+
+    let profile = analyze(&spec);
+
+    // Header with constants
+    let const_strs: Vec<String> = spec
+        .consts
+        .iter()
+        .map(|c| format!("{}={}", c.name, consts[c.index]))
+        .collect();
+    println!();
+    if const_strs.is_empty() {
+        println!("Estimated state space: {} ({})", module.name.name, filename);
+    } else {
+        println!(
+            "Estimated state space: {} ({})",
+            module.name.name,
+            const_strs.join(", ")
+        );
+    }
+
+    // Variable breakdown
+    println!("  Variables: {}, avg domain size: {}", profile.num_vars, {
+        let bounded: Vec<f64> = profile
+            .var_domain_sizes
+            .iter()
+            .filter_map(|(_, _, d)| d.map(|s| s as f64))
+            .collect();
+        if bounded.is_empty() {
+            "unbounded".to_string()
+        } else {
+            let avg = bounded.iter().sum::<f64>() / bounded.len() as f64;
+            format!("{:.1}", avg)
+        }
+    });
+
+    // Action branching
+    let total_combos: Option<u64> = {
+        let mut sum = 0u64;
+        let mut all_bounded = true;
+        for (_, c) in &profile.action_param_counts {
+            match c {
+                Some(n) => sum = sum.saturating_add(*n),
+                None => all_bounded = false,
+            }
+        }
+        if all_bounded {
+            Some(sum)
+        } else {
+            None
+        }
+    };
+    match total_combos {
+        Some(c) => println!(
+            "  Actions: {}, total branching factor: ~{}",
+            profile.num_actions, c
+        ),
+        None => println!(
+            "  Actions: {}, branching factor: unbounded",
+            profile.num_actions
+        ),
+    }
+
+    // State space estimate
+    match profile.state_space_bound {
+        Some(bound) => {
+            println!("  Estimated states: ~{}", format_large_number(bound));
+
+            // Time estimate: assume 80K states/s single-thread, ~300K multi-thread
+            let secs_single = bound as f64 / 80_000.0;
+            let secs_multi = bound as f64 / 300_000.0;
+            println!(
+                "  Estimated time: ~{} (single-threaded) / ~{} (parallel)",
+                format_duration(secs_single),
+                format_duration(secs_multi)
+            );
+
+            // Memory estimate: ~80 bytes/state full tracking, 8 bytes/state fast
+            let mem_full_mb = (bound as f64 * 80.0) / (1024.0 * 1024.0);
+            let mem_fast_mb = (bound as f64 * 8.0) / (1024.0 * 1024.0);
+            println!(
+                "  Memory estimate: ~{} (full tracking) / ~{} (--fast)",
+                format_memory(mem_full_mb),
+                format_memory(mem_fast_mb)
+            );
+        }
+        None => {
+            println!("  Estimated states: unbounded (cannot estimate)");
+            println!();
+            println!("  Tip: Use --bmc for symbolic bounded model checking with unbounded types,");
+            println!("       or add range bounds to variables for exhaustive checking.");
+        }
+    }
+
+    // Per-variable breakdown
+    println!();
+    println!("  Variable breakdown:");
+    for (name, ty, domain) in &profile.var_domain_sizes {
+        match domain {
+            Some(size) => println!("    {}: {} ({} values)", name, ty, format_large_number(*size)),
+            None => println!("    {}: {} (unbounded)", name, ty),
+        }
+    }
+
+    // Tips
+    if let Some(bound) = profile.state_space_bound {
+        println!();
+        if bound > 100_000_000 {
+            println!("  Tip: Use --fast for fingerprint-only mode (10x less memory, no traces)");
+            println!("       Use --bloom for fixed-memory probabilistic mode (bug finding)");
+        }
+        if bound > 10_000_000 {
+            if profile.has_symmetry {
+                let factors: Vec<String> = profile
+                    .symmetry_domain_sizes
+                    .iter()
+                    .map(|s| format!("{}x", factorial(*s as u64)))
+                    .collect();
+                println!(
+                    "  Tip: Use --symmetry for up to {} reduction",
+                    factors.join(", ")
+                );
+            }
+            let independence_pct = (profile.independence_ratio * 100.0) as u32;
+            if independence_pct >= 20 {
+                println!(
+                    "  Tip: Use --por ({}% of action pairs are independent)",
+                    independence_pct
+                );
+            }
+        }
+    }
+
+    println!();
+    Ok(())
+}
+
+fn format_duration(secs: f64) -> String {
+    if secs < 1.0 {
+        format!("{:.0}ms", secs * 1000.0)
+    } else if secs < 60.0 {
+        format!("{:.1}s", secs)
+    } else if secs < 3600.0 {
+        format!("{:.0}min", secs / 60.0)
+    } else if secs < 86400.0 {
+        format!("{:.1}h", secs / 3600.0)
+    } else {
+        format!("{:.0}d", secs / 86400.0)
+    }
+}
+
+fn format_memory(mb: f64) -> String {
+    if mb < 1.0 {
+        format!("{:.0} KB", mb * 1024.0)
+    } else if mb < 1024.0 {
+        format!("{:.0} MB", mb)
+    } else {
+        format!("{:.1} GB", mb / 1024.0)
+    }
+}
+
+fn factorial(n: u64) -> u64 {
+    (1..=n).fold(1u64, |acc, x| acc.saturating_mul(x))
 }
 
 fn cmd_techniques(verbose: bool) -> CliResult<()> {
