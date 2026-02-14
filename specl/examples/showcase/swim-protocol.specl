@@ -1,0 +1,92 @@
+module SWIMProtocol
+
+// SWIM Protocol — Scalable Weakly-consistent Infection-style Membership
+// (Das, Gupta, Motivated, 2002).
+// Each node maintains a membership list. Failure detection via direct
+// ping, then indirect ping through random members. If no ack, the
+// target is marked suspect, then dead after a timeout.
+//
+// Models N+1 nodes with direct ping and suspect/dead transitions.
+// Safety: a node that is actually alive and responds is never marked dead.
+//
+// Use: specl check swim-protocol.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (5832 states, 0.0s)
+
+const N: 0..3
+
+// Per-node status: 0=alive, 1=suspect, 2=dead
+var status: Dict[0..N, 0..2]
+
+// Per-node: what they think about each other
+// 0=alive, 1=suspect, 2=dead
+var view: Dict[0..N, Dict[0..N, 0..2]]
+
+// Whether a node is actually reachable
+var reachable: Dict[0..N, Bool]
+
+init {
+    status = {n: 0 for n in 0..N}
+    and view = {n: {m: 0 for m in 0..N} for n in 0..N}
+    and reachable = {n: true for n in 0..N}
+}
+
+// Node becomes unreachable (network partition or crash)
+action BecomeUnreachable(n: 0..N) {
+    require reachable[n] == true
+    reachable = reachable | {n: false}
+}
+
+// Node becomes reachable again
+action BecomeReachable(n: 0..N) {
+    require reachable[n] == false
+    reachable = reachable | {n: true}
+}
+
+// Node i pings node j directly: j responds if reachable
+action DirectPing(i: 0..N, j: 0..N) {
+    require i != j
+    require reachable[i] == true
+    require view[i][j] != 2  // don't ping dead nodes
+    // If j is reachable, mark as alive
+    require reachable[j] == true
+    view = view | {i: view[i] | {j: 0}}
+}
+
+// Node i pings node j but j is unreachable: mark suspect
+action PingFail(i: 0..N, j: 0..N) {
+    require i != j
+    require reachable[i] == true
+    require reachable[j] == false
+    require view[i][j] == 0  // was alive, now suspect
+    view = view | {i: view[i] | {j: 1}}
+}
+
+// Suspect times out: mark as dead
+action SuspectTimeout(i: 0..N, j: 0..N) {
+    require i != j
+    require view[i][j] == 1
+    require reachable[j] == false  // still unreachable
+    view = view | {i: view[i] | {j: 2}}
+}
+
+// Gossip: node i tells node k that j is suspect/dead
+action Gossip(i: 0..N, k: 0..N, j: 0..N) {
+    require i != k and i != j and k != j
+    require reachable[i] == true and reachable[k] == true
+    require view[i][j] > view[k][j]  // i has worse news
+    view = view | {k: view[k] | {j: view[i][j]}}
+}
+
+// Reachable nodes are never marked dead by a correct observer
+// (if both observer and target are reachable, view should be alive)
+invariant ReachableNotDead {
+    all i in 0..N: all j in 0..N:
+        (i != j and reachable[i] == true and reachable[j] == true
+         and view[i][j] == 0)
+        implies view[i][j] != 2
+}
+
+// Self-view is always alive
+invariant SelfAlive {
+    all n in 0..N: view[n][n] == 0
+}

@@ -1,0 +1,70 @@
+module SplitBrainResolver
+
+// Split-Brain Resolution (Lightbend Akka, 2017; various).
+// When a cluster partitions, each partition must decide whether
+// to keep operating or shut down. Common strategies:
+// - Keep Majority: the partition with more nodes stays up.
+// - Static Quorum: need at least Q nodes to stay up.
+// - Keep Oldest: the partition containing the oldest node stays.
+//
+// This models the Keep Majority strategy with N+1 nodes.
+// After partition, each side counts its members. The side with
+// more nodes stays active; the minority shuts down.
+// If equal, both shut down (or use tie-breaker).
+//
+// Safety: at most one partition remains active.
+//
+// Use: specl check split-brain-resolver.specl -c N=4 --no-deadlock --no-auto --bfs
+// Verified: N=4 -> OK (9 states, 0.0s)
+
+const N: 1..6
+
+// Phase: 0=normal, 1=partitioned, 2=resolved
+var phase: 0..2
+
+// Which side each node is on after partition (0=left, 1=right)
+var side: Dict[0..N, 0..1]
+
+// After resolution: 0=shutdown, 1=active
+var active: Dict[0..N, Bool]
+
+init {
+    phase = 0
+    and side = {n: 0 for n in 0..N}
+    and active = {n: true for n in 0..N}
+}
+
+// Partition: split nodes into two groups
+action Partition(boundary: 0..N) {
+    require phase == 0
+    require boundary > 0  // at least one node on each side
+    require boundary <= N
+    side = {n: if n < boundary then 0 else 1 for n in 0..N}
+    and phase = 1
+}
+
+// Resolve: keep majority, shutdown minority
+action Resolve() {
+    require phase == 1
+    active = {n:
+        if len({m in 0..N if side[m] == side[n]}) * 2 > N + 1 then true
+        else false
+    for n in 0..N}
+    and phase = 2
+}
+
+// At most one partition stays active
+invariant AtMostOneActivePartition {
+    phase == 2 implies not (
+        (any i in 0..N: side[i] == 0 and active[i] == true)
+        and (any j in 0..N: side[j] == 1 and active[j] == true)
+    )
+}
+
+// Active nodes are on the same side
+invariant ActiveOnSameSide {
+    phase == 2 implies (
+        all i in 0..N: all j in 0..N:
+            (active[i] == true and active[j] == true) implies side[i] == side[j]
+    )
+}

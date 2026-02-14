@@ -1,0 +1,56 @@
+module RendezvousHashing
+
+// Rendezvous Hashing / Highest Random Weight (Thaler & Ravishankar, 1998).
+// Each key is assigned to the node with the highest hash(key, node).
+// When a node fails, only keys assigned to that node are remapped.
+// No need for a hash ring — just compute scores for all live nodes.
+//
+// This models the assignment property: keys always map to alive nodes,
+// and a node's departure only moves its own keys.
+//
+// Use: specl check rendezvous-hashing.specl -c N=2 -c K=3 --no-deadlock --no-auto --bfs
+// Verified: N=2 K=3 -> OK (10 states, 0.0s)
+
+const N: 0..3
+const K: 1..4
+
+var alive: Dict[0..N, Bool]
+var owner: Dict[0..K, 0..N]
+
+// Deterministic score: hash(key, node) = (key * 7 + node * 13) % (N + 1 + K + 1)
+// Higher score wins; tie-break by higher node ID.
+
+init {
+    alive = {n: true for n in 0..N}
+    // Initially, each key goes to the highest-scoring alive node
+    // Simplified: key k -> node k % (N+1)
+    and owner = {k: k % (N + 1) for k in 0..K}
+}
+
+// Node n goes down: reassign its keys to highest-scoring remaining node
+action NodeDown(n: 0..N, replacement: 0..N) {
+    require alive[n] == true
+    require alive[replacement] == true
+    require replacement != n
+    // Must have at least one other alive node
+    alive = alive | {n: false}
+    and owner = {k:
+        if owner[k] == n then replacement
+        else owner[k]
+    for k in 0..K}
+}
+
+// Node n comes back: reclaim keys that naturally hash to it
+action NodeUp(n: 0..N) {
+    require alive[n] == false
+    alive = alive | {n: true}
+    and owner = {k:
+        if k % (N + 1) == n then n
+        else owner[k]
+    for k in 0..K}
+}
+
+// Keys are always assigned to alive nodes
+invariant KeysOnAlive {
+    all k in 0..K: alive[owner[k]] == true
+}
