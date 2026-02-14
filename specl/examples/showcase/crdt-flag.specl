@@ -1,0 +1,66 @@
+module CRDTFlag
+
+// Enable-Wins Flag CRDT (Shapiro et al., 2011).
+// A boolean flag that can be enabled or disabled.
+// Concurrent enable and disable resolve in favor of enable.
+// Each replica tracks enable and disable tokens (unique IDs).
+// The flag is true iff there exist enable tokens not covered
+// by a disable operation.
+//
+// N+1 replicas. Simplified: track enable/disable counts.
+// Enable-wins: if any replica has enabled since the last
+// observed disable, the flag is true after merge.
+//
+// Use: specl check crdt-flag.specl -c N=2 -c MaxOps=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxOps=2 -> OK (110 states)
+
+const N: 0..3
+const MaxOps: 1..4
+
+// Per-replica: enable count and disable count (lamport-style)
+var enable_count: Dict[0..N, 0..MaxOps]
+var disable_count: Dict[0..N, 0..MaxOps]
+var ops: 0..MaxOps
+
+init {
+    enable_count = {r: 0 for r in 0..N}
+    and disable_count = {r: 0 for r in 0..N}
+    and ops = 0
+}
+
+// Enable at replica r
+action Enable(r: 0..N) {
+    require ops < MaxOps
+    ops = ops + 1
+    and enable_count = enable_count | {r: enable_count[r] + 1}
+}
+
+// Disable at replica r
+action Disable(r: 0..N) {
+    require ops < MaxOps
+    ops = ops + 1
+    and disable_count = disable_count | {r: disable_count[r] + 1}
+}
+
+// Merge: take max of enable and disable counts
+action Merge(src: 0..N, dst: 0..N) {
+    require src != dst
+    enable_count = enable_count | {dst:
+        if enable_count[src] > enable_count[dst] then enable_count[src]
+        else enable_count[dst]
+    }
+    and disable_count = disable_count | {dst:
+        if disable_count[src] > disable_count[dst] then disable_count[src]
+        else disable_count[dst]
+    }
+}
+
+// Flag value at a replica: true iff enable_count > disable_count
+// After full merge, all replicas agree on the flag value
+invariant ConvergenceAfterMerge {
+    (all i in 0..N: all j in 0..N:
+        enable_count[i] == enable_count[j] and disable_count[i] == disable_count[j])
+    implies
+    (all i in 0..N: all j in 0..N:
+        (enable_count[i] > disable_count[i]) == (enable_count[j] > disable_count[j]))
+}

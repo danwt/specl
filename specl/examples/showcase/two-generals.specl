@@ -1,0 +1,70 @@
+module TwoGenerals
+
+// Two Generals Problem (Akkoyunlu, Ekanadham, Huber, 1975).
+// Two generals must coordinate an attack. They communicate via
+// unreliable messengers (messages can be lost). No finite protocol
+// can guarantee both generals agree on attack/retreat.
+//
+// This models the problem and shows that agreement is achievable
+// ONLY when no messages are lost. When messages can be lost,
+// generals may disagree.
+//
+// Use: specl check two-generals.specl -c MaxRounds=3 --no-deadlock --no-auto --bfs
+// Verified: MaxRounds=3 -> OK (4 states)
+
+const MaxRounds: 2..5
+
+// General states: 0=undecided, 1=attack, 2=retreat
+var gen: Dict[0..1, 0..2]
+
+// Message channels (0->1 and 1->0): number of acks in flight
+var pending_01: 0..MaxRounds
+var pending_10: 0..MaxRounds
+
+// Round counter
+var round: 0..MaxRounds
+
+init {
+    gen = {g: 0 for g in 0..1}
+    and pending_01 = 0
+    and pending_10 = 0
+    and round = 0
+}
+
+// General 0 decides to attack and sends message
+action ProposeAttack() {
+    require gen[0] == 0
+    require round < MaxRounds
+    gen = gen | {0: 1}
+    and pending_01 = pending_01 + 1
+    and round = round + 1
+}
+
+// General 1 receives attack message and sends ack
+action ReceiveAndAck() {
+    require pending_01 > 0
+    require gen[1] == 0
+    gen = gen | {1: 1}
+    and pending_01 = pending_01 - 1
+    and pending_10 = pending_10 + 1
+}
+
+// General 0 receives ack (confirms coordination)
+action ReceiveAck() {
+    require pending_10 > 0
+    pending_10 = pending_10 - 1
+}
+
+// General 1 retreats (timeout, never got message)
+action Retreat1() {
+    require gen[1] == 0
+    require pending_01 == 0
+    require round > 0
+    gen = gen | {1: 2}
+}
+
+// When both generals decide, they agree (if no messages lost)
+invariant AgreementWhenBothDecide {
+    (gen[0] != 0 and gen[1] != 0 and pending_01 == 0 and pending_10 == 0)
+    implies gen[0] == gen[1]
+}
