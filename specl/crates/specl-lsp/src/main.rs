@@ -1151,13 +1151,68 @@ impl SpeclLanguageServer {
         result
     }
 
-    fn get_code_actions(&self, source: &str, uri: &Url) -> Vec<CodeActionOrCommand> {
+    fn get_code_actions(
+        &self,
+        source: &str,
+        uri: &Url,
+        diagnostics: &[Diagnostic],
+    ) -> Vec<CodeActionOrCommand> {
         let module = match parse(source) {
             Ok(m) => m,
             Err(_) => return vec![],
         };
 
         let mut actions = Vec::new();
+
+        // Diagnostic-associated quick fixes
+        for diag in diagnostics {
+            // "undefined variable: foo" → offer to declare it
+            if let Some(name) = diag.message.strip_prefix("undefined variable: ") {
+                // Find the last var/const declaration to insert after
+                let mut insert_line = 0u32;
+                for decl in &module.decls {
+                    match decl {
+                        Decl::Var(d) => {
+                            let l = d.span.line.saturating_sub(1);
+                            if l >= insert_line {
+                                insert_line = l + 1;
+                            }
+                        }
+                        Decl::Const(d) => {
+                            let l = d.span.line.saturating_sub(1);
+                            if l >= insert_line {
+                                insert_line = l + 1;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                let snippet = format!("var {name}: ???\n");
+                let pos = Position {
+                    line: insert_line,
+                    character: 0,
+                };
+                let mut changes = std::collections::HashMap::new();
+                changes.insert(
+                    uri.clone(),
+                    vec![TextEdit {
+                        range: Range { start: pos, end: pos },
+                        new_text: snippet,
+                    }],
+                );
+                actions.push(CodeActionOrCommand::CodeAction(CodeAction {
+                    title: format!("Declare variable '{name}'"),
+                    kind: Some(CodeActionKind::QUICKFIX),
+                    diagnostics: Some(vec![diag.clone()]),
+                    edit: Some(WorkspaceEdit {
+                        changes: Some(changes),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                }));
+            }
+        }
 
         // Find insertion point: after the last declaration
         let last_line = source.lines().count() as u32;
@@ -1413,7 +1468,7 @@ impl LanguageServer for SpeclLanguageServer {
     async fn code_action(&self, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
         let uri = &params.text_document.uri;
         let Some(content) = self.get_content(uri) else { return Ok(None) };
-        let actions = self.get_code_actions(&content, uri);
+        let actions = self.get_code_actions(&content, uri, &params.context.diagnostics);
         Ok(if actions.is_empty() {
             None
         } else {
@@ -1868,7 +1923,7 @@ var x: 0..10
         let (service, _) = LspService::new(SpeclLanguageServer::new);
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
-        let actions = server.get_code_actions(src, &uri);
+        let actions = server.get_code_actions(src, &uri, &[]);
         let titles: Vec<&str> = actions
             .iter()
             .filter_map(|a| match a {
@@ -1886,7 +1941,7 @@ var x: 0..10
         let (service, _) = LspService::new(SpeclLanguageServer::new);
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
-        let actions = server.get_code_actions(SAMPLE_SPEC, &uri);
+        let actions = server.get_code_actions(SAMPLE_SPEC, &uri, &[]);
         let titles: Vec<&str> = actions
             .iter()
             .filter_map(|a| match a {
@@ -1954,6 +2009,44 @@ var x: 0..10
             step.range.end.line > step.range.start.line,
             "multi-line action should have range spanning multiple lines: start={}, end={}",
             step.range.start.line, step.range.end.line
+        );
+    }
+
+    #[test]
+    fn code_action_quickfix_undefined_var() {
+        let src = r#"module Test
+var x: 0..10
+init { x = 0 }
+action A() { x = y }
+"#;
+        let (service, _) = LspService::new(SpeclLanguageServer::new);
+        let server = service.inner();
+        let uri = Url::parse("file:///test.specl").unwrap();
+
+        // Simulate the diagnostic that the type checker would produce
+        let diag = Diagnostic {
+            range: Range {
+                start: Position { line: 3, character: 17 },
+                end: Position { line: 3, character: 18 },
+            },
+            severity: Some(DiagnosticSeverity::ERROR),
+            source: Some("specl".to_string()),
+            message: "undefined variable: y".to_string(),
+            ..Default::default()
+        };
+
+        let actions = server.get_code_actions(src, &uri, &[diag]);
+        let titles: Vec<&str> = actions
+            .iter()
+            .filter_map(|a| match a {
+                CodeActionOrCommand::CodeAction(ca) => Some(ca.title.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            titles.contains(&"Declare variable 'y'"),
+            "should offer to declare undefined variable 'y', got: {:?}",
+            titles
         );
     }
 }
