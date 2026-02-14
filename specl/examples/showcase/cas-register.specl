@@ -1,0 +1,57 @@
+module CASRegister
+
+// Compare-and-swap (CAS) register with N+1 concurrent clients.
+// Each client tries to CAS(expected, desired) on a shared register.
+// The operation succeeds only if the register's current value matches
+// the expected value, then atomically sets it to the desired value.
+//
+// Models a simple lock: CAS(0, myId) to acquire, CAS(myId, 0) to release.
+// Invariant: at most one client holds the lock.
+//
+// Use: specl check cas-register.specl -c N=3 --no-deadlock --no-auto
+// Verified: N=3 -> OK (k-induction k=2, 0.01s)
+
+const N: 1..5
+
+// Shared register: 0 = unlocked, 1..N = locked by client i
+var reg: 0..N
+
+// Client state: 0=idle, 1=holding_lock
+var state: Dict[0..N, 0..1]
+
+init {
+    reg = 0
+    and state = {i: 0 for i in 0..N}
+}
+
+// Client i acquires lock via CAS(0, i)
+action Acquire(i: 1..N) {
+    require state[i] == 0
+    require reg == 0
+    reg = i
+    and state = state | {i: 1}
+}
+
+// Client i releases lock via CAS(i, 0)
+action Release(i: 1..N) {
+    require state[i] == 1
+    require reg == i
+    reg = 0
+    and state = state | {i: 0}
+}
+
+// Mutual exclusion: at most one client holds the lock
+invariant MutualExclusion {
+    all i in 1..N: all j in 1..N:
+        (i != j) implies not (state[i] == 1 and state[j] == 1)
+}
+
+// Lock consistency: if someone holds the lock, register reflects it
+invariant LockConsistency {
+    all i in 1..N: state[i] == 1 implies reg == i
+}
+
+// Register consistency: if register shows a lock holder, they agree
+invariant RegisterConsistency {
+    all i in 1..N: reg == i implies state[i] == 1
+}
