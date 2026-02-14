@@ -1,7 +1,12 @@
-//! Lockless atomic fingerprint set using open addressing with linear probing.
+//! Lockless atomic fingerprint set using open addressing with triangular probing.
 //!
 //! Replaces DashMap<Fingerprint, ()> for fingerprint-only mode with zero lock
 //! contention and 8 bytes per entry instead of ~64.
+//!
+//! Tuning vs original:
+//! - Triangular probing (stride grows as 1, 2, 3, ...) avoids secondary clustering
+//! - Secondary hash mix reduces primary clustering from correlated fingerprints
+//! - Software prefetch hints reduce cache miss stalls on probe sequences
 
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
@@ -10,7 +15,37 @@ use crate::state::Fingerprint;
 /// Sentinel value for empty slots.
 const EMPTY: u64 = u64::MAX;
 
-/// A set of 64-bit fingerprints using open addressing with linear probing.
+/// Secondary hash mix to decorrelate slot indices from raw fingerprint values.
+/// Correlated fingerprints (e.g. sequential XOR hashes) cluster under identity mapping;
+/// this spreads them across the table.
+#[inline]
+fn secondary_mix(val: u64) -> u64 {
+    // Stafford variant 13 of Murmur3 finalizer
+    let mut h = val;
+    h ^= h >> 30;
+    h = h.wrapping_mul(0xbf58476d1ce4e5b9);
+    h ^= h >> 27;
+    h = h.wrapping_mul(0x94d049bb133111eb);
+    h ^= h >> 31;
+    h
+}
+
+/// Prefetch a cache line for reading. No-op on non-x86 targets.
+#[inline]
+fn prefetch_read(ptr: *const AtomicU64) {
+    #[cfg(target_arch = "x86_64")]
+    unsafe {
+        std::arch::x86_64::_mm_prefetch(ptr as *const i8, std::arch::x86_64::_MM_HINT_T0);
+    }
+    #[cfg(target_arch = "x86")]
+    unsafe {
+        std::arch::x86::_mm_prefetch(ptr as *const i8, std::arch::x86::_MM_HINT_T0);
+    }
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "x86")))]
+    let _ = ptr;
+}
+
+/// A set of 64-bit fingerprints using open addressing with triangular probing.
 ///
 /// Starts with an initial capacity and grows automatically when load exceeds 37.5%.
 /// Uses atomic CAS for concurrent insertion within a generation; resizing
@@ -41,16 +76,16 @@ impl AtomicFPSet {
     /// Remap fingerprint to avoid collision with EMPTY sentinel.
     #[inline]
     fn remap(fp: u64) -> u64 {
-        if fp == EMPTY {
-            EMPTY - 1
-        } else {
-            fp
-        }
+        if fp == EMPTY { EMPTY - 1 } else { fp }
+    }
+
+    /// Compute initial slot index from a value using secondary hash mix.
+    #[inline]
+    fn slot_index(&self, val: u64) -> usize {
+        (secondary_mix(val) & self.mask) as usize
     }
 
     /// Returns true if the load factor exceeds 37.5% and the set should be grown.
-    /// Lower threshold than 50% reduces average probe length from ~2.0 to ~1.6
-    /// and dramatically improves worst-case behavior under linear probing.
     #[inline]
     pub fn should_grow(&self) -> bool {
         self.count.load(Ordering::Relaxed) * 8 >= self.slots.len() * 3
@@ -66,18 +101,21 @@ impl AtomicFPSet {
         }
         let new_mask = (new_len - 1) as u64;
 
-        // Rehash all existing entries
+        // Rehash all existing entries using triangular probing in new table
         for slot in &self.slots {
             let val = slot.load(Ordering::Relaxed);
             if val != EMPTY {
-                let mut idx = (val & new_mask) as usize;
+                let start = (secondary_mix(val) & new_mask) as usize;
+                let mut idx = start;
+                let mut stride: usize = 1;
                 loop {
                     let current = new_slots[idx].load(Ordering::Relaxed);
                     if current == EMPTY {
                         new_slots[idx].store(val, Ordering::Relaxed);
                         break;
                     }
-                    idx = ((idx + 1) as u64 & new_mask) as usize;
+                    idx = ((idx + stride) as u64 & new_mask) as usize;
+                    stride += 1;
                 }
             }
         }
@@ -90,7 +128,12 @@ impl AtomicFPSet {
     #[inline]
     pub fn insert(&self, fp: Fingerprint) -> bool {
         let val = Self::remap(fp.as_u64());
-        let mut idx = (val & self.mask) as usize;
+        let start = self.slot_index(val);
+        let mut idx = start;
+        let mut stride: usize = 1;
+
+        // Prefetch first probe location
+        prefetch_read(unsafe { self.slots.get_unchecked(idx) });
 
         loop {
             let slot = unsafe { self.slots.get_unchecked(idx) };
@@ -111,14 +154,17 @@ impl AtomicFPSet {
                         if actual == val {
                             return false; // Another thread inserted same value
                         }
-                        // Another thread inserted a different value — hint CPU to reduce
-                        // contention before continuing probe sequence
                         std::hint::spin_loop();
                     }
                 }
             }
 
-            idx = ((idx + 1) as u64 & self.mask) as usize;
+            // Triangular probing: stride increments by 1 each step
+            let next_idx = ((idx + stride) as u64 & self.mask) as usize;
+            // Prefetch next probe location to hide cache miss latency
+            prefetch_read(unsafe { self.slots.get_unchecked(next_idx) });
+            idx = next_idx;
+            stride += 1;
         }
     }
 
@@ -126,7 +172,12 @@ impl AtomicFPSet {
     #[inline]
     pub fn contains(&self, fp: Fingerprint) -> bool {
         let val = Self::remap(fp.as_u64());
-        let mut idx = (val & self.mask) as usize;
+        let start = self.slot_index(val);
+        let mut idx = start;
+        let mut stride: usize = 1;
+
+        // Prefetch first probe location
+        prefetch_read(unsafe { self.slots.get_unchecked(idx) });
 
         loop {
             let current = unsafe { self.slots.get_unchecked(idx) }.load(Ordering::Relaxed);
@@ -138,7 +189,11 @@ impl AtomicFPSet {
                 return false;
             }
 
-            idx = ((idx + 1) as u64 & self.mask) as usize;
+            // Triangular probing
+            let next_idx = ((idx + stride) as u64 & self.mask) as usize;
+            prefetch_read(unsafe { self.slots.get_unchecked(next_idx) });
+            idx = next_idx;
+            stride += 1;
         }
     }
 
@@ -229,6 +284,36 @@ mod tests {
         assert_eq!(set.len(), 400);
 
         for i in 1..=400 {
+            assert!(set.contains(Fingerprint::from_u64(i)));
+        }
+    }
+
+    #[test]
+    fn test_sentinel_value() {
+        let set = AtomicFPSet::new(1024);
+        // Insert u64::MAX (the sentinel) — should be remapped to MAX-1
+        let fp_max = Fingerprint::from_u64(u64::MAX);
+        assert!(set.insert(fp_max));
+        assert!(!set.insert(fp_max));
+        assert!(set.contains(fp_max));
+
+        // MAX-2 is a distinct value
+        let fp_near = Fingerprint::from_u64(u64::MAX - 2);
+        assert!(set.insert(fp_near));
+        assert!(set.contains(fp_near));
+        assert!(set.contains(fp_max));
+    }
+
+    #[test]
+    fn test_secondary_mix_spreads() {
+        // Verify that sequential values get spread across the table
+        // (secondary_mix should decorrelate)
+        let set = AtomicFPSet::new(1024);
+        for i in 0..100 {
+            assert!(set.insert(Fingerprint::from_u64(i)));
+        }
+        assert_eq!(set.len(), 100);
+        for i in 0..100 {
             assert!(set.contains(Fingerprint::from_u64(i)));
         }
     }

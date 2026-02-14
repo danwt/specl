@@ -2,7 +2,7 @@
 
 ## Quick Wins
 - [ ] 1. FPSet tuning (prefetch, better probing)
-- [ ] 2. Portfolio symbolic (parallel threads for BMC/k-ind/IC3)
+- [x] 2. Portfolio symbolic (parallel threads for BMC/k-ind/IC3)
 - [ ] 3. Spacer tuning (parameter profiles for IC3)
 - [ ] 4. Collapse compression (per-variable interning)
 
