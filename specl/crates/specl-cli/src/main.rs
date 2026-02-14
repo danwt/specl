@@ -1093,6 +1093,70 @@ fn cmd_check(
         }
     }
 
+    // --- Validate incompatible explicit-state flag combinations (#25) ---
+    let storage_modes: Vec<&str> = [
+        (fast_check, "--fast"),
+        (bloom, "--bloom"),
+        (collapse, "--collapse"),
+        (tree, "--tree"),
+    ]
+    .iter()
+    .filter(|(flag, _)| *flag)
+    .map(|(_, name)| *name)
+    .collect();
+    if storage_modes.len() > 1 {
+        let msg = format!(
+            "Error: incompatible storage modes: {}. Pick one.",
+            storage_modes.join(", ")
+        );
+        if output_format != OutputFormat::Text {
+            let out = JsonOutput::new("error", 0.0).with_error(msg);
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else {
+            eprintln!("{msg}");
+        }
+        std::process::exit(1);
+    }
+
+    if directed && (fast_check || bloom || collapse || tree) {
+        let other = if fast_check { "--fast" } else if bloom { "--bloom" } else if collapse { "--collapse" } else { "--tree" };
+        let msg = format!("Error: --directed is incompatible with {other} (directed uses its own priority queue)");
+        if output_format != OutputFormat::Text {
+            let out = JsonOutput::new("error", 0.0).with_error(msg);
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else {
+            eprintln!("{msg}");
+        }
+        std::process::exit(1);
+    }
+
+    // --- Auto-correct flags that only work in sequential mode (#22, #23) ---
+    let mut parallel = parallel;
+    if actual_por && parallel {
+        if !quiet {
+            eprintln!("Note: --por requires sequential mode, disabling parallel exploration");
+        }
+        parallel = false;
+    }
+    if profile && parallel {
+        if !quiet {
+            eprintln!("Note: --profile requires sequential mode, disabling parallel exploration");
+        }
+        parallel = false;
+    }
+
+    // --- Decouple --bloom from fast_check (#24) ---
+    // bloom is a storage backend, not a checking strategy
+    // do NOT silently force fast_check when bloom is set
+
+    // --- Warn that --fast and --directed are always sequential (#21) ---
+    if fast_check && parallel && !quiet {
+        eprintln!("Note: --fast uses two-phase sequential BFS (parallel not yet supported)");
+    }
+    if directed && parallel && !quiet {
+        eprintln!("Note: --directed uses priority BFS which is sequential");
+    }
+
     // Swarm verification: run N independent instances with shuffled action orders
     if let Some(n) = swarm {
         return cmd_check_swarm(
@@ -1167,7 +1231,7 @@ fn cmd_check(
         num_threads,
         use_por: actual_por,
         use_symmetry: actual_symmetry,
-        fast_check: fast_check || bloom,
+        fast_check,
         progress: Some(progress),
         action_shuffle_seed: None,
         profile,
