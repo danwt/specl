@@ -1,0 +1,87 @@
+module LeaderElection
+
+// Chang-Roberts leader election in a unidirectional ring.
+// N+1 processes arranged in a ring, each with a unique ID (0..N).
+// Each process sends its ID around the ring. A process forwards a
+// received ID only if it's greater than its own. The process whose
+// ID completes a full circuit becomes the leader.
+//
+// Use: specl check leader-election.specl -c N=3 --no-deadlock --no-auto --bfs
+// Verified: N=3 -> OK (73 states, 0.0s)
+
+const N: 1..5
+
+// Messages in transit: msgs[i] is the set of IDs in the channel from i to (i+1)%N
+// We model channels as sets (unordered) since only the max matters.
+var msgs: Dict[0..N, Set[0..N]]
+// Whether process i has started (sent its own ID)
+var started: Dict[0..N, Bool]
+// Leader declaration: -1 = undecided, 0..N = declared leader ID
+var leader: Dict[0..N, 0..N]
+// Whether process i has declared a leader
+var decided: Dict[0..N, Bool]
+
+init {
+    msgs = {i: {} for i in 0..N}
+    and started = {i: false for i in 0..N}
+    and leader = {i: 0 for i in 0..N}
+    and decided = {i: false for i in 0..N}
+}
+
+// Process i initiates by sending its own ID to the next process
+action Start(i: 0..N, next: 0..N) {
+    require started[i] == false
+    require (i < N and next == i + 1) or (i == N and next == 0)
+    started = started | {i: true}
+    and msgs = msgs | {i: msgs[i] union {i}}
+}
+
+// Process i receives ID m from its predecessor and forwards if m > i
+action Forward(i: 0..N, prev: 0..N, next: 0..N, m: 0..N) {
+    require started[i] == true
+    require decided[i] == false
+    require (i > 0 and prev == i - 1) or (i == 0 and prev == N)
+    require (i < N and next == i + 1) or (i == N and next == 0)
+    require m in msgs[prev]
+    require m != i
+    require m > i
+    msgs = msgs | {prev: msgs[prev] diff {m}, i: msgs[i] union {m}}
+}
+
+// Process i receives ID m < i: absorb (drop the message)
+action Absorb(i: 0..N, prev: 0..N, m: 0..N) {
+    require started[i] == true
+    require decided[i] == false
+    require (i > 0 and prev == i - 1) or (i == 0 and prev == N)
+    require m in msgs[prev]
+    require m != i
+    require m < i
+    msgs = msgs | {prev: msgs[prev] diff {m}}
+}
+
+// Process i receives its own ID back — it's the leader
+action Elect(i: 0..N, prev: 0..N) {
+    require started[i] == true
+    require decided[i] == false
+    require (i > 0 and prev == i - 1) or (i == 0 and prev == N)
+    require i in msgs[prev]
+    decided = decided | {i: true}
+    and leader = leader | {i: i}
+    and msgs = msgs | {prev: msgs[prev] diff {i}}
+}
+
+// At most one process declares itself leader
+invariant AtMostOneLeader {
+    all i in 0..N: all j in 0..N:
+        (i != j) implies not (decided[i] and decided[j])
+}
+
+// If a process declares a leader, it must be itself (in Chang-Roberts)
+invariant LeaderIsSelf {
+    all i in 0..N: decided[i] implies leader[i] == i
+}
+
+// The elected leader must be the highest ID (N)
+invariant LeaderIsMax {
+    all i in 0..N: decided[i] implies i == N
+}
