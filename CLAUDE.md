@@ -33,6 +33,7 @@ specl check spec.specl --diff               # show only changed vars in traces
 specl check spec.specl --output json        # JSON output
 specl check spec.specl --output itf         # Apalache-compatible ITF trace
 specl check spec.specl --output mermaid     # Mermaid sequence diagram
+specl check spec.specl --output dot         # Graphviz DOT state graph (small specs only)
 specl check spec.specl --profile            # per-action firing counts and timing
 specl info spec.specl -c N=3               # analyze spec: state space, actions, optimizations
 specl estimate spec.specl -c N=3           # estimate state space size and resources
@@ -258,6 +259,22 @@ specl/crates/
 └── specl-lsp/      Language server (the `specl-lsp` binary)
 ```
 
+## Language Server (LSP)
+
+The `specl-lsp` binary provides IDE support via the Language Server Protocol:
+
+- **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
+- **Completion**: Keywords, types, and symbols from the current file
+- **Signature help**: Parameter info when typing inside `action()` or `func()` calls
+- **Go-to-definition**: Jump to declaration of any identifier
+- **Find all references**: Locate all uses of an identifier
+- **Rename**: Rename an identifier across the file
+- **Document symbols**: Outline view of all declarations
+- **Inlay hints**: Parameter names shown inline at call sites (e.g. `Recovery(leader: 0, other: 2)`)
+- **Formatting**: Pretty-print the document
+- **Semantic tokens**: Syntax highlighting (keywords, types, variables, functions, etc.)
+- **Diagnostics**: Parse and type errors shown inline
+
 ## Examples
 
-See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, CometBFT, Percolator, MESI, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, CometBFT, Percolator, MESI, G-Counter CRDT, Lamport Clocks, Dining Philosophers, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
