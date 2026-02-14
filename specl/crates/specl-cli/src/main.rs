@@ -290,6 +290,10 @@ enum Commands {
         #[arg(long, default_value = "30", help_heading = "Explicit-State")]
         bloom_bits: u32,
 
+        /// Collapse compression: per-variable interning (less memory than full, traces supported)
+        #[arg(long, help_heading = "Explicit-State")]
+        collapse: bool,
+
         /// Directed model checking: priority BFS exploring states closest to violation first
         #[arg(long, help_heading = "Explicit-State")]
         directed: bool,
@@ -532,6 +536,7 @@ fn main() {
             fast,
             bloom,
             bloom_bits,
+            collapse,
             directed,
             swarm,
             bmc,
@@ -558,6 +563,7 @@ fn main() {
                 || symmetry
                 || fast
                 || bloom
+                || collapse
                 || directed
                 || swarm.is_some()
                 || max_states > 0
@@ -616,6 +622,7 @@ fn main() {
                     fast,
                     bloom,
                     bloom_bits,
+                    collapse,
                     directed,
                     verbose,
                     quiet,
@@ -653,6 +660,7 @@ fn main() {
                         fast,
                         bloom,
                         bloom_bits,
+                        collapse,
                         directed,
                         verbose,
                         quiet,
@@ -961,6 +969,7 @@ fn cmd_check(
     fast_check: bool,
     bloom: bool,
     bloom_bits: u32,
+    collapse: bool,
     directed: bool,
     _verbose: bool,
     quiet: bool,
@@ -1143,6 +1152,7 @@ fn cmd_check(
         directed,
         max_time_secs,
         check_only_invariants,
+        collapse,
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -1426,6 +1436,7 @@ fn cmd_check_swarm(
                     directed: false,
                     max_time_secs: 0,
                     check_only_invariants: Vec::new(),
+                    collapse: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1495,6 +1506,7 @@ fn cmd_check_swarm(
                     directed: false,
                     max_time_secs: 0,
                     check_only_invariants: Vec::new(),
+                    collapse: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {

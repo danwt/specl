@@ -4,7 +4,7 @@
 - [ ] 1. FPSet tuning (prefetch, better probing)
 - [x] 2. Portfolio symbolic (parallel threads for BMC/k-ind/IC3)
 - [x] 3. Spacer tuning (parameter profiles for IC3)
-- [ ] 4. Collapse compression (per-variable interning)
+- [x] 4. Collapse compression (per-variable interning)
 
 ## Medium Effort
 - [ ] 5. Incremental expression evaluation (skip invariants when deps unchanged)

@@ -213,6 +213,8 @@ pub struct CheckConfig {
     pub max_time_secs: u64,
     /// Only check these invariants (empty = check all).
     pub check_only_invariants: Vec<String>,
+    /// Use collapse compression: per-variable interning for reduced memory with traces.
+    pub collapse: bool,
 }
 
 impl Default for CheckConfig {
@@ -235,6 +237,7 @@ impl Default for CheckConfig {
             directed: false,
             max_time_secs: 0,
             check_only_invariants: Vec::new(),
+            collapse: false,
         }
     }
 }
@@ -259,6 +262,7 @@ impl Clone for CheckConfig {
             directed: self.directed,
             max_time_secs: self.max_time_secs,
             check_only_invariants: self.check_only_invariants.clone(),
+            collapse: self.collapse,
         }
     }
 }
@@ -283,6 +287,7 @@ impl std::fmt::Debug for CheckConfig {
             .field("directed", &self.directed)
             .field("max_time_secs", &self.max_time_secs)
             .field("check_only_invariants", &self.check_only_invariants)
+            .field("collapse", &self.collapse)
             .finish()
     }
 }
@@ -889,9 +894,11 @@ fn enumerate_params_indexed<F>(
 impl Explorer {
     /// Create a new explorer.
     pub fn new(spec: CompiledSpec, consts: Vec<Value>, config: CheckConfig) -> Self {
-        // Choose storage backend: bloom > fast_check > full tracking
+        // Choose storage backend: bloom > collapse > fast_check > full tracking
         let store = if config.bloom {
             StateStore::with_bloom(config.bloom_bits, 3)
+        } else if config.collapse {
+            StateStore::with_collapse(spec.vars.len())
         } else {
             StateStore::with_tracking(!config.fast_check)
         };
