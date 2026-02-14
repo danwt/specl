@@ -29,6 +29,8 @@ enum OutputFormat {
     Json,
     /// Informal Trace Format (Apalache-compatible trace interchange)
     Itf,
+    /// Mermaid sequence diagram (for trace visualization)
+    Mermaid,
 }
 
 /// Top-level JSON output for `specl check --output json`.
