@@ -922,8 +922,7 @@ impl Explorer {
             })
             .collect();
 
-        // Compute COI reduction: identify actions relevant to invariants
-        let relevant_actions = Self::compute_coi(&spec);
+        // COI reduction computed after active_invariants below
 
         // Compile guard bytecode for each action
         let compiled_guards: Vec<Bytecode> = spec
@@ -1050,7 +1049,6 @@ impl Explorer {
         };
 
         // Compute which invariants are active (empty check_only = all active)
-        // Compute which invariants are active (empty check_only = all active)
         let active_invariants: Vec<bool> = if config.check_only_invariants.is_empty() {
             vec![true; spec.invariants.len()]
         } else {
@@ -1069,6 +1067,9 @@ impl Explorer {
                 .map(|inv| config.check_only_invariants.contains(&inv.name))
                 .collect()
         };
+
+        // Compute COI with active invariant filter for tighter reduction
+        let relevant_actions = Self::compute_coi(&spec, &active_invariants);
 
         let mut explorer = Self {
             spec,
@@ -1398,15 +1399,18 @@ impl Explorer {
 
     /// Compute Cone-of-Influence reduction.
     /// Returns None if all actions are relevant (no reduction possible).
-    fn compute_coi(spec: &CompiledSpec) -> Option<Vec<usize>> {
+    /// When `active_invariants` filters to a subset, computes a tighter COI.
+    fn compute_coi(spec: &CompiledSpec, active_invariants: &[bool]) -> Option<Vec<usize>> {
         if spec.invariants.is_empty() {
             return None;
         }
 
-        // Collect variables referenced by all invariants
+        // Collect variables referenced by active invariants only
         let mut coi_vars = std::collections::HashSet::new();
-        for inv in &spec.invariants {
-            Self::collect_var_refs(&inv.body, &mut coi_vars);
+        for (idx, inv) in spec.invariants.iter().enumerate() {
+            if active_invariants.get(idx).copied().unwrap_or(true) {
+                Self::collect_var_refs(&inv.body, &mut coi_vars);
+            }
         }
 
         // Transitive closure: if an action writes to a COI variable,
