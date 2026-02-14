@@ -3931,6 +3931,11 @@ impl Explorer {
         &self.store
     }
 
+    /// Pre-seed the store with cached fingerprints for incremental checking.
+    pub fn pre_seed_fingerprints(&self, fingerprints: &[u64]) {
+        self.store.pre_seed_fingerprints(fingerprints);
+    }
+
     /// Get profile data collected during checking (only available when config.profile is true).
     pub fn profile_data(&self) -> Option<&ProfileData> {
         self.profile_data.as_ref()

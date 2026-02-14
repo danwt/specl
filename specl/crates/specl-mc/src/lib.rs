@@ -1,6 +1,7 @@
 //! Model checker for Specl specifications.
 
 pub mod bloom;
+pub mod cache;
 pub mod direct_eval;
 pub mod explorer;
 pub mod fpset;

@@ -51,7 +51,10 @@ pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
             h ^ (h >> 32)
         }
         _ => {
-            let mut hasher = ahash::AHasher::default();
+            // Fixed seed for deterministic fingerprinting across runs
+            // (required for incremental checking cache to work).
+            use std::collections::hash_map::DefaultHasher;
+            let mut hasher = DefaultHasher::new();
             idx.hash(&mut hasher);
             val.hash(&mut hasher);
             hasher.finish()

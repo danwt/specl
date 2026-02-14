@@ -6,7 +6,6 @@ use crate::state::{Fingerprint, State};
 use dashmap::DashMap;
 use specl_eval::Value;
 use std::cell::UnsafeCell;
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 use tracing::error;
@@ -439,13 +438,39 @@ impl StateStore {
     }
 
     /// Get all seen fingerprints.
-    pub fn seen_fingerprints(&self) -> HashSet<Fingerprint> {
+    pub fn seen_fingerprints(&self) -> Vec<u64> {
         match &self.backend {
-            StorageBackend::Full => self.states.iter().map(|r| *r.key()).collect(),
+            StorageBackend::Full => self.states.iter().map(|r| r.key().as_u64()).collect(),
             StorageBackend::Collapse { ref compressed, .. } => {
-                compressed.iter().map(|r| *r.key()).collect()
+                compressed.iter().map(|r| r.key().as_u64()).collect()
             }
-            _ => HashSet::new(),
+            StorageBackend::Fingerprint(cell) => {
+                let fpset = unsafe { &*cell.get() };
+                fpset.fingerprints()
+            }
+            StorageBackend::Bloom(_) => Vec::new(),
+        }
+    }
+
+    /// Pre-seed the store with cached fingerprints for incremental checking.
+    /// Inserts fingerprints so that `is_known` returns true for previously explored states.
+    pub fn pre_seed_fingerprints(&self, fingerprints: &[u64]) {
+        match &self.backend {
+            StorageBackend::Fingerprint(cell) => {
+                let fpset = unsafe { &*cell.get() };
+                for &fp in fingerprints {
+                    fpset.insert(Fingerprint::from_u64(fp));
+                }
+            }
+            StorageBackend::Bloom(bloom) => {
+                for &fp in fingerprints {
+                    bloom.insert(Fingerprint::from_u64(fp));
+                }
+            }
+            _ => {
+                // Full and Collapse modes can't be pre-seeded without state data.
+                // Incremental checking is only effective with --fast or --bloom.
+            }
         }
     }
 

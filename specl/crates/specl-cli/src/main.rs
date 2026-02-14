@@ -298,6 +298,10 @@ enum Commands {
         #[arg(long, help_heading = "Explicit-State")]
         directed: bool,
 
+        /// Incremental checking: cache fingerprints to disk, skip previously explored states on re-run
+        #[arg(long, help_heading = "Explicit-State")]
+        incremental: bool,
+
         /// Swarm verification: run N parallel instances with shuffled action orders
         #[arg(long, value_name = "N", help_heading = "Explicit-State")]
         swarm: Option<usize>,
@@ -538,6 +542,7 @@ fn main() {
             bloom_bits,
             collapse,
             directed,
+            incremental,
             swarm,
             bmc,
             bmc_depth,
@@ -565,6 +570,7 @@ fn main() {
                 || bloom
                 || collapse
                 || directed
+                || incremental
                 || swarm.is_some()
                 || max_states > 0
                 || max_depth > 0
@@ -624,6 +630,7 @@ fn main() {
                     bloom_bits,
                     collapse,
                     directed,
+                    incremental,
                     verbose,
                     quiet,
                     no_auto,
@@ -662,6 +669,7 @@ fn main() {
                         bloom_bits,
                         collapse,
                         directed,
+                        incremental,
                         verbose,
                         quiet,
                         no_auto,
@@ -971,6 +979,7 @@ fn cmd_check(
     bloom_bits: u32,
     collapse: bool,
     directed: bool,
+    incremental: bool,
     _verbose: bool,
     quiet: bool,
     no_auto: bool,
@@ -1155,10 +1164,44 @@ fn cmd_check(
         collapse,
     };
 
+    // Incremental cache: compute spec hash and load cached fingerprints
+    let (cache_hash, cached_fps) = if incremental {
+        let const_pairs = parse_constants_as_pairs(constants);
+        let hash = specl_mc::cache::spec_hash(&source, &const_pairs);
+        let fps = specl_mc::cache::load_fingerprints(file.as_path(), hash);
+        if let Some(ref fps) = fps {
+            if !quiet {
+                println!(
+                    "Incremental: loaded {} cached states",
+                    format_large_number(fps.len() as u128)
+                );
+            }
+        }
+        (Some(hash), fps)
+    } else {
+        (None, None)
+    };
+
     let mut explorer = Explorer::new(spec, consts, config);
+
+    if let Some(ref fps) = cached_fps {
+        explorer.pre_seed_fingerprints(fps);
+    }
+
     let result = explorer.check().map_err(|e| CliError::CheckError {
         message: e.to_string(),
     })?;
+
+    // Save fingerprints for incremental re-use
+    if let Some(hash) = cache_hash {
+        let fps = explorer.store().seen_fingerprints();
+        if let Err(e) = specl_mc::cache::save_fingerprints(file.as_path(), hash, &fps) {
+            if !quiet {
+                eprintln!("Warning: failed to save incremental cache: {e}");
+            }
+        }
+        specl_mc::cache::cleanup_old_caches(file.as_path(), hash);
+    }
 
     let elapsed = start.elapsed();
 
@@ -2007,6 +2050,21 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
     Ok(values)
 }
 
+/// Parse constant strings into (name, value) pairs for cache hashing.
+fn parse_constants_as_pairs(constants: &[String]) -> Vec<(String, i64)> {
+    constants
+        .iter()
+        .filter_map(|c| {
+            let parts: Vec<&str> = c.splitn(2, '=').collect();
+            if parts.len() == 2 {
+                parts[1].trim().parse::<i64>().ok().map(|v| (parts[0].trim().to_string(), v))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn parse_value(s: &str) -> CliResult<Value> {
     // Try to parse as integer
     if let Ok(n) = s.parse::<i64>() {
@@ -2251,10 +2309,10 @@ fn store_to_dot(
     lines.push("    node [shape=box, fontname=\"monospace\", fontsize=10];".to_string());
     lines.push("    edge [fontname=\"monospace\", fontsize=9];".to_string());
 
-    let fps = store.seen_fingerprints();
+    let raw_fps = store.seen_fingerprints();
 
     // Assign compact numeric IDs to fingerprints
-    let mut fp_list: Vec<Fingerprint> = fps.into_iter().collect();
+    let mut fp_list: Vec<Fingerprint> = raw_fps.into_iter().map(Fingerprint::from_u64).collect();
     fp_list.sort_by_key(|fp| fp.as_u64());
     let fp_to_id: std::collections::HashMap<Fingerprint, usize> = fp_list
         .iter()

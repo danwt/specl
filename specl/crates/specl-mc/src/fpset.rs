@@ -208,6 +208,18 @@ impl AtomicFPSet {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// Collect all stored fingerprint values into a Vec.
+    pub fn fingerprints(&self) -> Vec<u64> {
+        let mut result = Vec::with_capacity(self.len());
+        for slot in &self.slots {
+            let val = slot.load(Ordering::Relaxed);
+            if val != EMPTY {
+                result.push(val);
+            }
+        }
+        result
+    }
 }
 
 #[cfg(test)]
