@@ -1025,9 +1025,13 @@ impl Explorer {
             .map(|action| action.name.clone())
             .collect();
 
-        // Build default action exploration order (shuffled for swarm)
+        // Build default action exploration order
+        // Sort by guard cost (cheapest first) for early rejection, then shuffle for swarm
         let num_actions = explorer.spec.actions.len();
         explorer.default_action_order = (0..num_actions).collect();
+        explorer
+            .default_action_order
+            .sort_by_key(|&i| explorer.spec.actions[i].guard_cost);
         if let Some(seed) = explorer.config.action_shuffle_seed {
             use rand::rngs::StdRng;
             use rand::seq::SliceRandom;

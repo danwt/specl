@@ -95,6 +95,8 @@ pub struct CompiledAction {
     /// (var_idx, None) = unkeyed read, always conflicts.
     /// (var_idx, Some(keys)) = reads only at these Dict keys.
     pub read_key_params: Vec<(usize, Option<Vec<KeySource>>)>,
+    /// Estimated evaluation cost of the guard expression (for action ordering).
+    pub guard_cost: u32,
 }
 
 /// A compiled invariant.

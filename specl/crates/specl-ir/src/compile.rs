@@ -136,6 +136,7 @@ impl Compiler {
                         reads: Vec::new(),
                         write_key_params: Vec::new(),
                         read_key_params: Vec::new(),
+                        guard_cost: 1,
                     });
                 }
                 _ => {}
@@ -319,6 +320,7 @@ impl Compiler {
 
         self.params.clear();
 
+        let guard_cost = expr_cost(&guard);
         Ok(CompiledAction {
             name: decl.name.name.clone(),
             params: param_types,
@@ -329,6 +331,7 @@ impl Compiler {
             reads,
             write_key_params,
             read_key_params,
+            guard_cost,
         })
     }
 
@@ -1472,5 +1475,80 @@ action Transfer(from: 0..N, to: 0..N) {
 
         // Self-pair should be refinable (keyed access on both sides)
         assert!(spec.refinable_pairs[0][0]);
+    }
+}
+
+/// Estimate the evaluation cost of a compiled expression for guard reordering.
+/// Lower cost = cheaper to evaluate = should be checked first (short-circuit).
+fn expr_cost(expr: &CompiledExpr) -> u32 {
+    match expr {
+        // Leaves: O(1)
+        CompiledExpr::Bool(_)
+        | CompiledExpr::Int(_)
+        | CompiledExpr::String(_)
+        | CompiledExpr::Var(_)
+        | CompiledExpr::PrimedVar(_)
+        | CompiledExpr::Const(_)
+        | CompiledExpr::Local(_)
+        | CompiledExpr::Param(_)
+        | CompiledExpr::Changes(_)
+        | CompiledExpr::Unchanged(_)
+        | CompiledExpr::Enabled(_) => 1,
+
+        // Simple operations
+        CompiledExpr::Binary { left, right, .. } => 1 + expr_cost(left) + expr_cost(right),
+        CompiledExpr::Unary { operand, .. } => 1 + expr_cost(operand),
+        CompiledExpr::Index { base, index } => 2 + expr_cost(base) + expr_cost(index),
+        CompiledExpr::Let { value, body } => 1 + expr_cost(value) + expr_cost(body),
+        CompiledExpr::If { cond, then_branch, else_branch } => {
+            1 + expr_cost(cond) + expr_cost(then_branch).max(expr_cost(else_branch))
+        }
+
+        // Collection literals
+        CompiledExpr::SetLit(elems)
+        | CompiledExpr::SeqLit(elems)
+        | CompiledExpr::TupleLit(elems) => {
+            elems.iter().map(expr_cost).sum::<u32>() + 1
+        }
+        CompiledExpr::DictLit(pairs) => {
+            pairs.iter().map(|(k, v)| expr_cost(k) + expr_cost(v)).sum::<u32>() + 1
+        }
+
+        // Quantifiers and comprehensions: expensive (iterate domain)
+        CompiledExpr::Forall { domain, body }
+        | CompiledExpr::Exists { domain, body }
+        | CompiledExpr::FnLit { domain, body } => 10 + expr_cost(domain) * expr_cost(body),
+        CompiledExpr::Choose { domain, predicate }
+        | CompiledExpr::SetComprehension { domain, filter: Some(predicate), .. } => {
+            10 + expr_cost(domain) * expr_cost(predicate)
+        }
+        CompiledExpr::SetComprehension { domain, element, filter: None } => {
+            10 + expr_cost(domain) * expr_cost(element)
+        }
+        CompiledExpr::Fix { predicate } => 10 + expr_cost(predicate),
+
+        // Access operations
+        CompiledExpr::Slice { base, lo, hi } => 3 + expr_cost(base) + expr_cost(lo) + expr_cost(hi),
+        CompiledExpr::Field { base, .. } => 1 + expr_cost(base),
+        CompiledExpr::SeqHead(inner) | CompiledExpr::SeqTail(inner) => 2 + expr_cost(inner),
+        CompiledExpr::Len(inner) | CompiledExpr::Keys(inner) | CompiledExpr::Values(inner) => {
+            2 + expr_cost(inner)
+        }
+        CompiledExpr::BigUnion(inner) | CompiledExpr::Powerset(inner) => 10 + expr_cost(inner),
+
+        // Updates
+        CompiledExpr::FnUpdate { base, key, value } => {
+            2 + expr_cost(base) + expr_cost(key) + expr_cost(value)
+        }
+        CompiledExpr::RecordUpdate { base, updates } => {
+            2 + expr_cost(base) + updates.iter().map(|(_, v)| expr_cost(v)).sum::<u32>()
+        }
+
+        // Calls
+        CompiledExpr::Call { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 5,
+        CompiledExpr::ActionCall { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 10,
+
+        // Range
+        CompiledExpr::Range { lo, hi } => 2 + expr_cost(lo) + expr_cost(hi),
     }
 }
