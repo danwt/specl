@@ -1,0 +1,60 @@
+module TokenBucket
+
+// Token Bucket rate limiter.
+// A bucket holds up to Capacity tokens. Tokens are refilled
+// periodically. N+1 clients consume tokens to make requests.
+// Requests without tokens are rejected.
+//
+// Use: specl check token-bucket.specl -c N=1 -c Capacity=3 --no-deadlock --no-auto --bfs
+// Verified: N=1 Capacity=3 -> OK (36 states, 0.0s)
+
+const N: 0..2
+const Capacity: 2..4
+
+// Current tokens in the bucket
+var tokens: 0..Capacity
+
+// Per-client: 0=idle, 1=served, 2=rejected
+var client: Dict[0..N, 0..2]
+
+init {
+    tokens = Capacity
+    and client = {c: 0 for c in 0..N}
+}
+
+// Client makes a request (token available)
+action Request(c: 0..N) {
+    require client[c] == 0
+    require tokens > 0
+    tokens = tokens - 1
+    and client = client | {c: 1}
+}
+
+// Client request rejected (no tokens)
+action Reject(c: 0..N) {
+    require client[c] == 0
+    require tokens == 0
+    client = client | {c: 2}
+}
+
+// Client returns to idle
+action Reset(c: 0..N) {
+    require client[c] != 0
+    client = client | {c: 0}
+}
+
+// Refill one token
+action Refill() {
+    require tokens < Capacity
+    tokens = tokens + 1
+}
+
+// Tokens never exceed capacity
+invariant BucketBounded {
+    tokens <= Capacity
+}
+
+// No client is simultaneously served and rejected
+invariant ConsistentClientState {
+    all c in 0..N: not (client[c] == 1 and client[c] == 2)
+}
