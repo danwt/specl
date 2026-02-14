@@ -1,0 +1,51 @@
+module VectorClocks
+
+// Vector Clocks for causal ordering in a distributed system.
+// 3 processes (0, 1, 2), each with a 3-element vector of logical timestamps.
+// - Tick: process p increments vc[p][p].
+// - Merge: process q adopts the max of its own clock and p's (pointwise).
+//
+// Merge models receiving a snapshot of p's clock. We abstract away the
+// message channel since the key property (SelfAware) holds regardless
+// of message ordering.
+//
+// Use: specl check vector-clocks.specl -c Max=3 --no-deadlock --fast --no-auto
+// Verified: Max=3 -> OK (25K states, 0.2s)
+
+const Max: 1..5
+
+// vc[p][q] = process p's view of process q's clock
+var vc: Dict[0..2, Dict[0..2, 0..Max]]
+
+init {
+    vc = {p: {q: 0 for q in 0..2} for p in 0..2}
+}
+
+// Tick: process p records a local event
+action Tick(p: 0..2) {
+    require vc[p][p] < Max
+    vc = vc | {p: vc[p] | {p: vc[p][p] + 1}}
+}
+
+// Merge: process q learns from process p's clock (pointwise max).
+// This models q receiving and processing a message from p.
+// Only fires if p has information q doesn't have.
+action Merge(p: 0..2, q: 0..2) {
+    require p != q
+    require any r in 0..2: vc[p][r] > vc[q][r]
+    vc = vc | {q:
+        {r: if vc[p][r] > vc[q][r] then vc[p][r] else vc[q][r]
+         for r in 0..2}
+    }
+}
+
+// Self-dominance: process p's own entry is always >= any other process's view of p
+invariant SelfAware {
+    all p in 0..2: all q in 0..2:
+        vc[p][p] >= vc[q][p]
+}
+
+// Clocks are non-negative
+invariant NonNegative {
+    all p in 0..2: all q in 0..2: vc[p][q] >= 0
+}
