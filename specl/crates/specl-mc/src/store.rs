@@ -3,6 +3,7 @@
 use crate::bloom::BloomFilter;
 use crate::fpset::AtomicFPSet;
 use crate::state::{Fingerprint, State};
+use crate::tree_table::TreeTable;
 use dashmap::DashMap;
 use specl_eval::Value;
 use std::cell::UnsafeCell;
@@ -93,6 +94,22 @@ impl CollapseTable {
     }
 }
 
+/// Compressed state info for tree compression mode.
+/// Stores a single root node ID instead of the full state vector.
+#[derive(Clone)]
+struct TreeStateInfo {
+    /// Root node ID in the tree table.
+    root_id: u32,
+    /// Predecessor fingerprint (None for initial states).
+    predecessor: Option<Fingerprint>,
+    /// Index of the action that led to this state.
+    action_idx: Option<usize>,
+    /// Parameter values used when firing the action.
+    param_values: Option<Vec<i64>>,
+    /// Depth from initial state.
+    depth: usize,
+}
+
 /// Storage mode for state deduplication.
 enum StorageBackend {
     /// Full tracking: DashMap stores complete state info for trace reconstruction.
@@ -108,15 +125,23 @@ enum StorageBackend {
         compressed: DashMap<Fingerprint, CompressedStateInfo>,
         table: CollapseTable,
     },
+    /// Tree compression (LTSmin-style): hierarchical hash table decomposes states
+    /// into shared subtrees. Better compression than Collapse when states share
+    /// common sub-vectors of variables.
+    Tree {
+        compressed: DashMap<Fingerprint, TreeStateInfo>,
+        table: TreeTable,
+    },
 }
 
 /// Thread-safe state storage using a single sharded hash map.
 ///
-/// Supports four modes:
+/// Supports five modes:
 /// - Full tracking: Stores complete state info for trace reconstruction
 /// - Fingerprint-only: Uses lockless AtomicFPSet for minimal memory and zero contention
 /// - Bloom filter: Fixed memory probabilistic deduplication for bug finding
 /// - Collapse compression: Per-variable interning for reduced memory with full traces
+/// - Tree compression: LTSmin-style hierarchical hash table for maximum compression with traces
 pub struct StateStore {
     /// Full tracking mode: map from fingerprint to state info.
     states: DashMap<Fingerprint, StateInfo>,
@@ -175,6 +200,19 @@ impl StateStore {
         }
     }
 
+    /// Create a state store with tree compression (LTSmin-style).
+    /// `num_vars` is the number of state variables.
+    pub fn with_tree(num_vars: usize) -> Self {
+        Self {
+            states: DashMap::new(),
+            backend: StorageBackend::Tree {
+                compressed: DashMap::new(),
+                table: TreeTable::new(num_vars),
+            },
+            collisions: AtomicUsize::new(0),
+        }
+    }
+
     /// Create a state store with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
@@ -195,6 +233,7 @@ impl StateStore {
             }
             StorageBackend::Bloom(bloom) => bloom.contains(*fp),
             StorageBackend::Collapse { ref compressed, .. } => compressed.contains_key(fp),
+            StorageBackend::Tree { ref compressed, .. } => compressed.contains_key(fp),
         }
     }
 
@@ -291,6 +330,37 @@ impl StateStore {
                     }
                 }
             }
+            StorageBackend::Tree {
+                ref compressed,
+                ref table,
+            } => {
+                use dashmap::mapref::entry::Entry;
+                let root_id = table.insert(&state.vars);
+                match compressed.entry(fp) {
+                    Entry::Occupied(occupied) => {
+                        if occupied.get().root_id != root_id {
+                            let n = self.collisions.fetch_add(1, Ordering::Relaxed);
+                            if n == 0 {
+                                error!(
+                                    fingerprint = %fp,
+                                    "hash collision detected: different states share fingerprint, results may be unsound"
+                                );
+                            }
+                        }
+                        false
+                    }
+                    Entry::Vacant(entry) => {
+                        entry.insert(TreeStateInfo {
+                            root_id,
+                            predecessor,
+                            action_idx,
+                            param_values,
+                            depth,
+                        });
+                        true
+                    }
+                }
+            }
         }
     }
 
@@ -302,6 +372,7 @@ impl StateStore {
             StorageBackend::Fingerprint(cell) => unsafe { &*cell.get() }.len(),
             StorageBackend::Bloom(bloom) => bloom.len(),
             StorageBackend::Collapse { ref compressed, .. } => compressed.len(),
+            StorageBackend::Tree { ref compressed, .. } => compressed.len(),
         }
     }
 
@@ -334,7 +405,7 @@ impl StateStore {
     pub fn has_full_tracking(&self) -> bool {
         matches!(
             self.backend,
-            StorageBackend::Full | StorageBackend::Collapse { .. }
+            StorageBackend::Full | StorageBackend::Collapse { .. } | StorageBackend::Tree { .. }
         )
     }
 
@@ -379,6 +450,20 @@ impl StateStore {
             } => compressed.get(fp).map(|r| {
                 let info = r.value();
                 let vars = table.decompress(&info.compressed_vars);
+                StateInfo {
+                    state: State::with_fingerprint(vars, *fp),
+                    predecessor: info.predecessor,
+                    action_idx: info.action_idx,
+                    param_values: info.param_values.clone(),
+                    depth: info.depth,
+                }
+            }),
+            StorageBackend::Tree {
+                ref compressed,
+                ref table,
+            } => compressed.get(fp).map(|r| {
+                let info = r.value();
+                let vars = table.reconstruct(info.root_id);
                 StateInfo {
                     state: State::with_fingerprint(vars, *fp),
                     predecessor: info.predecessor,
@@ -442,6 +527,9 @@ impl StateStore {
         match &self.backend {
             StorageBackend::Full => self.states.iter().map(|r| r.key().as_u64()).collect(),
             StorageBackend::Collapse { ref compressed, .. } => {
+                compressed.iter().map(|r| r.key().as_u64()).collect()
+            }
+            StorageBackend::Tree { ref compressed, .. } => {
                 compressed.iter().map(|r| r.key().as_u64()).collect()
             }
             StorageBackend::Fingerprint(cell) => {

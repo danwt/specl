@@ -213,6 +213,8 @@ pub struct CheckConfig {
     pub check_only_invariants: Vec<String>,
     /// Use collapse compression: per-variable interning for reduced memory with traces.
     pub collapse: bool,
+    /// Use tree compression: LTSmin-style hierarchical hash table for maximum compression with traces.
+    pub tree: bool,
 }
 
 impl Default for CheckConfig {
@@ -236,6 +238,7 @@ impl Default for CheckConfig {
             max_time_secs: 0,
             check_only_invariants: Vec::new(),
             collapse: false,
+            tree: false,
         }
     }
 }
@@ -261,6 +264,7 @@ impl Clone for CheckConfig {
             max_time_secs: self.max_time_secs,
             check_only_invariants: self.check_only_invariants.clone(),
             collapse: self.collapse,
+            tree: self.tree,
         }
     }
 }
@@ -892,9 +896,11 @@ fn enumerate_params_indexed<F>(
 impl Explorer {
     /// Create a new explorer.
     pub fn new(spec: CompiledSpec, consts: Vec<Value>, config: CheckConfig) -> Self {
-        // Choose storage backend: bloom > collapse > fast_check > full tracking
+        // Choose storage backend: bloom > tree > collapse > fast_check > full tracking
         let store = if config.bloom {
             StateStore::with_bloom(config.bloom_bits, 3)
+        } else if config.tree {
+            StateStore::with_tree(spec.vars.len())
         } else if config.collapse {
             StateStore::with_collapse(spec.vars.len())
         } else {

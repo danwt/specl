@@ -7,6 +7,7 @@ pub mod explorer;
 pub mod fpset;
 pub mod state;
 pub mod store;
+pub mod tree_table;
 
 pub use explorer::{
     CheckConfig, CheckError, CheckOutcome, CheckResult, Explorer, ProfileData, ProgressCounters,

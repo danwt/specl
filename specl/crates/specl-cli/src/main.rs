@@ -294,6 +294,10 @@ enum Commands {
         #[arg(long, help_heading = "Explicit-State")]
         collapse: bool,
 
+        /// Tree compression: LTSmin-style hierarchical hash table (best compression, traces supported)
+        #[arg(long, help_heading = "Explicit-State")]
+        tree: bool,
+
         /// Directed model checking: priority BFS exploring states closest to violation first
         #[arg(long, help_heading = "Explicit-State")]
         directed: bool,
@@ -545,6 +549,7 @@ fn main() {
             bloom,
             bloom_bits,
             collapse,
+            tree,
             directed,
             incremental,
             swarm,
@@ -574,6 +579,7 @@ fn main() {
                 || fast
                 || bloom
                 || collapse
+                || tree
                 || directed
                 || incremental
                 || swarm.is_some()
@@ -635,6 +641,7 @@ fn main() {
                     bloom,
                     bloom_bits,
                     collapse,
+                    tree,
                     directed,
                     incremental,
                     verbose,
@@ -674,6 +681,7 @@ fn main() {
                         bloom,
                         bloom_bits,
                         collapse,
+                        tree,
                         directed,
                         incremental,
                         verbose,
@@ -984,6 +992,7 @@ fn cmd_check(
     bloom: bool,
     bloom_bits: u32,
     collapse: bool,
+    tree: bool,
     directed: bool,
     incremental: bool,
     _verbose: bool,
@@ -1168,6 +1177,7 @@ fn cmd_check(
         max_time_secs,
         check_only_invariants,
         collapse,
+        tree,
     };
 
     // Incremental cache: compute spec hash and load cached fingerprints
@@ -1486,6 +1496,7 @@ fn cmd_check_swarm(
                     max_time_secs: 0,
                     check_only_invariants: Vec::new(),
                     collapse: false,
+                    tree: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 explorer.set_stop_flag(Arc::clone(&stop));
@@ -1556,6 +1567,7 @@ fn cmd_check_swarm(
                     max_time_secs: 0,
                     check_only_invariants: Vec::new(),
                     collapse: false,
+                    tree: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
                 let result = explorer.check().map_err(|e| CliError::CheckError {
