@@ -261,7 +261,7 @@ specl/crates/
 
 ## Language Server (LSP)
 
-The `specl-lsp` binary provides IDE support via the Language Server Protocol (28 unit tests):
+The `specl-lsp` binary provides IDE support via the Language Server Protocol (32 unit tests):
 
 - **Hover**: Declaration info for vars, consts, actions, funcs, types, invariants, properties
 - **Completion**: Keywords, types, and symbols (vars, consts, actions, funcs, invariants) from the current file
@@ -269,12 +269,13 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (28
 - **Go-to-definition**: Jump to declaration of any identifier
 - **Find all references**: Locate all uses of an identifier
 - **Document highlight**: Highlight all occurrences of symbol under cursor (WRITE for declarations, READ for uses)
-- **Rename**: Rename an identifier across the file
+- **Rename**: Rename an identifier across the file (with prepare_rename validation)
 - **Document symbols**: Outline view of all declarations (with accurate multi-line ranges)
 - **Workspace symbols**: Cross-file symbol search (`Ctrl+T` in VSCode)
 - **Selection ranges**: Smart expand/shrink selection (declaration → file)
+- **Call hierarchy**: Incoming/outgoing call relationships between actions and funcs
 - **Inlay hints**: Parameter names shown inline at call sites (e.g. `Recovery(leader: 0, other: 2)`)
-- **Code actions**: Insert templates for init blocks, actions, and invariants
+- **Code actions**: Insert templates for init blocks, actions, invariants; quick fix for undefined variables
 - **Folding ranges**: Collapse declaration blocks and comment groups
 - **Formatting**: Pretty-print the document
 - **Semantic tokens**: Syntax highlighting (keywords, types, variables, functions, etc.)
@@ -282,4 +283,4 @@ The `specl-lsp` binary provides IDE support via the Language Server Protocol (28
 
 ## Examples
 
-See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, G-Counter CRDT, PN-Counter CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Bakery, Reader-Writer, Leader Election, ABD Register, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
+See `specl/examples/showcase/` (curated protocol specs — Raft, Paxos, EPaxos, CometBFT, Percolator, MESI, PBFT, G-Counter CRDT, PN-Counter CRDT, Vector Clocks, Lamport Clocks, Peterson, Dekker, Token Ring, Dining Philosophers, Chandy-Misra, Bakery, Reader-Writer, Leader Election, ABD Register, CAS Register, Lamport Mutex, Seqlock, Barrier, Two-Phase Locking, Bounded Buffer, etc.) and `specl/examples/other/` (additional specs, semaphore puzzles, stress tests).
