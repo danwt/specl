@@ -1354,7 +1354,7 @@ fn sorted_vec_intersect(a: &[Value], b: &[Value]) -> Vec<Value> {
 
 /// Merge-based difference of two sorted, deduplicated Vecs.
 pub(crate) fn sorted_vec_diff(a: &[Value], b: &[Value]) -> Vec<Value> {
-    let mut result = Vec::new();
+    let mut result = Vec::with_capacity(a.len());
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
         match a[i].cmp(&b[j]) {
