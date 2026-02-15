@@ -15,6 +15,8 @@ pub enum Op {
     // === Literals ===
     Int(i64),
     Bool(bool),
+    /// Push a pre-created constant Value (e.g., string literals).
+    PushValue(Value),
 
     // === Context access ===
     Var(u16),
@@ -189,6 +191,10 @@ pub enum Op {
     SeqConcat,
     /// Pop hi, pop lo, pop seq → push seq[lo..hi].
     SeqSlice,
+    /// Pop seq → push first element.
+    SeqHead,
+    /// Pop seq → push tail (all but first).
+    SeqTail,
 
     // === Superinstructions (fused sequences) ===
     /// Fused Var(i) + DictGet: var is the key, base dict is on stack.
@@ -300,6 +306,9 @@ impl Compiler {
             CompiledExpr::Int(n) => {
                 self.emit(Op::Int(*n));
             }
+            CompiledExpr::String(s) => {
+                self.emit(Op::PushValue(Value::string(s.clone())));
+            }
             CompiledExpr::Var(idx) => {
                 self.emit(Op::Var(*idx as u16));
             }
@@ -410,6 +419,15 @@ impl Compiler {
                 self.compile(lo);
                 self.compile(hi);
                 self.emit(Op::SeqSlice);
+            }
+
+            CompiledExpr::SeqHead(seq) => {
+                self.compile(seq);
+                self.emit(Op::SeqHead);
+            }
+            CompiledExpr::SeqTail(seq) => {
+                self.compile(seq);
+                self.emit(Op::SeqTail);
             }
 
             CompiledExpr::SetComprehension {
@@ -1204,11 +1222,18 @@ fn vm_eval_inner(
         match op {
             Op::Int(n) => stack.push(Value::int(*n)),
             Op::Bool(b) => stack.push(Value::bool(*b)),
+            Op::PushValue(v) => stack.push(v.clone()),
 
             Op::Var(idx) => stack.push(vars[*idx as usize].clone()),
             Op::PrimedVar(idx) => stack.push(next_vars[*idx as usize].clone()),
             Op::Const(idx) => stack.push(consts[*idx as usize].clone()),
-            Op::Param(idx) => stack.push(params[*idx as usize].clone()),
+            Op::Param(idx) => {
+                let i = *idx as usize;
+                if i >= params.len() {
+                    return Err(EvalError::Internal(format!("param {} not found", i)));
+                }
+                stack.push(params[i].clone());
+            }
             Op::Local(idx) => {
                 let stack_idx = locals.len() - 1 - *idx as usize;
                 stack.push(locals[stack_idx].clone());
@@ -2083,6 +2108,30 @@ fn vm_eval_inner(
                         }
                     }
                     _ => return Err(type_mismatch("Seq", &base_val)),
+                }
+            }
+
+            Op::SeqHead => {
+                let seq_val = stack.pop().unwrap();
+                match seq_val.kind() {
+                    VK::Seq(s) if !s.is_empty() => stack.push(s[0].clone()),
+                    VK::Seq(_) => {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: 0,
+                            length: 0,
+                        })
+                    }
+                    _ => return Err(type_mismatch("Seq", &seq_val)),
+                }
+            }
+            Op::SeqTail => {
+                let seq_val = stack.pop().unwrap();
+                match seq_val.kind() {
+                    VK::Seq(s) if !s.is_empty() => {
+                        stack.push(Value::seq(s[1..].to_vec()))
+                    }
+                    VK::Seq(_) => stack.push(Value::seq(vec![])),
+                    _ => return Err(type_mismatch("Seq", &seq_val)),
                 }
             }
 
