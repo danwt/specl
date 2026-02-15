@@ -392,7 +392,7 @@ struct GuardIndex {
 }
 
 /// Size of the per-action operation cache (must be power of 2).
-const OP_CACHE_SIZE: usize = 1 << 14; // 16K entries
+const OP_CACHE_SIZE: usize = 1 << 15; // 32K entries
 
 /// Sentinel value indicating guard failed or no transition.
 const OP_NO_SUCCESSOR: u64 = u64::MAX;
@@ -3055,6 +3055,7 @@ impl Explorer {
                 *caches = (0..num_actions).map(|_| OpCache::new()).collect();
             }
             let mut params_buf = Vec::new();
+            let mut domains_buf = Vec::new();
             for &action_idx in actions {
                 if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
                     continue;
@@ -3070,6 +3071,7 @@ impl Explorer {
                     effect_bufs,
                     &mut params_buf,
                     var_hashes_buf,
+                    &mut domains_buf,
                 )?;
             }
             Ok::<(), CheckError>(())
@@ -3557,14 +3559,13 @@ impl Explorer {
         effect_bufs: &mut VmBufs,
         params_buf: &mut Vec<Value>,
         var_hashes_buf: &mut Vec<u64>,
+        domains_buf: &mut Vec<Vec<Value>>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
         let needs_pvals = self.store.has_full_tracking();
-        let dynamic;
         let orbit_filtered;
-        let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
-            dynamic = d;
-            &dynamic
+        let param_domains = if self.fill_effective_domains(action_idx, state, domains_buf) {
+            domains_buf.as_slice()
         } else if !orbit_reps.is_empty() {
             // Filter param domains to orbit representatives for symmetric params
             let sym_groups = &self.sym_param_groups[action_idx];
@@ -3881,6 +3882,46 @@ impl Explorer {
                 })
                 .collect(),
         )
+    }
+
+    /// Fill a reusable buffer with effective parameter domains.
+    /// Returns true if the buffer was filled (state-dependent domains), false if static domains should be used.
+    #[inline]
+    fn fill_effective_domains(
+        &self,
+        action_idx: usize,
+        state: &State,
+        buf: &mut Vec<Vec<Value>>,
+    ) -> bool {
+        if !self.has_state_dep[action_idx] {
+            return false;
+        }
+        let deps = &self.state_dep_domains[action_idx];
+        let action = &self.spec.actions[action_idx];
+        let static_domains = &self.cached_param_domains[action_idx];
+        let n = static_domains.len();
+        buf.resize_with(n, Vec::new);
+        buf.truncate(n);
+        for i in 0..n {
+            if let Some(var_idx) = deps[i] {
+                match state.vars[var_idx].as_set() {
+                    Some(elems) => {
+                        buf[i].clear();
+                        buf[i].extend_from_slice(elems);
+                    }
+                    _ => {
+                        let (_, ty) = &action.params[i];
+                        let domain = self.type_domain(ty);
+                        buf[i].clear();
+                        buf[i].extend(domain);
+                    }
+                }
+            } else {
+                buf[i].clear();
+                buf[i].extend_from_slice(&static_domains[i]);
+            }
+        }
+        true
     }
 
     /// Try to resolve a TypeExpr to a domain, evaluating constant references.
