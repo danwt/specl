@@ -216,13 +216,8 @@ impl Parser {
 
         // Parse semicolon-separated statements (also accepts old 'and' syntax
         // since parse_expr() consumes 'and' chains as binary AND).
-        let mut stmts = Vec::new();
-        while !self.check(TokenKind::RBrace) {
-            stmts.push(self.parse_expr()?);
-            if !self.match_token(TokenKind::Semicolon) {
-                break;
-            }
-        }
+        // Statement-level `let x = expr;` desugars to `let x = expr in (remaining)`.
+        let stmts = self.parse_statement_list()?;
 
         let body = Self::combine_with_and(stmts, start);
 
@@ -286,13 +281,8 @@ impl Parser {
 
         // Parse effect statements separated by ; (also accepts old 'and' syntax
         // since parse_expr() consumes 'and' chains as binary AND).
-        let mut effects = Vec::new();
-        while !self.check(TokenKind::RBrace) {
-            effects.push(self.parse_expr()?);
-            if !self.match_token(TokenKind::Semicolon) {
-                break;
-            }
-        }
+        // Statement-level `let x = expr;` desugars to `let x = expr in (remaining)`.
+        let effects = self.parse_statement_list()?;
 
         let effect = if effects.is_empty() {
             None
@@ -306,6 +296,74 @@ impl Parser {
             effect,
             span,
         })
+    }
+
+    /// Parse a list of semicolon-separated statements, with support for
+    /// statement-level `let x = expr;` which desugars to `let x = expr in (remaining)`.
+    /// Stops at `}` (RBrace).
+    fn parse_statement_list(&mut self) -> ParseResult<Vec<Expr>> {
+        let mut stmts = Vec::new();
+        while !self.check(TokenKind::RBrace) {
+            if self.check(TokenKind::Let) {
+                stmts.push(self.parse_statement_let()?);
+                break; // statement-let consumed all remaining statements
+            }
+            stmts.push(self.parse_expr()?);
+            if !self.match_token(TokenKind::Semicolon) {
+                break;
+            }
+        }
+        Ok(stmts)
+    }
+
+    /// Parse a `let` that may be statement-level (`let x = expr;`) or
+    /// expression-level (`let x = expr in body`).
+    ///
+    /// Statement-level: desugars `let x = v; rest...` to `let x = v in (rest...)`.
+    /// Handles nesting: `let x = 1; let y = x; z = y` works via recursion.
+    fn parse_statement_let(&mut self) -> ParseResult<Expr> {
+        let start = self.current_span();
+        self.expect(TokenKind::Let)?;
+        let var = self.parse_ident()?;
+        self.expect(TokenKind::Assign)?;
+        let value = self.parse_expr_no_in()?;
+
+        if self.check(TokenKind::In) {
+            // Traditional let..in expression
+            self.advance();
+            let body = self.parse_expr()?;
+            let span = start.merge(body.span);
+            return Ok(Expr::new(
+                ExprKind::Let {
+                    var,
+                    value: Box::new(value),
+                    body: Box::new(body),
+                },
+                span,
+            ));
+        }
+
+        // Statement-level let: parse remaining statements as body
+        self.match_token(TokenKind::Semicolon);
+
+        let remaining = self.parse_statement_list()?;
+        if remaining.is_empty() {
+            return Err(ParseError::InvalidSyntax {
+                message: "expected statements after let binding".to_string(),
+                span: self.current_span(),
+            });
+        }
+
+        let body = Self::combine_with_and(remaining, start);
+        let span = start.merge(body.span);
+        Ok(Expr::new(
+            ExprKind::Let {
+                var,
+                value: Box::new(value),
+                body: Box::new(body),
+            },
+            span,
+        ))
     }
 
     /// Combine multiple expressions into a single AND chain.
