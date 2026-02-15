@@ -34,8 +34,9 @@ pub fn extract_init_assignments(
     num_vars: usize,
 ) -> AssignmentResult {
     let mut assignments: Vec<Option<Value>> = vec![None; num_vars];
+    let mut locals = Vec::new();
 
-    if !extract_from_expr(init, consts, &mut assignments) {
+    if !extract_from_expr(init, consts, &mut assignments, &mut locals) {
         return AssignmentResult::NeedsEnumeration;
     }
 
@@ -60,6 +61,7 @@ fn extract_from_expr(
     expr: &CompiledExpr,
     consts: &[Value],
     assignments: &mut [Option<Value>],
+    locals: &mut Vec<Value>,
 ) -> bool {
     match expr {
         // Boolean literal true is trivially satisfied (no new assignments)
@@ -72,8 +74,20 @@ fn extract_from_expr(
             left,
             right,
         } => {
-            extract_from_expr(left, consts, assignments)
-                && extract_from_expr(right, consts, assignments)
+            extract_from_expr(left, consts, assignments, locals)
+                && extract_from_expr(right, consts, assignments, locals)
+        }
+
+        // Let binding: evaluate value, bind as local, extract from body
+        CompiledExpr::Let { value, body } => {
+            if let Some(val) = try_eval_value(value, consts, assignments, locals) {
+                locals.push(val);
+                let result = extract_from_expr(body, consts, assignments, locals);
+                locals.pop();
+                result
+            } else {
+                false
+            }
         }
 
         // Equality: x == expr where x is a variable
@@ -89,7 +103,7 @@ fn extract_from_expr(
                 _ => None,
             };
             if let Some(idx) = left_idx {
-                if let Some(value) = try_eval_value(right, consts, assignments) {
+                if let Some(value) = try_eval_value(right, consts, assignments, locals) {
                     if assignments[idx].is_none() {
                         assignments[idx] = Some(value);
                         return true;
@@ -105,7 +119,7 @@ fn extract_from_expr(
                 _ => None,
             };
             if let Some(idx) = right_idx {
-                if let Some(value) = try_eval_value(left, consts, assignments) {
+                if let Some(value) = try_eval_value(left, consts, assignments, locals) {
                     if assignments[idx].is_none() {
                         assignments[idx] = Some(value);
                         return true;
@@ -130,12 +144,16 @@ fn try_eval_value(
     expr: &CompiledExpr,
     consts: &[Value],
     partial_assignments: &[Option<Value>],
+    locals: &[Value],
 ) -> Option<Value> {
     let vars: Vec<Value> = partial_assignments
         .iter()
         .map(|a| a.clone().unwrap_or(Value::none()))
         .collect();
     let mut ctx = EvalContext::new(&vars, &vars, consts, &[]);
+    for local in locals {
+        ctx.push_local(local.clone());
+    }
     eval(expr, &mut ctx).ok()
 }
 
@@ -205,6 +223,26 @@ fn extract_effect_from_expr(
         } => {
             extract_effect_from_expr(left, assignments, has_constraints)
                 && extract_effect_from_expr(right, assignments, has_constraints)
+        }
+
+        // Let binding: extract from body, wrap assignment expressions in the let
+        CompiledExpr::Let { value, body } => {
+            let mut inner_assignments = Vec::new();
+            let mut inner_constraints = false;
+            if !extract_effect_from_expr(body, &mut inner_assignments, &mut inner_constraints) {
+                return false;
+            }
+            *has_constraints |= inner_constraints;
+            for (idx, inner_expr) in inner_assignments {
+                assignments.push((
+                    idx,
+                    CompiledExpr::Let {
+                        value: value.clone(),
+                        body: Box::new(inner_expr),
+                    },
+                ));
+            }
+            true
         }
 
         // Primed variable equality: var' == expr
@@ -432,7 +470,7 @@ mod tests {
         };
 
         let mut assignments = vec![None; 1];
-        let result = extract_from_expr(&expr, &[], &mut assignments);
+        let result = extract_from_expr(&expr, &[], &mut assignments, &mut Vec::new());
 
         assert!(result);
         assert_eq!(assignments[0], Some(Value::int(0)));
@@ -456,7 +494,7 @@ mod tests {
         };
 
         let mut assignments = vec![None; 2];
-        let result = extract_from_expr(&expr, &[], &mut assignments);
+        let result = extract_from_expr(&expr, &[], &mut assignments, &mut Vec::new());
 
         assert!(result);
         assert_eq!(assignments[0], Some(Value::int(0)));
