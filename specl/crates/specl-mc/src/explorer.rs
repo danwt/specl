@@ -913,7 +913,7 @@ fn strip_redundant_contains(
 /// Enumerate all parameter combinations using index assignment (no push/pop overhead).
 /// `params_buf` must be pre-allocated to `domains.len()` size.
 fn enumerate_params_flat<F>(
-    domains: &[Vec<Value>],
+    domains: &[&[Value]],
     params_buf: &mut Vec<Value>,
     level: usize,
     callback: &mut F,
@@ -924,7 +924,7 @@ fn enumerate_params_flat<F>(
         callback(params_buf);
         return;
     }
-    for value in &domains[level] {
+    for value in domains[level] {
         params_buf[level] = value.clone();
         enumerate_params_flat(domains, params_buf, level + 1, callback);
     }
@@ -934,7 +934,7 @@ fn enumerate_params_flat<F>(
 /// `params_buf` must be pre-allocated to `num_params` size.
 /// `guard_bufs` is reused across all guard evaluations to avoid per-call allocation.
 fn enumerate_params_indexed<F>(
-    domains: &[Vec<Value>],
+    domains: &[&[Value]],
     guard_index: &GuardIndex,
     guard_bc: &Bytecode,
     vars: &[Value],
@@ -961,7 +961,7 @@ fn enumerate_params_indexed<F>(
     }
 
     let orig_idx = guard_index.binding_order[level];
-    for value in &domains[orig_idx] {
+    for value in domains[orig_idx] {
         params_buf[orig_idx] = value.clone();
 
         // Check prefix guard at this level
@@ -1842,7 +1842,6 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
-        let mut domains_buf = Vec::new();
 
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
@@ -1943,7 +1942,6 @@ impl Explorer {
                 &mut var_hashes_buf,
                 &mut op_caches,
                 &mut params_buf,
-                &mut domains_buf,
             )?;
 
             if successors.is_empty() && self.config.check_deadlock {
@@ -2058,7 +2056,6 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
-        let mut domains_buf = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2098,7 +2095,6 @@ impl Explorer {
                 &mut var_hashes_buf,
                 &mut op_caches,
                 &mut params_buf,
-                &mut domains_buf,
             )?;
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
@@ -2134,7 +2130,6 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
-        let mut domains_buf = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2163,7 +2158,6 @@ impl Explorer {
                 &mut var_hashes_buf,
                 &mut op_caches,
                 &mut params_buf,
-                &mut domains_buf,
             )?;
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(state)?;
@@ -2214,7 +2208,6 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
-        let mut domains_buf = Vec::new();
 
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
@@ -2330,7 +2323,6 @@ impl Explorer {
                 &mut var_hashes_buf,
                 &mut op_caches,
                 &mut params_buf,
-                &mut domains_buf,
             )?;
             if let Some(t1) = t1 {
                 prof_time_succ += t1.elapsed();
@@ -2566,30 +2558,25 @@ impl Explorer {
                     thread_local! {
                         static PAR_OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
                         static PAR_PARAMS_BUF: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
-                        static PAR_DOMAINS_BUF: RefCell<Vec<Vec<Value>>> = const { RefCell::new(Vec::new()) };
                     }
                     let gen_result = PAR_OP_CACHES.with(|caches_cell| {
                         PAR_PARAMS_BUF.with(|params_cell| {
-                            PAR_DOMAINS_BUF.with(|domains_cell| {
-                                let mut caches = caches_cell.borrow_mut();
-                                if caches.len() != num_actions_par {
-                                    *caches = (0..num_actions_par).map(|_| OpCache::new()).collect();
-                                }
-                                let mut par_params = params_cell.borrow_mut();
-                                let mut par_domains = domains_cell.borrow_mut();
-                                self.generate_successors(
-                                    state,
-                                    &mut successors,
-                                    &mut next_vars_buf,
-                                    0,
-                                    &mut guard_bufs,
-                                    &mut effect_bufs,
-                                    &mut var_hashes_buf,
-                                    &mut caches,
-                                    &mut par_params,
-                                    &mut par_domains,
-                                )
-                            })
+                            let mut caches = caches_cell.borrow_mut();
+                            if caches.len() != num_actions_par {
+                                *caches = (0..num_actions_par).map(|_| OpCache::new()).collect();
+                            }
+                            let mut par_params = params_cell.borrow_mut();
+                            self.generate_successors(
+                                state,
+                                &mut successors,
+                                &mut next_vars_buf,
+                                0,
+                                &mut guard_bufs,
+                                &mut effect_bufs,
+                                &mut var_hashes_buf,
+                                &mut caches,
+                                &mut par_params,
+                            )
                         })
                     });
                     match gen_result {
@@ -3065,7 +3052,6 @@ impl Explorer {
         var_hashes_buf: &mut Vec<u64>,
         op_caches: &mut Vec<OpCache>,
         params_buf: &mut Vec<Value>,
-        domains_buf: &mut Vec<Vec<Value>>,
     ) -> CheckResult<()> {
         buf.clear();
 
@@ -3108,7 +3094,6 @@ impl Explorer {
                     var_hashes_buf,
                     op_caches,
                     params_buf,
-                    domains_buf,
                 );
             }
             // AmpleResult::Templates falls through to standard path below
@@ -3128,7 +3113,6 @@ impl Explorer {
                 var_hashes_buf,
                 op_caches,
                 params_buf,
-                domains_buf,
             )
         } else if let Some(ref relevant) = self.relevant_actions {
             self.apply_template_actions(
@@ -3142,7 +3126,6 @@ impl Explorer {
                 var_hashes_buf,
                 op_caches,
                 params_buf,
-                domains_buf,
             )
         } else {
             self.apply_template_actions(
@@ -3156,7 +3139,6 @@ impl Explorer {
                 var_hashes_buf,
                 op_caches,
                 params_buf,
-                domains_buf,
             )
         }
     }
@@ -3175,7 +3157,6 @@ impl Explorer {
         var_hashes_buf: &mut Vec<u64>,
         op_caches: &mut Vec<OpCache>,
         params_buf: &mut Vec<Value>,
-        domains_buf: &mut Vec<Vec<Value>>,
     ) -> CheckResult<()> {
         let orbit_reps: SmallVec<[Vec<usize>; 4]> =
             if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
@@ -3203,7 +3184,6 @@ impl Explorer {
                 effect_bufs,
                 params_buf,
                 var_hashes_buf,
-                domains_buf,
             )?;
         }
 
@@ -3230,13 +3210,7 @@ impl Explorer {
         _action: &CompiledAction,
         action_idx: usize,
     ) -> CheckResult<bool> {
-        let dynamic;
-        let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
-            dynamic = d;
-            &dynamic
-        } else {
-            &self.cached_param_domains[action_idx]
-        };
+        let param_domains = self.build_domain_refs(action_idx, state);
         let guard_bc = &self.compiled_guards[action_idx];
         let mut enabled = false;
         let mut guard_bufs = VmBufs::new();
@@ -3258,7 +3232,7 @@ impl Explorer {
             }
             let mut params_buf = vec![Value::none(); param_domains.len()];
             enumerate_params_indexed(
-                param_domains,
+                &param_domains,
                 guard_index,
                 guard_bc,
                 &state.vars,
@@ -3272,7 +3246,7 @@ impl Explorer {
             );
         } else {
             let mut params_buf = SmallVec::new();
-            self.enumerate_params(param_domains, &mut params_buf, &mut |params: &[Value]| {
+            self.enumerate_params(&param_domains, &mut params_buf, &mut |params: &[Value]| {
                 if !enabled {
                     if let Ok(true) =
                         vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
@@ -3364,13 +3338,7 @@ impl Explorer {
         state: &State,
         action_idx: usize,
     ) -> CheckResult<Vec<(usize, Vec<Value>)>> {
-        let dynamic;
-        let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
-            dynamic = d;
-            &dynamic
-        } else {
-            &self.cached_param_domains[action_idx]
-        };
+        let param_domains = self.build_domain_refs(action_idx, state);
         let guard_bc = &self.compiled_guards[action_idx];
         let mut instances = Vec::new();
         let mut guard_bufs = VmBufs::new();
@@ -3392,7 +3360,7 @@ impl Explorer {
             }
             let mut params_buf = vec![Value::none(); param_domains.len()];
             enumerate_params_indexed(
-                param_domains,
+                &param_domains,
                 guard_index,
                 guard_bc,
                 &state.vars,
@@ -3406,7 +3374,7 @@ impl Explorer {
             );
         } else {
             let mut params_buf = SmallVec::new();
-            self.enumerate_params(param_domains, &mut params_buf, &mut |params: &[Value]| {
+            self.enumerate_params(&param_domains, &mut params_buf, &mut |params: &[Value]| {
                 if vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
                     .unwrap_or(false)
                 {
@@ -3689,38 +3657,65 @@ impl Explorer {
         effect_bufs: &mut VmBufs,
         params_buf: &mut Vec<Value>,
         var_hashes_buf: &mut Vec<u64>,
-        domains_buf: &mut Vec<Vec<Value>>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
         let needs_pvals = self.store.has_full_tracking();
-        let orbit_filtered;
-        let param_domains = if self.fill_effective_domains(action_idx, state, domains_buf) {
-            domains_buf.as_slice()
+        let static_domains = &self.cached_param_domains[action_idx];
+        let num_params = static_domains.len();
+
+        // Orbit-filtered domains need owned storage — declared first so dropped last
+        let mut orbit_vecs: SmallVec<[Vec<Value>; 4]> = SmallVec::new();
+        // Build zero-copy domain references — avoids cloning set contents
+        let mut domain_refs: SmallVec<[&[Value]; 6]> = SmallVec::with_capacity(num_params);
+
+        if self.has_state_dep[action_idx] {
+            let deps = &self.state_dep_domains[action_idx];
+            for i in 0..num_params {
+                if let Some(var_idx) = deps[i] {
+                    if let Some(elems) = state.vars[var_idx].as_set() {
+                        domain_refs.push(elems);
+                    } else {
+                        domain_refs.push(&static_domains[i]);
+                    }
+                } else {
+                    domain_refs.push(&static_domains[i]);
+                }
+            }
         } else if !orbit_reps.is_empty() {
-            // Filter param domains to orbit representatives for symmetric params
             let sym_groups = &self.sym_param_groups[action_idx];
             if sym_groups.iter().any(|g| g.is_some()) {
-                orbit_filtered = self.cached_param_domains[action_idx]
-                    .iter()
-                    .enumerate()
-                    .map(|(param_idx, domain)| {
-                        if let Some(group_idx) = sym_groups[param_idx] {
-                            let reps = &orbit_reps[group_idx];
-                            reps.iter()
-                                .filter_map(|&rep| domain.get(rep).cloned())
-                                .collect()
-                        } else {
-                            domain.clone()
-                        }
-                    })
-                    .collect::<Vec<_>>();
-                &orbit_filtered
+                // First pass: build all owned orbit-filtered vecs
+                for (param_idx, domain) in static_domains.iter().enumerate() {
+                    if let Some(group_idx) = sym_groups[param_idx] {
+                        let reps = &orbit_reps[group_idx];
+                        let filtered: Vec<Value> = reps
+                            .iter()
+                            .filter_map(|&rep| domain.get(rep).cloned())
+                            .collect();
+                        orbit_vecs.push(filtered);
+                    }
+                }
+                // Second pass: build refs (orbit_vecs is now stable)
+                let mut orbit_idx = 0;
+                for (param_idx, domain) in static_domains.iter().enumerate() {
+                    if sym_groups[param_idx].is_some() {
+                        domain_refs.push(orbit_vecs[orbit_idx].as_slice());
+                        orbit_idx += 1;
+                    } else {
+                        domain_refs.push(domain.as_slice());
+                    }
+                }
             } else {
-                &self.cached_param_domains[action_idx]
+                for domain in static_domains {
+                    domain_refs.push(domain.as_slice());
+                }
             }
         } else {
-            &self.cached_param_domains[action_idx]
+            for domain in static_domains {
+                domain_refs.push(domain.as_slice());
+            }
         };
+        let param_domains = domain_refs.as_slice();
         let guard_bc = &self.compiled_guards[action_idx];
         let reads = &action.reads;
         let changes = &action.changes;
@@ -3977,7 +3972,7 @@ impl Explorer {
     /// Enumerate all parameter combinations.
     fn enumerate_params<F>(
         &self,
-        domains: &[Vec<Value>],
+        domains: &[&[Value]],
         buf: &mut SmallVec<[Value; 4]>,
         callback: &mut F,
     ) where
@@ -3989,84 +3984,38 @@ impl Explorer {
             return;
         }
 
-        for value in &domains[idx] {
+        for value in domains[idx] {
             buf.push(value.clone());
             self.enumerate_params(domains, buf, callback);
             buf.pop();
         }
     }
 
-    /// Build effective parameter domains, substituting state-dependent domains at runtime.
-    /// Returns None if no params are state-dependent (zero overhead fast path).
-    #[inline]
-    fn get_effective_domains(&self, action_idx: usize, state: &State) -> Option<Vec<Vec<Value>>> {
+    /// Build zero-copy domain references for an action, substituting state-dependent
+    /// domains at runtime. For state-dependent params, borrows directly from Arc'd set
+    /// contents via as_set(). For static params, borrows from cached_param_domains.
+    /// Falls back to owned Vec for non-Set runtime values (rare type_domain fallback).
+    fn build_domain_refs<'a>(&'a self, action_idx: usize, state: &'a State) -> Vec<&'a [Value]> {
+        let static_domains = &self.cached_param_domains[action_idx];
         if !self.has_state_dep[action_idx] {
-            return None;
+            return static_domains.iter().map(|d| d.as_slice()).collect();
         }
         let deps = &self.state_dep_domains[action_idx];
-        let action = &self.spec.actions[action_idx];
-        let static_domains = &self.cached_param_domains[action_idx];
-        Some(
-            static_domains
-                .iter()
-                .enumerate()
-                .map(|(i, static_domain)| {
-                    if let Some(var_idx) = deps[i] {
-                        match state.vars[var_idx].as_set() {
-                            Some(elems) => elems.to_vec(),
-                            _ => {
-                                // Non-Set runtime value: fall back to full type domain
-                                // (static_domain is empty placeholder for state-dep params)
-                                let (_, ty) = &action.params[i];
-                                self.type_domain(ty)
-                            }
-                        }
+        static_domains
+            .iter()
+            .enumerate()
+            .map(|(i, static_domain)| {
+                if let Some(var_idx) = deps[i] {
+                    if let Some(elems) = state.vars[var_idx].as_set() {
+                        elems
                     } else {
-                        static_domain.clone()
+                        static_domain.as_slice()
                     }
-                })
-                .collect(),
-        )
-    }
-
-    /// Fill a reusable buffer with effective parameter domains.
-    /// Returns true if the buffer was filled (state-dependent domains), false if static domains should be used.
-    #[inline]
-    fn fill_effective_domains(
-        &self,
-        action_idx: usize,
-        state: &State,
-        buf: &mut Vec<Vec<Value>>,
-    ) -> bool {
-        if !self.has_state_dep[action_idx] {
-            return false;
-        }
-        let deps = &self.state_dep_domains[action_idx];
-        let action = &self.spec.actions[action_idx];
-        let static_domains = &self.cached_param_domains[action_idx];
-        let n = static_domains.len();
-        buf.resize_with(n, Vec::new);
-        buf.truncate(n);
-        for i in 0..n {
-            if let Some(var_idx) = deps[i] {
-                match state.vars[var_idx].as_set() {
-                    Some(elems) => {
-                        buf[i].clear();
-                        buf[i].extend_from_slice(elems);
-                    }
-                    _ => {
-                        let (_, ty) = &action.params[i];
-                        let domain = self.type_domain(ty);
-                        buf[i].clear();
-                        buf[i].extend(domain);
-                    }
+                } else {
+                    static_domain.as_slice()
                 }
-            } else {
-                buf[i].clear();
-                buf[i].extend_from_slice(&static_domains[i]);
-            }
-        }
-        true
+            })
+            .collect()
     }
 
     /// Try to resolve a TypeExpr to a domain, evaluating constant references.
@@ -4264,7 +4213,6 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
-        let mut domains_buf = Vec::new();
 
         for _step in 0..max_steps {
             // Generate all successors (no POR, no symmetry)
@@ -4278,7 +4226,6 @@ impl Explorer {
                 &mut var_hashes_buf,
                 &mut op_caches,
                 &mut params_buf,
-                &mut domains_buf,
             )?;
 
             if successors_buf.is_empty() {
