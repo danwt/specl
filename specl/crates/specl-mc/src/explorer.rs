@@ -2077,7 +2077,7 @@ impl Explorer {
             }
 
             // --- Phase 1: Check invariants ---
-            let t0 = Instant::now();
+            let t0 = if profiling { Some(Instant::now()) } else { None };
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
                 if !self.active_invariants[inv_idx] {
                     continue;
@@ -2102,13 +2102,13 @@ impl Explorer {
                     });
                 }
             }
-            if profiling { prof_time_inv += t0.elapsed(); }
+            if let Some(t0) = t0 { prof_time_inv += t0.elapsed(); }
 
             // --- Phase 2: Generate successor states ---
-            let t1 = Instant::now();
+            let t1 = if profiling { Some(Instant::now()) } else { None };
             successors.clear();
             self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set, &mut guard_bufs, &mut effect_bufs)?;
-            if profiling { prof_time_succ += t1.elapsed(); }
+            if let Some(t1) = t1 { prof_time_succ += t1.elapsed(); }
 
             if successors.is_empty() && self.config.check_deadlock {
                 // Check if any action is enabled (ignoring sleep set — sleep doesn't cause deadlock)
@@ -2129,7 +2129,7 @@ impl Explorer {
             }
 
             // --- Phase 3: Store insert + queue management ---
-            let t2 = Instant::now();
+            let t2 = if profiling { Some(Instant::now()) } else { None };
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
             for (next_state, action_idx, pvals) in successors.drain(..) {
@@ -2161,7 +2161,7 @@ impl Explorer {
 
             // Grow FPSet between batches if needed (no concurrent inserts at this point)
             self.store.maybe_grow_fpset();
-            if profiling { prof_time_store += t2.elapsed(); }
+            if let Some(t2) = t2 { prof_time_store += t2.elapsed(); }
 
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {

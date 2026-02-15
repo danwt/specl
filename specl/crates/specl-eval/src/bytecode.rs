@@ -225,6 +225,10 @@ pub enum Op {
     VarIntEq(u16, i64),
     /// Fused Var(i) + Param(j) + DictGet: dict[param] from var.
     VarParamDictGet(u16, u16),
+    /// Fused VarParamDictGet(a, b) + Param(c) + DictGet: two-level dict lookup vars[a][params[b]][params[c]].
+    VarParam2DictGet(u16, u16, u16),
+    /// Fused VarParamDictGet(a, b) + Int(k) + IntEq: dict lookup + int compare vars[a][params[b]] == k.
+    VarParamDictGetIntEq(u16, u16, i64),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -1106,6 +1110,46 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
         }
 
+        // Pattern: VarParamDictGet(a, b), Param(c), DictGet → VarParam2DictGet(a, b, c)
+        // Two-level dict lookup: vars[a][params[b]][params[c]] without intermediate Arc clone.
+        if i + 2 < ops.len()
+            && !jump_targets.get(i + 2).copied().unwrap_or(false)
+        {
+            if let (Op::VarParamDictGet(var_idx, param1_idx), Op::Param(param2_idx), Op::DictGet) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param1_idx = *param1_idx;
+                let param2_idx = *param2_idx;
+                ops[i] = Op::VarParam2DictGet(var_idx, param1_idx, param2_idx);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: VarParamDictGet(a, b), Int(k), IntEq → VarParamDictGetIntEq(a, b, k)
+        // Dict lookup + comparison: vars[a][params[b]] == k without cloning the dict.
+        if i + 2 < ops.len()
+            && !jump_targets.get(i + 2).copied().unwrap_or(false)
+        {
+            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntEq) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::VarParamDictGetIntEq(var_idx, param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
         i += 1;
     }
 }
@@ -1459,6 +1503,66 @@ fn vm_eval_inner(
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             expected: "Fn or Seq".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParam2DictGet(var_idx, param1_idx, param2_idx) => {
+                // Fused: VarParamDictGet(a,b) + Param(c) + DictGet
+                // Two-level lookup: vars[a][params[b]][params[c]] without intermediate clone.
+                let key1 = &params[*param1_idx as usize];
+                let key2 = &params[*param2_idx as usize];
+                let outer = &vars[*var_idx as usize];
+                match outer.kind() {
+                    VK::Fn(map) => {
+                        let inner_ref = Value::fn_get(map, key1)
+                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?;
+                        match inner_ref.kind() {
+                            VK::IntMap(arr) => {
+                                let k = expect_int(key2)? as usize;
+                                stack.push(Value::int(arr[k]));
+                            }
+                            VK::Fn(inner_map) => {
+                                let val = Value::fn_get(inner_map, key2)
+                                    .cloned()
+                                    .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                                stack.push(val);
+                            }
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "Fn or IntMap".to_string(),
+                                    actual: inner_ref.type_name().to_string(),
+                                })
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn".to_string(),
+                            actual: outer.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetIntEq(var_idx, param_idx, k) => {
+                // Fused: VarParamDictGet(a,b) + Int(k) + IntEq
+                // Dict lookup + compare: vars[a][params[b]] == k without cloning the dict.
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(key)? as usize;
+                        stack.push(Value::bool(arr[idx] == *k));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(Value::bool(val.as_int() == Some(*k)));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
                             actual: base.type_name().to_string(),
                         })
                     }
