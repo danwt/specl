@@ -684,8 +684,22 @@ impl PartialOrd for Value {
 }
 
 impl Ord for Value {
+    #[inline]
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         use std::cmp::Ordering;
+
+        // Fast path: both inline Int (most common comparison in protocol specs).
+        // TAG_INT is 0x00, so tag byte is 0 for inline ints.
+        let t1 = self.tag();
+        let t2 = other.tag();
+        if t1 == TAG_INT && t2 == TAG_INT {
+            return self.as_i56().cmp(&other.as_i56());
+        }
+
+        // Fast path: identical bits (same Arc pointer or same inline value)
+        if self.0 == other.0 {
+            return Ordering::Equal;
+        }
 
         let d1 = self.ord_discriminant();
         let d2 = other.ord_discriminant();
