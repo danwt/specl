@@ -3,7 +3,9 @@
 //! Compiles CompiledExpr trees to flat bytecode and executes them in a tight
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
-use crate::eval::{eval, eval_bool, eval_int, expect_int, sorted_vec_diff, sorted_vec_union, type_mismatch};
+use crate::eval::{
+    eval, eval_bool, eval_int, expect_int, sorted_vec_diff, sorted_vec_union, type_mismatch,
+};
 use crate::value::{Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
@@ -231,6 +233,12 @@ pub enum Op {
     VarParamDictGetIntEq(u16, u16, i64),
     /// Fused VarParamDictGet(a, b) + Len: len(vars[a][params[b]]) without cloning the collection.
     VarParamDictGetLen(u16, u16),
+    /// Fused Param(p) + Int(k) + DictGet: params[p][k] — direct seq/dict index on parameter.
+    /// Common in message-parameterized actions: msg[0], msg[2], msg[3], etc.
+    ParamIntDictGet(u16, i64),
+    /// Fused Var(v) + Param(p) + Int(k) + DictGet + DictGet: vars[v][params[p][k]].
+    /// Common in protocol specs: currentTerm[msg[2]], state[msg[2]], logTerm[msg[2]], etc.
+    VarParamIntDictGet2(u16, u16, i64),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -1038,10 +1046,16 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
                     jump_targets[target] = true;
                 }
             }
-            Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
-            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t)
-            | Op::ForallPowersetInit(t) | Op::ExistsPowersetInit(t) => {
+            Op::ForallRangeInit(t)
+            | Op::ExistsRangeInit(t)
+            | Op::CountRangeInit(t)
+            | Op::FnLitRangeInit(t)
+            | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t)
+            | Op::ExistsSetInit(t)
+            | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t)
+            | Op::ExistsPowersetInit(t) => {
                 let target = *t as usize;
                 if target < jump_targets.len() {
                     jump_targets[target] = true;
@@ -1122,9 +1136,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
 
         // Pattern: VarParamDictGet(a, b), Param(c), DictGet → VarParam2DictGet(a, b, c)
         // Two-level dict lookup: vars[a][params[b]][params[c]] without intermediate Arc clone.
-        if i + 2 < ops.len()
-            && !jump_targets.get(i + 2).copied().unwrap_or(false)
-        {
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
             if let (Op::VarParamDictGet(var_idx, param1_idx), Op::Param(param2_idx), Op::DictGet) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
@@ -1142,9 +1154,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
 
         // Pattern: VarParamDictGet(a, b), Int(k), IntEq → VarParamDictGetIntEq(a, b, k)
         // Dict lookup + comparison: vars[a][params[b]] == k without cloning the dict.
-        if i + 2 < ops.len()
-            && !jump_targets.get(i + 2).copied().unwrap_or(false)
-        {
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
             if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntEq) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
@@ -1162,15 +1172,49 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
 
         // Pattern: VarParamDictGet(a, b), Len → VarParamDictGetLen(a, b)
         // len(vars[a][params[b]]) without cloning the intermediate collection.
-        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Len) =
-            (&ops[i], &ops[i + 1])
-        {
+        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Len) = (&ops[i], &ops[i + 1]) {
             let var_idx = *var_idx;
             let param_idx = *param_idx;
             ops[i] = Op::VarParamDictGetLen(var_idx, param_idx);
             ops.remove(i + 1);
             patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
             continue;
+        }
+
+        // Pattern: Param(p), Int(k), DictGet → ParamIntDictGet(p, k) (3 → 1)
+        // Direct seq/dict index on parameter: params[p][k]
+        // Very common in message-parameterized actions: msg[0], msg[2], msg[3], etc.
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::Param(param_idx), Op::Int(k), Op::DictGet) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::ParamIntDictGet(param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: Var(v), ParamIntDictGet(p, k), DictGet → VarParamIntDictGet2(v, p, k) (3 → 1)
+        // Two-level lookup: vars[v][params[p][k]] — e.g. currentTerm[msg[2]], state[msg[2]]
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::Var(var_idx), Op::ParamIntDictGet(param_idx, k), Op::DictGet) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::VarParamIntDictGet2(var_idx, param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
         }
 
         i += 1;
@@ -1192,10 +1236,16 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
                     *t -= 1;
                 }
             }
-            Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
-            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t)
-            | Op::ForallPowersetInit(t) | Op::ExistsPowersetInit(t) => {
+            Op::ForallRangeInit(t)
+            | Op::ExistsRangeInit(t)
+            | Op::CountRangeInit(t)
+            | Op::FnLitRangeInit(t)
+            | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t)
+            | Op::ExistsSetInit(t)
+            | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t)
+            | Op::ExistsPowersetInit(t) => {
                 if (*t as usize) > removed_pos {
                     *t -= 1;
                 }
@@ -1636,6 +1686,74 @@ fn vm_eval_inner(
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             expected: "Fn".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+
+            Op::ParamIntDictGet(param_idx, k) => {
+                // Fused: Param(p) + Int(k) + DictGet → params[p][k]
+                // Direct access into a Seq/Dict parameter at a constant index.
+                let param = &params[*param_idx as usize];
+                match param.kind() {
+                    VK::IntMap(arr) => {
+                        stack.push(Value::int(arr[*k as usize]));
+                    }
+                    VK::Seq(s) => {
+                        stack.push(s[*k as usize].clone());
+                    }
+                    VK::Fn(map) => {
+                        let key = Value::int(*k);
+                        let val = Value::fn_get(map, &key)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(val);
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Seq, Fn, or IntMap".to_string(),
+                            actual: param.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamIntDictGet2(var_idx, param_idx, k) => {
+                // Fused: Var(v) + Param(p) + Int(k) + DictGet + DictGet → vars[v][params[p][k]]
+                // Two-level lookup: first index into the parameter seq/dict, then use result
+                // as key into a state variable. E.g. currentTerm[msg[2]], state[msg[2]].
+                let param = &params[*param_idx as usize];
+                let inner_key = match param.kind() {
+                    VK::IntMap(arr) => Value::int(arr[*k as usize]),
+                    VK::Seq(s) => s[*k as usize].clone(),
+                    VK::Fn(map) => {
+                        let key = Value::int(*k);
+                        Value::fn_get(map, &key)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Seq, Fn, or IntMap".to_string(),
+                            actual: param.type_name().to_string(),
+                        })
+                    }
+                };
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(&inner_key)? as usize;
+                        stack.push(Value::int(arr[idx]));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, &inner_key)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(inner_key.to_string()))?;
+                        stack.push(val);
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
                             actual: base.type_name().to_string(),
                         })
                     }
@@ -2217,7 +2335,7 @@ fn vm_eval_inner(
                 locals.push(subset);
                 loops.push(LoopState {
                     hi: (1i64 << n) - 1, // max mask (inclusive)
-                    counter: 0,           // current mask
+                    counter: 0,          // current mask
                     fn_buf: Vec::new(),
                     set_buf: Vec::with_capacity(n),
                     domain_val: Some(base),
@@ -2250,8 +2368,7 @@ fn vm_eval_inner(
                         loop_state.set_buf.push(elem.clone());
                     }
                 }
-                *locals.last_mut().unwrap() =
-                    Value::set(Arc::new(loop_state.set_buf.clone()));
+                *locals.last_mut().unwrap() = Value::set(Arc::new(loop_state.set_buf.clone()));
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2299,8 +2416,7 @@ fn vm_eval_inner(
                         loop_state.set_buf.push(elem.clone());
                     }
                 }
-                *locals.last_mut().unwrap() =
-                    Value::set(Arc::new(loop_state.set_buf.clone()));
+                *locals.last_mut().unwrap() = Value::set(Arc::new(loop_state.set_buf.clone()));
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2448,9 +2564,7 @@ fn vm_eval_inner(
             Op::SeqTail => {
                 let seq_val = stack.pop().unwrap();
                 match seq_val.kind() {
-                    VK::Seq(s) if !s.is_empty() => {
-                        stack.push(Value::seq(s[1..].to_vec()))
-                    }
+                    VK::Seq(s) if !s.is_empty() => stack.push(Value::seq(s[1..].to_vec())),
                     VK::Seq(_) => stack.push(Value::seq(vec![])),
                     _ => return Err(type_mismatch("Seq", &seq_val)),
                 }
@@ -2470,10 +2584,17 @@ fn vm_eval_inner(
                     let domain_kind = match expr {
                         CompiledExpr::SetComprehension { domain, .. }
                         | CompiledExpr::Exists { domain, .. }
-                        | CompiledExpr::Forall { domain, .. } => format!("dom={:?}", std::mem::discriminant(domain.as_ref())),
+                        | CompiledExpr::Forall { domain, .. } => {
+                            format!("dom={:?}", std::mem::discriminant(domain.as_ref()))
+                        }
                         _ => String::new(),
                     };
-                    eprintln!("[FALLBACK] idx={} disc={:?} {}", idx, std::mem::discriminant(expr), domain_kind);
+                    eprintln!(
+                        "[FALLBACK] idx={} disc={:?} {}",
+                        idx,
+                        std::mem::discriminant(expr),
+                        domain_kind
+                    );
                 }
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
@@ -2483,7 +2604,11 @@ fn vm_eval_inner(
             Op::FallbackBool(idx) => {
                 let expr = &fallbacks[*idx as usize];
                 #[cfg(feature = "trace-fallbacks")]
-                eprintln!("[FALLBACK-BOOL] idx={} disc={:?}", idx, std::mem::discriminant(expr));
+                eprintln!(
+                    "[FALLBACK-BOOL] idx={} disc={:?}",
+                    idx,
+                    std::mem::discriminant(expr)
+                );
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_bool(expr, &mut ctx)?;
@@ -2492,7 +2617,11 @@ fn vm_eval_inner(
             Op::FallbackInt(idx) => {
                 let expr = &fallbacks[*idx as usize];
                 #[cfg(feature = "trace-fallbacks")]
-                eprintln!("[FALLBACK-INT] idx={} disc={:?}", idx, std::mem::discriminant(expr));
+                eprintln!(
+                    "[FALLBACK-INT] idx={} disc={:?}",
+                    idx,
+                    std::mem::discriminant(expr)
+                );
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_int(expr, &mut ctx)?;
