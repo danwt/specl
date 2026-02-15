@@ -282,6 +282,7 @@ fn extract_effect_from_expr(
 
 /// Apply effects using bytecode-compiled assignments (guard already checked).
 /// Uses cached var_hashes from the parent state to avoid rehashing old values.
+/// Uses var_hashes_buf as a reusable buffer to avoid per-firing allocation.
 pub fn apply_effects_bytecode(
     state: &State,
     params: &[Value],
@@ -290,18 +291,20 @@ pub fn apply_effects_bytecode(
     needs_reverify: bool,
     next_vars_buf: &mut Vec<Value>,
     effect: &CompiledExpr,
+    var_hashes_buf: &mut Vec<u64>,
 ) -> Result<Option<State>, EvalError> {
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
+    var_hashes_buf.clear();
+    var_hashes_buf.extend_from_slice(&state.var_hashes);
     let mut fp = state.fingerprint().as_u64();
-    let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
     for (var_idx, bc) in compiled_assignments {
         let value = vm_eval(bc, &state.vars, next_vars_buf, consts, params)?;
-        let old_hash = var_hashes[*var_idx];
+        let old_hash = var_hashes_buf[*var_idx];
         let new_hash = hash_var(*var_idx, &value);
         fp ^= old_hash ^ new_hash;
-        var_hashes[*var_idx] = new_hash;
+        var_hashes_buf[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }
 
@@ -313,7 +316,7 @@ pub fn apply_effects_bytecode(
             Ok(Some(State::with_fingerprint_and_hashes(
                 std::mem::take(next_vars_buf),
                 fp,
-                var_hashes,
+                var_hashes_buf,
             )))
         } else {
             Ok(None)
@@ -322,13 +325,14 @@ pub fn apply_effects_bytecode(
         Ok(Some(State::with_fingerprint_and_hashes(
             std::mem::take(next_vars_buf),
             fp,
-            var_hashes,
+            var_hashes_buf,
         )))
     }
 }
 
 /// Apply effects using bytecode-compiled assignments with reusable VM buffers.
 /// Uses cached var_hashes from the parent state to avoid rehashing old values.
+/// Uses var_hashes_buf as a reusable buffer to avoid per-firing allocation.
 pub fn apply_effects_bytecode_reuse(
     state: &State,
     params: &[Value],
@@ -338,18 +342,20 @@ pub fn apply_effects_bytecode_reuse(
     next_vars_buf: &mut Vec<Value>,
     effect: &CompiledExpr,
     vm_bufs: &mut VmBufs,
+    var_hashes_buf: &mut Vec<u64>,
 ) -> Result<Option<State>, EvalError> {
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
+    var_hashes_buf.clear();
+    var_hashes_buf.extend_from_slice(&state.var_hashes);
     let mut fp = state.fingerprint().as_u64();
-    let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
     for (var_idx, bc) in compiled_assignments {
         let value = vm_eval_reuse(bc, &state.vars, next_vars_buf, consts, params, vm_bufs)?;
-        let old_hash = var_hashes[*var_idx];
+        let old_hash = var_hashes_buf[*var_idx];
         let new_hash = hash_var(*var_idx, &value);
         fp ^= old_hash ^ new_hash;
-        var_hashes[*var_idx] = new_hash;
+        var_hashes_buf[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }
 
@@ -361,7 +367,7 @@ pub fn apply_effects_bytecode_reuse(
             Ok(Some(State::with_fingerprint_and_hashes(
                 std::mem::take(next_vars_buf),
                 fp,
-                var_hashes,
+                var_hashes_buf,
             )))
         } else {
             Ok(None)
@@ -370,7 +376,7 @@ pub fn apply_effects_bytecode_reuse(
         Ok(Some(State::with_fingerprint_and_hashes(
             std::mem::take(next_vars_buf),
             fp,
-            var_hashes,
+            var_hashes_buf,
         )))
     }
 }
@@ -386,6 +392,7 @@ pub fn apply_action_direct_cached(
     assignments: &[(usize, CompiledExpr)],
     needs_reverify: bool,
     next_vars_buf: &mut Vec<Value>,
+    var_hashes_buf: &mut Vec<u64>,
 ) -> Result<Option<State>, EvalError> {
     let mut ctx = EvalContext::new(&state.vars, &state.vars, consts, params);
     if !eval_bool(&action.guard, &mut ctx)? {
@@ -394,16 +401,17 @@ pub fn apply_action_direct_cached(
 
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
+    var_hashes_buf.clear();
+    var_hashes_buf.extend_from_slice(&state.var_hashes);
     let mut fp = state.fingerprint().as_u64();
-    let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
     for (var_idx, expr) in assignments {
         let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
         let value = eval(expr, &mut ctx)?;
-        let old_hash = var_hashes[*var_idx];
+        let old_hash = var_hashes_buf[*var_idx];
         let new_hash = hash_var(*var_idx, &value);
         fp ^= old_hash ^ new_hash;
-        var_hashes[*var_idx] = new_hash;
+        var_hashes_buf[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }
 
@@ -415,7 +423,7 @@ pub fn apply_action_direct_cached(
             Ok(Some(State::with_fingerprint_and_hashes(
                 std::mem::take(next_vars_buf),
                 fp,
-                var_hashes,
+                var_hashes_buf,
             )))
         } else {
             Ok(None)
@@ -424,7 +432,7 @@ pub fn apply_action_direct_cached(
         Ok(Some(State::with_fingerprint_and_hashes(
             std::mem::take(next_vars_buf),
             fp,
-            var_hashes,
+            var_hashes_buf,
         )))
     }
 }
@@ -437,6 +445,7 @@ pub fn apply_action_direct(
     consts: &[Value],
     _num_vars: usize,
     next_vars_buf: &mut Vec<Value>,
+    var_hashes_buf: &mut Vec<u64>,
 ) -> Result<Option<State>, EvalError> {
     // Try to extract direct assignments from effect
     if let Some(extraction) = extract_effect_assignments(&action.effect) {
@@ -448,6 +457,7 @@ pub fn apply_action_direct(
             &extraction.assignments,
             extraction.needs_reverify,
             next_vars_buf,
+            var_hashes_buf,
         )
     } else {
         Err(EvalError::Internal(

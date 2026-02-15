@@ -126,7 +126,7 @@ pub struct State {
     pub vars: Arc<Vec<Value>>,
     /// Cached per-variable hashes: var_hashes[i] = hash_var(i, vars[i]).
     /// Enables O(1) fingerprint updates and O(1) xor_hash_vars lookups.
-    pub var_hashes: Arc<Vec<u64>>,
+    pub var_hashes: Arc<[u64]>,
     /// Cached fingerprint (XOR-based decomposable hash).
     fp: Fingerprint,
 }
@@ -145,20 +145,21 @@ impl State {
         let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars);
         Self {
             vars: Arc::new(vars),
-            var_hashes: Arc::new(hashes),
+            var_hashes: Arc::from(hashes),
             fp,
         }
     }
 
     /// Create a state with pre-computed fingerprint and var_hashes (for incremental construction).
+    /// Accepts a slice to avoid requiring callers to construct a Vec.
     pub fn with_fingerprint_and_hashes(
         vars: Vec<Value>,
         fp: Fingerprint,
-        var_hashes: Vec<u64>,
+        var_hashes: &[u64],
     ) -> Self {
         Self {
             vars: Arc::new(vars),
-            var_hashes: Arc::new(var_hashes),
+            var_hashes: Arc::from(var_hashes),
             fp,
         }
     }
@@ -173,7 +174,7 @@ impl State {
             .collect();
         Self {
             vars: Arc::new(vars),
-            var_hashes: Arc::new(hashes),
+            var_hashes: Arc::from(hashes.as_slice()),
             fp,
         }
     }
@@ -428,7 +429,7 @@ mod tests {
         let s2 = State::with_fingerprint_and_hashes(
             vec![Value::int(1), Value::int(2)],
             s1.fingerprint(),
-            (*s1.var_hashes).clone(),
+            &s1.var_hashes,
         );
         assert_eq!(s1.fingerprint(), s2.fingerprint());
         assert_eq!(s1.var_hashes, s2.var_hashes);

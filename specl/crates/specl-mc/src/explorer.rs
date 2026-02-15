@@ -1759,6 +1759,7 @@ impl Explorer {
         let mut next_vars_buf = Vec::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
+        let mut var_hashes_buf = Vec::new();
 
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
@@ -1849,7 +1850,7 @@ impl Explorer {
 
             // Generate successors
             let mut successors = Vec::new();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs, &mut var_hashes_buf)?;
 
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(&state)?;
@@ -1959,6 +1960,7 @@ impl Explorer {
         let mut next_vars_buf = Vec::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
+        let mut var_hashes_buf = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -1988,7 +1990,7 @@ impl Explorer {
 
             // Generate successors
             let mut successors = Vec::new();
-            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
+            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs, &mut var_hashes_buf)?;
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
@@ -2019,6 +2021,7 @@ impl Explorer {
         let mut next_vars_buf = Vec::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
+        let mut var_hashes_buf = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2037,7 +2040,7 @@ impl Explorer {
 
             // Check for deadlock
             let mut successors = Vec::new();
-            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
+            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs, &mut var_hashes_buf)?;
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(state)?;
                 if !any_enabled {
@@ -2082,6 +2085,7 @@ impl Explorer {
         let mut vm_bufs = VmBufs::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
+        let mut var_hashes_buf = Vec::new();
         let mut successors: Vec<(State, usize, Vec<i64>)> = Vec::new();
 
         // Profile accumulators (zero-cost when profiling disabled)
@@ -2178,7 +2182,7 @@ impl Explorer {
             // --- Phase 2: Generate successor states ---
             let t1 = if profiling { Some(Instant::now()) } else { None };
             successors.clear();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set, &mut guard_bufs, &mut effect_bufs)?;
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set, &mut guard_bufs, &mut effect_bufs, &mut var_hashes_buf)?;
             if let Some(t1) = t1 { prof_time_succ += t1.elapsed(); }
 
             if successors.is_empty() && self.config.check_deadlock {
@@ -2391,7 +2395,8 @@ impl Explorer {
                     let mut next_vars_buf = Vec::new();
                     let mut guard_bufs = VmBufs::new();
                     let mut effect_bufs = VmBufs::new();
-                    match self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs) {
+                    let mut var_hashes_buf = Vec::new();
+                    match self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs, &mut var_hashes_buf) {
                         Ok(()) => {
                             if successors.is_empty() && self.config.check_deadlock {
                                 match self.any_action_enabled(state) {
@@ -2861,6 +2866,7 @@ impl Explorer {
         sleep_set: u64,
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
+        var_hashes_buf: &mut Vec<u64>,
     ) -> CheckResult<()> {
         buf.clear();
 
@@ -2876,7 +2882,7 @@ impl Explorer {
                         // Non-refinable action group: apply via template path below
                         template_actions.push(*action_idx);
                     } else {
-                        self.apply_single_instance(state, *action_idx, params, buf, next_vars_buf, effect_bufs)?;
+                        self.apply_single_instance(state, *action_idx, params, buf, next_vars_buf, effect_bufs, var_hashes_buf)?;
                     }
                 }
                 if template_actions.is_empty() {
@@ -2892,6 +2898,7 @@ impl Explorer {
                     0,
                     guard_bufs,
                     effect_bufs,
+                    var_hashes_buf,
                 );
             }
             // AmpleResult::Templates falls through to standard path below
@@ -2900,11 +2907,11 @@ impl Explorer {
         // Standard path: determine which action templates to explore
         if self.config.use_por {
             let actions_to_explore = self.compute_ample_set(state)?;
-            self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
+            self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs, var_hashes_buf)
         } else if let Some(ref relevant) = self.relevant_actions {
-            self.apply_template_actions(state, relevant, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
+            self.apply_template_actions(state, relevant, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs, var_hashes_buf)
         } else {
-            self.apply_template_actions(state, &self.default_action_order, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
+            self.apply_template_actions(state, &self.default_action_order, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs, var_hashes_buf)
         }
     }
 
@@ -2919,6 +2926,7 @@ impl Explorer {
         sleep_set: u64,
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
+        var_hashes_buf: &mut Vec<u64>,
     ) -> CheckResult<()> {
         thread_local! {
             static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
@@ -2956,6 +2964,7 @@ impl Explorer {
                     guard_bufs,
                     effect_bufs,
                     &mut params_buf,
+                    var_hashes_buf,
                 )?;
             }
             Ok::<(), CheckError>(())
@@ -3379,6 +3388,7 @@ impl Explorer {
         buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
         effect_bufs: &mut VmBufs,
+        var_hashes_buf: &mut Vec<u64>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
 
@@ -3395,6 +3405,7 @@ impl Explorer {
                 next_vars_buf,
                 &action.effect,
                 effect_bufs,
+                var_hashes_buf,
             ) {
                 if let Some(next_state) = result {
                     buf.push((next_state, action_idx, pvals));
@@ -3426,6 +3437,7 @@ impl Explorer {
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
         params_buf: &mut Vec<Value>,
+        var_hashes_buf: &mut Vec<u64>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
         let needs_pvals = self.store.has_full_tracking();
@@ -3520,6 +3532,7 @@ impl Explorer {
                                 next_vars_buf,
                                 &action.effect,
                                 effect_bufs,
+                                var_hashes_buf,
                             ) {
                                 if let Some(next_state) = result {
                                     cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
@@ -3543,6 +3556,7 @@ impl Explorer {
                                 next_vars_buf,
                                 &action.effect,
                                 effect_bufs,
+                                var_hashes_buf,
                             ) {
                                 if let Some(next_state) = result {
                                     let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
@@ -3597,6 +3611,7 @@ impl Explorer {
                             next_vars_buf,
                             &action.effect,
                             effect_bufs,
+                            var_hashes_buf,
                         ) {
                             if let Some(next_state) = result {
                                 cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
@@ -3626,6 +3641,7 @@ impl Explorer {
                             next_vars_buf,
                             &action.effect,
                             effect_bufs,
+                            var_hashes_buf,
                         ) {
                             if let Some(next_state) = result {
                                 let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
@@ -3742,6 +3758,7 @@ impl Explorer {
     ) -> CheckResult<Vec<State>> {
         // Try direct evaluation first (fast path)
         let mut buf = Vec::new();
+        let mut var_hashes_buf = Vec::new();
         match apply_action_direct(
             state,
             action,
@@ -3749,6 +3766,7 @@ impl Explorer {
             &self.consts,
             self.spec.vars.len(),
             &mut buf,
+            &mut var_hashes_buf,
         ) {
             Ok(Some(next_state)) => {
                 return Ok(vec![next_state]);
@@ -3893,10 +3911,11 @@ impl Explorer {
         let mut next_vars_buf: Vec<Value> = Vec::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
+        let mut var_hashes_buf = Vec::new();
 
         for _step in 0..max_steps {
             // Generate all successors (no POR, no symmetry)
-            self.generate_successors(&current, &mut successors_buf, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
+            self.generate_successors(&current, &mut successors_buf, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs, &mut var_hashes_buf)?;
 
             if successors_buf.is_empty() {
                 return Ok(SimulateOutcome::Deadlock { trace, var_names });
