@@ -1606,33 +1606,37 @@ fn vm_eval_inner(
                 let key1 = &params[*param1_idx as usize];
                 let key2 = &params[*param2_idx as usize];
                 let outer = &vars[*var_idx as usize];
-                match outer.kind() {
+                let inner_ref = match outer.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key1)? as usize;
+                        &arr[k]
+                    }
                     VK::Fn(map) => {
-                        let inner_ref = Value::fn_get(map, key1)
-                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?;
-                        match inner_ref.kind() {
-                            VK::IntMap(arr) => {
-                                let k = expect_int(key2)? as usize;
-                                stack.push(arr[k].clone());
-                            }
-                            VK::Fn(inner_map) => {
-                                let val = Value::fn_get(inner_map, key2)
-                                    .cloned()
-                                    .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
-                                stack.push(val);
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: inner_ref.type_name().to_string(),
-                                })
-                            }
-                        }
+                        Value::fn_get(map, key1)
+                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
                     }
                     _ => {
                         return Err(EvalError::TypeMismatch {
-                            expected: "Fn".to_string(),
+                            expected: "Fn or IntMap".to_string(),
                             actual: outer.type_name().to_string(),
+                        })
+                    }
+                };
+                match inner_ref.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key2)? as usize;
+                        stack.push(arr[k].clone());
+                    }
+                    VK::Fn(inner_map) => {
+                        let val = Value::fn_get(inner_map, key2)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                        stack.push(val);
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: inner_ref.type_name().to_string(),
                         })
                     }
                 }
@@ -1665,31 +1669,35 @@ fn vm_eval_inner(
                 // len(vars[a][params[b]]) without cloning the intermediate collection.
                 let key = &params[*param_idx as usize];
                 let base = &vars[*var_idx as usize];
-                match base.kind() {
+                let val = match base.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key)? as usize;
+                        &arr[k]
+                    }
                     VK::Fn(map) => {
-                        let val = Value::fn_get(map, key)
-                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
-                        let len = match val.kind() {
-                            VK::Set(s) => s.len() as i64,
-                            VK::Seq(s) => s.len() as i64,
-                            VK::Fn(f) => f.len() as i64,
-                            VK::IntMap(arr) => arr.len() as i64,
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Set, Seq, or Fn".to_string(),
-                                    actual: val.type_name().to_string(),
-                                })
-                            }
-                        };
-                        stack.push(Value::int(len));
+                        Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?
                     }
                     _ => {
                         return Err(EvalError::TypeMismatch {
-                            expected: "Fn".to_string(),
+                            expected: "Fn or IntMap".to_string(),
                             actual: base.type_name().to_string(),
                         })
                     }
-                }
+                };
+                let len = match val.kind() {
+                    VK::Set(s) => s.len() as i64,
+                    VK::Seq(s) => s.len() as i64,
+                    VK::Fn(f) => f.len() as i64,
+                    VK::IntMap(arr) => arr.len() as i64,
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Set, Seq, or Fn".to_string(),
+                            actual: val.type_name().to_string(),
+                        })
+                    }
+                };
+                stack.push(Value::int(len));
             }
 
             Op::ParamIntDictGet(param_idx, k) => {
