@@ -2549,35 +2549,46 @@ impl Explorer {
                         }
                     }
 
-                    // Generate successor states
-                    let mut successors = Vec::new();
-                    let mut next_vars_buf = Vec::new();
-                    let mut guard_bufs = VmBufs::new();
-                    let mut effect_bufs = VmBufs::new();
-                    let mut var_hashes_buf = Vec::new();
-                    thread_local! {
-                        static PAR_OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
-                        static PAR_PARAMS_BUF: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+                    // Generate successor states using thread-local reusable buffers
+                    struct ParBufs {
+                        op_caches: Vec<OpCache>,
+                        params: Vec<Value>,
+                        successors: Vec<(State, usize, Vec<i64>)>,
+                        next_vars: Vec<Value>,
+                        guard_bufs: VmBufs,
+                        effect_bufs: VmBufs,
+                        var_hashes: Vec<u64>,
                     }
-                    let gen_result = PAR_OP_CACHES.with(|caches_cell| {
-                        PAR_PARAMS_BUF.with(|params_cell| {
-                            let mut caches = caches_cell.borrow_mut();
-                            if caches.len() != num_actions_par {
-                                *caches = (0..num_actions_par).map(|_| OpCache::new()).collect();
-                            }
-                            let mut par_params = params_cell.borrow_mut();
-                            self.generate_successors(
-                                state,
-                                &mut successors,
-                                &mut next_vars_buf,
-                                0,
-                                &mut guard_bufs,
-                                &mut effect_bufs,
-                                &mut var_hashes_buf,
-                                &mut caches,
-                                &mut par_params,
-                            )
-                        })
+                    thread_local! {
+                        static PAR_BUFS: RefCell<ParBufs> = RefCell::new(ParBufs {
+                            op_caches: Vec::new(),
+                            params: Vec::new(),
+                            successors: Vec::new(),
+                            next_vars: Vec::new(),
+                            guard_bufs: VmBufs::new(),
+                            effect_bufs: VmBufs::new(),
+                            var_hashes: Vec::new(),
+                        });
+                    }
+                    let (successors, gen_result) = PAR_BUFS.with(|cell| {
+                        let b = &mut *cell.borrow_mut();
+                        if b.op_caches.len() != num_actions_par {
+                            b.op_caches = (0..num_actions_par).map(|_| OpCache::new()).collect();
+                        }
+                        b.successors.clear();
+                        let result = self.generate_successors(
+                            state,
+                            &mut b.successors,
+                            &mut b.next_vars,
+                            0,
+                            &mut b.guard_bufs,
+                            &mut b.effect_bufs,
+                            &mut b.var_hashes,
+                            &mut b.op_caches,
+                            &mut b.params,
+                        );
+                        let owned_succ: Vec<_> = b.successors.drain(..).collect();
+                        (owned_succ, result)
                     });
                     match gen_result {
                         Ok(()) => {
