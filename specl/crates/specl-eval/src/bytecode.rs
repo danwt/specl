@@ -121,6 +121,25 @@ pub enum Op {
         end_pc: u32,
     },
 
+    // === Set comprehension over range ===
+    /// Pop hi, pop lo. If lo > hi: push empty set, jump to end_pc.
+    /// Else: push Int(lo) onto locals, init set buffer, continue to body.
+    SetCompRangeInit(u32),
+    /// Pop element value, add to set buffer. Increment local.
+    /// If > hi: pop local, push completed Set, jump to end_pc.
+    /// Else: jump to body_pc.
+    SetCompRangeStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Advance loop without collecting (filter was false). Increment local.
+    /// If > hi: pop local, push completed Set, jump to end_pc.
+    /// Else: jump to body_pc.
+    SetCompRangeAdvance {
+        body_pc: u32,
+        end_pc: u32,
+    },
+
     // === Set/Seq construction ===
     /// Pop N values → push Set (sorted, deduped).
     SetLit(u16),
@@ -162,6 +181,8 @@ struct LoopState {
     counter: i64,
     /// Accumulator for FnLitRange.
     fn_buf: Vec<(Value, Value)>,
+    /// Accumulator for SetCompRange.
+    set_buf: Vec<Value>,
 }
 
 /// Compiled bytecode with fallback expression table.
@@ -207,11 +228,14 @@ impl Compiler {
             | Op::ForallRangeInit(t)
             | Op::ExistsRangeInit(t)
             | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) => *t = target,
+            | Op::FnLitRangeInit(t)
+            | Op::SetCompRangeInit(t) => *t = target,
             Op::ForallRangeStep { end_pc, .. }
             | Op::ExistsRangeStep { end_pc, .. }
             | Op::CountRangeStep { end_pc, .. }
-            | Op::FnLitRangeStep { end_pc, .. } => *end_pc = target,
+            | Op::FnLitRangeStep { end_pc, .. }
+            | Op::SetCompRangeStep { end_pc, .. }
+            | Op::SetCompRangeAdvance { end_pc, .. } => *end_pc = target,
             _ => {}
         }
     }
@@ -341,6 +365,14 @@ impl Compiler {
                 self.compile(lo);
                 self.compile(hi);
                 self.emit(Op::SeqSlice);
+            }
+
+            CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } => {
+                self.compile_set_comp(element, domain, filter.as_deref());
             }
 
             // Fallback for everything else
@@ -628,6 +660,62 @@ impl Compiler {
         }
     }
 
+    fn compile_set_comp(
+        &mut self,
+        element: &CompiledExpr,
+        domain: &CompiledExpr,
+        filter: Option<&CompiledExpr>,
+    ) {
+        if let CompiledExpr::Range { lo, hi } = domain {
+            self.compile(lo);
+            self.compile(hi);
+            let init = self.emit(Op::SetCompRangeInit(0));
+            let body_pc = self.current_pc();
+
+            if let Some(filter) = filter {
+                // With filter: evaluate filter, skip element if false
+                self.compile(filter);
+                let jump_skip = self.emit(Op::JumpIfFalse(0));
+                self.emit(Op::Pop); // pop the true
+                self.compile(element);
+                let step = self.emit(Op::SetCompRangeStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let skip_pc = self.current_pc();
+                self.patch_jump(jump_skip, skip_pc as u32);
+                self.emit(Op::Pop); // pop the false
+                let advance = self.emit(Op::SetCompRangeAdvance {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+                self.patch_jump(advance, end_pc as u32);
+            } else {
+                // No filter: just evaluate element for each value
+                self.compile(element);
+                let step = self.emit(Op::SetCompRangeStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+            }
+        } else {
+            // Non-range domain: fallback to tree-walk
+            let expr = CompiledExpr::SetComprehension {
+                element: Box::new(element.clone()),
+                domain: Box::new(domain.clone()),
+                filter: filter.map(|f| Box::new(f.clone())),
+            };
+            let idx = self.add_fallback(&expr);
+            self.emit(Op::Fallback(idx));
+        }
+    }
+
     /// Try to compile a nested dict update pattern into a specialized opcode.
     /// Returns true if the pattern was detected and compiled.
     ///
@@ -765,7 +853,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
                 }
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) => {
+            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t) => {
                 let target = *t as usize;
                 if target < jump_targets.len() {
                     jump_targets[target] = true;
@@ -774,7 +862,9 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             Op::ForallRangeStep { body_pc, end_pc }
             | Op::ExistsRangeStep { body_pc, end_pc }
             | Op::CountRangeStep { body_pc, end_pc }
-            | Op::FnLitRangeStep { body_pc, end_pc } => {
+            | Op::FnLitRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeAdvance { body_pc, end_pc } => {
                 let b = *body_pc as usize;
                 let e = *end_pc as usize;
                 if b < jump_targets.len() {
@@ -862,7 +952,7 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
                 }
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) => {
+            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t) => {
                 if (*t as usize) > removed_pos {
                     *t -= 1;
                 }
@@ -870,7 +960,9 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
             Op::ForallRangeStep { body_pc, end_pc }
             | Op::ExistsRangeStep { body_pc, end_pc }
             | Op::CountRangeStep { body_pc, end_pc }
-            | Op::FnLitRangeStep { body_pc, end_pc } => {
+            | Op::FnLitRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeAdvance { body_pc, end_pc } => {
                 if (*body_pc as usize) > removed_pos {
                     *body_pc -= 1;
                 }
@@ -1441,6 +1533,7 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
                 });
                 locals.push(Value::int(lo));
             }
@@ -1479,6 +1572,7 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
                 });
                 locals.push(Value::int(lo));
             }
@@ -1518,6 +1612,7 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
                 });
                 locals.push(Value::int(lo));
             }
@@ -1541,6 +1636,61 @@ fn vm_eval_inner(
                 continue;
             }
 
+            // === SetComprehension over range ===
+            Op::SetCompRangeInit(end_pc) => {
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
+                if lo > hi {
+                    stack.push(Value::empty_set());
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let cap = (hi - lo + 1).max(0) as usize;
+                loops.push(LoopState {
+                    hi,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(cap),
+                });
+                locals.push(Value::int(lo));
+            }
+            Op::SetCompRangeStep { body_pc, end_pc } => {
+                let element = stack.pop().unwrap();
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.set_buf.push(element);
+                let current = get_local_int(&locals)?;
+                if current >= loop_state.hi {
+                    let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = Value::int(current + 1);
+                pc = *body_pc as usize;
+                continue;
+            }
+            Op::SetCompRangeAdvance { body_pc, end_pc } => {
+                let current = get_local_int(&locals)?;
+                let loop_state = loops.last().unwrap();
+                if current >= loop_state.hi {
+                    let mut set_buf = std::mem::take(&mut loops.last_mut().unwrap().set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = Value::int(current + 1);
+                pc = *body_pc as usize;
+                continue;
+            }
+
             // === FnLit range ===
             Op::FnLitRangeInit(end_pc) => {
                 let hi = pop_int(stack)?;
@@ -1555,6 +1705,7 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::with_capacity(cap),
+                    set_buf: Vec::new(),
                 });
                 locals.push(Value::int(lo));
             }
