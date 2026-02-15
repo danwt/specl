@@ -2018,6 +2018,7 @@ impl Explorer {
         let mut vm_bufs = VmBufs::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
+        let mut successors: Vec<(State, usize, Vec<i64>)> = Vec::new();
 
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
@@ -2105,7 +2106,7 @@ impl Explorer {
 
             // --- Phase 2: Generate successor states ---
             let t1 = Instant::now();
-            let mut successors = Vec::new();
+            successors.clear();
             self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set, &mut guard_bufs, &mut effect_bufs)?;
             if profiling { prof_time_succ += t1.elapsed(); }
 
@@ -2131,7 +2132,7 @@ impl Explorer {
             let t2 = Instant::now();
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
-            for (next_state, action_idx, pvals) in successors {
+            for (next_state, action_idx, pvals) in successors.drain(..) {
                 if profiling { prof_action_counts[action_idx] += 1; }
                 let successor_sleep = if use_sleep {
                     accumulated_sleep & self.independent_masks[action_idx]
