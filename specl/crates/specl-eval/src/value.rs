@@ -651,6 +651,13 @@ impl PartialEq for Value {
         if self.0 == other.0 {
             return true;
         }
+        // Fast path: both inline types (Int/Bool/None, tags 0x00-0x03) with
+        // different bits are never equal. Only Int↔BigInt cross-type equality
+        // exists, and BigInt tag 0xFF is above HEAP_TAG_MIN.
+        const HEAP_TAG_MIN: u64 = (TAG_STRING as u64) << TAG_SHIFT;
+        if self.0 < HEAP_TAG_MIN && other.0 < HEAP_TAG_MIN {
+            return false;
+        }
         let t1 = self.tag();
         let t2 = other.tag();
         // Int == BigInt cross-comparison
