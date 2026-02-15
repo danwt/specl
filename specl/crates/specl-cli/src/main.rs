@@ -3,6 +3,9 @@
 // False positive: thiserror/miette derive macros generate code that triggers this
 #![allow(unused_assignments)]
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 use clap::{Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Diagnostic, NamedSource, SourceSpan};

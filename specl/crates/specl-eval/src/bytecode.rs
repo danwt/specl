@@ -3,7 +3,7 @@
 //! Compiles CompiledExpr trees to flat bytecode and executes them in a tight
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
-use crate::eval::{eval, eval_bool, eval_int, expect_int, type_mismatch};
+use crate::eval::{eval, eval_bool, eval_int, expect_int, sorted_vec_diff, sorted_vec_union, type_mismatch};
 use crate::value::{Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
@@ -15,6 +15,8 @@ pub enum Op {
     // === Literals ===
     Int(i64),
     Bool(bool),
+    /// Push a pre-created constant Value (e.g., string literals).
+    PushValue(Value),
 
     // === Context access ===
     Var(u16),
@@ -121,6 +123,101 @@ pub enum Op {
         end_pc: u32,
     },
 
+    // === Set comprehension over range ===
+    /// Pop hi, pop lo. If lo > hi: push empty set, jump to end_pc.
+    /// Else: push Int(lo) onto locals, init set buffer, continue to body.
+    SetCompRangeInit(u32),
+    /// Pop element value, add to set buffer. Increment local.
+    /// If > hi: pop local, push completed Set, jump to end_pc.
+    /// Else: jump to body_pc.
+    SetCompRangeStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Advance loop without collecting (filter was false). Increment local.
+    /// If > hi: pop local, push completed Set, jump to end_pc.
+    /// Else: jump to body_pc.
+    SetCompRangeAdvance {
+        body_pc: u32,
+        end_pc: u32,
+    },
+
+    // === Quantifiers/comprehensions over set domain ===
+    /// Pop set value. If empty: push true, jump to end_pc.
+    /// Else: store set, push first element to locals, continue.
+    ForallSetInit(u32),
+    /// Pop body result (bool). If false: cleanup, push false, jump to end_pc.
+    /// Else: advance index. If done: cleanup, push true, jump to end_pc.
+    /// Else: update local to next element, jump to body_pc.
+    ForallSetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Pop set value. If empty: push false, jump to end_pc.
+    /// Else: store set, push first element to locals, continue.
+    ExistsSetInit(u32),
+    /// Pop body result (bool). If true: cleanup, push true, jump to end_pc.
+    /// Else: advance index. If done: cleanup, push false, jump to end_pc.
+    /// Else: update local to next element, jump to body_pc.
+    ExistsSetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Pop set value. If empty: push empty set, jump to end_pc.
+    /// Else: store set, push first element to locals, init set buffer, continue.
+    SetCompSetInit(u32),
+    /// Pop element, add to buffer. Advance index. If done: push completed set, jump to end_pc.
+    /// Else: update local to next element, jump to body_pc.
+    SetCompSetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Advance set-comp without collecting (filter was false).
+    SetCompSetAdvance {
+        body_pc: u32,
+        end_pc: u32,
+    },
+
+    // === Quantifiers over powerset domain ===
+    /// Pop base set. Iterate 2^n bitmasks. Push first subset ({}) to locals.
+    ForallPowersetInit(u32),
+    /// Pop body result (bool). If false: cleanup, push false, jump to end_pc.
+    /// Advance mask. If done: cleanup, push true, jump to end_pc.
+    /// Create next subset, jump to body_pc.
+    ForallPowersetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Pop base set. Iterate 2^n bitmasks. Push first subset ({}) to locals.
+    ExistsPowersetInit(u32),
+    /// Pop body result (bool). If true: cleanup, push true, jump to end_pc.
+    /// Advance mask. If done: cleanup, push false, jump to end_pc.
+    /// Create next subset, jump to body_pc.
+    ExistsPowersetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+
+    // === Set/Seq construction ===
+    /// Pop N values → push Set (sorted, deduped).
+    SetLit(u16),
+    /// Pop N values → push Seq.
+    SeqLit(u16),
+    /// Pop two sets → push set union.
+    SetUnion,
+    /// Pop two sets → push set difference.
+    SetDiff,
+    /// Pop two seqs → push concatenated seq.
+    SeqConcat,
+    /// Pop hi, pop lo, pop seq → push seq[lo..hi].
+    SeqSlice,
+    /// Pop seq → push first element.
+    SeqHead,
+    /// Pop seq → push tail (all but first).
+    SeqTail,
+    /// Pop hi, pop lo → push Set of lo..=hi integers.
+    MakeRange,
+
     // === Superinstructions (fused sequences) ===
     /// Fused Var(i) + DictGet: var is the key, base dict is on stack.
     VarDictGet(u16),
@@ -128,6 +225,12 @@ pub enum Op {
     VarIntEq(u16, i64),
     /// Fused Var(i) + Param(j) + DictGet: dict[param] from var.
     VarParamDictGet(u16, u16),
+    /// Fused VarParamDictGet(a, b) + Param(c) + DictGet: two-level dict lookup vars[a][params[b]][params[c]].
+    VarParam2DictGet(u16, u16, u16),
+    /// Fused VarParamDictGet(a, b) + Int(k) + IntEq: dict lookup + int compare vars[a][params[b]] == k.
+    VarParamDictGetIntEq(u16, u16, i64),
+    /// Fused VarParamDictGet(a, b) + Len: len(vars[a][params[b]]) without cloning the collection.
+    VarParamDictGetLen(u16, u16),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -141,13 +244,17 @@ pub enum Op {
     Halt,
 }
 
-/// Loop state for range-based quantifiers.
+/// Loop state for range-based quantifiers and set iteration.
 struct LoopState {
     hi: i64,
-    /// Accumulator for CountRange.
+    /// Accumulator for CountRange / index for set iteration.
     counter: i64,
     /// Accumulator for FnLitRange.
     fn_buf: Vec<(Value, Value)>,
+    /// Accumulator for SetCompRange / SetCompSet.
+    set_buf: Vec<Value>,
+    /// Domain value for set/seq iteration (Forall/Exists/SetComp over sets).
+    domain_val: Option<Value>,
 }
 
 /// Compiled bytecode with fallback expression table.
@@ -193,11 +300,25 @@ impl Compiler {
             | Op::ForallRangeInit(t)
             | Op::ExistsRangeInit(t)
             | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) => *t = target,
+            | Op::FnLitRangeInit(t)
+            | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t)
+            | Op::ExistsSetInit(t)
+            | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t)
+            | Op::ExistsPowersetInit(t) => *t = target,
             Op::ForallRangeStep { end_pc, .. }
             | Op::ExistsRangeStep { end_pc, .. }
             | Op::CountRangeStep { end_pc, .. }
-            | Op::FnLitRangeStep { end_pc, .. } => *end_pc = target,
+            | Op::FnLitRangeStep { end_pc, .. }
+            | Op::SetCompRangeStep { end_pc, .. }
+            | Op::SetCompRangeAdvance { end_pc, .. }
+            | Op::ForallSetStep { end_pc, .. }
+            | Op::ExistsSetStep { end_pc, .. }
+            | Op::SetCompSetStep { end_pc, .. }
+            | Op::SetCompSetAdvance { end_pc, .. }
+            | Op::ForallPowersetStep { end_pc, .. }
+            | Op::ExistsPowersetStep { end_pc, .. } => *end_pc = target,
             _ => {}
         }
     }
@@ -216,6 +337,9 @@ impl Compiler {
             }
             CompiledExpr::Int(n) => {
                 self.emit(Op::Int(*n));
+            }
+            CompiledExpr::String(s) => {
+                self.emit(Op::PushValue(Value::string(s.clone())));
             }
             CompiledExpr::Var(idx) => {
                 self.emit(Op::Var(*idx as u16));
@@ -306,6 +430,49 @@ impl Compiler {
 
             CompiledExpr::FnLit { domain, body } => {
                 self.compile_fn_lit(domain, body);
+            }
+
+            CompiledExpr::SetLit(elems) => {
+                for e in elems {
+                    self.compile(e);
+                }
+                self.emit(Op::SetLit(elems.len() as u16));
+            }
+
+            CompiledExpr::SeqLit(elems) => {
+                for e in elems {
+                    self.compile(e);
+                }
+                self.emit(Op::SeqLit(elems.len() as u16));
+            }
+
+            CompiledExpr::Slice { base, lo, hi } => {
+                self.compile(base);
+                self.compile(lo);
+                self.compile(hi);
+                self.emit(Op::SeqSlice);
+            }
+
+            CompiledExpr::SeqHead(seq) => {
+                self.compile(seq);
+                self.emit(Op::SeqHead);
+            }
+            CompiledExpr::SeqTail(seq) => {
+                self.compile(seq);
+                self.emit(Op::SeqTail);
+            }
+            CompiledExpr::Range { lo, hi } => {
+                self.compile(lo);
+                self.compile(hi);
+                self.emit(Op::MakeRange);
+            }
+
+            CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } => {
+                self.compile_set_comp(element, domain, filter.as_deref());
             }
 
             // Fallback for everything else
@@ -455,18 +622,26 @@ impl Compiler {
                         self.emit(Op::DictUpdateN(entries.len() as u16));
                     }
                 } else {
-                    // General set union → fallback
-                    let expr = CompiledExpr::Binary {
-                        op,
-                        left: Box::new(left.clone()),
-                        right: Box::new(right.clone()),
-                    };
-                    let idx = self.add_fallback(&expr);
-                    self.emit(Op::Fallback(idx));
+                    // General set union
+                    self.compile(left);
+                    self.compile(right);
+                    self.emit(Op::SetUnion);
                 }
             }
-            // Set/sequence operations → fallback
-            BinOp::Intersect | BinOp::Diff | BinOp::SubsetOf | BinOp::Concat => {
+            // Set difference
+            BinOp::Diff => {
+                self.compile(left);
+                self.compile(right);
+                self.emit(Op::SetDiff);
+            }
+            // Sequence concatenation
+            BinOp::Concat => {
+                self.compile(left);
+                self.compile(right);
+                self.emit(Op::SeqConcat);
+            }
+            // Remaining set operations → fallback
+            BinOp::Intersect | BinOp::SubsetOf => {
                 let expr = CompiledExpr::Binary {
                     op,
                     left: Box::new(left.clone()),
@@ -525,14 +700,32 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
+        } else if let CompiledExpr::Powerset(inner) = domain {
+            // Powerset domain — iterate bitmasks
+            self.compile(inner);
+            let init = self.emit(Op::ForallPowersetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ForallPowersetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
         } else {
-            // Fallback for non-range domains
-            let expr = CompiledExpr::Forall {
-                domain: Box::new(domain.clone()),
-                body: Box::new(body.clone()),
-            };
-            let idx = self.add_fallback(&expr);
-            self.emit(Op::Fallback(idx));
+            // Set-valued domain (Var, Keys, etc.) — iterate elements
+            self.compile(domain);
+            let init = self.emit(Op::ForallSetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ForallSetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
         }
     }
 
@@ -550,14 +743,32 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
+        } else if let CompiledExpr::Powerset(inner) = domain {
+            // Powerset domain — iterate bitmasks
+            self.compile(inner);
+            let init = self.emit(Op::ExistsPowersetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ExistsPowersetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
         } else {
-            // Fallback for non-range domains (powerset, set, etc.)
-            let expr = CompiledExpr::Exists {
-                domain: Box::new(domain.clone()),
-                body: Box::new(body.clone()),
-            };
-            let idx = self.add_fallback(&expr);
-            self.emit(Op::Fallback(idx));
+            // Set-valued domain — iterate elements
+            self.compile(domain);
+            let init = self.emit(Op::ExistsSetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ExistsSetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
         }
     }
 
@@ -579,6 +790,98 @@ impl Compiler {
             let expr = CompiledExpr::FnLit {
                 domain: Box::new(domain.clone()),
                 body: Box::new(body.clone()),
+            };
+            let idx = self.add_fallback(&expr);
+            self.emit(Op::Fallback(idx));
+        }
+    }
+
+    fn compile_set_comp(
+        &mut self,
+        element: &CompiledExpr,
+        domain: &CompiledExpr,
+        filter: Option<&CompiledExpr>,
+    ) {
+        if let CompiledExpr::Range { lo, hi } = domain {
+            self.compile(lo);
+            self.compile(hi);
+            let init = self.emit(Op::SetCompRangeInit(0));
+            let body_pc = self.current_pc();
+
+            if let Some(filter) = filter {
+                // With filter: evaluate filter, skip element if false
+                self.compile(filter);
+                let jump_skip = self.emit(Op::JumpIfFalse(0));
+                self.emit(Op::Pop); // pop the true
+                self.compile(element);
+                let step = self.emit(Op::SetCompRangeStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let skip_pc = self.current_pc();
+                self.patch_jump(jump_skip, skip_pc as u32);
+                self.emit(Op::Pop); // pop the false
+                let advance = self.emit(Op::SetCompRangeAdvance {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+                self.patch_jump(advance, end_pc as u32);
+            } else {
+                // No filter: just evaluate element for each value
+                self.compile(element);
+                let step = self.emit(Op::SetCompRangeStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+            }
+        } else if !matches!(domain, CompiledExpr::Powerset(_)) {
+            // Set-valued domain — iterate elements
+            self.compile(domain);
+            let init = self.emit(Op::SetCompSetInit(0));
+            let body_pc = self.current_pc();
+
+            if let Some(filter) = filter {
+                self.compile(filter);
+                let jump_skip = self.emit(Op::JumpIfFalse(0));
+                self.emit(Op::Pop);
+                self.compile(element);
+                let step = self.emit(Op::SetCompSetStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let skip_pc = self.current_pc();
+                self.patch_jump(jump_skip, skip_pc as u32);
+                self.emit(Op::Pop);
+                let advance = self.emit(Op::SetCompSetAdvance {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+                self.patch_jump(advance, end_pc as u32);
+            } else {
+                self.compile(element);
+                let step = self.emit(Op::SetCompSetStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+            }
+        } else {
+            // Powerset domain: fallback to tree-walk
+            let expr = CompiledExpr::SetComprehension {
+                element: Box::new(element.clone()),
+                domain: Box::new(domain.clone()),
+                filter: filter.map(|f| Box::new(f.clone())),
             };
             let idx = self.add_fallback(&expr);
             self.emit(Op::Fallback(idx));
@@ -722,7 +1025,9 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
                 }
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) => {
+            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t) | Op::ExistsPowersetInit(t) => {
                 let target = *t as usize;
                 if target < jump_targets.len() {
                     jump_targets[target] = true;
@@ -731,7 +1036,15 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             Op::ForallRangeStep { body_pc, end_pc }
             | Op::ExistsRangeStep { body_pc, end_pc }
             | Op::CountRangeStep { body_pc, end_pc }
-            | Op::FnLitRangeStep { body_pc, end_pc } => {
+            | Op::FnLitRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeAdvance { body_pc, end_pc }
+            | Op::ForallSetStep { body_pc, end_pc }
+            | Op::ExistsSetStep { body_pc, end_pc }
+            | Op::SetCompSetStep { body_pc, end_pc }
+            | Op::SetCompSetAdvance { body_pc, end_pc }
+            | Op::ForallPowersetStep { body_pc, end_pc }
+            | Op::ExistsPowersetStep { body_pc, end_pc } => {
                 let b = *body_pc as usize;
                 let e = *end_pc as usize;
                 if b < jump_targets.len() {
@@ -799,6 +1112,59 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
         }
 
+        // Pattern: VarParamDictGet(a, b), Param(c), DictGet → VarParam2DictGet(a, b, c)
+        // Two-level dict lookup: vars[a][params[b]][params[c]] without intermediate Arc clone.
+        if i + 2 < ops.len()
+            && !jump_targets.get(i + 2).copied().unwrap_or(false)
+        {
+            if let (Op::VarParamDictGet(var_idx, param1_idx), Op::Param(param2_idx), Op::DictGet) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param1_idx = *param1_idx;
+                let param2_idx = *param2_idx;
+                ops[i] = Op::VarParam2DictGet(var_idx, param1_idx, param2_idx);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: VarParamDictGet(a, b), Int(k), IntEq → VarParamDictGetIntEq(a, b, k)
+        // Dict lookup + comparison: vars[a][params[b]] == k without cloning the dict.
+        if i + 2 < ops.len()
+            && !jump_targets.get(i + 2).copied().unwrap_or(false)
+        {
+            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntEq) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::VarParamDictGetIntEq(var_idx, param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: VarParamDictGet(a, b), Len → VarParamDictGetLen(a, b)
+        // len(vars[a][params[b]]) without cloning the intermediate collection.
+        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Len) =
+            (&ops[i], &ops[i + 1])
+        {
+            let var_idx = *var_idx;
+            let param_idx = *param_idx;
+            ops[i] = Op::VarParamDictGetLen(var_idx, param_idx);
+            ops.remove(i + 1);
+            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+            continue;
+        }
+
         i += 1;
     }
 }
@@ -819,7 +1185,9 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
                 }
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) => {
+            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t) | Op::ExistsPowersetInit(t) => {
                 if (*t as usize) > removed_pos {
                     *t -= 1;
                 }
@@ -827,7 +1195,15 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
             Op::ForallRangeStep { body_pc, end_pc }
             | Op::ExistsRangeStep { body_pc, end_pc }
             | Op::CountRangeStep { body_pc, end_pc }
-            | Op::FnLitRangeStep { body_pc, end_pc } => {
+            | Op::FnLitRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeStep { body_pc, end_pc }
+            | Op::SetCompRangeAdvance { body_pc, end_pc }
+            | Op::ForallSetStep { body_pc, end_pc }
+            | Op::ExistsSetStep { body_pc, end_pc }
+            | Op::SetCompSetStep { body_pc, end_pc }
+            | Op::SetCompSetAdvance { body_pc, end_pc }
+            | Op::ForallPowersetStep { body_pc, end_pc }
+            | Op::ExistsPowersetStep { body_pc, end_pc } => {
                 if (*body_pc as usize) > removed_pos {
                     *body_pc -= 1;
                 }
@@ -952,11 +1328,18 @@ fn vm_eval_inner(
         match op {
             Op::Int(n) => stack.push(Value::int(*n)),
             Op::Bool(b) => stack.push(Value::bool(*b)),
+            Op::PushValue(v) => stack.push(v.clone()),
 
             Op::Var(idx) => stack.push(vars[*idx as usize].clone()),
             Op::PrimedVar(idx) => stack.push(next_vars[*idx as usize].clone()),
             Op::Const(idx) => stack.push(consts[*idx as usize].clone()),
-            Op::Param(idx) => stack.push(params[*idx as usize].clone()),
+            Op::Param(idx) => {
+                let i = *idx as usize;
+                if i >= params.len() {
+                    return Err(EvalError::Internal(format!("param {} not found", i)));
+                }
+                stack.push(params[i].clone());
+            }
             Op::Local(idx) => {
                 let stack_idx = locals.len() - 1 - *idx as usize;
                 stack.push(locals[stack_idx].clone());
@@ -1135,6 +1518,97 @@ fn vm_eval_inner(
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             expected: "Fn or Seq".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParam2DictGet(var_idx, param1_idx, param2_idx) => {
+                // Fused: VarParamDictGet(a,b) + Param(c) + DictGet
+                // Two-level lookup: vars[a][params[b]][params[c]] without intermediate clone.
+                let key1 = &params[*param1_idx as usize];
+                let key2 = &params[*param2_idx as usize];
+                let outer = &vars[*var_idx as usize];
+                match outer.kind() {
+                    VK::Fn(map) => {
+                        let inner_ref = Value::fn_get(map, key1)
+                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?;
+                        match inner_ref.kind() {
+                            VK::IntMap(arr) => {
+                                let k = expect_int(key2)? as usize;
+                                stack.push(Value::int(arr[k]));
+                            }
+                            VK::Fn(inner_map) => {
+                                let val = Value::fn_get(inner_map, key2)
+                                    .cloned()
+                                    .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                                stack.push(val);
+                            }
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "Fn or IntMap".to_string(),
+                                    actual: inner_ref.type_name().to_string(),
+                                })
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn".to_string(),
+                            actual: outer.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetIntEq(var_idx, param_idx, k) => {
+                // Fused: VarParamDictGet(a,b) + Int(k) + IntEq
+                // Dict lookup + compare: vars[a][params[b]] == k without cloning the dict.
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(key)? as usize;
+                        stack.push(Value::bool(arr[idx] == *k));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(Value::bool(val.as_int() == Some(*k)));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetLen(var_idx, param_idx) => {
+                // Fused: VarParamDictGet(a,b) + Len
+                // len(vars[a][params[b]]) without cloning the intermediate collection.
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        let len = match val.kind() {
+                            VK::Set(s) => s.len() as i64,
+                            VK::Seq(s) => s.len() as i64,
+                            VK::Fn(f) => f.len() as i64,
+                            VK::IntMap(arr) => arr.len() as i64,
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "Set, Seq, or Fn".to_string(),
+                                    actual: val.type_name().to_string(),
+                                })
+                            }
+                        };
+                        stack.push(Value::int(len));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn".to_string(),
                             actual: base.type_name().to_string(),
                         })
                     }
@@ -1398,6 +1872,8 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1436,6 +1912,8 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1475,6 +1953,8 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1498,6 +1978,306 @@ fn vm_eval_inner(
                 continue;
             }
 
+            // === SetComprehension over range ===
+            Op::SetCompRangeInit(end_pc) => {
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
+                if lo > hi {
+                    stack.push(Value::empty_set());
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let cap = (hi - lo + 1).max(0) as usize;
+                loops.push(LoopState {
+                    hi,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(cap),
+                    domain_val: None,
+                });
+                locals.push(Value::int(lo));
+            }
+            Op::SetCompRangeStep { body_pc, end_pc } => {
+                let element = stack.pop().unwrap();
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.set_buf.push(element);
+                let current = get_local_int(&locals)?;
+                if current >= loop_state.hi {
+                    let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = Value::int(current + 1);
+                pc = *body_pc as usize;
+                continue;
+            }
+            Op::SetCompRangeAdvance { body_pc, end_pc } => {
+                let current = get_local_int(&locals)?;
+                let loop_state = loops.last().unwrap();
+                if current >= loop_state.hi {
+                    let mut set_buf = std::mem::take(&mut loops.last_mut().unwrap().set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = Value::int(current + 1);
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === Forall over set ===
+            Op::ForallSetInit(end_pc) => {
+                let domain = stack.pop().unwrap();
+                let domain = normalize_domain(domain)?;
+                let set = domain.as_set().unwrap();
+                if set.is_empty() {
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                locals.push(set[0].clone());
+                loops.push(LoopState {
+                    hi: 0,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: Some(domain),
+                });
+            }
+            Op::ForallSetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if !body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === Exists over set ===
+            Op::ExistsSetInit(end_pc) => {
+                let domain = stack.pop().unwrap();
+                let domain = normalize_domain(domain)?;
+                let set = domain.as_set().unwrap();
+                if set.is_empty() {
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                locals.push(set[0].clone());
+                loops.push(LoopState {
+                    hi: 0,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: Some(domain),
+                });
+            }
+            Op::ExistsSetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === SetComprehension over set ===
+            Op::SetCompSetInit(end_pc) => {
+                let domain = stack.pop().unwrap();
+                let domain = normalize_domain(domain)?;
+                let set = domain.as_set().unwrap();
+                if set.is_empty() {
+                    stack.push(Value::empty_set());
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                locals.push(set[0].clone());
+                let cap = set.len();
+                loops.push(LoopState {
+                    hi: 0,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(cap),
+                    domain_val: Some(domain),
+                });
+            }
+            Op::SetCompSetStep { body_pc, end_pc } => {
+                let element = stack.pop().unwrap();
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.set_buf.push(element);
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+            Op::SetCompSetAdvance { body_pc, end_pc } => {
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === Forall over powerset (bitmask iteration) ===
+            Op::ForallPowersetInit(end_pc) => {
+                let base = stack.pop().unwrap();
+                let base = normalize_domain(base)?;
+                let set = base.as_set().unwrap();
+                let n = set.len();
+                // Powerset always has at least 1 element (empty set at mask=0)
+                let subset = Value::empty_set();
+                locals.push(subset);
+                loops.push(LoopState {
+                    hi: (1i64 << n) - 1, // max mask (inclusive)
+                    counter: 0,           // current mask
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(n),
+                    domain_val: Some(base),
+                });
+                let _ = end_pc; // used for patching only
+            }
+            Op::ForallPowersetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if !body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                if loop_state.counter >= loop_state.hi {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                loop_state.counter += 1;
+                let mask = loop_state.counter;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                loop_state.set_buf.clear();
+                for (i, elem) in set.iter().enumerate() {
+                    if mask & (1 << i) != 0 {
+                        loop_state.set_buf.push(elem.clone());
+                    }
+                }
+                *locals.last_mut().unwrap() =
+                    Value::set(Arc::new(loop_state.set_buf.clone()));
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === Exists over powerset (bitmask iteration) ===
+            Op::ExistsPowersetInit(end_pc) => {
+                let base = stack.pop().unwrap();
+                let base = normalize_domain(base)?;
+                let set = base.as_set().unwrap();
+                let n = set.len();
+                let subset = Value::empty_set();
+                locals.push(subset);
+                loops.push(LoopState {
+                    hi: (1i64 << n) - 1,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(n),
+                    domain_val: Some(base),
+                });
+                let _ = end_pc;
+            }
+            Op::ExistsPowersetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                if loop_state.counter >= loop_state.hi {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                loop_state.counter += 1;
+                let mask = loop_state.counter;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                loop_state.set_buf.clear();
+                for (i, elem) in set.iter().enumerate() {
+                    if mask & (1 << i) != 0 {
+                        loop_state.set_buf.push(elem.clone());
+                    }
+                }
+                *locals.last_mut().unwrap() =
+                    Value::set(Arc::new(loop_state.set_buf.clone()));
+                pc = *body_pc as usize;
+                continue;
+            }
+
             // === FnLit range ===
             Op::FnLitRangeInit(end_pc) => {
                 let hi = pop_int(stack)?;
@@ -1512,6 +2292,8 @@ fn vm_eval_inner(
                     hi,
                     counter: 0,
                     fn_buf: Vec::with_capacity(cap),
+                    set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1543,9 +2325,131 @@ fn vm_eval_inner(
                 continue;
             }
 
+            // === Set/Seq construction ===
+            Op::SetLit(n) => {
+                let n = *n as usize;
+                let start = stack.len() - n;
+                let mut elems: Vec<Value> = stack.drain(start..).collect();
+                elems.sort();
+                elems.dedup();
+                stack.push(Value::set(Arc::new(elems)));
+            }
+            Op::SeqLit(n) => {
+                let n = *n as usize;
+                let start = stack.len() - n;
+                let elems: Vec<Value> = stack.drain(start..).collect();
+                stack.push(Value::seq(elems));
+            }
+            Op::SetUnion => {
+                let right_val = stack.pop().unwrap();
+                let left_val = stack.pop().unwrap();
+                if left_val.is_set_v() && right_val.is_set_v() {
+                    let a = left_val.into_set_arc();
+                    let b = right_val.into_set_arc();
+                    if b.len() <= 4 {
+                        let mut result = a;
+                        let inner = Arc::make_mut(&mut result);
+                        for v in b.iter() {
+                            Value::set_insert(inner, v.clone());
+                        }
+                        stack.push(Value::from_set_arc(result));
+                    } else if a.len() <= 4 {
+                        let mut result = b;
+                        let inner = Arc::make_mut(&mut result);
+                        for v in a.iter() {
+                            Value::set_insert(inner, v.clone());
+                        }
+                        stack.push(Value::from_set_arc(result));
+                    } else {
+                        stack.push(Value::set(Arc::new(sorted_vec_union(&a, &b))));
+                    }
+                } else {
+                    return Err(type_mismatch("Set", &left_val));
+                }
+            }
+            Op::SetDiff => {
+                let right_val = stack.pop().unwrap();
+                let left_val = stack.pop().unwrap();
+                match (left_val.kind(), right_val.kind()) {
+                    (VK::Set(a), VK::Set(b)) => {
+                        stack.push(Value::set(Arc::new(sorted_vec_diff(a, b))));
+                    }
+                    _ => return Err(type_mismatch("Set", &left_val)),
+                }
+            }
+            Op::SeqConcat => {
+                let right_val = stack.pop().unwrap();
+                let left_val = stack.pop().unwrap();
+                let mut a = left_val.into_seq_arc();
+                let b = right_val.into_seq_arc();
+                Arc::make_mut(&mut a).extend(b.iter().cloned());
+                stack.push(Value::from_seq_arc(a));
+            }
+            Op::SeqSlice => {
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
+                let base_val = stack.pop().unwrap();
+                match base_val.kind() {
+                    VK::Seq(seq) => {
+                        let start = lo.max(0) as usize;
+                        let end = if hi < 0 {
+                            0
+                        } else {
+                            (hi as usize).min(seq.len())
+                        };
+                        if start >= end {
+                            stack.push(Value::seq(Vec::new()));
+                        } else {
+                            stack.push(Value::seq(seq[start..end].to_vec()));
+                        }
+                    }
+                    _ => return Err(type_mismatch("Seq", &base_val)),
+                }
+            }
+
+            Op::SeqHead => {
+                let seq_val = stack.pop().unwrap();
+                match seq_val.kind() {
+                    VK::Seq(s) if !s.is_empty() => stack.push(s[0].clone()),
+                    VK::Seq(_) => {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: 0,
+                            length: 0,
+                        })
+                    }
+                    _ => return Err(type_mismatch("Seq", &seq_val)),
+                }
+            }
+            Op::SeqTail => {
+                let seq_val = stack.pop().unwrap();
+                match seq_val.kind() {
+                    VK::Seq(s) if !s.is_empty() => {
+                        stack.push(Value::seq(s[1..].to_vec()))
+                    }
+                    VK::Seq(_) => stack.push(Value::seq(vec![])),
+                    _ => return Err(type_mismatch("Seq", &seq_val)),
+                }
+            }
+
+            Op::MakeRange => {
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
+                stack.push(Value::range(lo, hi));
+            }
+
             // === Fallback to tree-walk ===
             Op::Fallback(idx) => {
                 let expr = &fallbacks[*idx as usize];
+                #[cfg(feature = "trace-fallbacks")]
+                {
+                    let domain_kind = match expr {
+                        CompiledExpr::SetComprehension { domain, .. }
+                        | CompiledExpr::Exists { domain, .. }
+                        | CompiledExpr::Forall { domain, .. } => format!("dom={:?}", std::mem::discriminant(domain.as_ref())),
+                        _ => String::new(),
+                    };
+                    eprintln!("[FALLBACK] idx={} disc={:?} {}", idx, std::mem::discriminant(expr), domain_kind);
+                }
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval(expr, &mut ctx)?;
@@ -1553,6 +2457,8 @@ fn vm_eval_inner(
             }
             Op::FallbackBool(idx) => {
                 let expr = &fallbacks[*idx as usize];
+                #[cfg(feature = "trace-fallbacks")]
+                eprintln!("[FALLBACK-BOOL] idx={} disc={:?}", idx, std::mem::discriminant(expr));
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_bool(expr, &mut ctx)?;
@@ -1560,6 +2466,8 @@ fn vm_eval_inner(
             }
             Op::FallbackInt(idx) => {
                 let expr = &fallbacks[*idx as usize];
+                #[cfg(feature = "trace-fallbacks")]
+                eprintln!("[FALLBACK-INT] idx={} disc={:?}", idx, std::mem::discriminant(expr));
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_int(expr, &mut ctx)?;
@@ -1614,6 +2522,24 @@ fn get_local_int(locals: &[Value]) -> EvalResult<i64> {
         expected: "Int".to_string(),
         actual: v.type_name().to_string(),
     })
+}
+
+/// Normalize a domain value to a Set for iteration.
+/// Handles Set (passthrough), Fn/Dict (extract keys), and IntMap (0..len indices).
+#[inline]
+fn normalize_domain(domain: Value) -> EvalResult<Value> {
+    match domain.kind() {
+        VK::Set(_) => Ok(domain),
+        VK::Fn(m) => {
+            let keys: Vec<Value> = m.iter().map(|(k, _)| k.clone()).collect();
+            Ok(Value::set(Arc::new(keys)))
+        }
+        VK::IntMap(arr) => {
+            let keys: Vec<Value> = (0..arr.len() as i64).map(Value::int).collect();
+            Ok(Value::set(Arc::new(keys)))
+        }
+        _ => Err(type_mismatch("Set or Dict", &domain)),
+    }
 }
 
 #[cfg(test)]

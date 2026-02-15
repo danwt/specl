@@ -1,7 +1,7 @@
 //! BFS state space explorer for model checking.
 
 use crate::direct_eval::{
-    apply_action_direct, apply_effects_bytecode, extract_effect_assignments,
+    apply_action_direct, apply_effects_bytecode_reuse, extract_effect_assignments,
     generate_initial_states_direct,
 };
 use crate::state::{Fingerprint, State};
@@ -343,6 +343,8 @@ pub struct Explorer {
     /// For each action, for each param: Some(var_idx) if domain comes from state variable.
     /// Detected from `require param in var` guard patterns.
     state_dep_domains: Vec<Vec<Option<usize>>>,
+    /// Precomputed: true if action has any state-dependent domain parameter.
+    has_state_dep: Vec<bool>,
     /// Precomputed bitmask: independent_masks[a] has bit b set iff action a is independent of b.
     /// Used for sleep set propagation.
     independent_masks: Vec<u64>,
@@ -847,6 +849,7 @@ fn detect_state_dep_domains(guard: &CompiledExpr, num_params: usize) -> Vec<Opti
 
 /// Enumerate parameter combinations with guard indexing for early pruning.
 /// `params_buf` must be pre-allocated to `num_params` size.
+/// `guard_bufs` is reused across all guard evaluations to avoid per-call allocation.
 fn enumerate_params_indexed<F>(
     domains: &[Vec<Value>],
     guard_index: &GuardIndex,
@@ -856,6 +859,7 @@ fn enumerate_params_indexed<F>(
     params_buf: &mut Vec<Value>,
     level: usize,
     callback: &mut F,
+    guard_bufs: &mut VmBufs,
 ) where
     F: FnMut(&[Value]),
 {
@@ -863,7 +867,9 @@ fn enumerate_params_indexed<F>(
         // All params bound
         if !guard_index.all_covered {
             // Check full guard for any remaining conjuncts
-            if !vm_eval_bool(guard_bc, vars, vars, consts, params_buf).unwrap_or(false) {
+            if !vm_eval_bool_reuse(guard_bc, vars, vars, consts, params_buf, guard_bufs)
+                .unwrap_or(false)
+            {
                 return;
             }
         }
@@ -877,7 +883,9 @@ fn enumerate_params_indexed<F>(
 
         // Check prefix guard at this level
         if let Some(ref prefix_bc) = guard_index.prefix_guards[level] {
-            if !vm_eval_bool(prefix_bc, vars, vars, consts, params_buf).unwrap_or(false) {
+            if !vm_eval_bool_reuse(prefix_bc, vars, vars, consts, params_buf, guard_bufs)
+                .unwrap_or(false)
+            {
                 continue;
             }
         }
@@ -891,6 +899,7 @@ fn enumerate_params_indexed<F>(
             params_buf,
             level + 1,
             callback,
+            guard_bufs,
         );
     }
 }
@@ -1093,6 +1102,7 @@ impl Explorer {
             action_names: Vec::new(),
             default_action_order: Vec::new(),
             stop_flag: None,
+            has_state_dep: state_dep_domains.iter().map(|d| d.iter().any(|p| p.is_some())).collect(),
             state_dep_domains,
             independent_masks,
             sym_param_groups: Vec::new(),
@@ -1708,6 +1718,8 @@ impl Explorer {
         let mut queue: BinaryHeap<PQEntry> = BinaryHeap::new();
         let mut max_depth = 0usize;
         let mut next_vars_buf = Vec::new();
+        let mut guard_bufs = VmBufs::new();
+        let mut effect_bufs = VmBufs::new();
 
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
@@ -1787,7 +1799,7 @@ impl Explorer {
 
             // Generate successors
             let mut successors = Vec::new();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0)?;
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
 
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(&state)?;
@@ -1890,6 +1902,8 @@ impl Explorer {
 
         let mut queue: VecDeque<Fingerprint> = VecDeque::new();
         let mut next_vars_buf = Vec::new();
+        let mut guard_bufs = VmBufs::new();
+        let mut effect_bufs = VmBufs::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -1919,7 +1933,7 @@ impl Explorer {
 
             // Generate successors
             let mut successors = Vec::new();
-            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0)?;
+            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
@@ -1945,6 +1959,8 @@ impl Explorer {
 
         let mut queue: VecDeque<Fingerprint> = VecDeque::new();
         let mut next_vars_buf = Vec::new();
+        let mut guard_bufs = VmBufs::new();
+        let mut effect_bufs = VmBufs::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -1963,7 +1979,7 @@ impl Explorer {
 
             // Check for deadlock
             let mut successors = Vec::new();
-            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0)?;
+            self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(state)?;
                 if !any_enabled {
@@ -2003,6 +2019,9 @@ impl Explorer {
         let mut memory_at_limit = 0usize;
         let mut next_vars_buf = Vec::new();
         let mut vm_bufs = VmBufs::new();
+        let mut guard_bufs = VmBufs::new();
+        let mut effect_bufs = VmBufs::new();
+        let mut successors: Vec<(State, usize, Vec<i64>)> = Vec::new();
 
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
@@ -2061,7 +2080,7 @@ impl Explorer {
             }
 
             // --- Phase 1: Check invariants ---
-            let t0 = Instant::now();
+            let t0 = if profiling { Some(Instant::now()) } else { None };
             for (inv_idx, inv) in self.spec.invariants.iter().enumerate() {
                 if !self.active_invariants[inv_idx] {
                     continue;
@@ -2086,13 +2105,13 @@ impl Explorer {
                     });
                 }
             }
-            if profiling { prof_time_inv += t0.elapsed(); }
+            if let Some(t0) = t0 { prof_time_inv += t0.elapsed(); }
 
             // --- Phase 2: Generate successor states ---
-            let t1 = Instant::now();
-            let mut successors = Vec::new();
-            self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set)?;
-            if profiling { prof_time_succ += t1.elapsed(); }
+            let t1 = if profiling { Some(Instant::now()) } else { None };
+            successors.clear();
+            self.generate_successors(&state, &mut successors, &mut next_vars_buf, sleep_set, &mut guard_bufs, &mut effect_bufs)?;
+            if let Some(t1) = t1 { prof_time_succ += t1.elapsed(); }
 
             if successors.is_empty() && self.config.check_deadlock {
                 // Check if any action is enabled (ignoring sleep set — sleep doesn't cause deadlock)
@@ -2113,10 +2132,11 @@ impl Explorer {
             }
 
             // --- Phase 3: Store insert + queue management ---
-            let t2 = Instant::now();
+            let t2 = if profiling { Some(Instant::now()) } else { None };
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
-            for (next_state, action_idx, pvals) in successors {
+            let fp_only = !self.store.has_full_tracking();
+            for (next_state, action_idx, pvals) in successors.drain(..) {
                 if profiling { prof_action_counts[action_idx] += 1; }
                 let successor_sleep = if use_sleep {
                     accumulated_sleep & self.independent_masks[action_idx]
@@ -2125,10 +2145,12 @@ impl Explorer {
                 };
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical.clone(), Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                let is_new = if fp_only {
+                    self.store.insert_fp_only(next_fp)
+                } else {
+                    self.store.insert_with_fp(next_fp, canonical.clone(), Some(fp), Some(action_idx), Some(pvals), depth + 1)
+                };
+                if is_new {
                     *max_depth = (*max_depth).max(depth + 1);
                     queue.push_back((
                         next_fp,
@@ -2145,7 +2167,7 @@ impl Explorer {
 
             // Grow FPSet between batches if needed (no concurrent inserts at this point)
             self.store.maybe_grow_fpset();
-            if profiling { prof_time_store += t2.elapsed(); }
+            if let Some(t2) = t2 { prof_time_store += t2.elapsed(); }
 
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
@@ -2299,7 +2321,9 @@ impl Explorer {
                     // Generate successor states
                     let mut successors = Vec::new();
                     let mut next_vars_buf = Vec::new();
-                    match self.generate_successors(state, &mut successors, &mut next_vars_buf, 0) {
+                    let mut guard_bufs = VmBufs::new();
+                    let mut effect_bufs = VmBufs::new();
+                    match self.generate_successors(state, &mut successors, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs) {
                         Ok(()) => {
                             if successors.is_empty() && self.config.check_deadlock {
                                 match self.any_action_enabled(state) {
@@ -2314,20 +2338,26 @@ impl Explorer {
                             // Insert successors into store directly (parallel)
                             let mut new_entries = Vec::new();
                             let mut batch_max_depth = 0;
+                            let fp_only_par = !self.store.has_full_tracking();
                             for (next_state, action_idx, pvals) in successors {
                                 let canonical = self.maybe_canonicalize(next_state);
                                 let next_fp = canonical.fingerprint();
                                 if self.store.contains(&next_fp) {
                                     continue;
                                 }
-                                if self.store.insert_with_fp(
-                                    next_fp,
-                                    canonical.clone(),
-                                    Some(*fp),
-                                    Some(action_idx),
-                                    Some(pvals),
-                                    depth + 1,
-                                ) {
+                                let is_new = if fp_only_par {
+                                    self.store.insert_fp_only(next_fp)
+                                } else {
+                                    self.store.insert_with_fp(
+                                        next_fp,
+                                        canonical.clone(),
+                                        Some(*fp),
+                                        Some(action_idx),
+                                        Some(pvals),
+                                        depth + 1,
+                                    )
+                                };
+                                if is_new {
                                     batch_max_depth = batch_max_depth.max(depth + 1);
                                     // Update progress from inside par_iter so spinner never freezes
                                     if let Some(ref p) = self.config.progress {
@@ -2761,6 +2791,8 @@ impl Explorer {
         buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
+        guard_bufs: &mut VmBufs,
+        effect_bufs: &mut VmBufs,
     ) -> CheckResult<()> {
         buf.clear();
 
@@ -2776,7 +2808,7 @@ impl Explorer {
                         // Non-refinable action group: apply via template path below
                         template_actions.push(*action_idx);
                     } else {
-                        self.apply_single_instance(state, *action_idx, params, buf, next_vars_buf)?;
+                        self.apply_single_instance(state, *action_idx, params, buf, next_vars_buf, effect_bufs)?;
                     }
                 }
                 if template_actions.is_empty() {
@@ -2790,21 +2822,22 @@ impl Explorer {
                     buf,
                     next_vars_buf,
                     0,
+                    guard_bufs,
+                    effect_bufs,
                 );
             }
             // AmpleResult::Templates falls through to standard path below
         }
 
         // Standard path: determine which action templates to explore
-        let actions_to_explore = if self.config.use_por {
-            self.compute_ample_set(state)?
+        if self.config.use_por {
+            let actions_to_explore = self.compute_ample_set(state)?;
+            self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
         } else if let Some(ref relevant) = self.relevant_actions {
-            relevant.clone()
+            self.apply_template_actions(state, relevant, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
         } else {
-            self.default_action_order.clone()
-        };
-
-        self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set)
+            self.apply_template_actions(state, &self.default_action_order, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
+        }
     }
 
     /// Apply a set of action templates to a state, using the operation cache and
@@ -2816,6 +2849,8 @@ impl Explorer {
         buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
+        guard_bufs: &mut VmBufs,
+        effect_bufs: &mut VmBufs,
     ) -> CheckResult<()> {
         thread_local! {
             static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
@@ -2838,6 +2873,7 @@ impl Explorer {
             if caches.len() != num_actions {
                 *caches = (0..num_actions).map(|_| OpCache::new()).collect();
             }
+            let mut params_buf = Vec::new();
             for &action_idx in actions {
                 if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
                     continue;
@@ -2849,6 +2885,9 @@ impl Explorer {
                     next_vars_buf,
                     &mut caches[action_idx],
                     &orbit_reps,
+                    guard_bufs,
+                    effect_bufs,
+                    &mut params_buf,
                 )?;
             }
             Ok::<(), CheckError>(())
@@ -2886,10 +2925,11 @@ impl Explorer {
         };
         let guard_bc = &self.compiled_guards[action_idx];
         let mut enabled = false;
+        let mut guard_bufs = VmBufs::new();
 
         if let Some(guard_index) = &self.guard_indices[action_idx] {
             if let Some(ref pre_guard) = guard_index.pre_guard {
-                if !vm_eval_bool(pre_guard, &state.vars, &state.vars, &self.consts, &[])
+                if !vm_eval_bool_reuse(pre_guard, &state.vars, &state.vars, &self.consts, &[], &mut guard_bufs)
                     .unwrap_or(false)
                 {
                     return Ok(false);
@@ -2907,6 +2947,7 @@ impl Explorer {
                 &mut |_params: &[Value]| {
                     enabled = true;
                 },
+                &mut guard_bufs,
             );
         } else {
             let mut params_buf = SmallVec::new();
@@ -3011,10 +3052,11 @@ impl Explorer {
         };
         let guard_bc = &self.compiled_guards[action_idx];
         let mut instances = Vec::new();
+        let mut guard_bufs = VmBufs::new();
 
         if let Some(guard_index) = &self.guard_indices[action_idx] {
             if let Some(ref pre_guard) = guard_index.pre_guard {
-                if !vm_eval_bool(pre_guard, &state.vars, &state.vars, &self.consts, &[])
+                if !vm_eval_bool_reuse(pre_guard, &state.vars, &state.vars, &self.consts, &[], &mut guard_bufs)
                     .unwrap_or(false)
                 {
                     return Ok(instances);
@@ -3032,6 +3074,7 @@ impl Explorer {
                 &mut |params: &[Value]| {
                     instances.push((action_idx, params.to_vec()));
                 },
+                &mut guard_bufs,
             );
         } else {
             let mut params_buf = SmallVec::new();
@@ -3267,6 +3310,7 @@ impl Explorer {
         params: &[Value],
         buf: &mut Vec<(State, usize, Vec<i64>)>,
         next_vars_buf: &mut Vec<Value>,
+        effect_bufs: &mut VmBufs,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
 
@@ -3274,7 +3318,7 @@ impl Explorer {
 
         // Try bytecode effect path first
         if let Some(cached) = &self.cached_effects[action_idx] {
-            if let Ok(result) = apply_effects_bytecode(
+            if let Ok(result) = apply_effects_bytecode_reuse(
                 state,
                 params,
                 &self.consts,
@@ -3282,6 +3326,7 @@ impl Explorer {
                 cached.needs_reverify,
                 next_vars_buf,
                 &action.effect,
+                effect_bufs,
             ) {
                 if let Some(next_state) = result {
                     buf.push((next_state, action_idx, pvals));
@@ -3310,8 +3355,12 @@ impl Explorer {
         next_vars_buf: &mut Vec<Value>,
         cache: &mut OpCache,
         orbit_reps: &SmallVec<[Vec<usize>; 4]>,
+        guard_bufs: &mut VmBufs,
+        effect_bufs: &mut VmBufs,
+        params_buf: &mut Vec<Value>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
+        let needs_pvals = self.store.has_full_tracking();
         let dynamic;
         let orbit_filtered;
         let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
@@ -3362,21 +3411,21 @@ impl Explorer {
         if let Some(guard_index) = &self.guard_indices[action_idx] {
             // Check pre-guard (state-only conjuncts) once before enumeration
             if let Some(ref pre_guard) = guard_index.pre_guard {
-                if !vm_eval_bool(pre_guard, &state.vars, &state.vars, &self.consts, &[])
+                if !vm_eval_bool_reuse(pre_guard, &state.vars, &state.vars, &self.consts, &[], guard_bufs)
                     .unwrap_or(false)
                 {
                     return Ok(());
                 }
             }
 
-            let mut params_buf = vec![Value::none(); param_domains.len()];
+            params_buf.resize(param_domains.len(), Value::none());
             enumerate_params_indexed(
                 param_domains,
                 guard_index,
                 guard_bc,
                 &state.vars,
                 &self.consts,
-                &mut params_buf,
+                params_buf,
                 0,
                 &mut |params: &[Value]| {
                     // Guard already passed. Check operation cache.
@@ -3394,7 +3443,7 @@ impl Explorer {
 
                         // Cache miss or new state: evaluate effects
                         if let Some(cached) = &self.cached_effects[action_idx] {
-                            if let Ok(result) = apply_effects_bytecode(
+                            if let Ok(result) = apply_effects_bytecode_reuse(
                                 state,
                                 params,
                                 &self.consts,
@@ -3402,10 +3451,12 @@ impl Explorer {
                                 cached.needs_reverify,
                                 next_vars_buf,
                                 &action.effect,
+                                effect_bufs,
                             ) {
                                 if let Some(next_state) = result {
                                     cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
-                                    buf.push((next_state, action_idx, params_to_i64s(params)));
+                                    let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                    buf.push((next_state, action_idx, pvals));
                                 } else {
                                     cache.store(key, OP_NO_SUCCESSOR);
                                 }
@@ -3415,7 +3466,7 @@ impl Explorer {
                     } else {
                         // No cache: evaluate effects directly
                         if let Some(cached) = &self.cached_effects[action_idx] {
-                            if let Ok(result) = apply_effects_bytecode(
+                            if let Ok(result) = apply_effects_bytecode_reuse(
                                 state,
                                 params,
                                 &self.consts,
@@ -3423,9 +3474,11 @@ impl Explorer {
                                 cached.needs_reverify,
                                 next_vars_buf,
                                 &action.effect,
+                                effect_bufs,
                             ) {
                                 if let Some(next_state) = result {
-                                    buf.push((next_state, action_idx, params_to_i64s(params)));
+                                    let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                    buf.push((next_state, action_idx, pvals));
                                 } else {
                                     // Guard reverification failed, no successor
                                 }
@@ -3435,12 +3488,13 @@ impl Explorer {
                     }
 
                     if let Ok(next_states) = self.find_next_states(state, action, params) {
-                        let pvals = params_to_i64s(params);
+                        let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
                         for next_state in next_states {
                             buf.push((next_state, action_idx, pvals.clone()));
                         }
                     }
                 },
+                guard_bufs,
             );
         } else {
             let mut params_buf = SmallVec::new();
@@ -3458,7 +3512,7 @@ impl Explorer {
                     }
 
                     let guard_ok =
-                        vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                        vm_eval_bool_reuse(guard_bc, &state.vars, &state.vars, &self.consts, params, guard_bufs)
                             .unwrap_or(false);
                     if !guard_ok {
                         cache.store(key, OP_NO_SUCCESSOR);
@@ -3466,7 +3520,7 @@ impl Explorer {
                     }
 
                     if let Some(cached) = &self.cached_effects[action_idx] {
-                        if let Ok(result) = apply_effects_bytecode(
+                        if let Ok(result) = apply_effects_bytecode_reuse(
                             state,
                             params,
                             &self.consts,
@@ -3474,10 +3528,12 @@ impl Explorer {
                             cached.needs_reverify,
                             next_vars_buf,
                             &action.effect,
+                            effect_bufs,
                         ) {
                             if let Some(next_state) = result {
                                 cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
-                                buf.push((next_state, action_idx, params_to_i64s(params)));
+                                let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                buf.push((next_state, action_idx, pvals));
                             } else {
                                 cache.store(key, OP_NO_SUCCESSOR);
                             }
@@ -3486,14 +3542,14 @@ impl Explorer {
                     }
                 } else {
                     let guard_ok =
-                        vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                        vm_eval_bool_reuse(guard_bc, &state.vars, &state.vars, &self.consts, params, guard_bufs)
                             .unwrap_or(false);
                     if !guard_ok {
                         return;
                     }
 
                     if let Some(cached) = &self.cached_effects[action_idx] {
-                        if let Ok(result) = apply_effects_bytecode(
+                        if let Ok(result) = apply_effects_bytecode_reuse(
                             state,
                             params,
                             &self.consts,
@@ -3501,9 +3557,11 @@ impl Explorer {
                             cached.needs_reverify,
                             next_vars_buf,
                             &action.effect,
+                            effect_bufs,
                         ) {
                             if let Some(next_state) = result {
-                                buf.push((next_state, action_idx, params_to_i64s(params)));
+                                let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                buf.push((next_state, action_idx, pvals));
                             }
                             return;
                         }
@@ -3512,7 +3570,7 @@ impl Explorer {
 
                 // Fallback: full eval path
                 if let Ok(next_states) = self.find_next_states(state, action, params) {
-                    let pvals = params_to_i64s(params);
+                    let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
                     for next_state in next_states {
                         buf.push((next_state, action_idx, pvals.clone()));
                     }
@@ -3547,11 +3605,12 @@ impl Explorer {
 
     /// Build effective parameter domains, substituting state-dependent domains at runtime.
     /// Returns None if no params are state-dependent (zero overhead fast path).
+    #[inline]
     fn get_effective_domains(&self, action_idx: usize, state: &State) -> Option<Vec<Vec<Value>>> {
-        let deps = &self.state_dep_domains[action_idx];
-        if !deps.iter().any(|d| d.is_some()) {
+        if !self.has_state_dep[action_idx] {
             return None;
         }
+        let deps = &self.state_dep_domains[action_idx];
         let action = &self.spec.actions[action_idx];
         let static_domains = &self.cached_param_domains[action_idx];
         Some(
@@ -3760,10 +3819,12 @@ impl Explorer {
         let mut current = state;
         let mut successors_buf: Vec<(State, usize, Vec<i64>)> = Vec::new();
         let mut next_vars_buf: Vec<Value> = Vec::new();
+        let mut guard_bufs = VmBufs::new();
+        let mut effect_bufs = VmBufs::new();
 
         for _step in 0..max_steps {
             // Generate all successors (no POR, no symmetry)
-            self.generate_successors(&current, &mut successors_buf, &mut next_vars_buf, 0)?;
+            self.generate_successors(&current, &mut successors_buf, &mut next_vars_buf, 0, &mut guard_bufs, &mut effect_bufs)?;
 
             if successors_buf.is_empty() {
                 return Ok(SimulateOutcome::Deadlock { trace, var_names });

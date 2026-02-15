@@ -112,13 +112,13 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
         CompiledExpr::Local(idx) => ctx
             .get_local(*idx)
             .cloned()
-            .ok_or(EvalError::Internal(format!("local {} not found", idx))),
+            .ok_or_else(|| EvalError::Internal(format!("local {} not found", idx))),
 
         CompiledExpr::Param(idx) => ctx
             .params
             .get(*idx)
             .cloned()
-            .ok_or(EvalError::Internal(format!("param {} not found", idx))),
+            .ok_or_else(|| EvalError::Internal(format!("param {} not found", idx))),
 
         CompiledExpr::Binary { op, left, right } => eval_binary(*op, left, right, ctx),
 
@@ -1279,14 +1279,17 @@ fn eval_unary(op: UnaryOp, operand: &CompiledExpr, ctx: &mut EvalContext) -> Eva
     }
 }
 
+#[inline(always)]
 pub fn expect_bool(val: &Value) -> EvalResult<bool> {
     val.as_bool().ok_or_else(|| type_mismatch("Bool", val))
 }
 
+#[inline(always)]
 pub fn expect_int(val: &Value) -> EvalResult<i64> {
     val.as_int().ok_or_else(|| type_mismatch("Int", val))
 }
 
+#[inline(always)]
 pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
     val.as_set().ok_or_else(|| type_mismatch("Set", val))
 }
@@ -1303,7 +1306,7 @@ fn extract_domain_elements(val: &Value) -> EvalResult<Vec<Value>> {
 }
 
 /// Merge-based union of two sorted, deduplicated Vecs.
-fn sorted_vec_union(a: &[Value], b: &[Value]) -> Vec<Value> {
+pub(crate) fn sorted_vec_union(a: &[Value], b: &[Value]) -> Vec<Value> {
     let mut result = Vec::with_capacity(a.len() + b.len());
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
@@ -1353,8 +1356,8 @@ fn sorted_vec_intersect(a: &[Value], b: &[Value]) -> Vec<Value> {
 }
 
 /// Merge-based difference of two sorted, deduplicated Vecs.
-fn sorted_vec_diff(a: &[Value], b: &[Value]) -> Vec<Value> {
-    let mut result = Vec::new();
+pub(crate) fn sorted_vec_diff(a: &[Value], b: &[Value]) -> Vec<Value> {
+    let mut result = Vec::with_capacity(a.len());
     let (mut i, mut j) = (0, 0);
     while i < a.len() && j < b.len() {
         match a[i].cmp(&b[j]) {

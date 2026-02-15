@@ -28,6 +28,7 @@ miette.workspace = true
 notify.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+mimalloc = { version = "0.1", default-features = false }
 
 [dev-dependencies]
 specl-syntax.workspace = true
