@@ -2135,6 +2135,7 @@ impl Explorer {
             let t2 = if profiling { Some(Instant::now()) } else { None };
             let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
+            let fp_only = !self.store.has_full_tracking();
             for (next_state, action_idx, pvals) in successors.drain(..) {
                 if profiling { prof_action_counts[action_idx] += 1; }
                 let successor_sleep = if use_sleep {
@@ -2144,10 +2145,12 @@ impl Explorer {
                 };
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical.clone(), Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                let is_new = if fp_only {
+                    self.store.insert_fp_only(next_fp)
+                } else {
+                    self.store.insert_with_fp(next_fp, canonical.clone(), Some(fp), Some(action_idx), Some(pvals), depth + 1)
+                };
+                if is_new {
                     *max_depth = (*max_depth).max(depth + 1);
                     queue.push_back((
                         next_fp,
@@ -2335,20 +2338,26 @@ impl Explorer {
                             // Insert successors into store directly (parallel)
                             let mut new_entries = Vec::new();
                             let mut batch_max_depth = 0;
+                            let fp_only_par = !self.store.has_full_tracking();
                             for (next_state, action_idx, pvals) in successors {
                                 let canonical = self.maybe_canonicalize(next_state);
                                 let next_fp = canonical.fingerprint();
                                 if self.store.contains(&next_fp) {
                                     continue;
                                 }
-                                if self.store.insert_with_fp(
-                                    next_fp,
-                                    canonical.clone(),
-                                    Some(*fp),
-                                    Some(action_idx),
-                                    Some(pvals),
-                                    depth + 1,
-                                ) {
+                                let is_new = if fp_only_par {
+                                    self.store.insert_fp_only(next_fp)
+                                } else {
+                                    self.store.insert_with_fp(
+                                        next_fp,
+                                        canonical.clone(),
+                                        Some(*fp),
+                                        Some(action_idx),
+                                        Some(pvals),
+                                        depth + 1,
+                                    )
+                                };
+                                if is_new {
                                     batch_max_depth = batch_max_depth.max(depth + 1);
                                     // Update progress from inside par_iter so spinner never freezes
                                     if let Some(ref p) = self.config.progress {
@@ -3348,6 +3357,7 @@ impl Explorer {
         effect_bufs: &mut VmBufs,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
+        let needs_pvals = self.store.has_full_tracking();
         let dynamic;
         let orbit_filtered;
         let param_domains = if let Some(d) = self.get_effective_domains(action_idx, state) {
@@ -3442,7 +3452,8 @@ impl Explorer {
                             ) {
                                 if let Some(next_state) = result {
                                     cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
-                                    buf.push((next_state, action_idx, params_to_i64s(params)));
+                                    let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                    buf.push((next_state, action_idx, pvals));
                                 } else {
                                     cache.store(key, OP_NO_SUCCESSOR);
                                 }
@@ -3463,7 +3474,8 @@ impl Explorer {
                                 effect_bufs,
                             ) {
                                 if let Some(next_state) = result {
-                                    buf.push((next_state, action_idx, params_to_i64s(params)));
+                                    let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                    buf.push((next_state, action_idx, pvals));
                                 } else {
                                     // Guard reverification failed, no successor
                                 }
@@ -3473,7 +3485,7 @@ impl Explorer {
                     }
 
                     if let Ok(next_states) = self.find_next_states(state, action, params) {
-                        let pvals = params_to_i64s(params);
+                        let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
                         for next_state in next_states {
                             buf.push((next_state, action_idx, pvals.clone()));
                         }
@@ -3517,7 +3529,8 @@ impl Explorer {
                         ) {
                             if let Some(next_state) = result {
                                 cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
-                                buf.push((next_state, action_idx, params_to_i64s(params)));
+                                let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                buf.push((next_state, action_idx, pvals));
                             } else {
                                 cache.store(key, OP_NO_SUCCESSOR);
                             }
@@ -3544,7 +3557,8 @@ impl Explorer {
                             effect_bufs,
                         ) {
                             if let Some(next_state) = result {
-                                buf.push((next_state, action_idx, params_to_i64s(params)));
+                                let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
+                                buf.push((next_state, action_idx, pvals));
                             }
                             return;
                         }
@@ -3553,7 +3567,7 @@ impl Explorer {
 
                 // Fallback: full eval path
                 if let Ok(next_states) = self.find_next_states(state, action, params) {
-                    let pvals = params_to_i64s(params);
+                    let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
                     for next_state in next_states {
                         buf.push((next_state, action_idx, pvals.clone()));
                     }

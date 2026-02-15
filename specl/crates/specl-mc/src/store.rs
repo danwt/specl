@@ -384,6 +384,30 @@ impl StateStore {
         }
     }
 
+    /// Insert by fingerprint only (no state data stored).
+    /// For use with Fingerprint and Bloom backends where the state is not needed.
+    /// Returns true if the fingerprint was new.
+    #[inline]
+    pub fn insert_fp_only(&self, fp: Fingerprint) -> bool {
+        match &self.backend {
+            StorageBackend::Fingerprint(cell) => {
+                let new = unsafe { &*cell.get() }.insert(fp);
+                if new {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+                new
+            }
+            StorageBackend::Bloom(bloom) => {
+                let new = bloom.insert(fp);
+                if new {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+                new
+            }
+            _ => panic!("insert_fp_only called on backend that requires state data"),
+        }
+    }
+
     /// Get the number of states stored. O(1) via cached atomic counter.
     #[inline]
     pub fn len(&self) -> usize {
