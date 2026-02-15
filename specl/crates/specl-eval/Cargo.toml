@@ -12,5 +12,8 @@ specl-ir.workspace = true
 num-bigint.workspace = true
 thiserror.workspace = true
 
+[features]
+trace-fallbacks = []
+
 [dev-dependencies]
 proptest.workspace = true

@@ -140,6 +140,42 @@ pub enum Op {
         end_pc: u32,
     },
 
+    // === Quantifiers/comprehensions over set domain ===
+    /// Pop set value. If empty: push true, jump to end_pc.
+    /// Else: store set, push first element to locals, continue.
+    ForallSetInit(u32),
+    /// Pop body result (bool). If false: cleanup, push false, jump to end_pc.
+    /// Else: advance index. If done: cleanup, push true, jump to end_pc.
+    /// Else: update local to next element, jump to body_pc.
+    ForallSetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Pop set value. If empty: push false, jump to end_pc.
+    /// Else: store set, push first element to locals, continue.
+    ExistsSetInit(u32),
+    /// Pop body result (bool). If true: cleanup, push true, jump to end_pc.
+    /// Else: advance index. If done: cleanup, push false, jump to end_pc.
+    /// Else: update local to next element, jump to body_pc.
+    ExistsSetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Pop set value. If empty: push empty set, jump to end_pc.
+    /// Else: store set, push first element to locals, init set buffer, continue.
+    SetCompSetInit(u32),
+    /// Pop element, add to buffer. Advance index. If done: push completed set, jump to end_pc.
+    /// Else: update local to next element, jump to body_pc.
+    SetCompSetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Advance set-comp without collecting (filter was false).
+    SetCompSetAdvance {
+        body_pc: u32,
+        end_pc: u32,
+    },
+
     // === Set/Seq construction ===
     /// Pop N values → push Set (sorted, deduped).
     SetLit(u16),
@@ -174,15 +210,17 @@ pub enum Op {
     Halt,
 }
 
-/// Loop state for range-based quantifiers.
+/// Loop state for range-based quantifiers and set iteration.
 struct LoopState {
     hi: i64,
-    /// Accumulator for CountRange.
+    /// Accumulator for CountRange / index for set iteration.
     counter: i64,
     /// Accumulator for FnLitRange.
     fn_buf: Vec<(Value, Value)>,
-    /// Accumulator for SetCompRange.
+    /// Accumulator for SetCompRange / SetCompSet.
     set_buf: Vec<Value>,
+    /// Domain value for set/seq iteration (Forall/Exists/SetComp over sets).
+    domain_val: Option<Value>,
 }
 
 /// Compiled bytecode with fallback expression table.
@@ -229,13 +267,20 @@ impl Compiler {
             | Op::ExistsRangeInit(t)
             | Op::CountRangeInit(t)
             | Op::FnLitRangeInit(t)
-            | Op::SetCompRangeInit(t) => *t = target,
+            | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t)
+            | Op::ExistsSetInit(t)
+            | Op::SetCompSetInit(t) => *t = target,
             Op::ForallRangeStep { end_pc, .. }
             | Op::ExistsRangeStep { end_pc, .. }
             | Op::CountRangeStep { end_pc, .. }
             | Op::FnLitRangeStep { end_pc, .. }
             | Op::SetCompRangeStep { end_pc, .. }
-            | Op::SetCompRangeAdvance { end_pc, .. } => *end_pc = target,
+            | Op::SetCompRangeAdvance { end_pc, .. }
+            | Op::ForallSetStep { end_pc, .. }
+            | Op::ExistsSetStep { end_pc, .. }
+            | Op::SetCompSetStep { end_pc, .. }
+            | Op::SetCompSetAdvance { end_pc, .. } => *end_pc = target,
             _ => {}
         }
     }
@@ -600,8 +645,21 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
+        } else if !matches!(domain, CompiledExpr::Powerset(_)) {
+            // Set-valued domain (Var, Keys, etc.) — iterate elements
+            self.compile(domain);
+            let init = self.emit(Op::ForallSetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ForallSetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
         } else {
-            // Fallback for non-range domains
+            // Fallback for powerset domains
             let expr = CompiledExpr::Forall {
                 domain: Box::new(domain.clone()),
                 body: Box::new(body.clone()),
@@ -625,8 +683,21 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
+        } else if !matches!(domain, CompiledExpr::Powerset(_)) {
+            // Set-valued domain — iterate elements
+            self.compile(domain);
+            let init = self.emit(Op::ExistsSetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ExistsSetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
         } else {
-            // Fallback for non-range domains (powerset, set, etc.)
+            // Fallback for powerset domains
             let expr = CompiledExpr::Exists {
                 domain: Box::new(domain.clone()),
                 body: Box::new(body.clone()),
@@ -704,8 +775,44 @@ impl Compiler {
                 self.patch_jump(init, end_pc as u32);
                 self.patch_jump(step, end_pc as u32);
             }
+        } else if !matches!(domain, CompiledExpr::Powerset(_)) {
+            // Set-valued domain — iterate elements
+            self.compile(domain);
+            let init = self.emit(Op::SetCompSetInit(0));
+            let body_pc = self.current_pc();
+
+            if let Some(filter) = filter {
+                self.compile(filter);
+                let jump_skip = self.emit(Op::JumpIfFalse(0));
+                self.emit(Op::Pop);
+                self.compile(element);
+                let step = self.emit(Op::SetCompSetStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let skip_pc = self.current_pc();
+                self.patch_jump(jump_skip, skip_pc as u32);
+                self.emit(Op::Pop);
+                let advance = self.emit(Op::SetCompSetAdvance {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+                self.patch_jump(advance, end_pc as u32);
+            } else {
+                self.compile(element);
+                let step = self.emit(Op::SetCompSetStep {
+                    body_pc: body_pc as u32,
+                    end_pc: 0,
+                });
+                let end_pc = self.current_pc();
+                self.patch_jump(init, end_pc as u32);
+                self.patch_jump(step, end_pc as u32);
+            }
         } else {
-            // Non-range domain: fallback to tree-walk
+            // Powerset domain: fallback to tree-walk
             let expr = CompiledExpr::SetComprehension {
                 element: Box::new(element.clone()),
                 domain: Box::new(domain.clone()),
@@ -853,7 +960,8 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
                 }
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t) => {
+            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t) => {
                 let target = *t as usize;
                 if target < jump_targets.len() {
                     jump_targets[target] = true;
@@ -864,7 +972,11 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             | Op::CountRangeStep { body_pc, end_pc }
             | Op::FnLitRangeStep { body_pc, end_pc }
             | Op::SetCompRangeStep { body_pc, end_pc }
-            | Op::SetCompRangeAdvance { body_pc, end_pc } => {
+            | Op::SetCompRangeAdvance { body_pc, end_pc }
+            | Op::ForallSetStep { body_pc, end_pc }
+            | Op::ExistsSetStep { body_pc, end_pc }
+            | Op::SetCompSetStep { body_pc, end_pc }
+            | Op::SetCompSetAdvance { body_pc, end_pc } => {
                 let b = *body_pc as usize;
                 let e = *end_pc as usize;
                 if b < jump_targets.len() {
@@ -952,7 +1064,8 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
                 }
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
-            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t) => {
+            | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
+            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t) => {
                 if (*t as usize) > removed_pos {
                     *t -= 1;
                 }
@@ -962,7 +1075,11 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
             | Op::CountRangeStep { body_pc, end_pc }
             | Op::FnLitRangeStep { body_pc, end_pc }
             | Op::SetCompRangeStep { body_pc, end_pc }
-            | Op::SetCompRangeAdvance { body_pc, end_pc } => {
+            | Op::SetCompRangeAdvance { body_pc, end_pc }
+            | Op::ForallSetStep { body_pc, end_pc }
+            | Op::ExistsSetStep { body_pc, end_pc }
+            | Op::SetCompSetStep { body_pc, end_pc }
+            | Op::SetCompSetAdvance { body_pc, end_pc } => {
                 if (*body_pc as usize) > removed_pos {
                     *body_pc -= 1;
                 }
@@ -1534,6 +1651,7 @@ fn vm_eval_inner(
                     counter: 0,
                     fn_buf: Vec::new(),
                     set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1573,6 +1691,7 @@ fn vm_eval_inner(
                     counter: 0,
                     fn_buf: Vec::new(),
                     set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1613,6 +1732,7 @@ fn vm_eval_inner(
                     counter: 0,
                     fn_buf: Vec::new(),
                     set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1651,6 +1771,7 @@ fn vm_eval_inner(
                     counter: 0,
                     fn_buf: Vec::new(),
                     set_buf: Vec::with_capacity(cap),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1691,6 +1812,151 @@ fn vm_eval_inner(
                 continue;
             }
 
+            // === Forall over set ===
+            Op::ForallSetInit(end_pc) => {
+                let domain = stack.pop().unwrap();
+                let domain = normalize_domain(domain)?;
+                let set = domain.as_set().unwrap();
+                if set.is_empty() {
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                locals.push(set[0].clone());
+                loops.push(LoopState {
+                    hi: 0,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: Some(domain),
+                });
+            }
+            Op::ForallSetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if !body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === Exists over set ===
+            Op::ExistsSetInit(end_pc) => {
+                let domain = stack.pop().unwrap();
+                let domain = normalize_domain(domain)?;
+                let set = domain.as_set().unwrap();
+                if set.is_empty() {
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                locals.push(set[0].clone());
+                loops.push(LoopState {
+                    hi: 0,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::new(),
+                    domain_val: Some(domain),
+                });
+            }
+            Op::ExistsSetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === SetComprehension over set ===
+            Op::SetCompSetInit(end_pc) => {
+                let domain = stack.pop().unwrap();
+                let domain = normalize_domain(domain)?;
+                let set = domain.as_set().unwrap();
+                if set.is_empty() {
+                    stack.push(Value::empty_set());
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                locals.push(set[0].clone());
+                let cap = set.len();
+                loops.push(LoopState {
+                    hi: 0,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(cap),
+                    domain_val: Some(domain),
+                });
+            }
+            Op::SetCompSetStep { body_pc, end_pc } => {
+                let element = stack.pop().unwrap();
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.set_buf.push(element);
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+            Op::SetCompSetAdvance { body_pc, end_pc } => {
+                let loop_state = loops.last_mut().unwrap();
+                loop_state.counter += 1;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                if loop_state.counter as usize >= set.len() {
+                    let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                    locals.pop();
+                    loops.pop();
+                    set_buf.sort();
+                    set_buf.dedup();
+                    stack.push(Value::set(Arc::new(set_buf)));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                pc = *body_pc as usize;
+                continue;
+            }
+
             // === FnLit range ===
             Op::FnLitRangeInit(end_pc) => {
                 let hi = pop_int(stack)?;
@@ -1706,6 +1972,7 @@ fn vm_eval_inner(
                     counter: 0,
                     fn_buf: Vec::with_capacity(cap),
                     set_buf: Vec::new(),
+                    domain_val: None,
                 });
                 locals.push(Value::int(lo));
             }
@@ -1822,6 +2089,16 @@ fn vm_eval_inner(
             // === Fallback to tree-walk ===
             Op::Fallback(idx) => {
                 let expr = &fallbacks[*idx as usize];
+                #[cfg(feature = "trace-fallbacks")]
+                {
+                    let domain_kind = match expr {
+                        CompiledExpr::SetComprehension { domain, .. }
+                        | CompiledExpr::Exists { domain, .. }
+                        | CompiledExpr::Forall { domain, .. } => format!("dom={:?}", std::mem::discriminant(domain.as_ref())),
+                        _ => String::new(),
+                    };
+                    eprintln!("[FALLBACK] idx={} disc={:?} {}", idx, std::mem::discriminant(expr), domain_kind);
+                }
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval(expr, &mut ctx)?;
@@ -1829,6 +2106,8 @@ fn vm_eval_inner(
             }
             Op::FallbackBool(idx) => {
                 let expr = &fallbacks[*idx as usize];
+                #[cfg(feature = "trace-fallbacks")]
+                eprintln!("[FALLBACK-BOOL] idx={} disc={:?}", idx, std::mem::discriminant(expr));
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_bool(expr, &mut ctx)?;
@@ -1836,6 +2115,8 @@ fn vm_eval_inner(
             }
             Op::FallbackInt(idx) => {
                 let expr = &fallbacks[*idx as usize];
+                #[cfg(feature = "trace-fallbacks")]
+                eprintln!("[FALLBACK-INT] idx={} disc={:?}", idx, std::mem::discriminant(expr));
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
                 ctx.locals = locals.clone();
                 let result = eval_int(expr, &mut ctx)?;
@@ -1890,6 +2171,24 @@ fn get_local_int(locals: &[Value]) -> EvalResult<i64> {
         expected: "Int".to_string(),
         actual: v.type_name().to_string(),
     })
+}
+
+/// Normalize a domain value to a Set for iteration.
+/// Handles Set (passthrough), Fn/Dict (extract keys), and IntMap (0..len indices).
+#[inline]
+fn normalize_domain(domain: Value) -> EvalResult<Value> {
+    match domain.kind() {
+        VK::Set(_) => Ok(domain),
+        VK::Fn(m) => {
+            let keys: Vec<Value> = m.iter().map(|(k, _)| k.clone()).collect();
+            Ok(Value::set(Arc::new(keys)))
+        }
+        VK::IntMap(arr) => {
+            let keys: Vec<Value> = (0..arr.len() as i64).map(Value::int).collect();
+            Ok(Value::set(Arc::new(keys)))
+        }
+        _ => Err(type_mismatch("Set or Dict", &domain)),
+    }
 }
 
 #[cfg(test)]
