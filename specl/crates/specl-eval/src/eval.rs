@@ -1279,14 +1279,17 @@ fn eval_unary(op: UnaryOp, operand: &CompiledExpr, ctx: &mut EvalContext) -> Eva
     }
 }
 
+#[inline(always)]
 pub fn expect_bool(val: &Value) -> EvalResult<bool> {
     val.as_bool().ok_or_else(|| type_mismatch("Bool", val))
 }
 
+#[inline(always)]
 pub fn expect_int(val: &Value) -> EvalResult<i64> {
     val.as_int().ok_or_else(|| type_mismatch("Int", val))
 }
 
+#[inline(always)]
 pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
     val.as_set().ok_or_else(|| type_mismatch("Set", val))
 }
