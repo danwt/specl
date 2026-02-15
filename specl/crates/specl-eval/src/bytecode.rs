@@ -6,7 +6,7 @@
 use crate::eval::{
     eval, eval_bool, eval_int, expect_int, sorted_vec_diff, sorted_vec_union, type_mismatch,
 };
-use crate::value::{IntMap2Data, Value, VK};
+use crate::value::{Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
 use std::sync::Arc;
@@ -1580,12 +1580,6 @@ fn vm_eval_inner(
                 let key = &vars[*var_idx as usize];
                 let base = stack.pop().unwrap();
                 match base.kind() {
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(key)? as usize;
-                        let start = k * inner_size as usize;
-                        let row = data[start..start + inner_size as usize].to_vec();
-                        stack.push(Value::intmap(Arc::new(row)));
-                    }
                     VK::IntMap(arr) => {
                         let k = expect_int(key)? as usize;
                         stack.push(arr[k].clone());
@@ -1631,12 +1625,6 @@ fn vm_eval_inner(
                 let key = &params[*param_idx as usize];
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(key)? as usize;
-                        let start = k * inner_size as usize;
-                        let row = data[start..start + inner_size as usize].to_vec();
-                        stack.push(Value::intmap(Arc::new(row)));
-                    }
                     VK::IntMap(arr) => {
                         let k = expect_int(key)? as usize;
                         stack.push(arr[k].clone());
@@ -1661,47 +1649,38 @@ fn vm_eval_inner(
                 let key1 = &params[*param1_idx as usize];
                 let key2 = &params[*param2_idx as usize];
                 let outer = &vars[*var_idx as usize];
-                match outer.kind() {
-                    VK::IntMap2(inner_size, data) => {
-                        let k1 = expect_int(key1)? as usize;
-                        let k2 = expect_int(key2)? as usize;
-                        stack.push(data[k1 * inner_size as usize + k2].clone());
+                let inner_ref = match outer.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key1)? as usize;
+                        &arr[k]
+                    }
+                    VK::Fn(map) => {
+                        Value::fn_get(map, key1)
+                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
                     }
                     _ => {
-                        let inner_ref = match outer.kind() {
-                            VK::IntMap(arr) => {
-                                let k = expect_int(key1)? as usize;
-                                &arr[k]
-                            }
-                            VK::Fn(map) => {
-                                Value::fn_get(map, key1)
-                                    .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: outer.type_name().to_string(),
-                                })
-                            }
-                        };
-                        match inner_ref.kind() {
-                            VK::IntMap(arr) => {
-                                let k = expect_int(key2)? as usize;
-                                stack.push(arr[k].clone());
-                            }
-                            VK::Fn(inner_map) => {
-                                let val = Value::fn_get(inner_map, key2)
-                                    .cloned()
-                                    .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
-                                stack.push(val);
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: inner_ref.type_name().to_string(),
-                                })
-                            }
-                        }
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: outer.type_name().to_string(),
+                        })
+                    }
+                };
+                match inner_ref.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key2)? as usize;
+                        stack.push(arr[k].clone());
+                    }
+                    VK::Fn(inner_map) => {
+                        let val = Value::fn_get(inner_map, key2)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                        stack.push(val);
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: inner_ref.type_name().to_string(),
+                        })
                     }
                 }
             }
@@ -1759,46 +1738,37 @@ fn vm_eval_inner(
                 let key2 = &params[*param2_idx as usize];
                 let outer = &vars[*var_idx as usize];
                 let expected = Value::bool(*bool_val);
-                match outer.kind() {
-                    VK::IntMap2(inner_size, data) => {
-                        let k1 = expect_int(key1)? as usize;
-                        let k2 = expect_int(key2)? as usize;
-                        stack.push(Value::bool(data[k1 * inner_size as usize + k2] == expected));
+                let inner_ref = match outer.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key1)? as usize;
+                        &arr[k]
+                    }
+                    VK::Fn(map) => {
+                        Value::fn_get(map, key1)
+                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
                     }
                     _ => {
-                        let inner_ref = match outer.kind() {
-                            VK::IntMap(arr) => {
-                                let k = expect_int(key1)? as usize;
-                                &arr[k]
-                            }
-                            VK::Fn(map) => {
-                                Value::fn_get(map, key1)
-                                    .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: outer.type_name().to_string(),
-                                })
-                            }
-                        };
-                        match inner_ref.kind() {
-                            VK::IntMap(arr) => {
-                                let k = expect_int(key2)? as usize;
-                                stack.push(Value::bool(arr[k] == expected));
-                            }
-                            VK::Fn(inner_map) => {
-                                let val = Value::fn_get(inner_map, key2)
-                                    .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
-                                stack.push(Value::bool(*val == expected));
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: inner_ref.type_name().to_string(),
-                                })
-                            }
-                        }
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: outer.type_name().to_string(),
+                        })
+                    }
+                };
+                match inner_ref.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key2)? as usize;
+                        stack.push(Value::bool(arr[k] == expected));
+                    }
+                    VK::Fn(inner_map) => {
+                        let val = Value::fn_get(inner_map, key2)
+                            .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                        stack.push(Value::bool(*val == expected));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: inner_ref.type_name().to_string(),
+                        })
                     }
                 }
             }
@@ -1911,12 +1881,6 @@ fn vm_eval_inner(
                 let key = stack.pop().unwrap();
                 let base = stack.pop().unwrap();
                 match base.kind() {
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&key)? as usize;
-                        let start = k * inner_size as usize;
-                        let row = data[start..start + inner_size as usize].to_vec();
-                        stack.push(Value::intmap(Arc::new(row)));
-                    }
                     VK::IntMap(arr) => {
                         let k = expect_int(&key)? as usize;
                         stack.push(arr[k].clone());
@@ -1949,25 +1913,7 @@ fn vm_eval_inner(
                 let value = stack.pop().unwrap();
                 let key = stack.pop().unwrap();
                 let base = stack.pop().unwrap();
-                if base.is_intmap2() {
-                    let k = expect_int(&key)? as usize;
-                    let mut arc = base.into_intmap2_arc();
-                    let d = Arc::make_mut(&mut arc);
-                    let start = k * d.inner_size as usize;
-                    match value.kind() {
-                        VK::IntMap(row) => {
-                            d.data[start..start + d.inner_size as usize]
-                                .clone_from_slice(row);
-                        }
-                        _ => {
-                            return Err(EvalError::TypeMismatch {
-                                expected: "IntMap".to_string(),
-                                actual: value.type_name().to_string(),
-                            });
-                        }
-                    }
-                    stack.push(Value::from_intmap2_arc(arc));
-                } else if base.is_intmap() {
+                if base.is_intmap() {
                     let mut arr = base.into_intmap_arc();
                     let k = expect_int(&key)? as usize;
                     Arc::make_mut(&mut arr)[k] = value;
@@ -1995,27 +1941,7 @@ fn vm_eval_inner(
                 }
                 pairs.reverse();
                 let base = stack.pop().unwrap();
-                if base.is_intmap2() {
-                    let mut arc = base.into_intmap2_arc();
-                    let d = Arc::make_mut(&mut arc);
-                    for (key, value) in pairs {
-                        let k = expect_int(&key)? as usize;
-                        let start = k * d.inner_size as usize;
-                        match value.kind() {
-                            VK::IntMap(row) => {
-                                d.data[start..start + d.inner_size as usize]
-                                    .clone_from_slice(row);
-                            }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "IntMap".to_string(),
-                                    actual: value.type_name().to_string(),
-                                });
-                            }
-                        }
-                    }
-                    stack.push(Value::from_intmap2_arc(arc));
-                } else if base.is_intmap() {
+                if base.is_intmap() {
                     let mut arr = base.into_intmap_arc();
                     let data = Arc::make_mut(&mut arr);
                     for (key, value) in pairs {
@@ -2042,14 +1968,7 @@ fn vm_eval_inner(
                 let k1 = stack.pop().unwrap();
                 let k2 = stack.pop().unwrap();
                 let value = stack.pop().unwrap();
-                if dict.is_intmap2() {
-                    let k1_int = expect_int(&k1)? as usize;
-                    let k2_int = expect_int(&k2)? as usize;
-                    let mut arc = dict.into_intmap2_arc();
-                    let d = Arc::make_mut(&mut arc);
-                    d.data[k1_int * d.inner_size as usize + k2_int] = value;
-                    stack.push(Value::from_intmap2_arc(arc));
-                } else if dict.is_intmap() {
+                if dict.is_intmap() {
                     let mut outer_arc = dict.into_intmap_arc();
                     let k1_int = expect_int(&k1)? as usize;
                     let outer = Arc::make_mut(&mut outer_arc);
@@ -2189,9 +2108,6 @@ fn vm_eval_inner(
                     VK::Seq(s) => s.len() as i64,
                     VK::Fn(f) => f.len() as i64,
                     VK::IntMap(arr) => arr.len() as i64,
-                    VK::IntMap2(inner_size, data) => {
-                        if inner_size > 0 { (data.len() / inner_size as usize) as i64 } else { 0 }
-                    }
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             expected: "Set, Seq, or Fn".to_string(),
@@ -2211,11 +2127,6 @@ fn vm_eval_inner(
                         let k = expect_int(&elem)? as usize;
                         k < arr.len()
                     }
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&elem)? as usize;
-                        let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
-                        k < outer_size
-                    }
                     _ => return Err(type_mismatch("Set or Dict", &right_val)),
                 };
                 stack.push(Value::bool(result));
@@ -2229,11 +2140,6 @@ fn vm_eval_inner(
                     VK::IntMap(arr) => {
                         let k = expect_int(&elem)? as usize;
                         k >= arr.len()
-                    }
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&elem)? as usize;
-                        let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
-                        k >= outer_size
                     }
                     _ => return Err(type_mismatch("Set or Dict", &right_val)),
                 };
@@ -2699,29 +2605,6 @@ fn vm_eval_inner(
                     if lo_zero {
                         let arr: Vec<Value> =
                             fn_buf.into_iter().map(|(_, v)| v).collect();
-                        // Promote to IntMap2 if all values are same-size IntMaps
-                        let inner_size = match arr.first().map(|v| v.kind()) {
-                            Some(VK::IntMap(a)) => Some(a.len()),
-                            _ => None,
-                        };
-                        if let Some(is) = inner_size {
-                            if is > 0 && arr.iter().all(|v| matches!(v.kind(), VK::IntMap(a) if a.len() == is)) {
-                                let mut flat = Vec::with_capacity(arr.len() * is);
-                                for v in arr {
-                                    let row_arc = v.into_intmap_arc();
-                                    match Arc::try_unwrap(row_arc) {
-                                        Ok(row) => flat.extend(row),
-                                        Err(arc) => flat.extend_from_slice(&arc),
-                                    }
-                                }
-                                stack.push(Value::intmap2(IntMap2Data {
-                                    inner_size: is as u32,
-                                    data: flat,
-                                }));
-                                pc = *end_pc as usize;
-                                continue;
-                            }
-                        }
                         stack.push(Value::intmap(Arc::new(arr)));
                     } else {
                         stack.push(Value::func(Arc::new(fn_buf)));
@@ -2958,11 +2841,6 @@ fn normalize_domain(domain: Value) -> EvalResult<Value> {
         }
         VK::IntMap(arr) => {
             let keys: Vec<Value> = (0..arr.len() as i64).map(Value::int).collect();
-            Ok(Value::set(Arc::new(keys)))
-        }
-        VK::IntMap2(inner_size, data) => {
-            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
-            let keys: Vec<Value> = (0..outer_size as i64).map(Value::int).collect();
             Ok(Value::set(Arc::new(keys)))
         }
         _ => Err(type_mismatch("Set or Dict", &domain)),
