@@ -2821,15 +2821,14 @@ impl Explorer {
         }
 
         // Standard path: determine which action templates to explore
-        let actions_to_explore = if self.config.use_por {
-            self.compute_ample_set(state)?
+        if self.config.use_por {
+            let actions_to_explore = self.compute_ample_set(state)?;
+            self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
         } else if let Some(ref relevant) = self.relevant_actions {
-            relevant.clone()
+            self.apply_template_actions(state, relevant, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
         } else {
-            self.default_action_order.clone()
-        };
-
-        self.apply_template_actions(state, &actions_to_explore, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
+            self.apply_template_actions(state, &self.default_action_order, buf, next_vars_buf, sleep_set, guard_bufs, effect_bufs)
+        }
     }
 
     /// Apply a set of action templates to a state, using the operation cache and
