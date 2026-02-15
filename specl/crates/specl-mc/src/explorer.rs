@@ -2457,9 +2457,9 @@ impl Explorer {
         // Flags to stop early
         let found_violation = AtomicBool::new(false);
         let batch_size = if self.config.num_threads > 0 {
-            self.config.num_threads * 256
+            self.config.num_threads * 4096
         } else {
-            rayon::current_num_threads() * 256
+            rayon::current_num_threads() * 4096
         };
         let mut hit_state_limit = false;
         let mut hit_memory_limit = false;
