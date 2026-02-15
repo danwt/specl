@@ -130,6 +130,10 @@ pub enum Op {
     SetUnion,
     /// Pop two sets → push set difference.
     SetDiff,
+    /// Pop two seqs → push concatenated seq.
+    SeqConcat,
+    /// Pop hi, pop lo, pop seq → push seq[lo..hi].
+    SeqSlice,
 
     // === Superinstructions (fused sequences) ===
     /// Fused Var(i) + DictGet: var is the key, base dict is on stack.
@@ -332,6 +336,13 @@ impl Compiler {
                 self.emit(Op::SeqLit(elems.len() as u16));
             }
 
+            CompiledExpr::Slice { base, lo, hi } => {
+                self.compile(base);
+                self.compile(lo);
+                self.compile(hi);
+                self.emit(Op::SeqSlice);
+            }
+
             // Fallback for everything else
             _ => {
                 let idx = self.add_fallback(expr);
@@ -491,8 +502,14 @@ impl Compiler {
                 self.compile(right);
                 self.emit(Op::SetDiff);
             }
-            // Remaining set/sequence operations → fallback
-            BinOp::Intersect | BinOp::SubsetOf | BinOp::Concat => {
+            // Sequence concatenation
+            BinOp::Concat => {
+                self.compile(left);
+                self.compile(right);
+                self.emit(Op::SeqConcat);
+            }
+            // Remaining set operations → fallback
+            BinOp::Intersect | BinOp::SubsetOf => {
                 let expr = CompiledExpr::Binary {
                     op,
                     left: Box::new(left.clone()),
@@ -1619,6 +1636,35 @@ fn vm_eval_inner(
                         stack.push(Value::set(Arc::new(sorted_vec_diff(a, b))));
                     }
                     _ => return Err(type_mismatch("Set", &left_val)),
+                }
+            }
+            Op::SeqConcat => {
+                let right_val = stack.pop().unwrap();
+                let left_val = stack.pop().unwrap();
+                let mut a = left_val.into_seq_arc();
+                let b = right_val.into_seq_arc();
+                Arc::make_mut(&mut a).extend(b.iter().cloned());
+                stack.push(Value::from_seq_arc(a));
+            }
+            Op::SeqSlice => {
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
+                let base_val = stack.pop().unwrap();
+                match base_val.kind() {
+                    VK::Seq(seq) => {
+                        let start = lo.max(0) as usize;
+                        let end = if hi < 0 {
+                            0
+                        } else {
+                            (hi as usize).min(seq.len())
+                        };
+                        if start >= end {
+                            stack.push(Value::seq(Vec::new()));
+                        } else {
+                            stack.push(Value::seq(seq[start..end].to_vec()));
+                        }
+                    }
+                    _ => return Err(type_mismatch("Seq", &base_val)),
                 }
             }
 
