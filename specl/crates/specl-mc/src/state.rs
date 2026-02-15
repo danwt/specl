@@ -8,8 +8,50 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// A fingerprint is a 64-bit hash identifying a state.
-#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Fingerprint(u64);
+
+impl Hash for Fingerprint {
+    #[inline]
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        state.write_u64(self.0);
+    }
+}
+
+/// Identity hasher for Fingerprint: the value IS already a hash,
+/// so we just pass it through without re-hashing.
+#[derive(Default)]
+pub struct FingerprintHasher(u64);
+
+impl Hasher for FingerprintHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        // Shouldn't be called for Fingerprint, but handle gracefully
+        for &b in bytes {
+            self.0 = self.0.wrapping_mul(31).wrapping_add(b as u64);
+        }
+    }
+    #[inline]
+    fn write_u64(&mut self, i: u64) {
+        self.0 = i;
+    }
+}
+
+/// BuildHasher that produces FingerprintHasher instances.
+#[derive(Default, Clone)]
+pub struct FingerprintBuildHasher;
+
+impl std::hash::BuildHasher for FingerprintBuildHasher {
+    type Hasher = FingerprintHasher;
+    #[inline]
+    fn build_hasher(&self) -> FingerprintHasher {
+        FingerprintHasher(0)
+    }
+}
 
 impl Fingerprint {
     #[inline]

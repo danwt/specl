@@ -2,7 +2,7 @@
 
 use crate::bloom::BloomFilter;
 use crate::fpset::AtomicFPSet;
-use crate::state::{Fingerprint, State};
+use crate::state::{Fingerprint, FingerprintBuildHasher, State};
 use crate::tree_table::TreeTable;
 use dashmap::DashMap;
 use specl_eval::Value;
@@ -122,14 +122,14 @@ enum StorageBackend {
     /// Collapse compression: per-variable interning stores Vec<u32> per state.
     /// ~3-6x less memory than Full mode while supporting trace reconstruction.
     Collapse {
-        compressed: DashMap<Fingerprint, CompressedStateInfo>,
+        compressed: DashMap<Fingerprint, CompressedStateInfo, FingerprintBuildHasher>,
         table: CollapseTable,
     },
     /// Tree compression (LTSmin-style): hierarchical hash table decomposes states
     /// into shared subtrees. Better compression than Collapse when states share
     /// common sub-vectors of variables.
     Tree {
-        compressed: DashMap<Fingerprint, TreeStateInfo>,
+        compressed: DashMap<Fingerprint, TreeStateInfo, FingerprintBuildHasher>,
         table: TreeTable,
     },
 }
@@ -144,7 +144,7 @@ enum StorageBackend {
 /// - Tree compression: LTSmin-style hierarchical hash table for maximum compression with traces
 pub struct StateStore {
     /// Full tracking mode: map from fingerprint to state info.
-    states: DashMap<Fingerprint, StateInfo>,
+    states: DashMap<Fingerprint, StateInfo, FingerprintBuildHasher>,
     /// Storage backend for deduplication.
     backend: StorageBackend,
     /// Number of hash collisions detected (different states, same fingerprint).
@@ -168,7 +168,7 @@ impl StateStore {
     /// Create a state store with specified tracking mode.
     pub fn with_tracking(full_tracking: bool) -> Self {
         Self {
-            states: DashMap::new(),
+            states: DashMap::with_hasher(FingerprintBuildHasher),
             backend: if full_tracking {
                 StorageBackend::Full
             } else {
@@ -181,7 +181,7 @@ impl StateStore {
     /// Create a state store using a bloom filter with specified bit count and hash functions.
     pub fn with_bloom(log2_bits: u32, num_hashes: u32) -> Self {
         Self {
-            states: DashMap::new(),
+            states: DashMap::with_hasher(FingerprintBuildHasher),
             backend: StorageBackend::Bloom(BloomFilter::from_log2_bits(log2_bits, num_hashes)),
             collisions: AtomicUsize::new(0),
         }
@@ -191,9 +191,9 @@ impl StateStore {
     /// `num_vars` is the number of state variables (for intern table sizing).
     pub fn with_collapse(num_vars: usize) -> Self {
         Self {
-            states: DashMap::new(),
+            states: DashMap::with_hasher(FingerprintBuildHasher),
             backend: StorageBackend::Collapse {
-                compressed: DashMap::new(),
+                compressed: DashMap::with_hasher(FingerprintBuildHasher),
                 table: CollapseTable::new(num_vars),
             },
             collisions: AtomicUsize::new(0),
@@ -204,9 +204,9 @@ impl StateStore {
     /// `num_vars` is the number of state variables.
     pub fn with_tree(num_vars: usize) -> Self {
         Self {
-            states: DashMap::new(),
+            states: DashMap::with_hasher(FingerprintBuildHasher),
             backend: StorageBackend::Tree {
-                compressed: DashMap::new(),
+                compressed: DashMap::with_hasher(FingerprintBuildHasher),
                 table: TreeTable::new(num_vars),
             },
             collisions: AtomicUsize::new(0),
@@ -216,7 +216,7 @@ impl StateStore {
     /// Create a state store with pre-allocated capacity.
     pub fn with_capacity(capacity: usize) -> Self {
         Self {
-            states: DashMap::with_capacity(capacity),
+            states: DashMap::with_capacity_and_hasher(capacity, FingerprintBuildHasher),
             backend: StorageBackend::Full,
             collisions: AtomicUsize::new(0),
         }
