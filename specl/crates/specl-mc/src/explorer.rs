@@ -371,6 +371,8 @@ struct CachedEffect {
     compiled_assignments: Vec<(usize, Bytecode)>,
     /// Whether re-verification is needed (true if effect has current-state constraints).
     needs_reverify: bool,
+    /// True if any assignment RHS references a primed variable (next-state dependency).
+    any_uses_primed: bool,
 }
 
 /// Precomputed guard indexing for early parameter pruning.
@@ -924,14 +926,16 @@ impl Explorer {
             .iter()
             .map(|action| {
                 extract_effect_assignments(&action.effect).map(|e| {
-                    let compiled_assignments = e
+                    let compiled_assignments: Vec<(usize, Bytecode)> = e
                         .assignments
                         .iter()
                         .map(|(idx, expr)| (*idx, compile_expr(expr)))
                         .collect();
+                    let any_uses_primed = compiled_assignments.iter().any(|(_, bc)| bc.uses_primed_var());
                     CachedEffect {
                         compiled_assignments,
                         needs_reverify: e.needs_reverify,
+                        any_uses_primed,
                     }
                 })
             })
@@ -3327,6 +3331,7 @@ impl Explorer {
                 next_vars_buf,
                 &action.effect,
                 effect_bufs,
+                cached.any_uses_primed,
             ) {
                 if let Some(next_state) = result {
                     buf.push((next_state, action_idx, pvals));
@@ -3452,6 +3457,7 @@ impl Explorer {
                                 next_vars_buf,
                                 &action.effect,
                                 effect_bufs,
+                                cached.any_uses_primed,
                             ) {
                                 if let Some(next_state) = result {
                                     cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
@@ -3475,6 +3481,7 @@ impl Explorer {
                                 next_vars_buf,
                                 &action.effect,
                                 effect_bufs,
+                                cached.any_uses_primed,
                             ) {
                                 if let Some(next_state) = result {
                                     let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };
@@ -3529,6 +3536,7 @@ impl Explorer {
                             next_vars_buf,
                             &action.effect,
                             effect_bufs,
+                            cached.any_uses_primed,
                         ) {
                             if let Some(next_state) = result {
                                 cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
@@ -3558,6 +3566,7 @@ impl Explorer {
                             next_vars_buf,
                             &action.effect,
                             effect_bufs,
+                            cached.any_uses_primed,
                         ) {
                             if let Some(next_state) = result {
                                 let pvals = if needs_pvals { params_to_i64s(params) } else { Vec::new() };

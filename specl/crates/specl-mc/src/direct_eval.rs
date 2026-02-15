@@ -291,6 +291,8 @@ pub fn apply_effects_bytecode(
 
 /// Apply effects using bytecode-compiled assignments with reusable VM buffers.
 /// Uses cached var_hashes from the parent state to avoid rehashing old values.
+/// When `any_uses_primed` is false, skips cloning all vars into next_vars_buf upfront
+/// and only fills in unchanged vars before State construction.
 pub fn apply_effects_bytecode_reuse(
     state: &State,
     params: &[Value],
@@ -300,9 +302,20 @@ pub fn apply_effects_bytecode_reuse(
     next_vars_buf: &mut Vec<Value>,
     effect: &CompiledExpr,
     vm_bufs: &mut VmBufs,
+    any_uses_primed: bool,
 ) -> Result<Option<State>, EvalError> {
-    next_vars_buf.clear();
-    next_vars_buf.extend_from_slice(&state.vars);
+    let num_vars = state.vars.len();
+    if any_uses_primed || needs_reverify {
+        // Full pre-fill: some bytecode reads from next_vars via PrimedVar,
+        // or reverification needs complete next state.
+        next_vars_buf.clear();
+        next_vars_buf.extend_from_slice(&state.vars);
+    } else {
+        // Lazy fill: no bytecode reads next_vars, so just ensure correct length.
+        // Fill with sentinel (none) — these slots won't be read by the VM.
+        next_vars_buf.clear();
+        next_vars_buf.resize(num_vars, Value::none());
+    }
     let mut fp = state.fingerprint().as_u64();
     let mut var_hashes: Vec<u64> = (*state.var_hashes).clone();
 
@@ -313,6 +326,20 @@ pub fn apply_effects_bytecode_reuse(
         fp ^= old_hash ^ new_hash;
         var_hashes[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
+    }
+
+    if !any_uses_primed && !needs_reverify {
+        // Fill unchanged vars from parent state before constructing State.
+        // Build bitmask of changed vars (supports up to 64 vars).
+        let mut changed: u64 = 0;
+        for (var_idx, _) in compiled_assignments {
+            changed |= 1u64 << var_idx;
+        }
+        for (i, parent_val) in state.vars.iter().enumerate() {
+            if changed & (1u64 << i) == 0 {
+                next_vars_buf[i] = parent_val.clone();
+            }
+        }
     }
 
     let fp = crate::state::Fingerprint::from_u64(fp);

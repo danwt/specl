@@ -263,6 +263,13 @@ pub struct Bytecode {
     pub fallbacks: Vec<CompiledExpr>,
 }
 
+impl Bytecode {
+    /// Returns true if any op in this bytecode references a primed variable (next-state).
+    pub fn uses_primed_var(&self) -> bool {
+        self.ops.iter().any(|op| matches!(op, Op::PrimedVar(_)))
+    }
+}
+
 // ============================================================================
 // Compiler
 // ============================================================================
