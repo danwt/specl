@@ -520,10 +520,12 @@ impl Value {
 impl Clone for Value {
     #[inline]
     fn clone(&self) -> Self {
-        match self.tag() {
-            // Inline types: just copy the bits
-            TAG_INT | TAG_BOOL_FALSE | TAG_BOOL_TRUE | TAG_NONE => Value(self.0),
-            // Heap types: increment Arc refcount
+        // Fast path: inline types (tag < 0x10) — just copy the bits.
+        let tag = self.tag();
+        if tag < 0x10 {
+            return Value(self.0);
+        }
+        match tag {
             TAG_STRING => {
                 unsafe { Arc::increment_strong_count(self.ptr() as *const String) };
                 Value(self.0)
@@ -574,11 +576,16 @@ impl Clone for Value {
 // === Drop ===
 
 impl Drop for Value {
+    #[inline]
     fn drop(&mut self) {
-        match self.tag() {
-            // Inline types: nothing to drop
-            TAG_INT | TAG_BOOL_FALSE | TAG_BOOL_TRUE | TAG_NONE => {}
-            // Heap types: decrement Arc refcount
+        // Fast path: inline types (tag < 0x10) have no heap allocation.
+        // Int(0x00), BoolFalse(0x01), BoolTrue(0x02), None(0x03) are the
+        // most common types in protocol specs — skip with a single comparison.
+        let tag = self.tag();
+        if tag < 0x10 {
+            return;
+        }
+        match tag {
             TAG_STRING => unsafe {
                 Arc::decrement_strong_count(self.ptr() as *const String);
             },
@@ -614,6 +621,7 @@ impl Drop for Value {
 // === PartialEq / Eq ===
 
 impl PartialEq for Value {
+    #[inline]
     fn eq(&self, other: &Self) -> bool {
         // Fast path: identical bits (same Arc pointer or same inline value)
         if self.0 == other.0 {
@@ -767,7 +775,15 @@ fn all_int_keys(pairs: &[(Value, Value)]) -> bool {
 }
 
 impl Hash for Value {
+    #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Fast path: inline Int (most common type in protocol specs).
+        // Avoids kind() dispatch overhead.
+        if self.tag() == TAG_INT {
+            1u8.hash(state);
+            self.as_i56().hash(state);
+            return;
+        }
         match self.kind() {
             VK::Bool(b) => {
                 0u8.hash(state);
