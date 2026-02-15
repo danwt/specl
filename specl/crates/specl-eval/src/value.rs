@@ -70,6 +70,13 @@ impl Value {
         (self.0 >> TAG_SHIFT) as u8
     }
 
+    /// Raw 64-bit representation. Two Values with the same raw bits are identical.
+    /// Useful for fast hashing without going through the Value::Hash dispatch.
+    #[inline(always)]
+    pub fn raw_bits(&self) -> u64 {
+        self.0
+    }
+
     #[inline(always)]
     fn ptr(&self) -> usize {
         (self.0 & PTR_MASK) as usize
