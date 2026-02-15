@@ -112,13 +112,13 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
         CompiledExpr::Local(idx) => ctx
             .get_local(*idx)
             .cloned()
-            .ok_or(EvalError::Internal(format!("local {} not found", idx))),
+            .ok_or_else(|| EvalError::Internal(format!("local {} not found", idx))),
 
         CompiledExpr::Param(idx) => ctx
             .params
             .get(*idx)
             .cloned()
-            .ok_or(EvalError::Internal(format!("param {} not found", idx))),
+            .ok_or_else(|| EvalError::Internal(format!("param {} not found", idx))),
 
         CompiledExpr::Binary { op, left, right } => eval_binary(*op, left, right, ctx),
 
