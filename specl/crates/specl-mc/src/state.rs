@@ -95,6 +95,7 @@ pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
             h ^ (h >> 32)
         }
         VK::IntMap(arr) => hash_intmap(idx, arr),
+        VK::IntMap2(inner_size, data) => hash_intmap2(idx, inner_size, data),
         _ => {
             let mut hasher = ahash::AHasher::default();
             idx.hash(&mut hasher);
@@ -144,6 +145,65 @@ fn hash_intmap(idx: usize, arr: &[Value]) -> u64 {
                 h = h.wrapping_mul(K1);
             }
         }
+    }
+    h ^ (h >> 32)
+}
+
+/// Fast hash for IntMap2 (flattened 2-level dict). Produces the same hash
+/// as hash_intmap would for the equivalent nested IntMap structure.
+#[inline]
+fn hash_intmap2(idx: usize, inner_size: u32, data: &[Value]) -> u64 {
+    const HEAP_TAG_MIN: u64 = 0x10u64 << 56;
+    const K1: u64 = 0x517cc1b727220a95;
+    const K2: u64 = 0x9e3779b97f4a7c15;
+
+    let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+    let is = inner_size as usize;
+
+    let mut h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(K2);
+    h = (h ^ (outer_size as u64)).wrapping_mul(K1);
+
+    for i in 0..outer_size {
+        h ^= (i as u64).wrapping_add(1).wrapping_mul(K2);
+        h = h.wrapping_mul(K1);
+
+        // Compute inner hash matching hash_intmap(i, &data[i*is..(i+1)*is])
+        let base = i * is;
+        let mut ih = ((i as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(K2);
+        ih = (ih ^ (is as u64)).wrapping_mul(K1);
+
+        let row = &data[base..base + is];
+        let all_inline = row.iter().all(|v| v.raw_bits() < HEAP_TAG_MIN);
+        if all_inline {
+            for (j, v) in row.iter().enumerate() {
+                ih ^= (j as u64).wrapping_add(1).wrapping_mul(K2);
+                ih = ih.wrapping_mul(K1);
+                ih ^= v.raw_bits();
+                ih = ih.wrapping_mul(K1);
+            }
+        } else {
+            for (j, v) in row.iter().enumerate() {
+                ih ^= (j as u64).wrapping_add(1).wrapping_mul(K2);
+                ih = ih.wrapping_mul(K1);
+                if v.raw_bits() < HEAP_TAG_MIN {
+                    ih ^= v.raw_bits();
+                    ih = ih.wrapping_mul(K1);
+                } else if let VK::IntMap(inner) = v.kind() {
+                    ih ^= hash_intmap(j, inner);
+                    ih = ih.wrapping_mul(K1);
+                } else {
+                    let mut hasher = ahash::AHasher::default();
+                    j.hash(&mut hasher);
+                    v.hash(&mut hasher);
+                    ih ^= hasher.finish();
+                    ih = ih.wrapping_mul(K1);
+                }
+            }
+        }
+        ih = ih ^ (ih >> 32);
+
+        h ^= ih;
+        h = h.wrapping_mul(K1);
     }
     h ^ (h >> 32)
 }

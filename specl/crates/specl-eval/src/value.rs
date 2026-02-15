@@ -26,12 +26,22 @@ const TAG_INTMAP: u8 = 0x14; // Arc<Vec<Value>> (dense dict with implicit 0..N k
 const TAG_RECORD: u8 = 0x15; // Arc<BTreeMap<String, Value>>
 const TAG_TUPLE: u8 = 0x16; // Arc<Vec<Value>>
 const TAG_SOME: u8 = 0x17; // Arc<Value>
+const TAG_INTMAP2: u8 = 0x18; // Arc<IntMap2Data> (flattened 2-level dict)
 const TAG_BIGINT: u8 = 0xFF; // Arc<i64> (values outside i56 range)
 
 const TAG_SHIFT: u32 = 56;
 const PTR_MASK: u64 = (1u64 << TAG_SHIFT) - 1;
 const I56_MIN: i64 = -(1i64 << 55);
 const I56_MAX: i64 = (1i64 << 55) - 1;
+
+/// Flattened 2-level IntMap. Stores `Dict[0..N, Dict[0..M, V]]` as a single
+/// flat `Vec<Value>` of size `N * M`, indexed by `i * inner_size + j`.
+/// Eliminates per-row Arc overhead and enables single-pass hashing.
+#[derive(Clone)]
+pub struct IntMap2Data {
+    pub inner_size: u32,
+    pub data: Vec<Value>,
+}
 
 /// NaN-boxed runtime value. 8 bytes.
 ///
@@ -56,6 +66,8 @@ pub enum VK<'a> {
     Seq(&'a [Value]),
     Fn(&'a [(Value, Value)]),
     IntMap(&'a [Value]),
+    /// Flattened 2-level dict: (inner_size, flat_data).
+    IntMap2(u32, &'a [Value]),
     Record(&'a BTreeMap<String, Value>),
     Tuple(&'a [Value]),
     None,
@@ -165,6 +177,11 @@ impl Value {
     }
 
     #[inline]
+    pub fn intmap2(data: IntMap2Data) -> Self {
+        Self::from_heap(TAG_INTMAP2, Arc::new(data))
+    }
+
+    #[inline]
     pub fn record(r: BTreeMap<String, Value>) -> Self {
         Self::from_heap(TAG_RECORD, Arc::new(r))
     }
@@ -236,6 +253,13 @@ impl Value {
         from_tuple_arc
     );
     heap_methods!(TAG_SOME, Value, is_some_v, into_some_arc, from_some_arc);
+    heap_methods!(
+        TAG_INTMAP2,
+        IntMap2Data,
+        is_intmap2,
+        into_intmap2_arc,
+        from_intmap2_arc
+    );
 
     #[inline]
     pub fn is_int(&self) -> bool {
@@ -255,7 +279,7 @@ impl Value {
     /// True for TAG_FN or TAG_INTMAP (both represent dict/function values).
     #[inline]
     pub fn is_fn_like(&self) -> bool {
-        self.is_fn() || self.is_intmap()
+        self.is_fn() || self.is_intmap() || self.is_intmap2()
     }
 }
 
@@ -287,6 +311,10 @@ impl Value {
                 let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
                 VK::IntMap(vec.as_slice())
             }
+            TAG_INTMAP2 => {
+                let d = unsafe { &*(self.ptr() as *const IntMap2Data) };
+                VK::IntMap2(d.inner_size, d.data.as_slice())
+            }
             TAG_RECORD => VK::Record(unsafe { &*(self.ptr() as *const BTreeMap<String, Value>) }),
             TAG_TUPLE => {
                 let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
@@ -308,7 +336,7 @@ impl Value {
             TAG_STRING => "String",
             TAG_SET => "Set",
             TAG_SEQ => "Seq",
-            TAG_FN | TAG_INTMAP => "Fn",
+            TAG_FN | TAG_INTMAP | TAG_INTMAP2 => "Fn",
             TAG_RECORD => "Record",
             TAG_TUPLE => "Tuple",
             TAG_NONE => "None",
@@ -516,6 +544,27 @@ impl Value {
                     v.write_bytes(out);
                 }
             }
+            VK::IntMap2(inner_size, data) => {
+                // Serialize as nested IntMap (outer Fn tag 5, inner Fn tag 5)
+                let outer_size = if inner_size > 0 {
+                    data.len() / inner_size as usize
+                } else {
+                    0
+                };
+                out.push(5);
+                out.extend_from_slice(&(outer_size as u64).to_le_bytes());
+                for i in 0..outer_size {
+                    Value::int(i as i64).write_bytes(out);
+                    // Inner IntMap serialization
+                    out.push(5);
+                    out.extend_from_slice(&(inner_size as u64).to_le_bytes());
+                    let base = i * inner_size as usize;
+                    for j in 0..inner_size as usize {
+                        Value::int(j as i64).write_bytes(out);
+                        data[base + j].write_bytes(out);
+                    }
+                }
+            }
             VK::Record(r) => {
                 out.push(6);
                 out.extend_from_slice(&(r.len() as u64).to_le_bytes());
@@ -574,6 +623,10 @@ impl Clone for Value {
                 unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<Value>) };
                 Value(self.0)
             }
+            TAG_INTMAP2 => {
+                unsafe { Arc::increment_strong_count(self.ptr() as *const IntMap2Data) };
+                Value(self.0)
+            }
             TAG_RECORD => {
                 unsafe {
                     Arc::increment_strong_count(self.ptr() as *const BTreeMap<String, Value>)
@@ -625,6 +678,9 @@ impl Drop for Value {
             TAG_INTMAP => unsafe {
                 Arc::decrement_strong_count(self.ptr() as *const Vec<Value>);
             },
+            TAG_INTMAP2 => unsafe {
+                Arc::decrement_strong_count(self.ptr() as *const IntMap2Data);
+            },
             TAG_RECORD => unsafe {
                 Arc::decrement_strong_count(self.ptr() as *const BTreeMap<String, Value>);
             },
@@ -664,18 +720,45 @@ impl PartialEq for Value {
         if (t1 == TAG_INT || t1 == TAG_BIGINT) && (t2 == TAG_INT || t2 == TAG_BIGINT) {
             return self.as_int().unwrap() == other.as_int().unwrap();
         }
-        // IntMap == Fn cross-comparison (same logical dict, different storage)
-        if (t1 == TAG_INTMAP || t1 == TAG_FN) && (t2 == TAG_INTMAP || t2 == TAG_FN) {
+        // IntMap/IntMap2/Fn cross-comparison (same logical dict, different storage)
+        let fn_like = |t: u8| t == TAG_INTMAP || t == TAG_FN || t == TAG_INTMAP2;
+        if fn_like(t1) && fn_like(t2) {
             return match (self.kind(), other.kind()) {
                 (VK::IntMap(a), VK::IntMap(b)) => a == b,
                 (VK::Fn(a), VK::Fn(b)) => a == b,
+                (VK::IntMap2(is_a, da), VK::IntMap2(is_b, db)) => is_a == is_b && da == db,
                 (VK::IntMap(arr), VK::Fn(pairs)) | (VK::Fn(pairs), VK::IntMap(arr)) => {
                     arr.len() == pairs.len()
                         && pairs.iter().enumerate().all(|(i, (k, v))| {
                             k.as_int() == Some(i as i64) && *v == arr[i]
                         })
                 }
-                _ => unreachable!(),
+                // IntMap2 vs IntMap/Fn: expand IntMap2 to logical nested representation
+                (VK::IntMap2(inner_size, data), VK::IntMap(arr))
+                | (VK::IntMap(arr), VK::IntMap2(inner_size, data)) => {
+                    let outer_size = if inner_size > 0 {
+                        data.len() / inner_size as usize
+                    } else {
+                        0
+                    };
+                    if arr.len() != outer_size {
+                        return false;
+                    }
+                    for i in 0..outer_size {
+                        let slice =
+                            &data[i * inner_size as usize..(i + 1) * inner_size as usize];
+                        match arr[i].kind() {
+                            VK::IntMap(inner) => {
+                                if inner != slice {
+                                    return false;
+                                }
+                            }
+                            _ => return false,
+                        }
+                    }
+                    true
+                }
+                _ => false,
             };
         }
         if t1 != t2 {
@@ -718,7 +801,7 @@ impl Value {
             TAG_STRING => 2,
             TAG_SET => 3,
             TAG_SEQ => 4,
-            TAG_FN | TAG_INTMAP => 5,
+            TAG_FN | TAG_INTMAP | TAG_INTMAP2 => 5,
             TAG_RECORD => 6,
             TAG_TUPLE => 7,
             TAG_NONE => 8,
@@ -800,6 +883,39 @@ impl Ord for Value {
                     }
                 }
                 pairs.len().cmp(&arr.len())
+            }
+            (VK::IntMap2(is_a, da), VK::IntMap2(is_b, db)) => {
+                match is_a.cmp(&is_b) {
+                    Ordering::Equal => da.cmp(db),
+                    other => other,
+                }
+            }
+            // IntMap2 vs IntMap/Fn: materialize IntMap2 rows for comparison
+            (VK::IntMap2(..), _) | (_, VK::IntMap2(..)) => {
+                // Fallback: convert both to canonical Fn representation and compare
+                let to_fn = |v: &Value| -> Vec<(Value, Value)> {
+                    match v.kind() {
+                        VK::IntMap(arr) => Value::intmap_to_fn_vec(arr),
+                        VK::Fn(f) => f.to_vec(),
+                        VK::IntMap2(inner_size, data) => {
+                            let outer_size = if inner_size > 0 {
+                                data.len() / inner_size as usize
+                            } else {
+                                0
+                            };
+                            (0..outer_size)
+                                .map(|i| {
+                                    let base = i * inner_size as usize;
+                                    let inner: Vec<Value> =
+                                        data[base..base + inner_size as usize].to_vec();
+                                    (Value::int(i as i64), Value::intmap(Arc::new(inner)))
+                                })
+                                .collect()
+                        }
+                        _ => Vec::new(),
+                    }
+                };
+                to_fn(self).cmp(&to_fn(other))
             }
             (VK::Record(a), VK::Record(b)) => a.cmp(b),
             (VK::Tuple(a), VK::Tuple(b)) => a.cmp(b),
@@ -917,6 +1033,27 @@ impl Hash for Value {
                     v.hash(state);
                 }
             }
+            VK::IntMap2(inner_size, data) => {
+                // Hash as equivalent nested IntMap for consistency.
+                let outer_size = if inner_size > 0 {
+                    data.len() / inner_size as usize
+                } else {
+                    0
+                };
+                5u8.hash(state);
+                outer_size.hash(state);
+                for i in 0..outer_size {
+                    (i as i64).hash(state);
+                    // Inner IntMap hash: discriminant 5, inner_size length, then elements
+                    5u8.hash(state);
+                    (inner_size as usize).hash(state);
+                    let base = i * inner_size as usize;
+                    for j in 0..inner_size as usize {
+                        (j as i64).hash(state);
+                        data[base + j].hash(state);
+                    }
+                }
+            }
             VK::Record(r) => {
                 6u8.hash(state);
                 r.len().hash(state);
@@ -995,6 +1132,29 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
+            VK::IntMap2(inner_size, data) => {
+                let outer_size = if inner_size > 0 {
+                    data.len() / inner_size as usize
+                } else {
+                    0
+                };
+                write!(f, "fn{{")?;
+                for i in 0..outer_size {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    write!(f, "{} -> fn{{", i)?;
+                    let base = i * inner_size as usize;
+                    for j in 0..inner_size as usize {
+                        if j > 0 {
+                            write!(f, ", ")?;
+                        }
+                        write!(f, "{} -> {}", j, data[base + j])?;
+                    }
+                    write!(f, "}}")?;
+                }
+                write!(f, "}}")
+            }
             VK::Record(r) => {
                 write!(f, "{{")?;
                 for (i, (k, v)) in r.iter().enumerate() {
@@ -1048,6 +1208,9 @@ impl fmt::Debug for Value {
                 write!(f, "IntMap(")?;
                 f.debug_list().entries(a.iter()).finish()?;
                 write!(f, ")")
+            }
+            VK::IntMap2(inner_size, data) => {
+                write!(f, "IntMap2(inner_size={}, len={})", inner_size, data.len())
             }
             VK::Record(r) => {
                 write!(f, "Record(")?;
