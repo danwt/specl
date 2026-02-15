@@ -2873,6 +2873,7 @@ impl Explorer {
             if caches.len() != num_actions {
                 *caches = (0..num_actions).map(|_| OpCache::new()).collect();
             }
+            let mut params_buf = Vec::new();
             for &action_idx in actions {
                 if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
                     continue;
@@ -2886,6 +2887,7 @@ impl Explorer {
                     &orbit_reps,
                     guard_bufs,
                     effect_bufs,
+                    &mut params_buf,
                 )?;
             }
             Ok::<(), CheckError>(())
@@ -3355,6 +3357,7 @@ impl Explorer {
         orbit_reps: &SmallVec<[Vec<usize>; 4]>,
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
+        params_buf: &mut Vec<Value>,
     ) -> CheckResult<()> {
         let action = &self.spec.actions[action_idx];
         let needs_pvals = self.store.has_full_tracking();
@@ -3415,14 +3418,14 @@ impl Explorer {
                 }
             }
 
-            let mut params_buf = vec![Value::none(); param_domains.len()];
+            params_buf.resize(param_domains.len(), Value::none());
             enumerate_params_indexed(
                 param_domains,
                 guard_index,
                 guard_bc,
                 &state.vars,
                 &self.consts,
-                &mut params_buf,
+                params_buf,
                 0,
                 &mut |params: &[Value]| {
                     // Guard already passed. Check operation cache.
