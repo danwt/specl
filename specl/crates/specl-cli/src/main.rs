@@ -288,7 +288,7 @@ enum Commands {
         #[arg(long, help_heading = "Explicit-State")]
         fast: bool,
 
-        /// Use bloom filter for state storage (fixed memory, probabilistic dedup)
+        /// Bloom filter: fixed memory, probabilistic dedup. UNSOUND: may miss bugs. For bug finding only.
         #[arg(long, help_heading = "Explicit-State")]
         bloom: bool,
 
@@ -365,7 +365,7 @@ enum Commands {
         #[arg(long)]
         no_auto: bool,
 
-        /// Output format (text, json, or itf)
+        /// Output format (text (default), json, itf, mermaid, dot)
         #[arg(long, value_enum, default_value = "text")]
         output: OutputFormat,
 
@@ -1178,6 +1178,11 @@ fn cmd_check(
     // --- Warn that --directed is always sequential (#21) ---
     if directed && parallel && !quiet {
         eprintln!("Note: --directed uses priority BFS which is sequential");
+    }
+
+    // --- Warn that --bloom is probabilistic/unsound ---
+    if bloom && !quiet {
+        eprintln!("Warning: --bloom is probabilistic and may miss bugs. For exhaustive verification use --fast or default mode.");
     }
 
     // Swarm verification: run N independent instances with shuffled action orders
@@ -3291,7 +3296,7 @@ fn cmd_estimate(file: &PathBuf, constants: &[String]) -> CliResult<()> {
         println!();
         if bound > 100_000_000 {
             println!("  Tip: Use --fast for fingerprint-only mode (10x less memory, no traces)");
-            println!("       Use --bloom for fixed-memory probabilistic mode (bug finding)");
+            println!("       Use --bloom for fixed-memory probabilistic mode (UNSOUND: bug finding only)");
         }
         if bound > 10_000_000 {
             if profile.has_symmetry {
