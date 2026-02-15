@@ -245,6 +245,20 @@ pub enum Op {
     /// Fused VarParam2DictGet(a, b, c) + Bool(v) + Eq: two-level dict lookup + bool compare.
     /// vars[a][params[b]][params[c]] == v without cloning. Common: reply[p][q] == false.
     VarParam2DictGetBoolEq(u16, u16, u16, bool),
+    /// Fused VarParam2DictGet(a, b, c) + Not: not vars[a][params[b]][params[c]].
+    /// Common in guards: `not reply[i][j]`.
+    VarParam2DictGetNot(u16, u16, u16),
+    /// Fused VarParamDictGet(a, b) + Not: not vars[a][params[b]].
+    /// Common in guards: `not has_req[p]`.
+    VarParamDictGetNot(u16, u16),
+    /// Fused VarParamDictGet(a, b) + Int(k) + Add: vars[a][params[b]] + k.
+    /// Common in arithmetic: `clock[i] + 1`.
+    VarParamDictGetIntAdd(u16, u16, i64),
+    /// Fused VarParamDictGet(a, b) + Int(k) + IntGe: vars[a][params[b]] >= k.
+    /// Common in guards: `balance[from] >= amount`.
+    VarParamDictGetIntGe(u16, u16, i64),
+    /// Fused VarParamDictGet(a, b) + Int(k) + IntLt: vars[a][params[b]] < k.
+    VarParamDictGetIntLt(u16, u16, i64),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -275,6 +289,12 @@ struct LoopState {
 pub struct Bytecode {
     pub ops: Vec<Op>,
     pub fallbacks: Vec<CompiledExpr>,
+    /// Number of times this bytecode has been executed.
+    /// Used for adaptive re-optimization: after a threshold, a deeper
+    /// peephole pass runs to fuse patterns missed by the initial pass.
+    pub execution_count: std::sync::atomic::AtomicU32,
+    /// Whether the adaptive re-optimization pass has run.
+    pub is_reoptimized: std::sync::atomic::AtomicBool,
 }
 
 // ============================================================================
@@ -974,6 +994,8 @@ impl Compiler {
         Bytecode {
             ops: self.ops,
             fallbacks: self.fallbacks,
+            execution_count: std::sync::atomic::AtomicU32::new(0),
+            is_reoptimized: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -1037,6 +1059,41 @@ pub fn compile_expr(expr: &CompiledExpr) -> Bytecode {
     let mut bc = compiler.finish();
     peephole_optimize(&mut bc.ops);
     bc
+}
+
+/// Adaptive re-optimization threshold. After this many executions,
+/// a second peephole pass runs if the bytecode hasn't been re-optimized yet.
+const REOPT_THRESHOLD: u32 = 1000;
+
+/// Check if bytecode needs re-optimization based on execution count.
+/// Returns true if the bytecode crossed the threshold and the flag was set.
+pub fn needs_reoptimize(bytecode: &Bytecode) -> bool {
+    if bytecode.is_reoptimized.load(std::sync::atomic::Ordering::Relaxed) {
+        return false;
+    }
+    let count = bytecode.execution_count.load(std::sync::atomic::Ordering::Relaxed);
+    if count >= REOPT_THRESHOLD {
+        // CAS to ensure only one thread triggers re-optimization
+        bytecode
+            .is_reoptimized
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Relaxed,
+            )
+            .is_ok()
+    } else {
+        false
+    }
+}
+
+/// Re-optimize bytecode with an additional peephole pass.
+/// Called after the execution threshold is reached. Safe to call
+/// only when no other threads are executing this bytecode (e.g.,
+/// between BFS batches).
+pub fn reoptimize(bytecode: &mut Bytecode) {
+    peephole_optimize(&mut bytecode.ops);
 }
 
 /// Peephole optimization: fuse common instruction sequences into superinstructions.
@@ -1224,6 +1281,85 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             continue;
         }
 
+        // Pattern: VarParam2DictGet(a, b, c), Not → VarParam2DictGetNot(a, b, c)
+        // not vars[a][params[b]][params[c]] — avoids clone + drop of intermediate bool.
+        if let (Op::VarParam2DictGet(var_idx, param1_idx, param2_idx), Op::Not) =
+            (&ops[i], &ops[i + 1])
+        {
+            let var_idx = *var_idx;
+            let param1_idx = *param1_idx;
+            let param2_idx = *param2_idx;
+            ops[i] = Op::VarParam2DictGetNot(var_idx, param1_idx, param2_idx);
+            ops.remove(i + 1);
+            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+            continue;
+        }
+
+        // Pattern: VarParamDictGet(a, b), Not → VarParamDictGetNot(a, b)
+        // not vars[a][params[b]] — avoids clone + drop.
+        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Not) = (&ops[i], &ops[i + 1]) {
+            let var_idx = *var_idx;
+            let param_idx = *param_idx;
+            ops[i] = Op::VarParamDictGetNot(var_idx, param_idx);
+            ops.remove(i + 1);
+            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+            continue;
+        }
+
+        // Pattern: VarParamDictGet(a, b), Int(k), Add → VarParamDictGetIntAdd(a, b, k)
+        // vars[a][params[b]] + k — avoids clone + drop for dict lookup + add.
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::Add) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::VarParamDictGetIntAdd(var_idx, param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: VarParamDictGet(a, b), Int(k), IntGe → VarParamDictGetIntGe(a, b, k)
+        // vars[a][params[b]] >= k — avoids clone + drop.
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntGe) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::VarParamDictGetIntGe(var_idx, param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: VarParamDictGet(a, b), Int(k), IntLt → VarParamDictGetIntLt(a, b, k)
+        // vars[a][params[b]] < k — avoids clone + drop.
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntLt) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let k = *k;
+                ops[i] = Op::VarParamDictGetIntLt(var_idx, param_idx, k);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
         // Pattern: Param(p), Int(k), DictGet → ParamIntDictGet(p, k) (3 → 1)
         // Direct seq/dict index on parameter: params[p][k]
         // Very common in message-parameterized actions: msg[0], msg[2], msg[3], etc.
@@ -1372,6 +1508,9 @@ pub fn vm_eval_reuse(
     params: &[Value],
     bufs: &mut VmBufs,
 ) -> EvalResult<Value> {
+    bytecode
+        .execution_count
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     bufs.stack.clear();
     bufs.locals.clear();
     bufs.loops.clear();
@@ -1799,6 +1938,168 @@ fn vm_eval_inner(
                                 })
                             }
                         }
+                    }
+                }
+            }
+            Op::VarParam2DictGetNot(var_idx, param1_idx, param2_idx) => {
+                // Fused: VarParam2DictGet(a,b,c) + Not
+                let key1 = &params[*param1_idx as usize];
+                let key2 = &params[*param2_idx as usize];
+                let outer = &vars[*var_idx as usize];
+                match outer.kind() {
+                    VK::IntMap2(inner_size, data) => {
+                        let k1 = expect_int(key1)? as usize;
+                        let k2 = expect_int(key2)? as usize;
+                        let val = &data[k1 * inner_size as usize + k2];
+                        stack.push(Value::bool(!val.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                            expected: "Bool".to_string(),
+                            actual: val.type_name().to_string(),
+                        })?));
+                    }
+                    _ => {
+                        let inner_ref = match outer.kind() {
+                            VK::IntMap(arr) => {
+                                let k = expect_int(key1)? as usize;
+                                &arr[k]
+                            }
+                            VK::Fn(map) => {
+                                Value::fn_get(map, key1)
+                                    .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
+                            }
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "Fn or IntMap".to_string(),
+                                    actual: outer.type_name().to_string(),
+                                })
+                            }
+                        };
+                        match inner_ref.kind() {
+                            VK::IntMap(arr) => {
+                                let k = expect_int(key2)? as usize;
+                                let b = arr[k].as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                                    expected: "Bool".to_string(),
+                                    actual: arr[k].type_name().to_string(),
+                                })?;
+                                stack.push(Value::bool(!b));
+                            }
+                            VK::Fn(inner_map) => {
+                                let val = Value::fn_get(inner_map, key2)
+                                    .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                                let b = val.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                                    expected: "Bool".to_string(),
+                                    actual: val.type_name().to_string(),
+                                })?;
+                                stack.push(Value::bool(!b));
+                            }
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "Fn or IntMap".to_string(),
+                                    actual: inner_ref.type_name().to_string(),
+                                })
+                            }
+                        }
+                    }
+                }
+            }
+            Op::VarParamDictGetNot(var_idx, param_idx) => {
+                // Fused: VarParamDictGet(a,b) + Not
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key)? as usize;
+                        let b = arr[k].as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                            expected: "Bool".to_string(),
+                            actual: arr[k].type_name().to_string(),
+                        })?;
+                        stack.push(Value::bool(!b));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        let b = val.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                            expected: "Bool".to_string(),
+                            actual: val.type_name().to_string(),
+                        })?;
+                        stack.push(Value::bool(!b));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetIntAdd(var_idx, param_idx, k) => {
+                // Fused: VarParamDictGet(a,b) + Int(k) + Add
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(key)? as usize;
+                        let n = expect_int(&arr[idx])?;
+                        stack.push(Value::int(n + k));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        let n = expect_int(val)?;
+                        stack.push(Value::int(n + k));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetIntGe(var_idx, param_idx, k) => {
+                // Fused: VarParamDictGet(a,b) + Int(k) + IntGe
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(key)? as usize;
+                        let n = expect_int(&arr[idx])?;
+                        stack.push(Value::bool(n >= *k));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        let n = expect_int(val)?;
+                        stack.push(Value::bool(n >= *k));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetIntLt(var_idx, param_idx, k) => {
+                // Fused: VarParamDictGet(a,b) + Int(k) + IntLt
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(key)? as usize;
+                        let n = expect_int(&arr[idx])?;
+                        stack.push(Value::bool(n < *k));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        let n = expect_int(val)?;
+                        stack.push(Value::bool(n < *k));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
                     }
                 }
             }
