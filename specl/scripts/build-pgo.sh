@@ -1,9 +1,9 @@
 #!/bin/bash
 # Build specl with Profile-Guided Optimization (PGO)
-# Achieves ~26% speedup over standard release build.
+# Achieves ~20-30% speedup over standard release build.
 #
-# Usage: ./scripts/build-pgo.sh [spec_file] [extra_args...]
-# Default: uses raft.specl N=2 as training workload
+# Usage: ./scripts/build-pgo.sh
+# Uses diverse showcase specs as training workloads.
 
 set -euo pipefail
 
@@ -12,26 +12,32 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$PROJECT_DIR"
 
 SYSROOT=$(rustc --print sysroot)
-LLVM_PROFDATA="$SYSROOT/lib/rustlib/aarch64-apple-darwin/bin/llvm-profdata"
+TARGET=$(rustc -vV | sed -n 's/host: //p')
+LLVM_PROFDATA="$SYSROOT/lib/rustlib/$TARGET/bin/llvm-profdata"
 
 if [ ! -f "$LLVM_PROFDATA" ]; then
     echo "Installing llvm-tools..."
     rustup component add llvm-tools
+    if [ ! -f "$LLVM_PROFDATA" ]; then
+        echo "Error: llvm-profdata not found at $LLVM_PROFDATA"
+        exit 1
+    fi
 fi
 
 PGO_DIR="/tmp/specl-pgo-data"
 PGO_MERGED="/tmp/specl-pgo-merged.profdata"
 
-SPEC_FILE="${1:-examples/showcase/raft.specl}"
-shift 2>/dev/null || true
-EXTRA_ARGS="${*:--c N=2 -c MaxVal=1 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=3 --no-deadlock --max-states 2000000 --no-parallel -q}"
-
 echo "=== Step 1/4: Building instrumented binary ==="
 rm -rf "$PGO_DIR"
 RUSTFLAGS="-Cprofile-generate=$PGO_DIR" cargo build --release
 
-echo "=== Step 2/4: Collecting profile data ==="
-./target/release/specl check "$SPEC_FILE" $EXTRA_ARGS || true
+echo "=== Step 2/4: Collecting profile data (diverse workloads) ==="
+SPECL=./target/release/specl
+$SPECL check examples/showcase/raft.specl -c N=2 -c MaxVal=2 -c MaxElections=2 -c MaxRestarts=1 -c MaxLogLen=3 --no-deadlock --no-parallel --max-states 100000 -q || true
+$SPECL check examples/showcase/paxos.specl -c N=2 -c MaxBallot=3 -c V=2 --no-deadlock --no-parallel --max-states 100000 -q || true
+$SPECL check examples/showcase/comet.specl -c N=3 -c MaxRound=2 -c V=2 -c F=1 --no-deadlock --no-parallel --bfs --max-states 100000 -q || true
+$SPECL check examples/showcase/ricart-agrawala.specl -c N=3 --no-deadlock --no-parallel --bfs --max-states 100000 -q || true
+$SPECL check examples/showcase/lamport-mutex.specl -c N=3 --no-deadlock --no-parallel --bfs --max-states 100000 -q || true
 
 echo "=== Step 3/4: Merging profile data ==="
 "$LLVM_PROFDATA" merge -o "$PGO_MERGED" "$PGO_DIR/"
