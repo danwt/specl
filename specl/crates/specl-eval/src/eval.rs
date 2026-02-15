@@ -690,6 +690,10 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                 match right_val.kind() {
                     VK::Set(s) => Ok(Value::set_contains(s, &left_val)),
                     VK::Fn(f) => Ok(Value::fn_get(f, &left_val).is_some()),
+                    VK::IntMap(arr) => {
+                        let k = expect_int(&left_val)? as usize;
+                        Ok(k < arr.len())
+                    }
                     _ => Err(type_mismatch("Set or Dict", &right_val)),
                 }
             }
@@ -699,6 +703,10 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                 match right_val.kind() {
                     VK::Set(s) => Ok(!Value::set_contains(s, &left_val)),
                     VK::Fn(f) => Ok(Value::fn_get(f, &left_val).is_none()),
+                    VK::IntMap(arr) => {
+                        let k = expect_int(&left_val)? as usize;
+                        Ok(k >= arr.len())
+                    }
                     _ => Err(type_mismatch("Set or Dict", &right_val)),
                 }
             }
@@ -1145,11 +1153,19 @@ fn eval_binary(
         BinOp::In => match right_val.kind() {
             VK::Set(s) => Ok(Value::bool(Value::set_contains(s, &left_val))),
             VK::Fn(f) => Ok(Value::bool(Value::fn_get(f, &left_val).is_some())),
+            VK::IntMap(arr) => {
+                let k = expect_int(&left_val)? as usize;
+                Ok(Value::bool(k < arr.len()))
+            }
             _ => Err(type_mismatch("Set or Dict", &right_val)),
         },
         BinOp::NotIn => match right_val.kind() {
             VK::Set(s) => Ok(Value::bool(!Value::set_contains(s, &left_val))),
             VK::Fn(f) => Ok(Value::bool(Value::fn_get(f, &left_val).is_none())),
+            VK::IntMap(arr) => {
+                let k = expect_int(&left_val)? as usize;
+                Ok(Value::bool(k >= arr.len()))
+            }
             _ => Err(type_mismatch("Set or Dict", &right_val)),
         },
 

@@ -2015,6 +2015,10 @@ fn vm_eval_inner(
                 let result = match right_val.kind() {
                     VK::Set(s) => Value::set_contains(s, &elem),
                     VK::Fn(f) => Value::fn_get(f, &elem).is_some(),
+                    VK::IntMap(arr) => {
+                        let k = expect_int(&elem)? as usize;
+                        k < arr.len()
+                    }
                     _ => return Err(type_mismatch("Set or Dict", &right_val)),
                 };
                 stack.push(Value::bool(result));
@@ -2025,6 +2029,10 @@ fn vm_eval_inner(
                 let result = match right_val.kind() {
                     VK::Set(s) => !Value::set_contains(s, &elem),
                     VK::Fn(f) => Value::fn_get(f, &elem).is_none(),
+                    VK::IntMap(arr) => {
+                        let k = expect_int(&elem)? as usize;
+                        k >= arr.len()
+                    }
                     _ => return Err(type_mismatch("Set or Dict", &right_val)),
                 };
                 stack.push(Value::bool(result));
