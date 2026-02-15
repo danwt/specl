@@ -868,6 +868,48 @@ fn detect_state_dep_domains(guard: &CompiledExpr, num_params: usize) -> Vec<Opti
     result
 }
 
+/// Strip redundant `require param in var` guard conjuncts when the parameter's
+/// domain is already restricted to that variable's set elements (state-dependent domain).
+/// Returns a reduced guard with those conjuncts replaced by `true`, or None if no
+/// reduction is possible.
+fn strip_redundant_contains(
+    guard: &CompiledExpr,
+    state_deps: &[Option<usize>],
+) -> Option<CompiledExpr> {
+    if state_deps.iter().all(|d| d.is_none()) {
+        return None;
+    }
+    let conjuncts = decompose_conjuncts(guard);
+    let mut kept: Vec<&CompiledExpr> = Vec::new();
+    let mut stripped = 0usize;
+    for conj in &conjuncts {
+        if let CompiledExpr::Binary {
+            op: BinOp::In,
+            left,
+            right,
+        } = conj
+        {
+            if let (CompiledExpr::Param(param_idx), CompiledExpr::Var(var_idx)) =
+                (left.as_ref(), right.as_ref())
+            {
+                if state_deps.get(*param_idx).copied().flatten() == Some(*var_idx) {
+                    stripped += 1;
+                    continue;
+                }
+            }
+        }
+        kept.push(conj);
+    }
+    if stripped == 0 {
+        return None;
+    }
+    if kept.is_empty() {
+        Some(CompiledExpr::Bool(true))
+    } else {
+        Some(build_conjunction(&kept))
+    }
+}
+
 /// Enumerate all parameter combinations using index assignment (no push/pop overhead).
 /// `params_buf` must be pre-allocated to `domains.len()` size.
 fn enumerate_params_flat<F>(
@@ -1057,6 +1099,20 @@ impl Explorer {
                 "state-dependent parameter domains detected"
             );
         }
+
+        // Create reduced guards that strip redundant `param in var` conjuncts
+        // when the parameter domain already comes from that variable.
+        let compiled_guards: Vec<Bytecode> = compiled_guards
+            .into_iter()
+            .enumerate()
+            .map(|(action_idx, guard_bc)| {
+                let deps = &state_dep_domains[action_idx];
+                match strip_redundant_contains(&spec.actions[action_idx].guard, deps) {
+                    Some(reduced_guard) => compile_expr(&reduced_guard),
+                    None => guard_bc,
+                }
+            })
+            .collect();
 
         let indexed_count = guard_indices.iter().filter(|g| g.is_some()).count();
         if indexed_count > 0 {
