@@ -1121,6 +1121,11 @@ fn cmd_check(
 
     let mut actual_por = use_por;
     let mut actual_symmetry = use_symmetry;
+    let mut actual_fast = fast_check;
+    let mut actual_collapse = collapse;
+
+    // Check if user set any explicit storage/strategy flags
+    let user_has_explicit_storage = fast_check || bloom || collapse || tree || directed;
 
     if !no_auto {
         if !use_por && spec_profile.independence_ratio > 0.3 {
@@ -1157,16 +1162,45 @@ fn cmd_check(
                 );
             }
         }
-        if !quiet && (actual_por != use_por || actual_symmetry != use_symmetry) {
+
+        // Auto-select storage mode based on estimated state space
+        if !user_has_explicit_storage {
+            if let Some(estimated) = spec_profile.state_space_bound {
+                if estimated > 50_000_000 {
+                    actual_fast = true;
+                    if !quiet {
+                        println!(
+                            "Auto-enabled: --fast (estimated {} states, fingerprint-only saves memory)",
+                            format_large_number(estimated)
+                        );
+                    }
+                } else if estimated > 5_000_000 {
+                    actual_collapse = true;
+                    if !quiet {
+                        println!(
+                            "Auto-enabled: --collapse (estimated {} states, compressed storage)",
+                            format_large_number(estimated)
+                        );
+                    }
+                }
+            }
+        }
+
+        if !quiet
+            && (actual_por != use_por
+                || actual_symmetry != use_symmetry
+                || actual_fast != fast_check
+                || actual_collapse != collapse)
+        {
             println!();
         }
     }
 
     // --- Validate incompatible explicit-state flag combinations (#25) ---
     let storage_modes: Vec<&str> = [
-        (fast_check, "--fast"),
+        (actual_fast, "--fast"),
         (bloom, "--bloom"),
-        (collapse, "--collapse"),
+        (actual_collapse, "--collapse"),
         (tree, "--tree"),
     ]
     .iter()
@@ -1187,12 +1221,12 @@ fn cmd_check(
         std::process::exit(1);
     }
 
-    if directed && (fast_check || bloom || collapse || tree) {
-        let other = if fast_check {
+    if directed && (actual_fast || bloom || actual_collapse || tree) {
+        let other = if actual_fast {
             "--fast"
         } else if bloom {
             "--bloom"
-        } else if collapse {
+        } else if actual_collapse {
             "--collapse"
         } else {
             "--tree"
@@ -1312,7 +1346,7 @@ fn cmd_check(
         num_threads,
         use_por: actual_por,
         use_symmetry: actual_symmetry,
-        fast_check,
+        fast_check: actual_fast,
         progress: Some(progress),
         action_shuffle_seed: None,
         profile,
@@ -1321,7 +1355,7 @@ fn cmd_check(
         directed,
         max_time_secs,
         check_only_invariants,
-        collapse,
+        collapse: actual_collapse,
         tree,
     };
 
@@ -1552,8 +1586,11 @@ fn cmd_check(
                 }
                 if bloom {
                     opts.push("bloom");
-                } else if fast_check {
+                } else if actual_fast {
                     opts.push("fast");
+                }
+                if actual_collapse {
+                    opts.push("collapse");
                 }
                 if directed {
                     opts.push("directed");
