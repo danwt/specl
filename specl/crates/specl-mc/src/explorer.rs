@@ -868,6 +868,26 @@ fn detect_state_dep_domains(guard: &CompiledExpr, num_params: usize) -> Vec<Opti
     result
 }
 
+/// Enumerate all parameter combinations using index assignment (no push/pop overhead).
+/// `params_buf` must be pre-allocated to `domains.len()` size.
+fn enumerate_params_flat<F>(
+    domains: &[Vec<Value>],
+    params_buf: &mut Vec<Value>,
+    level: usize,
+    callback: &mut F,
+) where
+    F: FnMut(&[Value]),
+{
+    if level >= domains.len() {
+        callback(params_buf);
+        return;
+    }
+    for value in &domains[level] {
+        params_buf[level] = value.clone();
+        enumerate_params_flat(domains, params_buf, level + 1, callback);
+    }
+}
+
 /// Enumerate parameter combinations with guard indexing for early pruning.
 /// `params_buf` must be pre-allocated to `num_params` size.
 /// `guard_bufs` is reused across all guard evaluations to avoid per-call allocation.
@@ -3719,8 +3739,8 @@ impl Explorer {
                 guard_bufs,
             );
         } else {
-            let mut params_buf = SmallVec::new();
-            self.enumerate_params(param_domains, &mut params_buf, &mut |params: &[Value]| {
+            params_buf.resize(param_domains.len(), Value::none());
+            enumerate_params_flat(param_domains, params_buf, 0, &mut |params: &[Value]| {
                 if use_cache {
                     let key = op_cache_key(params, read_xor);
                     if let Some(cached_wnh) = cache.probe(key) {
