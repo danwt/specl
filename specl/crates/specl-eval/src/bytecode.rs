@@ -239,6 +239,12 @@ pub enum Op {
     /// Fused Var(v) + Param(p) + Int(k) + DictGet + DictGet: vars[v][params[p][k]].
     /// Common in protocol specs: currentTerm[msg[2]], state[msg[2]], logTerm[msg[2]], etc.
     VarParamIntDictGet2(u16, u16, i64),
+    /// Fused VarParamDictGet(a, b) + Bool(v) + Eq: dict lookup + bool compare.
+    /// vars[a][params[b]] == v without cloning. Common in guards: has_req[p] == true.
+    VarParamDictGetBoolEq(u16, u16, bool),
+    /// Fused VarParam2DictGet(a, b, c) + Bool(v) + Eq: two-level dict lookup + bool compare.
+    /// vars[a][params[b]][params[c]] == v without cloning. Common: reply[p][q] == false.
+    VarParam2DictGetBoolEq(u16, u16, u16, bool),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -1170,6 +1176,43 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
         }
 
+        // Pattern: VarParamDictGet(a, b), Bool(v), Eq → VarParamDictGetBoolEq(a, b, v)
+        // Dict lookup + bool compare: vars[a][params[b]] == v without cloning.
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Bool(v), Op::Eq) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param_idx = *param_idx;
+                let v = *v;
+                ops[i] = Op::VarParamDictGetBoolEq(var_idx, param_idx, v);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
+        // Pattern: VarParam2DictGet(a, b, c), Bool(v), Eq → VarParam2DictGetBoolEq(a, b, c, v)
+        // Two-level dict lookup + bool compare: vars[a][params[b]][params[c]] == v without cloning.
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::VarParam2DictGet(var_idx, param1_idx, param2_idx), Op::Bool(v), Op::Eq) =
+                (&ops[i], &ops[i + 1], &ops[i + 2])
+            {
+                let var_idx = *var_idx;
+                let param1_idx = *param1_idx;
+                let param2_idx = *param2_idx;
+                let v = *v;
+                ops[i] = Op::VarParam2DictGetBoolEq(var_idx, param1_idx, param2_idx, v);
+                ops.remove(i + 2);
+                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
+                ops.remove(i + 1);
+                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                continue;
+            }
+        }
+
         // Pattern: VarParamDictGet(a, b), Len → VarParamDictGetLen(a, b)
         // len(vars[a][params[b]]) without cloning the intermediate collection.
         if let (Op::VarParamDictGet(var_idx, param_idx), Op::Len) = (&ops[i], &ops[i + 1]) {
@@ -1660,6 +1703,71 @@ fn vm_eval_inner(
                         return Err(EvalError::TypeMismatch {
                             expected: "Fn or IntMap".to_string(),
                             actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetBoolEq(var_idx, param_idx, bool_val) => {
+                // Fused: VarParamDictGet(a,b) + Bool(v) + Eq
+                // Dict lookup + bool compare: vars[a][params[b]] == v without cloning.
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                let expected = Value::bool(*bool_val);
+                match base.kind() {
+                    VK::IntMap(arr) => {
+                        let idx = expect_int(key)? as usize;
+                        stack.push(Value::bool(arr[idx] == expected));
+                    }
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(Value::bool(*val == expected));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParam2DictGetBoolEq(var_idx, param1_idx, param2_idx, bool_val) => {
+                // Fused: VarParam2DictGet(a,b,c) + Bool(v) + Eq
+                // Two-level lookup + bool compare: vars[a][params[b]][params[c]] == v without cloning.
+                let key1 = &params[*param1_idx as usize];
+                let key2 = &params[*param2_idx as usize];
+                let outer = &vars[*var_idx as usize];
+                let expected = Value::bool(*bool_val);
+                let inner_ref = match outer.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key1)? as usize;
+                        &arr[k]
+                    }
+                    VK::Fn(map) => {
+                        Value::fn_get(map, key1)
+                            .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: outer.type_name().to_string(),
+                        })
+                    }
+                };
+                match inner_ref.kind() {
+                    VK::IntMap(arr) => {
+                        let k = expect_int(key2)? as usize;
+                        stack.push(Value::bool(arr[k] == expected));
+                    }
+                    VK::Fn(inner_map) => {
+                        let val = Value::fn_get(inner_map, key2)
+                            .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
+                        stack.push(Value::bool(*val == expected));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: inner_ref.type_name().to_string(),
                         })
                     }
                 }
