@@ -79,8 +79,8 @@ impl fmt::Display for Fingerprint {
 
 /// Hash a single variable at a given position.
 /// Specialized fast path for Int/Bool (dominant types in protocol specs)
-/// using splitmix64-style mixing. Falls back to AHash for composite types
-/// (3-5x faster than SipHash on modern CPUs with AES-NI).
+/// using splitmix64-style mixing. IntMap of inline types (Int/Bool/None)
+/// uses raw NaN-boxed bits directly. Falls back to AHash for complex types.
 #[inline]
 pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
     match val.kind() {
@@ -94,6 +94,7 @@ pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
             let h = (h ^ (b as u64)).wrapping_mul(0x517cc1b727220a95);
             h ^ (h >> 32)
         }
+        VK::IntMap(arr) => hash_intmap(idx, arr),
         _ => {
             let mut hasher = ahash::AHasher::default();
             idx.hash(&mut hasher);
@@ -101,6 +102,50 @@ pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
             hasher.finish()
         }
     }
+}
+
+/// Fast hash for IntMap values. Uses two-step splitmix64 mixing per element
+/// (position salt + value bits), avoiding ahash overhead. For flat IntMaps
+/// (all inline types), uses raw NaN-boxed bits directly. For nested IntMaps,
+/// recurses. Falls back to ahash only for rare non-IntMap heap types.
+#[inline]
+fn hash_intmap(idx: usize, arr: &[Value]) -> u64 {
+    const HEAP_TAG_MIN: u64 = 0x10u64 << 56;
+    const K1: u64 = 0x517cc1b727220a95;
+    const K2: u64 = 0x9e3779b97f4a7c15;
+
+    let mut h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(K2);
+    h = (h ^ (arr.len() as u64)).wrapping_mul(K1);
+
+    let all_inline = arr.iter().all(|v| v.raw_bits() < HEAP_TAG_MIN);
+
+    if all_inline {
+        for (i, v) in arr.iter().enumerate() {
+            h ^= (i as u64).wrapping_add(1).wrapping_mul(K2);
+            h = h.wrapping_mul(K1);
+            h ^= v.raw_bits();
+            h = h.wrapping_mul(K1);
+        }
+    } else {
+        for (i, v) in arr.iter().enumerate() {
+            h ^= (i as u64).wrapping_add(1).wrapping_mul(K2);
+            h = h.wrapping_mul(K1);
+            if v.raw_bits() < HEAP_TAG_MIN {
+                h ^= v.raw_bits();
+                h = h.wrapping_mul(K1);
+            } else if let VK::IntMap(inner) = v.kind() {
+                h ^= hash_intmap(i, inner);
+                h = h.wrapping_mul(K1);
+            } else {
+                let mut hasher = ahash::AHasher::default();
+                i.hash(&mut hasher);
+                v.hash(&mut hasher);
+                h ^= hasher.finish();
+                h = h.wrapping_mul(K1);
+            }
+        }
+    }
+    h ^ (h >> 32)
 }
 
 /// Compute per-variable hashes and the decomposable fingerprint.
