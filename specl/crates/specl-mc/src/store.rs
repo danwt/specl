@@ -149,6 +149,8 @@ pub struct StateStore {
     backend: StorageBackend,
     /// Number of hash collisions detected (different states, same fingerprint).
     collisions: AtomicUsize,
+    /// Cached state count — incremented atomically on insert, avoids DashMap::len() overhead.
+    count: AtomicUsize,
 }
 
 // SAFETY: AtomicFPSet uses AtomicU64 internally, which is Sync.
@@ -175,6 +177,7 @@ impl StateStore {
                 StorageBackend::Fingerprint(UnsafeCell::new(AtomicFPSet::new(1 << 23)))
             },
             collisions: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
         }
     }
 
@@ -184,6 +187,7 @@ impl StateStore {
             states: DashMap::with_hasher(FingerprintBuildHasher),
             backend: StorageBackend::Bloom(BloomFilter::from_log2_bits(log2_bits, num_hashes)),
             collisions: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
         }
     }
 
@@ -197,6 +201,7 @@ impl StateStore {
                 table: CollapseTable::new(num_vars),
             },
             collisions: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
         }
     }
 
@@ -210,6 +215,7 @@ impl StateStore {
                 table: TreeTable::new(num_vars),
             },
             collisions: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
         }
     }
 
@@ -219,6 +225,7 @@ impl StateStore {
             states: DashMap::with_capacity_and_hasher(capacity, FingerprintBuildHasher),
             backend: StorageBackend::Full,
             collisions: AtomicUsize::new(0),
+            count: AtomicUsize::new(0),
         }
     }
 
@@ -285,15 +292,26 @@ impl StateStore {
                             param_values,
                             depth,
                         });
+                        self.count.fetch_add(1, Ordering::Relaxed);
                         true
                     }
                 }
             }
             StorageBackend::Fingerprint(cell) => {
                 // SAFETY: insert() uses atomic CAS, safe with concurrent inserts
-                unsafe { &*cell.get() }.insert(fp)
+                let new = unsafe { &*cell.get() }.insert(fp);
+                if new {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+                new
             }
-            StorageBackend::Bloom(bloom) => bloom.insert(fp),
+            StorageBackend::Bloom(bloom) => {
+                let new = bloom.insert(fp);
+                if new {
+                    self.count.fetch_add(1, Ordering::Relaxed);
+                }
+                new
+            }
             StorageBackend::Collapse {
                 ref compressed,
                 ref table,
@@ -326,6 +344,7 @@ impl StateStore {
                             param_values,
                             depth,
                         });
+                        self.count.fetch_add(1, Ordering::Relaxed);
                         true
                     }
                 }
@@ -357,6 +376,7 @@ impl StateStore {
                             param_values,
                             depth,
                         });
+                        self.count.fetch_add(1, Ordering::Relaxed);
                         true
                     }
                 }
@@ -364,16 +384,10 @@ impl StateStore {
         }
     }
 
-    /// Get the number of states stored.
+    /// Get the number of states stored. O(1) via cached atomic counter.
     #[inline]
     pub fn len(&self) -> usize {
-        match &self.backend {
-            StorageBackend::Full => self.states.len(),
-            StorageBackend::Fingerprint(cell) => unsafe { &*cell.get() }.len(),
-            StorageBackend::Bloom(bloom) => bloom.len(),
-            StorageBackend::Collapse { ref compressed, .. } => compressed.len(),
-            StorageBackend::Tree { ref compressed, .. } => compressed.len(),
-        }
+        self.count.load(Ordering::Relaxed)
     }
 
     /// Check if the store is empty.
