@@ -1,8 +1,8 @@
 //! BFS state space explorer for model checking.
 
 use crate::direct_eval::{
-    apply_action_direct, apply_effects_bytecode_reuse, extract_effect_assignments,
-    generate_initial_states_direct,
+    apply_action_direct, apply_effects_bytecode_reuse, compute_effects_bytecode_reuse,
+    extract_effect_assignments, generate_initial_states_direct, take_computed_state,
 };
 use crate::state::{Fingerprint, State};
 use crate::store::StateStore;
@@ -3668,9 +3668,9 @@ impl Explorer {
                             }
                         }
 
-                        // Cache miss or new state: evaluate effects
+                        // Cache miss or new state: compute effects, check store before constructing State
                         if let Some(cached) = &self.cached_effects[action_idx] {
-                            if let Ok(result) = apply_effects_bytecode_reuse(
+                            if let Ok(result) = compute_effects_bytecode_reuse(
                                 state,
                                 params,
                                 &self.consts,
@@ -3681,15 +3681,22 @@ impl Explorer {
                                 effect_bufs,
                                 var_hashes_buf,
                             ) {
-                                if let Some(next_state) = result {
-                                    cache
-                                        .store(key, xor_hash_vars(&next_state.var_hashes, changes));
-                                    let pvals = if needs_pvals {
-                                        params_to_i64s(params)
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    buf.push((next_state, action_idx, pvals));
+                                if let Some(fp) = result {
+                                    let wnh = xor_hash_vars(var_hashes_buf, changes);
+                                    cache.store(key, wnh);
+                                    if !self.store.contains(&fp) {
+                                        let next_state = take_computed_state(
+                                            next_vars_buf,
+                                            fp,
+                                            var_hashes_buf,
+                                        );
+                                        let pvals = if needs_pvals {
+                                            params_to_i64s(params)
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        buf.push((next_state, action_idx, pvals));
+                                    }
                                 } else {
                                     cache.store(key, OP_NO_SUCCESSOR);
                                 }
@@ -3768,7 +3775,7 @@ impl Explorer {
                     }
 
                     if let Some(cached) = &self.cached_effects[action_idx] {
-                        if let Ok(result) = apply_effects_bytecode_reuse(
+                        if let Ok(result) = compute_effects_bytecode_reuse(
                             state,
                             params,
                             &self.consts,
@@ -3779,14 +3786,22 @@ impl Explorer {
                             effect_bufs,
                             var_hashes_buf,
                         ) {
-                            if let Some(next_state) = result {
-                                cache.store(key, xor_hash_vars(&next_state.var_hashes, changes));
-                                let pvals = if needs_pvals {
-                                    params_to_i64s(params)
-                                } else {
-                                    Vec::new()
-                                };
-                                buf.push((next_state, action_idx, pvals));
+                            if let Some(fp) = result {
+                                let wnh = xor_hash_vars(var_hashes_buf, changes);
+                                cache.store(key, wnh);
+                                if !self.store.contains(&fp) {
+                                    let next_state = take_computed_state(
+                                        next_vars_buf,
+                                        fp,
+                                        var_hashes_buf,
+                                    );
+                                    let pvals = if needs_pvals {
+                                        params_to_i64s(params)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    buf.push((next_state, action_idx, pvals));
+                                }
                             } else {
                                 cache.store(key, OP_NO_SUCCESSOR);
                             }
