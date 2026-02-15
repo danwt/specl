@@ -37,6 +37,7 @@ const I56_MAX: i64 = (1i64 << 55) - 1;
 /// Flattened 2-level IntMap. Stores `Dict[0..N, Dict[0..M, V]]` as a single
 /// flat `Vec<Value>` of size `N * M`, indexed by `i * inner_size + j`.
 /// Eliminates per-row Arc overhead and enables single-pass hashing.
+#[derive(Clone)]
 pub struct IntMap2Data {
     pub inner_size: u32,
     pub data: Vec<Value>,
