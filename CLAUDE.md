@@ -182,7 +182,7 @@ A spec defines a state machine: initial state + actions (transitions) + invarian
 
 ### Language Constraints
 
-- `let` bindings available: `let x = expr in body` for local definitions within expressions.
+- `let` bindings: statement-level `let x = expr;` in action/init bodies (scopes to remaining statements), and `let x = expr in body` in expressions.
 - `any` is a boolean quantifier, NOT a binder — can't use the bound variable outside.
 - Range expressions in parameters can't use arithmetic: `0..V+1` is invalid. Add a `const MaxVal` instead.
 - State spaces grow exponentially. Typical sizes: N=2 is ~100K-2M states, N=3 is ~10M-100M. Always start with N=2.
