@@ -343,6 +343,8 @@ pub struct Explorer {
     /// For each action, for each param: Some(var_idx) if domain comes from state variable.
     /// Detected from `require param in var` guard patterns.
     state_dep_domains: Vec<Vec<Option<usize>>>,
+    /// Precomputed: true if action has any state-dependent domain parameter.
+    has_state_dep: Vec<bool>,
     /// Precomputed bitmask: independent_masks[a] has bit b set iff action a is independent of b.
     /// Used for sleep set propagation.
     independent_masks: Vec<u64>,
@@ -1100,6 +1102,7 @@ impl Explorer {
             action_names: Vec::new(),
             default_action_order: Vec::new(),
             stop_flag: None,
+            has_state_dep: state_dep_domains.iter().map(|d| d.iter().any(|p| p.is_some())).collect(),
             state_dep_domains,
             independent_masks,
             sym_param_groups: Vec::new(),
@@ -3586,11 +3589,12 @@ impl Explorer {
 
     /// Build effective parameter domains, substituting state-dependent domains at runtime.
     /// Returns None if no params are state-dependent (zero overhead fast path).
+    #[inline]
     fn get_effective_domains(&self, action_idx: usize, state: &State) -> Option<Vec<Vec<Value>>> {
-        let deps = &self.state_dep_domains[action_idx];
-        if !deps.iter().any(|d| d.is_some()) {
+        if !self.has_state_dep[action_idx] {
             return None;
         }
+        let deps = &self.state_dep_domains[action_idx];
         let action = &self.spec.actions[action_idx];
         let static_domains = &self.cached_param_domains[action_idx];
         Some(
