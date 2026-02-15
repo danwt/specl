@@ -229,6 +229,8 @@ pub enum Op {
     VarParam2DictGet(u16, u16, u16),
     /// Fused VarParamDictGet(a, b) + Int(k) + IntEq: dict lookup + int compare vars[a][params[b]] == k.
     VarParamDictGetIntEq(u16, u16, i64),
+    /// Fused VarParamDictGet(a, b) + Len: len(vars[a][params[b]]) without cloning the collection.
+    VarParamDictGetLen(u16, u16),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -1150,6 +1152,19 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
         }
 
+        // Pattern: VarParamDictGet(a, b), Len → VarParamDictGetLen(a, b)
+        // len(vars[a][params[b]]) without cloning the intermediate collection.
+        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Len) =
+            (&ops[i], &ops[i + 1])
+        {
+            let var_idx = *var_idx;
+            let param_idx = *param_idx;
+            ops[i] = Op::VarParamDictGetLen(var_idx, param_idx);
+            ops.remove(i + 1);
+            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+            continue;
+        }
+
         i += 1;
     }
 }
@@ -1563,6 +1578,37 @@ fn vm_eval_inner(
                     _ => {
                         return Err(EvalError::TypeMismatch {
                             expected: "Fn or IntMap".to_string(),
+                            actual: base.type_name().to_string(),
+                        })
+                    }
+                }
+            }
+            Op::VarParamDictGetLen(var_idx, param_idx) => {
+                // Fused: VarParamDictGet(a,b) + Len
+                // len(vars[a][params[b]]) without cloning the intermediate collection.
+                let key = &params[*param_idx as usize];
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::Fn(map) => {
+                        let val = Value::fn_get(map, key)
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        let len = match val.kind() {
+                            VK::Set(s) => s.len() as i64,
+                            VK::Seq(s) => s.len() as i64,
+                            VK::Fn(f) => f.len() as i64,
+                            VK::IntMap(arr) => arr.len() as i64,
+                            _ => {
+                                return Err(EvalError::TypeMismatch {
+                                    expected: "Set, Seq, or Fn".to_string(),
+                                    actual: val.type_name().to_string(),
+                                })
+                            }
+                        };
+                        stack.push(Value::int(len));
+                    }
+                    _ => {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn".to_string(),
                             actual: base.type_name().to_string(),
                         })
                     }
