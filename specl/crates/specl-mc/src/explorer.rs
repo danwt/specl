@@ -1,8 +1,8 @@
 //! BFS state space explorer for model checking.
 
 use crate::direct_eval::{
-    apply_action_direct, apply_effects_bytecode_reuse, compute_effects_bytecode_reuse,
-    extract_effect_assignments, generate_initial_states_direct, take_computed_state,
+    apply_action_direct, compute_effects_bytecode_reuse, extract_effect_assignments,
+    generate_initial_states_direct, take_computed_state,
 };
 use crate::state::{Fingerprint, State};
 use crate::store::StateStore;
@@ -3624,9 +3624,9 @@ impl Explorer {
 
         let pvals = params_to_i64s(params);
 
-        // Try bytecode effect path first
+        // Try bytecode effect path first, with early dedup
         if let Some(cached) = &self.cached_effects[action_idx] {
-            if let Ok(result) = apply_effects_bytecode_reuse(
+            if let Ok(result) = compute_effects_bytecode_reuse(
                 state,
                 params,
                 &self.consts,
@@ -3637,8 +3637,11 @@ impl Explorer {
                 effect_bufs,
                 var_hashes_buf,
             ) {
-                if let Some(next_state) = result {
-                    buf.push((next_state, action_idx, pvals));
+                if let Some(fp) = result {
+                    if !self.store.contains(&fp) {
+                        let next_state = take_computed_state(next_vars_buf, fp, var_hashes_buf);
+                        buf.push((next_state, action_idx, pvals));
+                    }
                 }
                 return Ok(());
             }
@@ -3820,9 +3823,9 @@ impl Explorer {
                             }
                         }
                     } else {
-                        // No cache: evaluate effects directly
+                        // No cache: compute fingerprint first, skip State construction for duplicates
                         if let Some(cached) = &self.cached_effects[action_idx] {
-                            if let Ok(result) = apply_effects_bytecode_reuse(
+                            if let Ok(result) = compute_effects_bytecode_reuse(
                                 state,
                                 params,
                                 &self.consts,
@@ -3833,15 +3836,20 @@ impl Explorer {
                                 effect_bufs,
                                 var_hashes_buf,
                             ) {
-                                if let Some(next_state) = result {
-                                    let pvals = if needs_pvals {
-                                        params_to_i64s(params)
-                                    } else {
-                                        Vec::new()
-                                    };
-                                    buf.push((next_state, action_idx, pvals));
-                                } else {
-                                    // Guard reverification failed, no successor
+                                if let Some(fp) = result {
+                                    if !self.store.contains(&fp) {
+                                        let next_state = take_computed_state(
+                                            next_vars_buf,
+                                            fp,
+                                            var_hashes_buf,
+                                        );
+                                        let pvals = if needs_pvals {
+                                            params_to_i64s(params)
+                                        } else {
+                                            Vec::new()
+                                        };
+                                        buf.push((next_state, action_idx, pvals));
+                                    }
                                 }
                                 return;
                             }
@@ -3939,7 +3947,7 @@ impl Explorer {
                     }
 
                     if let Some(cached) = &self.cached_effects[action_idx] {
-                        if let Ok(result) = apply_effects_bytecode_reuse(
+                        if let Ok(result) = compute_effects_bytecode_reuse(
                             state,
                             params,
                             &self.consts,
@@ -3950,13 +3958,20 @@ impl Explorer {
                             effect_bufs,
                             var_hashes_buf,
                         ) {
-                            if let Some(next_state) = result {
-                                let pvals = if needs_pvals {
-                                    params_to_i64s(params)
-                                } else {
-                                    Vec::new()
-                                };
-                                buf.push((next_state, action_idx, pvals));
+                            if let Some(fp) = result {
+                                if !self.store.contains(&fp) {
+                                    let next_state = take_computed_state(
+                                        next_vars_buf,
+                                        fp,
+                                        var_hashes_buf,
+                                    );
+                                    let pvals = if needs_pvals {
+                                        params_to_i64s(params)
+                                    } else {
+                                        Vec::new()
+                                    };
+                                    buf.push((next_state, action_idx, pvals));
+                                }
                             }
                             return;
                         }
