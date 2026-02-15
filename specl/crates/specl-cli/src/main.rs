@@ -476,6 +476,9 @@ enum Commands {
         verbose: bool,
     },
 
+    /// Show comprehensive performance guide for writing fast specs and choosing flags
+    PerfGuide,
+
     /// Estimate state space size and resource requirements before checking
     Estimate {
         /// Input file
@@ -741,6 +744,7 @@ fn main() {
         } => cmd_watch(&file, &constant, max_states, max_depth, !no_deadlock),
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
         Commands::Techniques { verbose } => cmd_techniques(verbose),
+        Commands::PerfGuide => cmd_perf_guide(),
         Commands::Estimate { file, constant } => cmd_estimate(&file, &constant),
         Commands::Test {
             dir,
@@ -3879,5 +3883,196 @@ fn cmd_translate(file: &PathBuf, output: Option<&PathBuf>) -> CliResult<()> {
         print!("{}", specl_source);
     }
 
+    Ok(())
+}
+
+fn cmd_perf_guide() -> CliResult<()> {
+    print!(
+        "\
+SPECL PERFORMANCE GUIDE
+=======================
+
+1. STATE SPACE DRIVERS
+   Every variable adds a multiplicative factor to the total state space.
+   The key driver is the number of distinct values each variable can hold.
+
+   Type                          Distinct values (approx)
+   -------------------------------------------------------
+   Bool                          2
+   0..K                          K+1
+   Set[0..K]                     2^(K+1)             (powerset!)
+   Seq[0..K] up to length L      sum_i (K+1)^i for i=0..L
+   Dict[0..N, 0..K]              (K+1)^(N+1)
+   Dict[0..N, Dict[0..M, V]]     |V|^((N+1)*(M+1))  (nested = exponent of exponent)
+   Option[T]                      |T| + 1
+
+   Total state space ~= product of |V_i| for each variable V_i.
+
+   Action parameter explosion:
+   An action with P parameters of sizes D1, D2, ..., DP generates
+   D1 * D2 * ... * DP parameter combinations per state. Each combination
+   is a potential transition the checker must evaluate.
+
+   Example: Transfer(from: 0..N, to: 0..N, amount: 1..MAX)
+   = (N+1) * (N+1) * MAX combinations per state.
+
+2. WRITING FAST SPECS
+   a) Minimize variable domains
+      Use the smallest type that captures your intent.
+      Dict[Int, Bool] has 2^N states vs Dict[Int, 0..K] with (K+1)^N.
+
+   b) Avoid deep nesting
+      Dict[0..N, Dict[0..M, V]] has |V|^(N*M) states.
+      If the inner dict models per-pair state, consider whether you really
+      need all N*M entries, or whether a Set of pairs suffices.
+
+   c) Separate message types
+      var msgs: Set[Seq[Int]] (one bag for all message types) means every
+      message type interferes with every other. Instead use separate
+      variables per message type:
+        var voteReqs: Set[(Int, Int)]
+        var voteResps: Set[(Int, Int, Bool)]
+      This also improves POR (more independent actions).
+
+   d) Use selective guards
+      The checker evaluates guards to prune parameter combinations early.
+      A require that references a dict lookup (e.g., require state[i] == 1)
+      is scored ~10x more selective than a simple comparison. The checker
+      automatically reorders parameter binding to evaluate the most selective
+      guards first. Help it by writing guards that reference action parameters.
+
+   e) Prefer Dict[Int, V] over Dict[String, V]
+      Integer-keyed dicts with keys 0..N are stored as dense arrays (IntMap)
+      internally. String or sparse keys fall back to sorted-pair representation,
+      which is slower to hash, clone, and compare.
+
+   f) Avoid powerset quantifiers
+      Expressions like: any s in powerset(0..N): ... enumerate 2^N subsets.
+      Restructure as existential quantifiers over individual elements when
+      possible.
+
+   g) Use bounded constants
+      0..V+1 is invalid in parameter ranges. Define a const MaxVal and use
+      0..MaxVal. Start with small constants (N=2, MAX=3) and scale up.
+
+3. INVARIANT PERFORMANCE
+   The checker tracks which variables each invariant depends on (inv_dep_masks).
+   After each state transition, only invariants whose dependencies changed are
+   rechecked. This is automatic — no user action needed.
+
+   To benefit most:
+   - Write invariants that reference few variables.
+   - Avoid invariants with O(N^2) quantifiers when O(N) suffices.
+   - Use --check-only Name to focus on a specific invariant during debugging.
+
+4. STORAGE MODE GUIDE
+   Storage modes control how visited states are stored for deduplication.
+   Only one mode is active at a time. Each has different memory/trace tradeoffs.
+
+   Mode        Memory/state   Traces?   Notes
+   ---------------------------------------------------------------
+   default     80-200 bytes   Yes       Full state stored. Sound.
+   --fast      8 bytes        No        Fingerprint only. Sound (2^-64 collision).
+                                        If violation found, re-run without --fast for trace.
+   --collapse  30-60 bytes    Yes       Per-variable interning. Sound.
+                                        Good balance of memory and trace support.
+   --tree      20-50 bytes    Yes       Hierarchical subtree sharing (LTSmin-style). Sound.
+                                        Best compression for specs with many similar states.
+   --bloom     Fixed total    No        Probabilistic. UNSOUND: false positives skip states.
+                                        For bug finding only, not verification.
+
+   Decision tree:
+   - State space < 5M states?     -> default (full storage, best debugging)
+   - 5M-50M states?               -> --collapse (3x less memory, keeps traces)
+   - 50M+ states or OOM?          -> --fast (10x less memory, no traces)
+   - Want bug finding, not proof?  -> --fast or --bloom
+   - Many similar states?          -> --tree (best compression ratio)
+
+5. OPTIMIZATION FLAGS
+   --por              Partial Order Reduction. Skips redundant action interleavings
+                      when actions are independent (don't read/write overlapping vars).
+                      Auto-enabled when >30%% of action pairs are independent.
+                      Forces single-threaded exploration (sequential BFS).
+                      Typical reduction: 2-10x.
+
+   --symmetry         Symmetry Reduction. Groups equivalent states that differ only
+                      in process identity. Auto-enabled when symmetric Dict patterns
+                      are detected. Reduction up to N! (e.g., 24x for N=4).
+
+   --directed         Priority BFS. Explores states closer to invariant violations
+                      first. Finds bugs faster but does not guarantee shortest trace.
+                      Uses directed mode's OpCache (32K-entry direct-mapped cache)
+                      to skip redundant action evaluations.
+
+   --swarm N          Parallel random exploration. Launches N instances with shuffled
+                      action orderings. Good for bug hunting in very large state spaces.
+
+   --incremental      Caches the set of visited state fingerprints between runs.
+                      Subsequent runs skip already-explored states. Invalidates
+                      automatically if the spec changes (content hash).
+
+   --no-parallel      Force single-threaded. Useful for deterministic debugging
+                      or when combined with --por (which is already single-threaded).
+
+   --threads N        Set thread count for parallel BFS (default: all cores).
+
+6. PRACTICAL BOUNDS
+   N=2:  Always start here.    Typical: 10K-2M states. Seconds.
+   N=3:  For confidence.       Typical: 100K-100M states. Seconds to minutes.
+   N=4+: Large state spaces.   Use --fast + --por + --symmetry.
+   N=5+: Usually requires      --fast + --por + --symmetry + --max-states.
+
+   Use --max-states to cap exploration when iterating on a spec.
+   Use --max-time for CI pipelines (e.g., --max-time 60 for 1-minute budget).
+
+7. PROFILING YOUR SPEC
+   specl info FILE -c N=2
+     Static analysis: state space estimates per variable, action parameter
+     combination counts, recommended flags, detected optimizations (POR %%,
+     symmetry candidates).
+
+   specl estimate FILE -c N=2
+     Estimate total states, time, and memory requirements without running
+     the full check.
+
+   specl check FILE -c N=2 --profile
+     After checking, prints per-action firing counts and timing breakdown.
+     Shows which actions dominate exploration time.
+
+8. SOUNDNESS
+   Sound modes (can prove absence of bugs):
+     default, --fast, --collapse, --tree, --por, --symmetry, --incremental
+
+   --fast has a theoretical 2^-64 hash collision probability per state pair.
+   The checker detects collisions when possible and warns.
+
+   --bloom is UNSOUND: false positives cause states to be skipped entirely.
+   Use only for bug hunting, never for verification.
+
+   --symmetry is sound only if your spec is truly symmetric with respect to
+   the process identities. An asymmetric spec (e.g., process 0 is special)
+   with --symmetry may miss bugs.
+
+9. PARALLEL MODE
+   The default parallel BFS distributes states across threads using rayon.
+   Each thread maintains its own evaluation buffers (VmBufs) — no contention
+   on the hot path. State deduplication uses lock-free structures (DashMap for
+   full storage, AtomicFPSet for fingerprint mode).
+
+   Optimizations active in parallel mode:
+     - Incremental fingerprint hashing (XOR-decomposable, O(changed vars))
+     - inv_dep_masks (skip unchanged invariants)
+     - NaN-boxed Values (8-byte inline, no allocation for ints/bools)
+     - IntMap dense storage for Dict[Int, V]
+     - Superinstruction fusion in bytecode VM
+
+   Not active in parallel mode:
+     - POR (requires sequential BFS for sleep set propagation)
+     - OpCache (directed mode only)
+
+   Parallel mode scales near-linearly up to ~8 cores, then memory bandwidth
+   becomes the bottleneck. Use --threads to control.
+"
+    );
     Ok(())
 }
