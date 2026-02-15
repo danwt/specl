@@ -2431,6 +2431,21 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         }
         VK::Tuple(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
         VK::None => serde_json::Value::Null,
+        VK::IntMap2(inner_size, data) => {
+            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+            let obj: serde_json::Map<String, serde_json::Value> = (0..outer_size)
+                .map(|i| {
+                    let inner_obj: serde_json::Map<String, serde_json::Value> =
+                        (0..inner_size as usize)
+                            .map(|j| {
+                                (j.to_string(), value_to_json(&data[i * inner_size as usize + j]))
+                            })
+                            .collect();
+                    (i.to_string(), serde_json::Value::Object(inner_obj))
+                })
+                .collect();
+            serde_json::Value::Object(obj)
+        }
         VK::Some(inner) => value_to_json(inner),
     }
 }
@@ -2479,6 +2494,26 @@ fn value_to_itf(v: &Value) -> serde_json::Value {
             serde_json::json!({"#tup": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
         }
         VK::None => serde_json::json!({"tag": "None", "value": serde_json::json!({})}),
+        VK::IntMap2(inner_size, data) => {
+            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+            let entries: Vec<serde_json::Value> = (0..outer_size)
+                .map(|i| {
+                    let inner_entries: Vec<serde_json::Value> = (0..inner_size as usize)
+                        .map(|j| {
+                            serde_json::json!([
+                                serde_json::json!({"#bigint": j.to_string()}),
+                                value_to_itf(&data[i * inner_size as usize + j])
+                            ])
+                        })
+                        .collect();
+                    serde_json::json!([
+                        serde_json::json!({"#bigint": i.to_string()}),
+                        serde_json::json!({"#map": inner_entries})
+                    ])
+                })
+                .collect();
+            serde_json::json!({"#map": entries})
+        }
         VK::Some(inner) => {
             serde_json::json!({"tag": "Some", "value": value_to_itf(inner)})
         }
@@ -2724,6 +2759,24 @@ fn format_value_compact(v: &Value) -> String {
             format!("({})", inner.join(","))
         }
         VK::None => "None".to_string(),
+        VK::IntMap2(inner_size, data) => {
+            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+            let inner: Vec<String> = (0..outer_size)
+                .map(|i| {
+                    let vals: Vec<String> = (0..inner_size as usize)
+                        .map(|j| {
+                            format!(
+                                "{}:{}",
+                                j,
+                                format_value_compact(&data[i * inner_size as usize + j])
+                            )
+                        })
+                        .collect();
+                    format!("{}:{{{}}}", i, vals.join(","))
+                })
+                .collect();
+            format!("{{{}}}", inner.join(","))
+        }
         VK::Some(v) => format!("Some({})", format_value_compact(v)),
     }
 }
