@@ -178,6 +178,26 @@ pub enum Op {
         end_pc: u32,
     },
 
+    // === Quantifiers over powerset domain ===
+    /// Pop base set. Iterate 2^n bitmasks. Push first subset ({}) to locals.
+    ForallPowersetInit(u32),
+    /// Pop body result (bool). If false: cleanup, push false, jump to end_pc.
+    /// Advance mask. If done: cleanup, push true, jump to end_pc.
+    /// Create next subset, jump to body_pc.
+    ForallPowersetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+    /// Pop base set. Iterate 2^n bitmasks. Push first subset ({}) to locals.
+    ExistsPowersetInit(u32),
+    /// Pop body result (bool). If true: cleanup, push true, jump to end_pc.
+    /// Advance mask. If done: cleanup, push false, jump to end_pc.
+    /// Create next subset, jump to body_pc.
+    ExistsPowersetStep {
+        body_pc: u32,
+        end_pc: u32,
+    },
+
     // === Set/Seq construction ===
     /// Pop N values → push Set (sorted, deduped).
     SetLit(u16),
@@ -195,6 +215,8 @@ pub enum Op {
     SeqHead,
     /// Pop seq → push tail (all but first).
     SeqTail,
+    /// Pop hi, pop lo → push Set of lo..=hi integers.
+    MakeRange,
 
     // === Superinstructions (fused sequences) ===
     /// Fused Var(i) + DictGet: var is the key, base dict is on stack.
@@ -276,7 +298,9 @@ impl Compiler {
             | Op::SetCompRangeInit(t)
             | Op::ForallSetInit(t)
             | Op::ExistsSetInit(t)
-            | Op::SetCompSetInit(t) => *t = target,
+            | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t)
+            | Op::ExistsPowersetInit(t) => *t = target,
             Op::ForallRangeStep { end_pc, .. }
             | Op::ExistsRangeStep { end_pc, .. }
             | Op::CountRangeStep { end_pc, .. }
@@ -286,7 +310,9 @@ impl Compiler {
             | Op::ForallSetStep { end_pc, .. }
             | Op::ExistsSetStep { end_pc, .. }
             | Op::SetCompSetStep { end_pc, .. }
-            | Op::SetCompSetAdvance { end_pc, .. } => *end_pc = target,
+            | Op::SetCompSetAdvance { end_pc, .. }
+            | Op::ForallPowersetStep { end_pc, .. }
+            | Op::ExistsPowersetStep { end_pc, .. } => *end_pc = target,
             _ => {}
         }
     }
@@ -428,6 +454,11 @@ impl Compiler {
             CompiledExpr::SeqTail(seq) => {
                 self.compile(seq);
                 self.emit(Op::SeqTail);
+            }
+            CompiledExpr::Range { lo, hi } => {
+                self.compile(lo);
+                self.compile(hi);
+                self.emit(Op::MakeRange);
             }
 
             CompiledExpr::SetComprehension {
@@ -663,7 +694,20 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
-        } else if !matches!(domain, CompiledExpr::Powerset(_)) {
+        } else if let CompiledExpr::Powerset(inner) = domain {
+            // Powerset domain — iterate bitmasks
+            self.compile(inner);
+            let init = self.emit(Op::ForallPowersetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ForallPowersetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
+        } else {
             // Set-valued domain (Var, Keys, etc.) — iterate elements
             self.compile(domain);
             let init = self.emit(Op::ForallSetInit(0));
@@ -676,14 +720,6 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
-        } else {
-            // Fallback for powerset domains
-            let expr = CompiledExpr::Forall {
-                domain: Box::new(domain.clone()),
-                body: Box::new(body.clone()),
-            };
-            let idx = self.add_fallback(&expr);
-            self.emit(Op::Fallback(idx));
         }
     }
 
@@ -701,7 +737,20 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
-        } else if !matches!(domain, CompiledExpr::Powerset(_)) {
+        } else if let CompiledExpr::Powerset(inner) = domain {
+            // Powerset domain — iterate bitmasks
+            self.compile(inner);
+            let init = self.emit(Op::ExistsPowersetInit(0));
+            let body_pc = self.current_pc();
+            self.compile(body);
+            let step = self.emit(Op::ExistsPowersetStep {
+                body_pc: body_pc as u32,
+                end_pc: 0,
+            });
+            let end_pc = self.current_pc();
+            self.patch_jump(init, end_pc as u32);
+            self.patch_jump(step, end_pc as u32);
+        } else {
             // Set-valued domain — iterate elements
             self.compile(domain);
             let init = self.emit(Op::ExistsSetInit(0));
@@ -714,14 +763,6 @@ impl Compiler {
             let end_pc = self.current_pc();
             self.patch_jump(init, end_pc as u32);
             self.patch_jump(step, end_pc as u32);
-        } else {
-            // Fallback for powerset domains
-            let expr = CompiledExpr::Exists {
-                domain: Box::new(domain.clone()),
-                body: Box::new(body.clone()),
-            };
-            let idx = self.add_fallback(&expr);
-            self.emit(Op::Fallback(idx));
         }
     }
 
@@ -979,7 +1020,8 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
             | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
-            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t) => {
+            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t) | Op::ExistsPowersetInit(t) => {
                 let target = *t as usize;
                 if target < jump_targets.len() {
                     jump_targets[target] = true;
@@ -994,7 +1036,9 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
             | Op::ForallSetStep { body_pc, end_pc }
             | Op::ExistsSetStep { body_pc, end_pc }
             | Op::SetCompSetStep { body_pc, end_pc }
-            | Op::SetCompSetAdvance { body_pc, end_pc } => {
+            | Op::SetCompSetAdvance { body_pc, end_pc }
+            | Op::ForallPowersetStep { body_pc, end_pc }
+            | Op::ExistsPowersetStep { body_pc, end_pc } => {
                 let b = *body_pc as usize;
                 let e = *end_pc as usize;
                 if b < jump_targets.len() {
@@ -1083,7 +1127,8 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
             }
             Op::ForallRangeInit(t) | Op::ExistsRangeInit(t) | Op::CountRangeInit(t)
             | Op::FnLitRangeInit(t) | Op::SetCompRangeInit(t)
-            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t) => {
+            | Op::ForallSetInit(t) | Op::ExistsSetInit(t) | Op::SetCompSetInit(t)
+            | Op::ForallPowersetInit(t) | Op::ExistsPowersetInit(t) => {
                 if (*t as usize) > removed_pos {
                     *t -= 1;
                 }
@@ -1097,7 +1142,9 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
             | Op::ForallSetStep { body_pc, end_pc }
             | Op::ExistsSetStep { body_pc, end_pc }
             | Op::SetCompSetStep { body_pc, end_pc }
-            | Op::SetCompSetAdvance { body_pc, end_pc } => {
+            | Op::SetCompSetAdvance { body_pc, end_pc }
+            | Op::ForallPowersetStep { body_pc, end_pc }
+            | Op::ExistsPowersetStep { body_pc, end_pc } => {
                 if (*body_pc as usize) > removed_pos {
                     *body_pc -= 1;
                 }
@@ -1982,6 +2029,105 @@ fn vm_eval_inner(
                 continue;
             }
 
+            // === Forall over powerset (bitmask iteration) ===
+            Op::ForallPowersetInit(end_pc) => {
+                let base = stack.pop().unwrap();
+                let base = normalize_domain(base)?;
+                let set = base.as_set().unwrap();
+                let n = set.len();
+                // Powerset always has at least 1 element (empty set at mask=0)
+                let subset = Value::empty_set();
+                locals.push(subset);
+                loops.push(LoopState {
+                    hi: (1i64 << n) - 1, // max mask (inclusive)
+                    counter: 0,           // current mask
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(n),
+                    domain_val: Some(base),
+                });
+                let _ = end_pc; // used for patching only
+            }
+            Op::ForallPowersetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if !body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                if loop_state.counter >= loop_state.hi {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                loop_state.counter += 1;
+                let mask = loop_state.counter;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                loop_state.set_buf.clear();
+                for (i, elem) in set.iter().enumerate() {
+                    if mask & (1 << i) != 0 {
+                        loop_state.set_buf.push(elem.clone());
+                    }
+                }
+                *locals.last_mut().unwrap() =
+                    Value::set(Arc::new(loop_state.set_buf.clone()));
+                pc = *body_pc as usize;
+                continue;
+            }
+
+            // === Exists over powerset (bitmask iteration) ===
+            Op::ExistsPowersetInit(end_pc) => {
+                let base = stack.pop().unwrap();
+                let base = normalize_domain(base)?;
+                let set = base.as_set().unwrap();
+                let n = set.len();
+                let subset = Value::empty_set();
+                locals.push(subset);
+                loops.push(LoopState {
+                    hi: (1i64 << n) - 1,
+                    counter: 0,
+                    fn_buf: Vec::new(),
+                    set_buf: Vec::with_capacity(n),
+                    domain_val: Some(base),
+                });
+                let _ = end_pc;
+            }
+            Op::ExistsPowersetStep { body_pc, end_pc } => {
+                let body_result = pop_bool(stack)?;
+                if body_result {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(true));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                let loop_state = loops.last_mut().unwrap();
+                if loop_state.counter >= loop_state.hi {
+                    locals.pop();
+                    loops.pop();
+                    stack.push(Value::bool(false));
+                    pc = *end_pc as usize;
+                    continue;
+                }
+                loop_state.counter += 1;
+                let mask = loop_state.counter;
+                let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
+                loop_state.set_buf.clear();
+                for (i, elem) in set.iter().enumerate() {
+                    if mask & (1 << i) != 0 {
+                        loop_state.set_buf.push(elem.clone());
+                    }
+                }
+                *locals.last_mut().unwrap() =
+                    Value::set(Arc::new(loop_state.set_buf.clone()));
+                pc = *body_pc as usize;
+                continue;
+            }
+
             // === FnLit range ===
             Op::FnLitRangeInit(end_pc) => {
                 let hi = pop_int(stack)?;
@@ -2133,6 +2279,12 @@ fn vm_eval_inner(
                     VK::Seq(_) => stack.push(Value::seq(vec![])),
                     _ => return Err(type_mismatch("Seq", &seq_val)),
                 }
+            }
+
+            Op::MakeRange => {
+                let hi = pop_int(stack)?;
+                let lo = pop_int(stack)?;
+                stack.push(Value::range(lo, hi));
             }
 
             // === Fallback to tree-walk ===
