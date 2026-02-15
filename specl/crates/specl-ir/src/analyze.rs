@@ -14,6 +14,8 @@ pub struct SpecProfile {
     pub state_space_bound: Option<u128>,
     /// Per-variable: (name, type string, domain size). None domain = unbounded.
     pub var_domain_sizes: Vec<(String, String, Option<u128>)>,
+    /// Per-variable nesting depth (name, depth). Only includes depth >= 2.
+    pub var_nesting_depths: Vec<(String, usize)>,
     /// Per-action: (name, parameter combination count). None if unbounded.
     pub action_param_counts: Vec<(String, Option<u64>)>,
     /// Fraction of action pairs that are template-independent (0.0-1.0).
@@ -24,6 +26,8 @@ pub struct SpecProfile {
     pub symmetry_domain_sizes: Vec<usize>,
     /// Whether any refinable pairs exist (instance-level POR applicable).
     pub has_refinable_pairs: bool,
+    /// Recommended storage mode string, if any.
+    pub storage_recommendation: Option<String>,
     pub warnings: Vec<Warning>,
     pub recommendations: Vec<Recommendation>,
 }
@@ -253,17 +257,58 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
         });
     }
 
+    // Nesting depth analysis
+    let var_nesting_depths: Vec<(String, usize)> = spec
+        .vars
+        .iter()
+        .filter_map(|var| {
+            let depth = type_nesting_depth(&var.ty);
+            if depth >= 2 {
+                Some((var.name.clone(), depth))
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    for (name, depth) in &var_nesting_depths {
+        if *depth >= 3 {
+            warnings.push(Warning::ExponentialVar {
+                var: name.clone(),
+                reason: format!(
+                    "nesting depth {} — deeply nested dicts cause exponential state explosion",
+                    depth
+                ),
+            });
+        }
+    }
+
+    // Storage mode recommendation
+    let storage_recommendation = match state_space_bound {
+        Some(b) if b > 50_000_000 => Some(format!(
+            "--fast: estimated {} states — fingerprint-only uses 10x less memory",
+            format_number(b)
+        )),
+        Some(b) if b > 5_000_000 => Some(format!(
+            "--collapse: estimated {} states — compressed storage saves ~3x memory while keeping traces",
+            format_number(b)
+        )),
+        _ => None,
+    };
+
     SpecProfile {
         num_vars,
         num_actions,
         num_invariants,
         state_space_bound,
         var_domain_sizes,
+        var_nesting_depths,
         action_param_counts,
         independence_ratio,
         has_symmetry,
         symmetry_domain_sizes,
         has_refinable_pairs,
+        storage_recommendation,
         warnings,
         recommendations,
     }
@@ -325,6 +370,14 @@ fn type_domain_size(ty: &Type) -> Option<u128> {
             Some(product)
         }
         _ => None,
+    }
+}
+
+/// Compute dict nesting depth. Dict[K, Dict[K2, V]] = 2, Dict[K, V] = 1, non-dict = 0.
+fn type_nesting_depth(ty: &Type) -> usize {
+    match ty {
+        Type::Fn(_, val) => 1 + type_nesting_depth(val),
+        _ => 0,
     }
 }
 

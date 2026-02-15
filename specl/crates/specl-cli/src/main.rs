@@ -888,15 +888,64 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
         None => println!("  Total: unbounded"),
     }
 
-    // Action details
+    // Action details with hottest action identification
     println!();
     println!("Action Analysis:");
+    let total_combos: u64 = profile
+        .action_param_counts
+        .iter()
+        .filter_map(|(_, c)| *c)
+        .sum();
     for (name, combos) in &profile.action_param_counts {
         let combo_str = match combos {
             Some(c) => format_large_number(*c as u128),
             None => "unbounded".to_string(),
         };
-        println!("  {:30} {} param combos", name, combo_str);
+        let pct_str = match (combos, total_combos) {
+            (Some(c), t) if t > 0 => format!("  ({:.0}%)", *c as f64 / t as f64 * 100.0),
+            _ => String::new(),
+        };
+        println!("  {:30} {} param combos{}", name, combo_str, pct_str);
+    }
+    if total_combos > 0 {
+        if let Some((hottest, Some(hot_combos))) = profile
+            .action_param_counts
+            .iter()
+            .max_by_key(|(_, c)| c.unwrap_or(0))
+        {
+            let hot_pct = *hot_combos as f64 / total_combos as f64 * 100.0;
+            if hot_pct > 40.0 && profile.action_param_counts.len() > 1 {
+                println!(
+                    "  Tip: '{}' dominates ({:.0}%) — ensure it has selective require guards",
+                    hottest, hot_pct
+                );
+            }
+        }
+    }
+
+    // Nesting depth analysis
+    if !profile.var_nesting_depths.is_empty() {
+        println!();
+        println!("Nesting Analysis:");
+        for (name, depth) in &profile.var_nesting_depths {
+            let severity = if *depth >= 3 { "WARNING" } else { "Note" };
+            println!(
+                "  {}: '{}' has {}-level dict nesting",
+                severity, name, depth
+            );
+            if *depth >= 3 {
+                println!("    Dict[K1, Dict[K2, Dict[K3, V]]] has |V|^(K1*K2*K3) states");
+                println!("    Consider flattening to Dict[(K1,K2,K3), V] or using a simpler encoding");
+            } else {
+                println!("    OK for most specs, but watch state space with large ranges");
+            }
+        }
+    }
+
+    // Storage mode recommendation
+    if let Some(ref rec) = profile.storage_recommendation {
+        println!();
+        println!("Storage: {}", rec);
     }
 
     // Independence / symmetry
