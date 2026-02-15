@@ -1839,6 +1839,10 @@ impl Explorer {
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
         let mut var_hashes_buf = Vec::new();
+        let num_actions = self.spec.actions.len();
+        let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
+        let mut params_buf = Vec::new();
+        let mut domains_buf = Vec::new();
 
         for state in initial_states {
             let canonical = self.maybe_canonicalize(state);
@@ -1937,6 +1941,9 @@ impl Explorer {
                 &mut guard_bufs,
                 &mut effect_bufs,
                 &mut var_hashes_buf,
+                &mut op_caches,
+                &mut params_buf,
+                &mut domains_buf,
             )?;
 
             if successors.is_empty() && self.config.check_deadlock {
@@ -2048,6 +2055,10 @@ impl Explorer {
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
         let mut var_hashes_buf = Vec::new();
+        let num_actions = self.spec.actions.len();
+        let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
+        let mut params_buf = Vec::new();
+        let mut domains_buf = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2085,6 +2096,9 @@ impl Explorer {
                 &mut guard_bufs,
                 &mut effect_bufs,
                 &mut var_hashes_buf,
+                &mut op_caches,
+                &mut params_buf,
+                &mut domains_buf,
             )?;
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
@@ -2117,6 +2131,10 @@ impl Explorer {
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
         let mut var_hashes_buf = Vec::new();
+        let num_actions = self.spec.actions.len();
+        let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
+        let mut params_buf = Vec::new();
+        let mut domains_buf = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2143,6 +2161,9 @@ impl Explorer {
                 &mut guard_bufs,
                 &mut effect_bufs,
                 &mut var_hashes_buf,
+                &mut op_caches,
+                &mut params_buf,
+                &mut domains_buf,
             )?;
             if successors.is_empty() && self.config.check_deadlock {
                 let any_enabled = self.any_action_enabled(state)?;
@@ -2190,6 +2211,10 @@ impl Explorer {
         let mut effect_bufs = VmBufs::new();
         let mut var_hashes_buf = Vec::new();
         let mut successors: Vec<(State, usize, Vec<i64>)> = Vec::new();
+        let num_actions = self.spec.actions.len();
+        let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
+        let mut params_buf = Vec::new();
+        let mut domains_buf = Vec::new();
 
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
@@ -2303,6 +2328,9 @@ impl Explorer {
                 &mut guard_bufs,
                 &mut effect_bufs,
                 &mut var_hashes_buf,
+                &mut op_caches,
+                &mut params_buf,
+                &mut domains_buf,
             )?;
             if let Some(t1) = t1 {
                 prof_time_succ += t1.elapsed();
@@ -2484,6 +2512,7 @@ impl Explorer {
             thread_local! {
                 static VM_BUFS: RefCell<VmBufs> = RefCell::new(VmBufs::new());
             }
+            let num_actions_par = self.spec.actions.len();
 
             // Process batch in parallel
             let results: Vec<_> = batch
@@ -2534,15 +2563,36 @@ impl Explorer {
                     let mut guard_bufs = VmBufs::new();
                     let mut effect_bufs = VmBufs::new();
                     let mut var_hashes_buf = Vec::new();
-                    match self.generate_successors(
-                        state,
-                        &mut successors,
-                        &mut next_vars_buf,
-                        0,
-                        &mut guard_bufs,
-                        &mut effect_bufs,
-                        &mut var_hashes_buf,
-                    ) {
+                    thread_local! {
+                        static PAR_OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
+                        static PAR_PARAMS_BUF: RefCell<Vec<Value>> = const { RefCell::new(Vec::new()) };
+                        static PAR_DOMAINS_BUF: RefCell<Vec<Vec<Value>>> = const { RefCell::new(Vec::new()) };
+                    }
+                    let gen_result = PAR_OP_CACHES.with(|caches_cell| {
+                        PAR_PARAMS_BUF.with(|params_cell| {
+                            PAR_DOMAINS_BUF.with(|domains_cell| {
+                                let mut caches = caches_cell.borrow_mut();
+                                if caches.len() != num_actions_par {
+                                    *caches = (0..num_actions_par).map(|_| OpCache::new()).collect();
+                                }
+                                let mut par_params = params_cell.borrow_mut();
+                                let mut par_domains = domains_cell.borrow_mut();
+                                self.generate_successors(
+                                    state,
+                                    &mut successors,
+                                    &mut next_vars_buf,
+                                    0,
+                                    &mut guard_bufs,
+                                    &mut effect_bufs,
+                                    &mut var_hashes_buf,
+                                    &mut caches,
+                                    &mut par_params,
+                                    &mut par_domains,
+                                )
+                            })
+                        })
+                    });
+                    match gen_result {
                         Ok(()) => {
                             if successors.is_empty() && self.config.check_deadlock {
                                 match self.any_action_enabled(state) {
@@ -3013,6 +3063,9 @@ impl Explorer {
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
         var_hashes_buf: &mut Vec<u64>,
+        op_caches: &mut Vec<OpCache>,
+        params_buf: &mut Vec<Value>,
+        domains_buf: &mut Vec<Vec<Value>>,
     ) -> CheckResult<()> {
         buf.clear();
 
@@ -3053,6 +3106,9 @@ impl Explorer {
                     guard_bufs,
                     effect_bufs,
                     var_hashes_buf,
+                    op_caches,
+                    params_buf,
+                    domains_buf,
                 );
             }
             // AmpleResult::Templates falls through to standard path below
@@ -3070,6 +3126,9 @@ impl Explorer {
                 guard_bufs,
                 effect_bufs,
                 var_hashes_buf,
+                op_caches,
+                params_buf,
+                domains_buf,
             )
         } else if let Some(ref relevant) = self.relevant_actions {
             self.apply_template_actions(
@@ -3081,6 +3140,9 @@ impl Explorer {
                 guard_bufs,
                 effect_bufs,
                 var_hashes_buf,
+                op_caches,
+                params_buf,
+                domains_buf,
             )
         } else {
             self.apply_template_actions(
@@ -3092,6 +3154,9 @@ impl Explorer {
                 guard_bufs,
                 effect_bufs,
                 var_hashes_buf,
+                op_caches,
+                params_buf,
+                domains_buf,
             )
         }
     }
@@ -3108,11 +3173,10 @@ impl Explorer {
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
         var_hashes_buf: &mut Vec<u64>,
+        op_caches: &mut Vec<OpCache>,
+        params_buf: &mut Vec<Value>,
+        domains_buf: &mut Vec<Vec<Value>>,
     ) -> CheckResult<()> {
-        thread_local! {
-            static OP_CACHES: RefCell<Vec<OpCache>> = const { RefCell::new(Vec::new()) };
-        }
-
         let orbit_reps: SmallVec<[Vec<usize>; 4]> =
             if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
                 self.spec
@@ -3124,34 +3188,24 @@ impl Explorer {
                 SmallVec::new()
             };
 
-        let num_actions = self.spec.actions.len();
-        OP_CACHES.with(|cell| {
-            let mut caches = cell.borrow_mut();
-            if caches.len() != num_actions {
-                *caches = (0..num_actions).map(|_| OpCache::new()).collect();
+        for &action_idx in actions {
+            if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
+                continue;
             }
-            let mut params_buf = Vec::new();
-            let mut domains_buf = Vec::new();
-            for &action_idx in actions {
-                if sleep_set != 0 && action_idx < 64 && sleep_set & (1u64 << action_idx) != 0 {
-                    continue;
-                }
-                self.apply_action(
-                    state,
-                    action_idx,
-                    buf,
-                    next_vars_buf,
-                    &mut caches[action_idx],
-                    &orbit_reps,
-                    guard_bufs,
-                    effect_bufs,
-                    &mut params_buf,
-                    var_hashes_buf,
-                    &mut domains_buf,
-                )?;
-            }
-            Ok::<(), CheckError>(())
-        })?;
+            self.apply_action(
+                state,
+                action_idx,
+                buf,
+                next_vars_buf,
+                &mut op_caches[action_idx],
+                &orbit_reps,
+                guard_bufs,
+                effect_bufs,
+                params_buf,
+                var_hashes_buf,
+                domains_buf,
+            )?;
+        }
 
         Ok(())
     }
@@ -4207,6 +4261,10 @@ impl Explorer {
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
         let mut var_hashes_buf = Vec::new();
+        let num_actions = self.spec.actions.len();
+        let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
+        let mut params_buf = Vec::new();
+        let mut domains_buf = Vec::new();
 
         for _step in 0..max_steps {
             // Generate all successors (no POR, no symmetry)
@@ -4218,6 +4276,9 @@ impl Explorer {
                 &mut guard_bufs,
                 &mut effect_bufs,
                 &mut var_hashes_buf,
+                &mut op_caches,
+                &mut params_buf,
+                &mut domains_buf,
             )?;
 
             if successors_buf.is_empty() {
