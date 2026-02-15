@@ -170,9 +170,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     ctx.pop_local();
                     map.push((Value::int(i), value));
                 }
-                // Produce IntMap if keys start at 0 and all values are Int
-                if lo_val == 0 && map.iter().all(|(_, v)| v.is_int()) {
-                    let arr: Vec<i64> = map.iter().map(|(_, v)| v.as_int().unwrap()).collect();
+                // Produce IntMap if keys start at 0 (dense 0..N dict)
+                if lo_val == 0 {
+                    let arr: Vec<Value> = map.into_iter().map(|(_, v)| v).collect();
                     return Ok(Value::intmap(Arc::new(arr)));
                 }
                 return Ok(Value::func(Arc::new(map)));
@@ -208,7 +208,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 }
                 VK::IntMap(arr) => {
                     let k = expect_int(&index_val)? as usize;
-                    Ok(Value::int(arr[k]))
+                    Ok(arr[k].clone())
                 }
                 VK::Fn(map) => Value::fn_get(map, &index_val)
                     .cloned()
@@ -262,7 +262,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     }
                     let arg = eval(&args[0], ctx)?;
                     let k = expect_int(&arg)? as usize;
-                    Ok(Value::int(arr[k]))
+                    Ok(arr[k].clone())
                 }
                 VK::Fn(map) => {
                     if args.len() != 1 {
@@ -306,15 +306,8 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             if base_val.is_intmap() {
                 let mut arr = base_val.into_intmap_arc();
                 let k = expect_int(&key_val)? as usize;
-                if let Some(v) = value_val.as_int() {
-                    Arc::make_mut(&mut arr)[k] = v;
-                    Ok(Value::from_intmap_arc(arr))
-                } else {
-                    // Fall back to Fn if value isn't Int
-                    let mut fn_vec = Value::intmap_to_fn_vec(&arr);
-                    Value::fn_insert(&mut fn_vec, key_val, value_val);
-                    Ok(Value::func(Arc::new(fn_vec)))
-                }
+                Arc::make_mut(&mut arr)[k] = value_val;
+                Ok(Value::from_intmap_arc(arr))
             } else if base_val.is_fn() {
                 let mut map = base_val.into_fn_arc();
                 Value::fn_insert(Arc::make_mut(&mut map), key_val, value_val);
@@ -597,7 +590,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             let val = eval(expr, ctx)?;
             match val.kind() {
                 VK::IntMap(arr) => {
-                    let mut vals: Vec<Value> = arr.iter().map(|v| Value::int(*v)).collect();
+                    let mut vals: Vec<Value> = arr.to_vec();
                     vals.sort();
                     vals.dedup();
                     Ok(Value::set(Arc::new(vals)))
@@ -871,7 +864,7 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
             match base_val.kind() {
                 VK::IntMap(arr) => {
                     let k = expect_int(&index_val)? as usize;
-                    Ok(arr[k])
+                    arr[k].as_int().ok_or_else(|| type_mismatch("Int", &arr[k]))
                 }
                 VK::Fn(map) => match Value::fn_get(map, &index_val) {
                     Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
@@ -1189,7 +1182,7 @@ fn eval_binary(
                 let arr = Arc::make_mut(&mut a);
                 for (i, v) in b.iter().enumerate() {
                     if i < arr.len() {
-                        arr[i] = *v;
+                        arr[i] = v.clone();
                     }
                 }
                 Ok(Value::from_intmap_arc(a))
@@ -1206,7 +1199,7 @@ fn eval_binary(
                 let b = right_val.into_intmap_arc();
                 let inner = Arc::make_mut(&mut fn_a);
                 for (i, v) in b.iter().enumerate() {
-                    Value::fn_insert(inner, Value::int(i as i64), Value::int(*v));
+                    Value::fn_insert(inner, Value::int(i as i64), v.clone());
                 }
                 Ok(Value::from_fn_arc(fn_a))
             } else if left_val.is_fn() && right_val.is_fn() {

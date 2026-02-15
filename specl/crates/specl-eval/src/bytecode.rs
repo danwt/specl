@@ -1539,7 +1539,7 @@ fn vm_eval_inner(
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let k = expect_int(key)? as usize;
-                        stack.push(Value::int(arr[k]));
+                        stack.push(arr[k].clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1584,7 +1584,7 @@ fn vm_eval_inner(
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let k = expect_int(key)? as usize;
-                        stack.push(Value::int(arr[k]));
+                        stack.push(arr[k].clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1613,7 +1613,7 @@ fn vm_eval_inner(
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
                                 let k = expect_int(key2)? as usize;
-                                stack.push(Value::int(arr[k]));
+                                stack.push(arr[k].clone());
                             }
                             VK::Fn(inner_map) => {
                                 let val = Value::fn_get(inner_map, key2)
@@ -1645,7 +1645,7 @@ fn vm_eval_inner(
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let idx = expect_int(key)? as usize;
-                        stack.push(Value::bool(arr[idx] == *k));
+                        stack.push(Value::bool(arr[idx] == Value::int(*k)));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1698,7 +1698,7 @@ fn vm_eval_inner(
                 let param = &params[*param_idx as usize];
                 match param.kind() {
                     VK::IntMap(arr) => {
-                        stack.push(Value::int(arr[*k as usize]));
+                        stack.push(arr[*k as usize].clone());
                     }
                     VK::Seq(s) => {
                         stack.push(s[*k as usize].clone());
@@ -1724,7 +1724,7 @@ fn vm_eval_inner(
                 // as key into a state variable. E.g. currentTerm[msg[2]], state[msg[2]].
                 let param = &params[*param_idx as usize];
                 let inner_key = match param.kind() {
-                    VK::IntMap(arr) => Value::int(arr[*k as usize]),
+                    VK::IntMap(arr) => arr[*k as usize].clone(),
                     VK::Seq(s) => s[*k as usize].clone(),
                     VK::Fn(map) => {
                         let key = Value::int(*k);
@@ -1743,7 +1743,7 @@ fn vm_eval_inner(
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let idx = expect_int(&inner_key)? as usize;
-                        stack.push(Value::int(arr[idx]));
+                        stack.push(arr[idx].clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, &inner_key)
@@ -1767,7 +1767,7 @@ fn vm_eval_inner(
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let k = expect_int(&key)? as usize;
-                        stack.push(Value::int(arr[k]));
+                        stack.push(arr[k].clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, &key)
@@ -1800,19 +1800,8 @@ fn vm_eval_inner(
                 if base.is_intmap() {
                     let mut arr = base.into_intmap_arc();
                     let k = expect_int(&key)? as usize;
-                    if let Some(v) = value.as_int() {
-                        Arc::make_mut(&mut arr)[k] = v;
-                        stack.push(Value::from_intmap_arc(arr));
-                    } else {
-                        let fn_vec: Vec<(Value, Value)> = arr
-                            .iter()
-                            .enumerate()
-                            .map(|(i, v)| (Value::int(i as i64), Value::int(*v)))
-                            .collect();
-                        let mut fn_vec = fn_vec;
-                        Value::fn_insert(&mut fn_vec, key, value);
-                        stack.push(Value::func(Arc::new(fn_vec)));
-                    }
+                    Arc::make_mut(&mut arr)[k] = value;
+                    stack.push(Value::from_intmap_arc(arr));
                 } else if base.is_fn() {
                     let mut map = base.into_fn_arc();
                     Value::fn_insert(Arc::make_mut(&mut map), key, value);
@@ -1838,26 +1827,12 @@ fn vm_eval_inner(
                 let base = stack.pop().unwrap();
                 if base.is_intmap() {
                     let mut arr = base.into_intmap_arc();
-                    // Check if all updates stay in IntMap form
-                    let all_int = pairs.iter().all(|(_, v)| v.is_int());
-                    if all_int {
-                        let data = Arc::make_mut(&mut arr);
-                        for (key, value) in &pairs {
-                            let k = expect_int(key)? as usize;
-                            data[k] = value.as_int().unwrap();
-                        }
-                        stack.push(Value::from_intmap_arc(arr));
-                    } else {
-                        let mut fn_vec: Vec<(Value, Value)> = arr
-                            .iter()
-                            .enumerate()
-                            .map(|(i, v)| (Value::int(i as i64), Value::int(*v)))
-                            .collect();
-                        for (key, value) in pairs {
-                            Value::fn_insert(&mut fn_vec, key, value);
-                        }
-                        stack.push(Value::func(Arc::new(fn_vec)));
+                    let data = Arc::make_mut(&mut arr);
+                    for (key, value) in pairs {
+                        let k = expect_int(&key)? as usize;
+                        data[k] = value;
                     }
+                    stack.push(Value::from_intmap_arc(arr));
                 } else if base.is_fn() {
                     let mut map = base.into_fn_arc();
                     let data = Arc::make_mut(&mut map);
@@ -1877,36 +1852,57 @@ fn vm_eval_inner(
                 let k1 = stack.pop().unwrap();
                 let k2 = stack.pop().unwrap();
                 let value = stack.pop().unwrap();
-                if !dict.is_fn() {
+                if dict.is_intmap() {
+                    let mut outer_arc = dict.into_intmap_arc();
+                    let k1_int = expect_int(&k1)? as usize;
+                    let outer = Arc::make_mut(&mut outer_arc);
+                    let inner_val = std::mem::replace(&mut outer[k1_int], Value::none());
+                    if inner_val.is_intmap() {
+                        let k2_int = expect_int(&k2)? as usize;
+                        let mut inner_arc = inner_val.into_intmap_arc();
+                        Arc::make_mut(&mut inner_arc)[k2_int] = value;
+                        outer[k1_int] = Value::from_intmap_arc(inner_arc);
+                    } else if inner_val.is_fn() {
+                        let mut inner_arc = inner_val.into_fn_arc();
+                        Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
+                        outer[k1_int] = Value::from_fn_arc(inner_arc);
+                    } else {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: inner_val.type_name().to_string(),
+                        });
+                    }
+                    stack.push(Value::from_intmap_arc(outer_arc));
+                } else if dict.is_fn() {
+                    let mut outer_arc = dict.into_fn_arc();
+                    let outer = Arc::make_mut(&mut outer_arc);
+                    let pos = outer
+                        .binary_search_by(|(k, _)| k.cmp(&k1))
+                        .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
+                    if outer[pos].1.is_intmap() {
+                        let k2_int = expect_int(&k2)? as usize;
+                        let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
+                        let mut inner_arc = inner_val.into_intmap_arc();
+                        Arc::make_mut(&mut inner_arc)[k2_int] = value;
+                        outer[pos].1 = Value::from_intmap_arc(inner_arc);
+                    } else if outer[pos].1.is_fn() {
+                        let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
+                        let mut inner_arc = inner_val.into_fn_arc();
+                        Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
+                        outer[pos].1 = Value::from_fn_arc(inner_arc);
+                    } else {
+                        return Err(EvalError::TypeMismatch {
+                            expected: "Fn or IntMap".to_string(),
+                            actual: outer[pos].1.type_name().to_string(),
+                        });
+                    }
+                    stack.push(Value::from_fn_arc(outer_arc));
+                } else {
                     return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
+                        expected: "Fn or IntMap".to_string(),
                         actual: dict.type_name().to_string(),
                     });
                 }
-                let mut outer_arc = dict.into_fn_arc();
-                let outer = Arc::make_mut(&mut outer_arc);
-                let pos = outer
-                    .binary_search_by(|(k, _)| k.cmp(&k1))
-                    .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
-                if outer[pos].1.is_intmap() {
-                    let k2_int = expect_int(&k2)? as usize;
-                    let v_int = expect_int(&value)?;
-                    let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
-                    let mut inner_arc = inner_val.into_intmap_arc();
-                    Arc::make_mut(&mut inner_arc)[k2_int] = v_int;
-                    outer[pos].1 = Value::from_intmap_arc(inner_arc);
-                } else if outer[pos].1.is_fn() {
-                    let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
-                    let mut inner_arc = inner_val.into_fn_arc();
-                    Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
-                    outer[pos].1 = Value::from_fn_arc(inner_arc);
-                } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
-                        actual: outer[pos].1.type_name().to_string(),
-                    });
-                }
-                stack.push(Value::from_fn_arc(outer_arc));
             }
             Op::NestedDictUpdate3 => {
                 let dict = stack.pop().unwrap();
@@ -1914,49 +1910,80 @@ fn vm_eval_inner(
                 let k2 = stack.pop().unwrap();
                 let k3 = stack.pop().unwrap();
                 let value = stack.pop().unwrap();
-                if !dict.is_fn() {
+
+                // Helper: update the innermost (3rd level) dict
+                let update_inner =
+                    |inner_val: Value, k3: Value, value: Value| -> Result<Value, EvalError> {
+                        if inner_val.is_intmap() {
+                            let k3_int = expect_int(&k3)? as usize;
+                            let mut inner_arc = inner_val.into_intmap_arc();
+                            Arc::make_mut(&mut inner_arc)[k3_int] = value;
+                            Ok(Value::from_intmap_arc(inner_arc))
+                        } else if inner_val.is_fn() {
+                            let mut inner_arc = inner_val.into_fn_arc();
+                            Value::fn_insert(Arc::make_mut(&mut inner_arc), k3, value);
+                            Ok(Value::from_fn_arc(inner_arc))
+                        } else {
+                            Err(EvalError::TypeMismatch {
+                                expected: "Fn or IntMap".to_string(),
+                                actual: inner_val.type_name().to_string(),
+                            })
+                        }
+                    };
+
+                // Helper: update the middle (2nd level) dict
+                let update_mid =
+                    |mid_val: Value,
+                     k2: Value,
+                     k3: Value,
+                     value: Value|
+                     -> Result<Value, EvalError> {
+                        if mid_val.is_intmap() {
+                            let k2_int = expect_int(&k2)? as usize;
+                            let mut mid_arc = mid_val.into_intmap_arc();
+                            let mid = Arc::make_mut(&mut mid_arc);
+                            let inner_val = std::mem::replace(&mut mid[k2_int], Value::none());
+                            mid[k2_int] = update_inner(inner_val, k3, value)?;
+                            Ok(Value::from_intmap_arc(mid_arc))
+                        } else if mid_val.is_fn() {
+                            let mut mid_arc = mid_val.into_fn_arc();
+                            let mid = Arc::make_mut(&mut mid_arc);
+                            let pos2 = mid
+                                .binary_search_by(|(k, _)| k.cmp(&k2))
+                                .map_err(|_| EvalError::KeyNotFound(k2.to_string()))?;
+                            let inner_val = std::mem::replace(&mut mid[pos2].1, Value::none());
+                            mid[pos2].1 = update_inner(inner_val, k3, value)?;
+                            Ok(Value::from_fn_arc(mid_arc))
+                        } else {
+                            Err(EvalError::TypeMismatch {
+                                expected: "Fn or IntMap".to_string(),
+                                actual: mid_val.type_name().to_string(),
+                            })
+                        }
+                    };
+
+                if dict.is_intmap() {
+                    let k1_int = expect_int(&k1)? as usize;
+                    let mut outer_arc = dict.into_intmap_arc();
+                    let outer = Arc::make_mut(&mut outer_arc);
+                    let mid_val = std::mem::replace(&mut outer[k1_int], Value::none());
+                    outer[k1_int] = update_mid(mid_val, k2, k3, value)?;
+                    stack.push(Value::from_intmap_arc(outer_arc));
+                } else if dict.is_fn() {
+                    let mut outer_arc = dict.into_fn_arc();
+                    let outer = Arc::make_mut(&mut outer_arc);
+                    let pos1 = outer
+                        .binary_search_by(|(k, _)| k.cmp(&k1))
+                        .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
+                    let mid_val = std::mem::replace(&mut outer[pos1].1, Value::none());
+                    outer[pos1].1 = update_mid(mid_val, k2, k3, value)?;
+                    stack.push(Value::from_fn_arc(outer_arc));
+                } else {
                     return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
+                        expected: "Fn or IntMap".to_string(),
                         actual: dict.type_name().to_string(),
                     });
                 }
-                let mut outer_arc = dict.into_fn_arc();
-                let outer = Arc::make_mut(&mut outer_arc);
-                let pos1 = outer
-                    .binary_search_by(|(k, _)| k.cmp(&k1))
-                    .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
-                if !outer[pos1].1.is_fn() {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
-                        actual: outer[pos1].1.type_name().to_string(),
-                    });
-                }
-                let mid_val = std::mem::replace(&mut outer[pos1].1, Value::none());
-                let mut mid_arc = mid_val.into_fn_arc();
-                let mid = Arc::make_mut(&mut mid_arc);
-                let pos2 = mid
-                    .binary_search_by(|(k, _)| k.cmp(&k2))
-                    .map_err(|_| EvalError::KeyNotFound(k2.to_string()))?;
-                if mid[pos2].1.is_intmap() {
-                    let k3_int = expect_int(&k3)? as usize;
-                    let v_int = expect_int(&value)?;
-                    let inner_val = std::mem::replace(&mut mid[pos2].1, Value::none());
-                    let mut inner_arc = inner_val.into_intmap_arc();
-                    Arc::make_mut(&mut inner_arc)[k3_int] = v_int;
-                    mid[pos2].1 = Value::from_intmap_arc(inner_arc);
-                } else if mid[pos2].1.is_fn() {
-                    let inner_val = std::mem::replace(&mut mid[pos2].1, Value::none());
-                    let mut inner_arc = inner_val.into_fn_arc();
-                    Value::fn_insert(Arc::make_mut(&mut inner_arc), k3, value);
-                    mid[pos2].1 = Value::from_fn_arc(inner_arc);
-                } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
-                        actual: mid[pos2].1.type_name().to_string(),
-                    });
-                }
-                outer[pos1].1 = Value::from_fn_arc(mid_arc);
-                stack.push(Value::from_fn_arc(outer_arc));
             }
             Op::Len => {
                 let val = stack.pop().unwrap();
@@ -2449,11 +2476,11 @@ fn vm_eval_inner(
                     let fn_buf = std::mem::take(&mut loop_state.fn_buf);
                     locals.pop();
                     loops.pop();
-                    // Produce IntMap if keys start at 0 and all values are Int
+                    // Produce IntMap if keys start at 0
                     let lo_zero = fn_buf.first().is_none_or(|(k, _)| k == &Value::int(0));
-                    if lo_zero && fn_buf.iter().all(|(_, v)| v.is_int()) {
-                        let arr: Vec<i64> =
-                            fn_buf.iter().map(|(_, v)| v.as_int().unwrap()).collect();
+                    if lo_zero {
+                        let arr: Vec<Value> =
+                            fn_buf.into_iter().map(|(_, v)| v).collect();
                         stack.push(Value::intmap(Arc::new(arr)));
                     } else {
                         stack.push(Value::func(Arc::new(fn_buf)));

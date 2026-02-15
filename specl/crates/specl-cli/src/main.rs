@@ -2323,7 +2323,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
             let obj: serde_json::Map<String, serde_json::Value> = vals
                 .iter()
                 .enumerate()
-                .map(|(i, v)| (i.to_string(), serde_json::json!(*v)))
+                .map(|(i, v)| (i.to_string(), value_to_json(v)))
                 .collect();
             serde_json::Value::Object(obj)
         }

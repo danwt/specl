@@ -245,7 +245,7 @@ fn build_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<Vec<Vec<u8>>> 
                 .map(|&var_idx| match vars[var_idx].kind() {
                     VK::IntMap(arr) => {
                         if i < arr.len() {
-                            Value::int(arr[i]).to_bytes()
+                            arr[i].to_bytes()
                         } else {
                             vec![]
                         }
@@ -310,10 +310,10 @@ fn apply_permutation(vars: &mut [Value], group: &SymmetryGroup, perm: &[usize]) 
     for &var_idx in &group.variables {
         match vars[var_idx].kind() {
             VK::IntMap(arr) => {
-                let mut new_arr = vec![0i64; arr.len()];
+                let mut new_arr: Vec<Value> = vec![Value::none(); arr.len()];
                 for (old_idx, val) in arr.iter().enumerate() {
                     let new_idx = perm.get(old_idx).copied().unwrap_or(old_idx);
-                    new_arr[new_idx] = *val;
+                    new_arr[new_idx] = val.clone();
                 }
                 vars[var_idx] = Value::intmap(Arc::new(new_arr));
             }

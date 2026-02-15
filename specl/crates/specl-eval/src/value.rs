@@ -22,7 +22,7 @@ const TAG_STRING: u8 = 0x10; // Arc<String>
 const TAG_SET: u8 = 0x11; // Arc<Vec<Value>>
 const TAG_SEQ: u8 = 0x12; // Arc<Vec<Value>>
 const TAG_FN: u8 = 0x13; // Arc<Vec<(Value, Value)>>
-const TAG_INTMAP: u8 = 0x14; // Arc<Vec<i64>>
+const TAG_INTMAP: u8 = 0x14; // Arc<Vec<Value>> (dense dict with implicit 0..N keys)
 const TAG_RECORD: u8 = 0x15; // Arc<BTreeMap<String, Value>>
 const TAG_TUPLE: u8 = 0x16; // Arc<Vec<Value>>
 const TAG_SOME: u8 = 0x17; // Arc<Value>
@@ -55,7 +55,7 @@ pub enum VK<'a> {
     Set(&'a [Value]),
     Seq(&'a [Value]),
     Fn(&'a [(Value, Value)]),
-    IntMap(&'a [i64]),
+    IntMap(&'a [Value]),
     Record(&'a BTreeMap<String, Value>),
     Tuple(&'a [Value]),
     None,
@@ -160,7 +160,7 @@ impl Value {
     }
 
     #[inline]
-    pub fn intmap(v: Arc<Vec<i64>>) -> Self {
+    pub fn intmap(v: Arc<Vec<Value>>) -> Self {
         Self::from_heap(TAG_INTMAP, v)
     }
 
@@ -216,7 +216,7 @@ impl Value {
     heap_methods!(TAG_FN, Vec<(Value, Value)>, is_fn, into_fn_arc, from_fn_arc);
     heap_methods!(
         TAG_INTMAP,
-        Vec<i64>,
+        Vec<Value>,
         is_intmap,
         into_intmap_arc,
         from_intmap_arc
@@ -284,7 +284,7 @@ impl Value {
                 VK::Fn(vec.as_slice())
             }
             TAG_INTMAP => {
-                let vec = unsafe { &*(self.ptr() as *const Vec<i64>) };
+                let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
                 VK::IntMap(vec.as_slice())
             }
             TAG_RECORD => VK::Record(unsafe { &*(self.ptr() as *const BTreeMap<String, Value>) }),
@@ -436,9 +436,9 @@ impl Value {
         }
     }
 
-    pub fn as_intmap(&self) -> Option<&[i64]> {
+    pub fn as_intmap(&self) -> Option<&[Value]> {
         if self.tag() == TAG_INTMAP {
-            Some(unsafe { &*(self.ptr() as *const Vec<i64>) })
+            Some(unsafe { &*(self.ptr() as *const Vec<Value>) })
         } else {
             None
         }
@@ -452,14 +452,14 @@ impl Value {
         }
     }
 
-    pub fn intmap_to_fn(arr: &[i64]) -> Value {
+    pub fn intmap_to_fn(arr: &[Value]) -> Value {
         Value::func(Arc::new(Self::intmap_to_fn_vec(arr)))
     }
 
-    pub fn intmap_to_fn_vec(arr: &[i64]) -> Vec<(Value, Value)> {
+    pub fn intmap_to_fn_vec(arr: &[Value]) -> Vec<(Value, Value)> {
         arr.iter()
             .enumerate()
-            .map(|(i, v)| (Value::int(i as i64), Value::int(*v)))
+            .map(|(i, v)| (Value::int(i as i64), v.clone()))
             .collect()
     }
 
@@ -507,10 +507,13 @@ impl Value {
                 }
             }
             VK::IntMap(arr) => {
-                out.push(10);
+                // Serialize as Fn (tag 5) so IntMap and Fn with same content
+                // produce identical byte representations.
+                out.push(5);
                 out.extend_from_slice(&(arr.len() as u64).to_le_bytes());
-                for v in arr {
-                    out.extend_from_slice(&v.to_le_bytes());
+                for (i, v) in arr.iter().enumerate() {
+                    Value::int(i as i64).write_bytes(out);
+                    v.write_bytes(out);
                 }
             }
             VK::Record(r) => {
@@ -568,7 +571,7 @@ impl Clone for Value {
                 Value(self.0)
             }
             TAG_INTMAP => {
-                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<i64>) };
+                unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<Value>) };
                 Value(self.0)
             }
             TAG_RECORD => {
@@ -620,7 +623,7 @@ impl Drop for Value {
                 Arc::decrement_strong_count(self.ptr() as *const Vec<(Value, Value)>);
             },
             TAG_INTMAP => unsafe {
-                Arc::decrement_strong_count(self.ptr() as *const Vec<i64>);
+                Arc::decrement_strong_count(self.ptr() as *const Vec<Value>);
             },
             TAG_RECORD => unsafe {
                 Arc::decrement_strong_count(self.ptr() as *const BTreeMap<String, Value>);
@@ -654,9 +657,21 @@ impl PartialEq for Value {
         if (t1 == TAG_INT || t1 == TAG_BIGINT) && (t2 == TAG_INT || t2 == TAG_BIGINT) {
             return self.as_int().unwrap() == other.as_int().unwrap();
         }
+        // IntMap == Fn cross-comparison (same logical dict, different storage)
+        if (t1 == TAG_INTMAP || t1 == TAG_FN) && (t2 == TAG_INTMAP || t2 == TAG_FN) {
+            return match (self.kind(), other.kind()) {
+                (VK::IntMap(a), VK::IntMap(b)) => a == b,
+                (VK::Fn(a), VK::Fn(b)) => a == b,
+                (VK::IntMap(arr), VK::Fn(pairs)) | (VK::Fn(pairs), VK::IntMap(arr)) => {
+                    arr.len() == pairs.len()
+                        && pairs.iter().enumerate().all(|(i, (k, v))| {
+                            k.as_int() == Some(i as i64) && *v == arr[i]
+                        })
+                }
+                _ => unreachable!(),
+            };
+        }
         if t1 != t2 {
-            // IntMap and Fn are considered different tags for the purposes of Eq,
-            // even though they have the same ordering discriminant.
             return false;
         }
         // Same tag, different bits — compare inner data
@@ -745,8 +760,40 @@ impl Ord for Value {
             (VK::Seq(a), VK::Seq(b)) => a.cmp(b),
             (VK::Fn(a), VK::Fn(b)) => a.cmp(b),
             (VK::IntMap(a), VK::IntMap(b)) => a.cmp(b),
-            (VK::IntMap(_), VK::Fn(_)) => Ordering::Less,
-            (VK::Fn(_), VK::IntMap(_)) => Ordering::Greater,
+            (VK::IntMap(arr), VK::Fn(pairs)) => {
+                // Cross-compare: IntMap as virtual (key, value) pairs
+                for (i, v) in arr.iter().enumerate() {
+                    if i >= pairs.len() {
+                        return Ordering::Greater;
+                    }
+                    let key_cmp = Value::int(i as i64).cmp(&pairs[i].0);
+                    if key_cmp != Ordering::Equal {
+                        return key_cmp;
+                    }
+                    let val_cmp = v.cmp(&pairs[i].1);
+                    if val_cmp != Ordering::Equal {
+                        return val_cmp;
+                    }
+                }
+                arr.len().cmp(&pairs.len())
+            }
+            (VK::Fn(pairs), VK::IntMap(arr)) => {
+                // Reverse of above
+                for (i, (k, v)) in pairs.iter().enumerate() {
+                    if i >= arr.len() {
+                        return Ordering::Greater;
+                    }
+                    let key_cmp = k.cmp(&Value::int(i as i64));
+                    if key_cmp != Ordering::Equal {
+                        return key_cmp;
+                    }
+                    let val_cmp = v.cmp(&arr[i]);
+                    if val_cmp != Ordering::Equal {
+                        return val_cmp;
+                    }
+                }
+                pairs.len().cmp(&arr.len())
+            }
             (VK::Record(a), VK::Record(b)) => a.cmp(b),
             (VK::Tuple(a), VK::Tuple(b)) => a.cmp(b),
             (VK::None, VK::None) => Ordering::Equal,
@@ -853,14 +900,15 @@ impl Hash for Value {
                 }
             }
             VK::IntMap(arr) => {
-                // Batch-hash: write the entire i64 slice as contiguous bytes.
-                // AHasher can process 16 bytes at a time with AES-NI, much faster
-                // than individual i64.hash() calls.
-                10u8.hash(state);
+                // Use same discriminant as Fn (5) so IntMap and Fn with
+                // identical logical content produce the same hash.
+                5u8.hash(state);
                 arr.len().hash(state);
-                let bytes =
-                    unsafe { std::slice::from_raw_parts(arr.as_ptr() as *const u8, arr.len() * 8) };
-                state.write(bytes);
+                // Match hash_int_keyed_pairs: hash raw i64 key (no discriminant)
+                for (i, v) in arr.iter().enumerate() {
+                    (i as i64).hash(state);
+                    v.hash(state);
+                }
             }
             VK::Record(r) => {
                 6u8.hash(state);
@@ -932,11 +980,11 @@ impl fmt::Display for Value {
             }
             VK::IntMap(arr) => {
                 write!(f, "fn{{")?;
-                for (i, v) in arr.iter().enumerate() {
-                    if i > 0 {
+                for (idx, v) in arr.iter().enumerate() {
+                    if idx > 0 {
                         write!(f, ", ")?;
                     }
-                    write!(f, "{} -> {}", i, v)?;
+                    write!(f, "{} -> {}", idx, v)?;
                 }
                 write!(f, "}}")
             }
