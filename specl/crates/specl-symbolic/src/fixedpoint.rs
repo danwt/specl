@@ -84,8 +84,7 @@ impl Fixedpoint {
 
     /// Add a rule (universally quantified Horn clause).
     pub fn add_rule(&self, rule: z3_sys::Z3_ast) {
-        let name = unsafe { z3_sys::Z3_mk_string_symbol(self.ctx, c"rule".as_ptr()) }
-            .unwrap();
+        let name = unsafe { z3_sys::Z3_mk_string_symbol(self.ctx, c"rule".as_ptr()) }.unwrap();
         unsafe { z3_sys::Z3_fixedpoint_add_rule(self.ctx, self.fp, rule, name) };
     }
 

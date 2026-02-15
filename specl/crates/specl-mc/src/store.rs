@@ -607,8 +607,7 @@ impl StateStore {
         if full_tracking {
             self.backend = StorageBackend::Full;
         } else {
-            self.backend =
-                StorageBackend::Fingerprint(UnsafeCell::new(AtomicFPSet::new(1 << 23)));
+            self.backend = StorageBackend::Fingerprint(UnsafeCell::new(AtomicFPSet::new(1 << 23)));
         }
     }
 }

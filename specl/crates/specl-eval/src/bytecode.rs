@@ -902,11 +902,25 @@ impl Compiler {
         value: &CompiledExpr,
     ) -> bool {
         // Check for 2-level: value is a dict update of base[key]
-        if let Some((CompiledExpr::Index { base: idx_base, index: idx_key }, inner_key, inner_value)) = extract_dict_update(value) {
+        if let Some((
+            CompiledExpr::Index {
+                base: idx_base,
+                index: idx_key,
+            },
+            inner_key,
+            inner_value,
+        )) = extract_dict_update(value)
+        {
             if expr_structural_eq(base, idx_base) && expr_structural_eq(key, idx_key) {
                 // Check for 3-level: inner_value is a dict update of base[key][inner_key]
-                if let Some((CompiledExpr::Index { base: idx2_base, index: idx2_key }, inner2_key, inner2_value)) =
-                    extract_dict_update(inner_value)
+                if let Some((
+                    CompiledExpr::Index {
+                        base: idx2_base,
+                        index: idx2_key,
+                    },
+                    inner2_key,
+                    inner2_value,
+                )) = extract_dict_update(inner_value)
                 {
                     if let CompiledExpr::Index {
                         base: idx2_inner_base,
@@ -1077,9 +1091,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
         }
 
         // Pattern: Var(i), Param(j), DictGet → VarParamDictGet(i, j) (3 → 1)
-        if i + 2 < ops.len()
-            && !jump_targets.get(i + 2).copied().unwrap_or(false)
-        {
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
             if let (Op::Var(var_idx), Op::Param(param_idx), Op::DictGet) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
@@ -1095,12 +1107,8 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
         }
 
         // Pattern: Var(i), Int(k), IntEq → VarIntEq(i, k) (3 → 1)
-        if i + 2 < ops.len()
-            && !jump_targets.get(i + 2).copied().unwrap_or(false)
-        {
-            if let (Op::Var(var_idx), Op::Int(k), Op::IntEq) =
-                (&ops[i], &ops[i + 1], &ops[i + 2])
-            {
+        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
+            if let (Op::Var(var_idx), Op::Int(k), Op::IntEq) = (&ops[i], &ops[i + 1], &ops[i + 2]) {
                 let var_idx = *var_idx;
                 let k = *k;
                 ops[i] = Op::VarIntEq(var_idx, k);
@@ -1221,7 +1229,6 @@ fn patch_jumps_after_remove(ops: &mut [Op], removed_pos: usize, jump_targets: &m
 // ============================================================================
 
 /// Execute bytecode and return the result as a bool.
-/// Execute bytecode and return the result as a bool.
 pub fn vm_eval_bool(
     bytecode: &Bytecode,
     vars: &[Value],
@@ -1275,7 +1282,17 @@ pub fn vm_eval_reuse(
     bufs.stack.clear();
     bufs.locals.clear();
     bufs.loops.clear();
-    vm_eval_inner(&bytecode.ops, &bytecode.fallbacks, vars, next_vars, consts, params, &mut bufs.stack, &mut bufs.locals, &mut bufs.loops)
+    vm_eval_inner(
+        &bytecode.ops,
+        &bytecode.fallbacks,
+        vars,
+        next_vars,
+        consts,
+        params,
+        &mut bufs.stack,
+        &mut bufs.locals,
+        &mut bufs.loops,
+    )
 }
 
 /// Execute bytecode using reusable buffers. Returns the result as a bool.
@@ -1305,7 +1322,17 @@ pub fn vm_eval(
     let mut stack: Vec<Value> = Vec::with_capacity(16);
     let mut locals: Vec<Value> = Vec::new();
     let mut loops: Vec<LoopState> = Vec::new();
-    vm_eval_inner(&bytecode.ops, &bytecode.fallbacks, vars, next_vars, consts, params, &mut stack, &mut locals, &mut loops)
+    vm_eval_inner(
+        &bytecode.ops,
+        &bytecode.fallbacks,
+        vars,
+        next_vars,
+        consts,
+        params,
+        &mut stack,
+        &mut locals,
+        &mut loops,
+    )
 }
 
 /// Core VM execution loop. Shared by `vm_eval` and `vm_eval_reuse`.
@@ -2309,10 +2336,8 @@ fn vm_eval_inner(
                     // Produce IntMap if keys start at 0 and all values are Int
                     let lo_zero = fn_buf.first().is_none_or(|(k, _)| k == &Value::int(0));
                     if lo_zero && fn_buf.iter().all(|(_, v)| v.is_int()) {
-                        let arr: Vec<i64> = fn_buf
-                            .iter()
-                            .map(|(_, v)| v.as_int().unwrap())
-                            .collect();
+                        let arr: Vec<i64> =
+                            fn_buf.iter().map(|(_, v)| v.as_int().unwrap()).collect();
                         stack.push(Value::intmap(Arc::new(arr)));
                     } else {
                         stack.push(Value::func(Arc::new(fn_buf)));

@@ -79,11 +79,7 @@ pub fn load_fingerprints(spec_path: &Path, hash: u64) -> Option<Vec<u64>> {
 }
 
 /// Save fingerprints to disk for incremental re-use.
-pub fn save_fingerprints(
-    spec_path: &Path,
-    hash: u64,
-    fingerprints: &[u64],
-) -> std::io::Result<()> {
+pub fn save_fingerprints(spec_path: &Path, hash: u64, fingerprints: &[u64]) -> std::io::Result<()> {
     let dir = cache_dir(spec_path);
     fs::create_dir_all(&dir)?;
 
@@ -119,7 +115,10 @@ pub fn cleanup_old_caches(spec_path: &Path, current_hash: u64) {
         let current_name = format!("{:016x}.fp", current_hash);
         for entry in entries.flatten() {
             let name = entry.file_name();
-            if name.to_str().is_some_and(|n| n.ends_with(".fp") && n != current_name) {
+            if name
+                .to_str()
+                .is_some_and(|n| n.ends_with(".fp") && n != current_name)
+            {
                 let _ = fs::remove_file(entry.path());
                 debug!(file = %entry.path().display(), "removed old cache file");
             }

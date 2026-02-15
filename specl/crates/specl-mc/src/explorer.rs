@@ -11,9 +11,9 @@ use rayon::prelude::*;
 use smallvec::SmallVec;
 use specl_eval::bytecode::{compile_expr, vm_eval_bool, vm_eval_bool_reuse, Bytecode, VmBufs};
 use specl_eval::{eval, EvalContext, EvalError, Value};
-use std::cell::RefCell;
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
+use std::cell::RefCell;
 use std::collections::BinaryHeap;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
@@ -138,7 +138,11 @@ fn params_to_i64s(params: &[Value]) -> Vec<i64> {
             if let Some(n) = v.as_int() {
                 n
             } else if let Some(b) = v.as_bool() {
-                if b { 1 } else { 0 }
+                if b {
+                    1
+                } else {
+                    0
+                }
             } else {
                 0
             }
@@ -482,9 +486,7 @@ fn op_cache_key(params: &[Value], read_xor: u64) -> u64 {
 /// Uses pre-computed hashes from State::var_hashes, avoiding rehashing entirely.
 #[inline]
 fn xor_hash_vars(var_hashes: &[u64], indices: &[usize]) -> u64 {
-    indices
-        .iter()
-        .fold(0u64, |acc, &i| acc ^ var_hashes[i])
+    indices.iter().fold(0u64, |acc, &i| acc ^ var_hashes[i])
 }
 
 /// Decompose a guard expression into top-level AND-conjuncts.
@@ -570,7 +572,10 @@ fn collect_param_refs_recursive(
         | CompiledExpr::Keys(e)
         | CompiledExpr::Values(e)
         | CompiledExpr::Powerset(e)
-        | CompiledExpr::BigUnion(e) => {
+        | CompiledExpr::BigUnion(e)
+        | CompiledExpr::SeqHead(e)
+        | CompiledExpr::SeqTail(e)
+        | CompiledExpr::Fix { predicate: e } => {
             collect_param_refs_recursive(e, params);
         }
         CompiledExpr::Choose { domain, predicate } => {
@@ -581,8 +586,18 @@ fn collect_param_refs_recursive(
             collect_param_refs_recursive(lo, params);
             collect_param_refs_recursive(hi, params);
         }
+        CompiledExpr::Slice { base, lo, hi } => {
+            collect_param_refs_recursive(base, params);
+            collect_param_refs_recursive(lo, params);
+            collect_param_refs_recursive(hi, params);
+        }
         CompiledExpr::Call { func, args } => {
             collect_param_refs_recursive(func, params);
+            for a in args {
+                collect_param_refs_recursive(a, params);
+            }
+        }
+        CompiledExpr::ActionCall { args, .. } => {
             for a in args {
                 collect_param_refs_recursive(a, params);
             }
@@ -594,8 +609,20 @@ fn collect_param_refs_recursive(
                 collect_param_refs_recursive(e, params);
             }
         }
+        CompiledExpr::DictLit(pairs) => {
+            for (k, v) in pairs {
+                collect_param_refs_recursive(k, params);
+                collect_param_refs_recursive(v, params);
+            }
+        }
         CompiledExpr::Field { base, .. } => {
             collect_param_refs_recursive(base, params);
+        }
+        CompiledExpr::RecordUpdate { base, updates } => {
+            collect_param_refs_recursive(base, params);
+            for (_, v) in updates {
+                collect_param_refs_recursive(v, params);
+            }
         }
         // Leaves with no param refs
         CompiledExpr::Bool(_)
@@ -608,12 +635,6 @@ fn collect_param_refs_recursive(
         | CompiledExpr::Unchanged(_)
         | CompiledExpr::Changes(_)
         | CompiledExpr::Enabled(_) => {}
-        // Remaining complex expressions
-        _ => {
-            // Conservative: don't collect from unknown patterns.
-            // This means some conjuncts may not be attributed to params,
-            // which is safe (just less optimization).
-        }
     }
 }
 
@@ -1067,7 +1088,11 @@ impl Explorer {
         let active_invariants: Vec<bool> = if config.check_only_invariants.is_empty() {
             vec![true; spec.invariants.len()]
         } else {
-            let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+            let inv_names: Vec<&str> = spec
+                .invariants
+                .iter()
+                .map(|inv| inv.name.as_str())
+                .collect();
             for name in &config.check_only_invariants {
                 if !inv_names.contains(&name.as_str()) {
                     error!(
@@ -1083,8 +1108,15 @@ impl Explorer {
                 .collect()
         };
 
-        // Compute COI with active invariant filter for tighter reduction
-        let relevant_actions = Self::compute_coi(&spec, &active_invariants);
+        // Compute COI with active invariant filter for tighter reduction.
+        // Disable COI when deadlock checking is enabled: COI prunes actions
+        // irrelevant to invariants, but this prevents reaching states where
+        // deadlocks occur (no actions enabled).
+        let relevant_actions = if config.check_deadlock {
+            None
+        } else {
+            Self::compute_coi(&spec, &active_invariants)
+        };
 
         let mut explorer = Self {
             spec,
@@ -1693,7 +1725,10 @@ impl Explorer {
             return Err(CheckError::NoInitialStates);
         }
 
-        info!(count = initial_states.len(), "generated initial states (directed)");
+        info!(
+            count = initial_states.len(),
+            "generated initial states (directed)"
+        );
 
         // Priority queue entry sorted by heuristic score (lower = closer to violation = higher priority)
         struct PQEntry {
@@ -1703,11 +1738,15 @@ impl Explorer {
             depth: usize,
         }
         impl PartialEq for PQEntry {
-            fn eq(&self, other: &Self) -> bool { self.score == other.score }
+            fn eq(&self, other: &Self) -> bool {
+                self.score == other.score
+            }
         }
         impl Eq for PQEntry {}
         impl PartialOrd for PQEntry {
-            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> { Some(self.cmp(other)) }
+            fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+                Some(self.cmp(other))
+            }
         }
         impl Ord for PQEntry {
             fn cmp(&self, other: &Self) -> std::cmp::Ordering {
@@ -1726,11 +1765,19 @@ impl Explorer {
             let fp = canonical.fingerprint();
             if self.store.insert(canonical.clone(), None, None, None, 0) {
                 let h = self.invariant_heuristic(&canonical);
-                queue.push(PQEntry { score: h, fp, state: canonical, depth: 0 });
+                queue.push(PQEntry {
+                    score: h,
+                    fp,
+                    state: canonical,
+                    depth: 0,
+                });
             }
         }
 
-        while let Some(PQEntry { fp, state, depth, .. }) = queue.pop() {
+        while let Some(PQEntry {
+            fp, state, depth, ..
+        }) = queue.pop()
+        {
             // Check external stop flag
             if let Some(ref flag) = self.stop_flag {
                 if flag.load(Ordering::Relaxed) {
@@ -1776,7 +1823,10 @@ impl Explorer {
             }
 
             // Check time limit
-            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
+            if self.deadline.is_some()
+                && self.store.len().is_multiple_of(1000)
+                && self.past_deadline()
+            {
                 return Ok(CheckOutcome::TimeLimitReached {
                     states_explored: self.store.len(),
                     max_depth,
@@ -1826,7 +1876,12 @@ impl Explorer {
                         p.queue_len.store(queue.len(), Ordering::Relaxed);
                     }
                     let h = self.invariant_heuristic(&canonical);
-                    queue.push(PQEntry { score: h, fp: succ_fp, state: canonical, depth: depth + 1 });
+                    queue.push(PQEntry {
+                        score: h,
+                        fp: succ_fp,
+                        state: canonical,
+                        depth: depth + 1,
+                    });
                 }
             }
         }
@@ -1937,10 +1992,13 @@ impl Explorer {
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical, Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                if self.store.insert(
+                    canonical,
+                    Some(fp),
+                    Some(action_idx),
+                    Some(pvals),
+                    depth + 1,
+                ) {
                     queue.push_back(next_fp);
                 }
             }
@@ -1992,10 +2050,13 @@ impl Explorer {
             for (next_state, action_idx, pvals) in successors {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
-                if self
-                    .store
-                    .insert(canonical, Some(fp), Some(action_idx), Some(pvals), depth + 1)
-                {
+                if self.store.insert(
+                    canonical,
+                    Some(fp),
+                    Some(action_idx),
+                    Some(pvals),
+                    depth + 1,
+                ) {
                     queue.push_back(next_fp);
                 }
             }
@@ -2026,7 +2087,11 @@ impl Explorer {
         // Profile accumulators (zero-cost when profiling disabled)
         let profiling = self.config.profile;
         let n_actions = self.spec.actions.len();
-        let mut prof_action_counts = if profiling { vec![0usize; n_actions] } else { vec![] };
+        let mut prof_action_counts = if profiling {
+            vec![0usize; n_actions]
+        } else {
+            vec![]
+        };
         let mut prof_time_inv = Duration::ZERO;
         let mut prof_time_succ = Duration::ZERO;
         let mut prof_time_store = Duration::ZERO;
@@ -2073,7 +2138,10 @@ impl Explorer {
             }
 
             // Check time limit (every 1000 states to reduce overhead)
-            if self.deadline.is_some() && self.store.len().is_multiple_of(1000) && self.past_deadline() {
+            if self.deadline.is_some()
+                && self.store.len().is_multiple_of(1000)
+                && self.past_deadline()
+            {
                 info!("reached time limit");
                 hit_time_limit = true;
                 break;
@@ -3710,7 +3778,11 @@ impl Explorer {
             (*state.vars).clone(),
             &mut |next_vars: Vec<Value>| {
                 let mut ctx = EvalContext::new(&state.vars, &next_vars, &self.consts, params);
-                if eval(&action.effect, &mut ctx).ok().and_then(|v| v.as_bool()) == Some(true) {
+                if eval(&action.effect, &mut ctx)
+                    .ok()
+                    .and_then(|v| v.as_bool())
+                    == Some(true)
+                {
                     next_states.push(State::new(next_vars));
                 }
             },

@@ -1293,6 +1293,7 @@ impl Translator {
                             translate_span(name.span),
                         ),
                         value: specl::ConstValue::Type(ty),
+                        default_value: None,
                         span: translate_span(*span),
                     }));
                 }

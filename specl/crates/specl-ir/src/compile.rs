@@ -103,7 +103,7 @@ impl Compiler {
                     let ty = self.lookup_const_type(&d.name.name);
                     let default_value = match &d.value {
                         ConstValue::Scalar(n) => Some(*n),
-                        ConstValue::Type(_) => None,
+                        ConstValue::Type(_) => d.default_value,
                     };
                     consts.push(IrConstDecl {
                         name: d.name.name.clone(),
@@ -1381,18 +1381,22 @@ fn expr_cost(expr: &CompiledExpr) -> u32 {
         CompiledExpr::Unary { operand, .. } => 1 + expr_cost(operand),
         CompiledExpr::Index { base, index } => 2 + expr_cost(base) + expr_cost(index),
         CompiledExpr::Let { value, body } => 1 + expr_cost(value) + expr_cost(body),
-        CompiledExpr::If { cond, then_branch, else_branch } => {
-            1 + expr_cost(cond) + expr_cost(then_branch).max(expr_cost(else_branch))
-        }
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => 1 + expr_cost(cond) + expr_cost(then_branch).max(expr_cost(else_branch)),
 
         // Collection literals
         CompiledExpr::SetLit(elems)
         | CompiledExpr::SeqLit(elems)
-        | CompiledExpr::TupleLit(elems) => {
-            elems.iter().map(expr_cost).sum::<u32>() + 1
-        }
+        | CompiledExpr::TupleLit(elems) => elems.iter().map(expr_cost).sum::<u32>() + 1,
         CompiledExpr::DictLit(pairs) => {
-            pairs.iter().map(|(k, v)| expr_cost(k) + expr_cost(v)).sum::<u32>() + 1
+            pairs
+                .iter()
+                .map(|(k, v)| expr_cost(k) + expr_cost(v))
+                .sum::<u32>()
+                + 1
         }
 
         // Quantifiers and comprehensions: expensive (iterate domain)
@@ -1400,12 +1404,16 @@ fn expr_cost(expr: &CompiledExpr) -> u32 {
         | CompiledExpr::Exists { domain, body }
         | CompiledExpr::FnLit { domain, body } => 10 + expr_cost(domain) * expr_cost(body),
         CompiledExpr::Choose { domain, predicate }
-        | CompiledExpr::SetComprehension { domain, filter: Some(predicate), .. } => {
-            10 + expr_cost(domain) * expr_cost(predicate)
-        }
-        CompiledExpr::SetComprehension { domain, element, filter: None } => {
-            10 + expr_cost(domain) * expr_cost(element)
-        }
+        | CompiledExpr::SetComprehension {
+            domain,
+            filter: Some(predicate),
+            ..
+        } => 10 + expr_cost(domain) * expr_cost(predicate),
+        CompiledExpr::SetComprehension {
+            domain,
+            element,
+            filter: None,
+        } => 10 + expr_cost(domain) * expr_cost(element),
         CompiledExpr::Fix { predicate } => 10 + expr_cost(predicate),
 
         // Access operations

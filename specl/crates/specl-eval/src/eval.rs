@@ -172,10 +172,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 }
                 // Produce IntMap if keys start at 0 and all values are Int
                 if lo_val == 0 && map.iter().all(|(_, v)| v.is_int()) {
-                    let arr: Vec<i64> = map
-                        .iter()
-                        .map(|(_, v)| v.as_int().unwrap())
-                        .collect();
+                    let arr: Vec<i64> = map.iter().map(|(_, v)| v.as_int().unwrap()).collect();
                     return Ok(Value::intmap(Arc::new(arr)));
                 }
                 return Ok(Value::func(Arc::new(map)));

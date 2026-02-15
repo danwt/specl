@@ -108,7 +108,11 @@ pub fn check(
         SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k, sb),
         SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb, config.spacer_profile),
         SymbolicMode::Golem => golem::check_golem(spec, consts, sb),
-        SymbolicMode::Smart => smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile),
-        SymbolicMode::Portfolio => portfolio::check_portfolio(spec, consts, config.depth, sb, config.spacer_profile),
+        SymbolicMode::Smart => {
+            smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile)
+        }
+        SymbolicMode::Portfolio => {
+            portfolio::check_portfolio(spec, consts, config.depth, sb, config.spacer_profile)
+        }
     }
 }

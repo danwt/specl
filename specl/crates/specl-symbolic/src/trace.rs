@@ -1,7 +1,7 @@
 //! Counterexample trace extraction from Z3 models.
 
-use crate::encoder::EncoderCtx;
 use crate::state_vars::{VarKind, VarLayout};
+use crate::transition::encode_action_instance;
 use crate::TraceStep;
 use specl_eval::Value;
 use specl_ir::CompiledSpec;
@@ -32,7 +32,8 @@ pub fn extract_trace(
     trace
 }
 
-/// Identify which action fired at the given step by evaluating guards against the model.
+/// Identify which action fired at the given step by checking full action transitions
+/// (guard + effect + frame) against the model.
 fn identify_action(
     model: &Model,
     layout: &VarLayout,
@@ -73,7 +74,7 @@ fn identify_action(
 
         if param_ranges.is_empty() {
             // No parameters — just evaluate the guard
-            if guard_satisfied(model, layout, step_vars, spec, consts, action, step, &[]) {
+            if action_matches(model, layout, step_vars, consts, action, step, &[]) {
                 return Some(action.name.clone());
             }
         } else {
@@ -81,7 +82,7 @@ fn identify_action(
             let mut combos = Vec::new();
             enumerate_param_combos(&param_ranges, 0, &mut Vec::new(), &mut combos);
             for combo in &combos {
-                if guard_satisfied(model, layout, step_vars, spec, consts, action, step, combo) {
+                if action_matches(model, layout, step_vars, consts, action, step, combo) {
                     let params_str = combo
                         .iter()
                         .map(|v| v.to_string())
@@ -96,12 +97,11 @@ fn identify_action(
     None
 }
 
-/// Check if an action's guard is satisfied in the model at the given step.
-fn guard_satisfied(
+/// Check if an action's full transition (guard + effect + frame) is satisfied in the model.
+fn action_matches(
     model: &Model,
     layout: &VarLayout,
     step_vars: &[Vec<Vec<Dynamic>>],
-    _spec: &CompiledSpec,
     consts: &[Value],
     action: &specl_ir::CompiledAction,
     step: usize,
@@ -112,25 +112,14 @@ fn guard_satisfied(
         .map(|v| Dynamic::from_ast(&Int::from_i64(*v)))
         .collect();
 
-    let mut enc = EncoderCtx {
-        layout,
-        consts,
-        step_vars,
-        current_step: step,
-        next_step: step + 1,
-        params: &z3_params,
-        locals: Vec::new(),
-        compound_locals: Vec::new(),
-        set_locals: Vec::new(),
-        whole_var_locals: Vec::new(),
-    };
-
-    let Ok(guard) = enc.encode_bool(&action.guard) else {
+    let Ok(constraint) =
+        encode_action_instance(action, consts, layout, step_vars, step, &z3_params)
+    else {
         return false;
     };
 
     model
-        .eval(&Dynamic::from_ast(&guard), true)
+        .eval(&Dynamic::from_ast(&constraint), true)
         .and_then(|v| v.as_bool())
         .and_then(|b| b.as_bool())
         .unwrap_or(false)

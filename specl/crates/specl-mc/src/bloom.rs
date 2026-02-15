@@ -111,9 +111,7 @@ impl BloomFilter {
     #[inline]
     fn hash_pair(&self, fp: Fingerprint) -> (u64, u64) {
         let h1 = fp.as_u64();
-        let h2 = h1
-            .wrapping_mul(0x9E3779B97F4A7C15)
-            .wrapping_add(0x6A09E667);
+        let h2 = h1.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0x6A09E667);
         (h1, h2)
     }
 

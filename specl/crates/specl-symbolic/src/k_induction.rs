@@ -195,9 +195,7 @@ fn check_inductive_step(
                     if cti_count > MAX_CTI_ITERATIONS {
                         info!(
                             invariant = inv.name,
-                            k,
-                            cti_count,
-                            "CTI learning limit reached"
+                            k, cti_count, "CTI learning limit reached"
                         );
                         solver.pop(1);
                         return Ok(SymbolicOutcome::Unknown {
@@ -211,9 +209,7 @@ fn check_inductive_step(
                     let model = solver.get_model().unwrap();
                     info!(
                         invariant = inv.name,
-                        k,
-                        cti_count,
-                        "CTI found, extracting blocking clause"
+                        k, cti_count, "CTI found, extracting blocking clause"
                     );
 
                     // Extract CTI state at step K and block it at all steps

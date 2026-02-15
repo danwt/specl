@@ -45,10 +45,7 @@ pub fn check_golem(
 
         if smt2.is_empty() {
             return Ok(SymbolicOutcome::Unknown {
-                reason: format!(
-                    "failed to export CHC system for invariant '{}'",
-                    inv.name
-                ),
+                reason: format!("failed to export CHC system for invariant '{}'", inv.name),
             });
         }
 
@@ -71,9 +68,7 @@ pub fn check_golem(
             .arg("--input")
             .arg(path)
             .output()
-            .map_err(|e| {
-                crate::SymbolicError::Internal(format!("failed to invoke Golem: {e}"))
-            })?;
+            .map_err(|e| crate::SymbolicError::Internal(format!("failed to invoke Golem: {e}")))?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -114,8 +109,7 @@ pub fn check_golem(
             return Ok(SymbolicOutcome::Unknown {
                 reason: format!(
                     "Golem returned unknown for invariant '{}': {}",
-                    inv.name,
-                    result_line
+                    inv.name, result_line
                 ),
             });
         }

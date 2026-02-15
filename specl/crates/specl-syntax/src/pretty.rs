@@ -102,6 +102,10 @@ impl PrettyPrinter {
             ConstValue::Type(ty) => self.print_type_expr(ty),
             ConstValue::Scalar(n) => self.write(&n.to_string()),
         }
+        if let Some(default) = decl.default_value {
+            self.write(" = ");
+            self.write(&default.to_string());
+        }
         self.newline();
     }
 

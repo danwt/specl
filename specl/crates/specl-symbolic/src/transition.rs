@@ -392,6 +392,36 @@ pub fn encode_transition(
     Ok(Bool::or(&action_encodings))
 }
 
+/// Encode a specific action instance (with given params) as guard AND effect AND frame.
+/// Used by trace reconstruction to identify which action fired.
+pub fn encode_action_instance(
+    action: &CompiledAction,
+    consts: &[Value],
+    layout: &VarLayout,
+    step_vars: &[Vec<Vec<Dynamic>>],
+    step: usize,
+    params: &[Dynamic],
+) -> SymbolicResult<Bool> {
+    let mut enc = EncoderCtx {
+        layout,
+        consts,
+        step_vars,
+        current_step: step,
+        next_step: step + 1,
+        params,
+        locals: Vec::new(),
+        compound_locals: Vec::new(),
+        set_locals: Vec::new(),
+        whole_var_locals: Vec::new(),
+    };
+
+    let guard = enc.encode_bool(&action.guard)?;
+    let effect = encode_effect(action, consts, layout, step_vars, step, params)?;
+    let frame = encode_frame(action, layout, step_vars, step)?;
+
+    Ok(Bool::and(&[guard, effect, frame]))
+}
+
 fn encode_action(
     action: &CompiledAction,
     spec: &CompiledSpec,
