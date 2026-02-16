@@ -13,6 +13,12 @@ pub enum SpacerProfile {
     /// More thorough exploration for harder problems. Uses heavier
     /// model-based projection and ground POBs.
     Thorough,
+    /// Heavy model-based projection with lemma-as-CTI reuse.
+    MbpAggressive,
+    /// Flexible PDR trace construction with EUF generalization.
+    PdrFlexible,
+    /// Same as Default but with a specific random seed for diversification.
+    Seeded(u32),
 }
 
 /// Wrapper around Z3 fixedpoint engine (Spacer).
@@ -30,11 +36,11 @@ impl Default for Fixedpoint {
 impl Fixedpoint {
     /// Create a new fixedpoint engine using the thread-local Z3 context.
     pub fn new() -> Self {
-        Self::with_profile(SpacerProfile::Default)
+        Self::with_profile(SpacerProfile::Default, None)
     }
 
     /// Create a new fixedpoint engine with a specific Spacer parameter profile.
-    pub fn with_profile(profile: SpacerProfile) -> Self {
+    pub fn with_profile(profile: SpacerProfile, timeout_ms: Option<u64>) -> Self {
         let ctx = Context::thread_local().get_z3_context();
         let fp = unsafe { z3_sys::Z3_mk_fixedpoint(ctx) }.unwrap();
         unsafe { z3_sys::Z3_fixedpoint_inc_ref(ctx, fp) };
@@ -69,6 +75,29 @@ impl Fixedpoint {
                 // Higher level limit
                 set_uint_param(ctx, params, c"spacer.max_level", 200);
             }
+            SpacerProfile::MbpAggressive => {
+                // Reuse lemmas as CTIs for faster convergence
+                set_bool_param(ctx, params, c"spacer.use_lemma_as_cti", true);
+                // Eliminate auxiliary variables aggressively
+                set_bool_param(ctx, params, c"spacer.elim_aux", true);
+                // Convert reachability to DNF
+                set_bool_param(ctx, params, c"spacer.reach_dnf", true);
+                set_uint_param(ctx, params, c"spacer.max_level", 150);
+            }
+            SpacerProfile::PdrFlexible => {
+                // Allow flexible trace construction
+                set_bool_param(ctx, params, c"spacer.pdr.flexible_trace", true);
+                // Use EUF-based generalization
+                set_bool_param(ctx, params, c"spacer.use_euf_gen", true);
+                set_uint_param(ctx, params, c"spacer.max_level", 100);
+            }
+            SpacerProfile::Seeded(seed) => {
+                set_uint_param(ctx, params, c"spacer.random_seed", seed);
+            }
+        }
+
+        if let Some(ms) = timeout_ms {
+            set_uint_param(ctx, params, c"timeout", ms.min(u32::MAX as u64) as u32);
         }
 
         unsafe { z3_sys::Z3_fixedpoint_set_params(ctx, fp, params) };
