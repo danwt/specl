@@ -1,0 +1,41 @@
+// Test spec for auxiliary invariant support.
+// Two variables: x and y, both increment together.
+// The main invariant (x <= 10) is not inductive alone because
+// the checker doesn't know y tracks x. The auxiliary invariant
+// (x == y) makes it inductive.
+//
+// Use: specl check %f -c N=10 --symbolic inductive
+
+module AuxiliaryTest
+
+const N: Int
+
+var x: 0..N
+var y: 0..N
+
+init {
+    x = 0;
+    y = 0;
+}
+
+action Step() {
+    require x < N;
+    require y < N;
+    x = x + 1;
+    y = y + 1;
+}
+
+action StepGuarded() {
+    require y < N;
+    require x == y;
+    x = x + 1;
+    y = y + 1;
+}
+
+auxiliary invariant XEqualsY {
+    x == y
+}
+
+invariant XBounded {
+    x <= N
+}

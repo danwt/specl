@@ -1,0 +1,30 @@
+// Test spec for Option type support in symbolic mode.
+// A counter with an optional cached value.
+//
+// Use: specl check %f -c N=5 --symbolic
+
+module OptionTest
+
+const N: Int
+
+var count: 0..N
+var cached: Option[0..N]
+
+init {
+    count = 0;
+    cached = None;
+}
+
+action Increment() {
+    require count < N;
+    count = count + 1;
+    cached = Some(count);
+}
+
+action ClearCache() {
+    cached = None;
+}
+
+invariant CountBounded {
+    count <= N
+}
