@@ -6,7 +6,7 @@
   "types": "bindings/node",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-org/tree-sitter-specl.git"
+    "url": "https://github.com/danwt/specl.git"
   },
   "keywords": [
     "tree-sitter",
@@ -22,7 +22,7 @@
     "queries/*",
     "src/**"
   ],
-  "author": "",
+  "author": "Daniel Tisdall",
   "license": "MIT",
   "dependencies": {
     "node-addon-api": "^7.1.0",
