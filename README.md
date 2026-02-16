@@ -45,14 +45,16 @@ With parallelism: 1M+ states/second on typical workloads.
 
 | | |
 |---|---|
-| [Raft consensus](specl/examples/showcase/raft.specl) | Leader election + log replication (Vanlightly's async model) |
-| [Percolator](specl/examples/showcase/percolator.specl) | Google's distributed transactions with snapshot isolation |
-| [CometBFT](specl/examples/showcase/comet.specl) | Tendermint BFT with Byzantine faults |
-| [Paxos](specl/examples/showcase/paxos.specl) | Single-decree Paxos (Synod) consensus |
+| [Peterson](specl/examples/showcase/peterson.specl) | Mutual exclusion for 2 processes |
+| [Dining Philosophers](specl/examples/showcase/dining-philosophers.specl) | Classic concurrency problem |
+| [Two-Phase Commit](specl/examples/showcase/two-phase-commit.specl) | Distributed transaction protocol |
+| [G-Counter](specl/examples/showcase/g-counter.specl) | Grow-only counter CRDT |
 | [MESI](specl/examples/showcase/mesi.specl) | Cache coherence protocol |
+| [Paxos](specl/examples/showcase/paxos.specl) | Single-decree Paxos (Synod) consensus |
 | [Redlock](specl/examples/showcase/redlock.specl) | Distributed lock bug-finding (Kleppmann attack) |
+| [Raft](specl/examples/showcase/raft.specl) | Leader election + log replication (Vanlightly's async model) |
 
-See [`examples/showcase/`](specl/examples/showcase/) for curated protocol specs, [`examples/other/`](specl/examples/other/) for additional specs.
+See [`examples/`](specl/examples/) for the full catalogue (100+ specs) and verification results.
 
 ## Toolchain
 
