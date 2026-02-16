@@ -407,7 +407,7 @@ pub fn compute_effects_bytecode_reuse(
         let value = vm_eval_reuse(bc, &state.vars, next_vars_buf, consts, params, vm_bufs)?;
         let old_hash = var_hashes_buf[*var_idx];
         let new_hash = hash_var(*var_idx, &value);
-        if view_mask.map_or(true, |m| m[*var_idx]) {
+        if view_mask.is_none_or(|m| m[*var_idx]) {
             fp ^= old_hash ^ new_hash;
         }
         var_hashes_buf[*var_idx] = new_hash;

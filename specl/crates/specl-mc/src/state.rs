@@ -225,7 +225,7 @@ fn compute_var_hashes_and_fingerprint(
     for (i, var) in vars.iter().enumerate() {
         let h = hash_var(i, var);
         hashes.push(h);
-        if view_mask.map_or(true, |m| m[i]) {
+        if view_mask.is_none_or(|m| m[i]) {
             fp ^= h;
         }
     }
