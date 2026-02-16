@@ -210,6 +210,12 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     let k = expect_int(&index_val)? as usize;
                     Ok(arr[k].clone())
                 }
+                VK::IntMap2(inner_size, data) => {
+                    let k = expect_int(&index_val)? as usize;
+                    let sz = inner_size as usize;
+                    let start = k * sz;
+                    Ok(Value::intmap(Arc::new(data[start..start + sz].to_vec())))
+                }
                 VK::Fn(map) => Value::fn_get(map, &index_val)
                     .cloned()
                     .ok_or_else(|| EvalError::KeyNotFound(index_val.to_string())),
@@ -264,6 +270,18 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     let k = expect_int(&arg)? as usize;
                     Ok(arr[k].clone())
                 }
+                VK::IntMap2(inner_size, data) => {
+                    if args.len() != 1 {
+                        return Err(EvalError::Internal(
+                            "function call with wrong arity".to_string(),
+                        ));
+                    }
+                    let arg = eval(&args[0], ctx)?;
+                    let k = expect_int(&arg)? as usize;
+                    let sz = inner_size as usize;
+                    let start = k * sz;
+                    Ok(Value::intmap(Arc::new(data[start..start + sz].to_vec())))
+                }
                 VK::Fn(map) => {
                     if args.len() != 1 {
                         return Err(EvalError::Internal(
@@ -308,6 +326,16 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 let k = expect_int(&key_val)? as usize;
                 Arc::make_mut(&mut arr)[k] = value_val;
                 Ok(Value::from_intmap_arc(arr))
+            } else if base_val.is_intmap2() {
+                let im2 = base_val.into_intmap2_arc();
+                let sz = im2.inner_size as usize;
+                let outer_size = im2.data.len() / sz;
+                let k = expect_int(&key_val)? as usize;
+                let mut rows: Vec<Value> = (0..outer_size)
+                    .map(|i| Value::intmap(Arc::new(im2.data[i * sz..(i + 1) * sz].to_vec())))
+                    .collect();
+                rows[k] = value_val;
+                Ok(Value::intmap(Arc::new(rows)))
             } else if base_val.is_fn() {
                 let mut map = base_val.into_fn_arc();
                 Value::fn_insert(Arc::make_mut(&mut map), key_val, value_val);
@@ -564,6 +592,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 VK::Set(s) => Ok(Value::int(s.len() as i64)),
                 VK::Fn(m) => Ok(Value::int(m.len() as i64)),
                 VK::IntMap(arr) => Ok(Value::int(arr.len() as i64)),
+                VK::IntMap2(inner_size, data) => {
+                    Ok(Value::int((data.len() / inner_size as usize) as i64))
+                }
                 _ => Err(type_mismatch("Seq, Set, or Fn", &val)),
             }
         }
@@ -575,6 +606,12 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 VK::IntMap(arr) => Ok(Value::set(Arc::new(
                     (0..arr.len() as i64).map(Value::int).collect(),
                 ))),
+                VK::IntMap2(inner_size, data) => {
+                    let outer_size = data.len() / inner_size as usize;
+                    Ok(Value::set(Arc::new(
+                        (0..outer_size as i64).map(Value::int).collect(),
+                    )))
+                }
                 VK::Fn(m) => Ok(Value::set(Arc::new(
                     m.iter().map(|(k, _)| k.clone()).collect(),
                 ))),
@@ -591,6 +628,16 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             match val.kind() {
                 VK::IntMap(arr) => {
                     let mut vals: Vec<Value> = arr.to_vec();
+                    vals.sort();
+                    vals.dedup();
+                    Ok(Value::set(Arc::new(vals)))
+                }
+                VK::IntMap2(inner_size, data) => {
+                    let sz = inner_size as usize;
+                    let outer_size = data.len() / sz;
+                    let mut vals: Vec<Value> = (0..outer_size)
+                        .map(|i| Value::intmap(Arc::new(data[i * sz..(i + 1) * sz].to_vec())))
+                        .collect();
                     vals.sort();
                     vals.dedup();
                     Ok(Value::set(Arc::new(vals)))
@@ -694,6 +741,10 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                         let k = expect_int(&left_val)? as usize;
                         Ok(k < arr.len())
                     }
+                    VK::IntMap2(inner_size, data) => {
+                        let k = expect_int(&left_val)? as usize;
+                        Ok(k < data.len() / inner_size as usize)
+                    }
                     _ => Err(type_mismatch("Set or Dict", &right_val)),
                 }
             }
@@ -706,6 +757,10 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
                     VK::IntMap(arr) => {
                         let k = expect_int(&left_val)? as usize;
                         Ok(k >= arr.len())
+                    }
+                    VK::IntMap2(inner_size, data) => {
+                        let k = expect_int(&left_val)? as usize;
+                        Ok(k >= data.len() / inner_size as usize)
                     }
                     _ => Err(type_mismatch("Set or Dict", &right_val)),
                 }
