@@ -307,10 +307,10 @@ fn extract_blocking_clause(
 
     // Blocking clauses at assumption steps 0..K-1: same state is blocked
     let mut at_assumptions = Vec::new();
-    for step in 0..k {
+    for step_vars in &all_step_vars[..k] {
         let mut step_eqs = Vec::new();
         for (var_idx, sub_idx, _, val) in &equalities_at_k {
-            let step_var = &all_step_vars[step][*var_idx][*sub_idx];
+            let step_var = &step_vars[*var_idx][*sub_idx];
             step_eqs.push(step_var.eq(val));
         }
         let eq_refs: Vec<&Bool> = step_eqs.iter().collect();

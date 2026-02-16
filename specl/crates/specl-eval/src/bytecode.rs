@@ -1693,13 +1693,13 @@ fn vm_eval_inner(
 
             // Control flow
             Op::JumpIfFalse(target) => {
-                if !peek_bool(&stack)? {
+                if !peek_bool(stack)? {
                     pc = *target as usize;
                     continue;
                 }
             }
             Op::JumpIfTrue(target) => {
-                if peek_bool(&stack)? {
+                if peek_bool(stack)? {
                     pc = *target as usize;
                     continue;
                 }
@@ -2577,7 +2577,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let current = get_local_int(&locals)?;
+                let current = get_local_int(locals)?;
                 let hi = loops.last().unwrap().hi;
                 if current >= hi {
                     locals.pop();
@@ -2617,7 +2617,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let current = get_local_int(&locals)?;
+                let current = get_local_int(locals)?;
                 let hi = loops.last().unwrap().hi;
                 if current >= hi {
                     locals.pop();
@@ -2655,7 +2655,7 @@ fn vm_eval_inner(
                 if pred {
                     loop_state.counter += 1;
                 }
-                let current = get_local_int(&locals)?;
+                let current = get_local_int(locals)?;
                 if current >= loop_state.hi {
                     let count = loop_state.counter;
                     locals.pop();
@@ -2692,7 +2692,7 @@ fn vm_eval_inner(
                 let element = stack.pop().unwrap();
                 let loop_state = loops.last_mut().unwrap();
                 loop_state.set_buf.push(element);
-                let current = get_local_int(&locals)?;
+                let current = get_local_int(locals)?;
                 if current >= loop_state.hi {
                     let mut set_buf = std::mem::take(&mut loop_state.set_buf);
                     locals.pop();
@@ -2708,7 +2708,7 @@ fn vm_eval_inner(
                 continue;
             }
             Op::SetCompRangeAdvance { body_pc, end_pc } => {
-                let current = get_local_int(&locals)?;
+                let current = get_local_int(locals)?;
                 let loop_state = loops.last().unwrap();
                 if current >= loop_state.hi {
                     let mut set_buf = std::mem::take(&mut loops.last_mut().unwrap().set_buf);
@@ -2988,7 +2988,7 @@ fn vm_eval_inner(
             }
             Op::FnLitRangeStep { body_pc, end_pc } => {
                 let body_val = stack.pop().unwrap();
-                let current = get_local_int(&locals)?;
+                let current = get_local_int(locals)?;
                 let loop_state = loops.last_mut().unwrap();
                 loop_state.fn_buf.push((Value::int(current), body_val));
                 if current >= loop_state.hi {

@@ -129,7 +129,7 @@ impl Value {
 impl Value {
     #[inline]
     pub fn int(n: i64) -> Self {
-        if n >= I56_MIN && n <= I56_MAX {
+        if (I56_MIN..=I56_MAX).contains(&n) {
             Value((n as u64) & PTR_MASK)
         } else {
             Self::from_heap(TAG_BIGINT, Arc::new(n))
@@ -410,10 +410,7 @@ impl Value {
     }
 
     pub fn is_truthy(&self) -> bool {
-        match self.tag() {
-            TAG_BOOL_FALSE => false,
-            _ => true,
-        }
+        !matches!(self.tag(), TAG_BOOL_FALSE)
     }
 
     pub fn as_bool(&self) -> Option<bool> {
@@ -568,7 +565,7 @@ impl Value {
             VK::Record(r) => {
                 out.push(6);
                 out.extend_from_slice(&(r.len() as u64).to_le_bytes());
-                for (k, v) in &*r {
+                for (k, v) in r {
                     out.extend_from_slice(&(k.len() as u64).to_le_bytes());
                     out.extend_from_slice(k.as_bytes());
                     v.write_bytes(out);
@@ -1057,7 +1054,7 @@ impl Hash for Value {
             VK::Record(r) => {
                 6u8.hash(state);
                 r.len().hash(state);
-                for (k, v) in &*r {
+                for (k, v) in r {
                     k.hash(state);
                     v.hash(state);
                 }
