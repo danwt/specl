@@ -3115,11 +3115,7 @@ fn vm_eval_inner(
                     VK::Seq(seq) => {
                         let len = seq.len();
                         let start = lo.max(0) as usize;
-                        let end = if hi < 0 {
-                            0
-                        } else {
-                            (hi as usize).min(len)
-                        };
+                        let end = if hi < 0 { 0 } else { (hi as usize).min(len) };
                         if start >= end {
                             stack.push(Value::empty_seq());
                         } else {

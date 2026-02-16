@@ -256,7 +256,11 @@ impl TypeChecker {
             ExprKind::String(_) => Type::String,
 
             ExprKind::Ident(name) => {
-                if let Some(ty) = self.env.lookup_ident(name) {
+                // None → Option[T] where T is a fresh type variable
+                if name == "None" {
+                    let inner = self.var_gen.fresh_type();
+                    Type::Option(Box::new(inner))
+                } else if let Some(ty) = self.env.lookup_ident(name) {
                     ty.clone()
                 } else {
                     return Err(TypeError::UndefinedVariable {
@@ -363,6 +367,25 @@ impl TypeChecker {
                             });
                         }
                     }
+                    Type::Tuple(elems) => {
+                        if let Ok(idx) = field.name.parse::<usize>() {
+                            if idx < elems.len() {
+                                elems[idx].clone()
+                            } else {
+                                return Err(TypeError::InvalidField {
+                                    ty: base_ty,
+                                    field: field.name.clone(),
+                                    span: field.span,
+                                });
+                            }
+                        } else {
+                            return Err(TypeError::InvalidField {
+                                ty: base_ty,
+                                field: field.name.clone(),
+                                span: field.span,
+                            });
+                        }
+                    }
                     // MVP: Allow field access on Int (for TLA+ specs where elements are records
                     // but type inference defaults to Int). Return Int as the field type.
                     Type::Int => Type::Int,
@@ -398,6 +421,12 @@ impl TypeChecker {
                         }
 
                         return Ok(Type::Bool); // Actions are predicates
+                    }
+
+                    // Some(x) → Option[T]
+                    if name == "Some" && args.len() == 1 {
+                        let inner_ty = self.infer_expr(&args[0])?;
+                        return Ok(Type::Option(Box::new(inner_ty)));
                     }
 
                     // Check for user-defined function call

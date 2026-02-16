@@ -759,7 +759,17 @@ impl Parser {
                     );
                 }
             } else if self.match_token(TokenKind::Dot) {
-                let field = self.parse_ident()?;
+                // Support both identifier fields (r.name) and numeric fields (t.0, t.1)
+                let field = if let TokenKind::Integer(n) = self.peek_kind() {
+                    let span = self.current_span();
+                    self.advance();
+                    Ident {
+                        name: n.to_string(),
+                        span,
+                    }
+                } else {
+                    self.parse_ident()?
+                };
                 let span = expr.span.merge(field.span);
                 expr = Expr::new(
                     ExprKind::Field {

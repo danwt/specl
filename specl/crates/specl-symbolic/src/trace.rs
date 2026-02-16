@@ -239,6 +239,54 @@ fn extract_state(
                 }
                 format!("[{}]", elems.join(", "))
             }
+            VarKind::ExplodedOption { inner_kind } => {
+                let present = model
+                    .eval(&z3_vars[0], true)
+                    .and_then(|v| v.as_bool())
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false);
+                if !present {
+                    "None".to_string()
+                } else {
+                    let inner_stride = inner_kind.z3_var_count();
+                    let inner_vars = &z3_vars[1..1 + inner_stride];
+                    let inner_str =
+                        format_compound_value(model, inner_kind, inner_vars, &layout.string_table);
+                    format!("Some({})", inner_str)
+                }
+            }
+            VarKind::ExplodedTuple { element_kinds } => {
+                let mut elems = Vec::new();
+                let mut offset = 0;
+                for kind in element_kinds {
+                    let stride = kind.z3_var_count();
+                    let elem_vars = &z3_vars[offset..offset + stride];
+                    elems.push(format_compound_value(
+                        model,
+                        kind,
+                        elem_vars,
+                        &layout.string_table,
+                    ));
+                    offset += stride;
+                }
+                format!("({})", elems.join(", "))
+            }
+            VarKind::ExplodedRecord {
+                field_names,
+                field_kinds,
+            } => {
+                let mut fields = Vec::new();
+                let mut offset = 0;
+                for (name, kind) in field_names.iter().zip(field_kinds.iter()) {
+                    let stride = kind.z3_var_count();
+                    let field_vars = &z3_vars[offset..offset + stride];
+                    let val_str =
+                        format_compound_value(model, kind, field_vars, &layout.string_table);
+                    fields.push(format!("{}: {}", name, val_str));
+                    offset += stride;
+                }
+                format!("{{{}}}", fields.join(", "))
+            }
         };
 
         state.push((entry.name.clone(), value_str));
@@ -336,6 +384,47 @@ fn format_compound_value(
             .and_then(|i| i.as_i64())
             .map(|n| format_int_value(n, kind, string_table))
             .unwrap_or_else(|| "?".to_string()),
+        VarKind::ExplodedOption { inner_kind } => {
+            let present = model
+                .eval(&vars[0], true)
+                .and_then(|v| v.as_bool())
+                .and_then(|b| b.as_bool())
+                .unwrap_or(false);
+            if !present {
+                "None".to_string()
+            } else {
+                let inner_stride = inner_kind.z3_var_count();
+                let inner_vars = &vars[1..1 + inner_stride];
+                let inner_str = format_compound_value(model, inner_kind, inner_vars, string_table);
+                format!("Some({})", inner_str)
+            }
+        }
+        VarKind::ExplodedTuple { element_kinds } => {
+            let mut elems = Vec::new();
+            let mut offset = 0;
+            for kind in element_kinds {
+                let stride = kind.z3_var_count();
+                let elem_vars = &vars[offset..offset + stride];
+                elems.push(format_compound_value(model, kind, elem_vars, string_table));
+                offset += stride;
+            }
+            format!("({})", elems.join(", "))
+        }
+        VarKind::ExplodedRecord {
+            field_names,
+            field_kinds,
+        } => {
+            let mut fields = Vec::new();
+            let mut offset = 0;
+            for (name, kind) in field_names.iter().zip(field_kinds.iter()) {
+                let stride = kind.z3_var_count();
+                let field_vars = &vars[offset..offset + stride];
+                let val_str = format_compound_value(model, kind, field_vars, string_table);
+                fields.push(format!("{}: {}", name, val_str));
+                offset += stride;
+            }
+            format!("{{{}}}", fields.join(", "))
+        }
     }
 }
 

@@ -276,6 +276,157 @@ fn encode_init_assignment(
                 ))),
             }
         }
+        VarKind::ExplodedOption { inner_kind } => {
+            let mut enc = EncoderCtx {
+                layout,
+                consts,
+                step_vars,
+                current_step: 0,
+                next_step: 0,
+                params: &[],
+                locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
+            };
+            let present_var = z3_vars[0].as_bool().unwrap();
+            let inner_stride = inner_kind.z3_var_count();
+            let inner_vars = &z3_vars[1..1 + inner_stride];
+            // Check if rhs is None (Bool(false) used as sentinel) or Some(value)
+            // None is compiled as Call { func: Ident("None"), args: [] } but since
+            // we handle it in the IR compiler, it becomes OptionNone.
+            // For now, handle common patterns:
+            match rhs {
+                // None literal
+                CompiledExpr::Bool(false) => {
+                    solver.assert(present_var.eq(Bool::from_bool(false)));
+                    Ok(())
+                }
+                // TupleLit [present, value] (internal encoding)
+                CompiledExpr::TupleLit(elems) if elems.len() == 2 => {
+                    let present_z3 = enc.encode_bool(&elems[0])?;
+                    solver.assert(present_var.eq(&present_z3));
+                    let val_z3 = enc.encode(&elems[1])?;
+                    if let (Some(vi), Some(ri)) = (inner_vars[0].as_int(), val_z3.as_int()) {
+                        solver.assert(vi.eq(&ri));
+                    } else if let (Some(vb), Some(rb)) = (inner_vars[0].as_bool(), val_z3.as_bool())
+                    {
+                        solver.assert(vb.eq(&rb));
+                    }
+                    Ok(())
+                }
+                _ => {
+                    // Try general encoding — the expression might evaluate to a scalar
+                    let rhs_z3 = enc.encode(rhs)?;
+                    if let Some(rb) = rhs_z3.as_bool() {
+                        // Interpreting as present flag only (None = false)
+                        solver.assert(present_var.eq(&rb));
+                        Ok(())
+                    } else {
+                        Err(SymbolicError::Encoding(format!(
+                            "unsupported Option init rhs: {:?}",
+                            std::mem::discriminant(rhs)
+                        )))
+                    }
+                }
+            }
+        }
+        VarKind::ExplodedTuple { element_kinds } => match rhs {
+            CompiledExpr::TupleLit(elems) => {
+                let mut enc = EncoderCtx {
+                    layout,
+                    consts,
+                    step_vars,
+                    current_step: 0,
+                    next_step: 0,
+                    params: &[],
+                    locals: Vec::new(),
+                    compound_locals: Vec::new(),
+                    set_locals: Vec::new(),
+                    whole_var_locals: Vec::new(),
+                };
+                let mut offset = 0;
+                for (i, kind) in element_kinds.iter().enumerate() {
+                    let stride = kind.z3_var_count();
+                    if stride == 1 {
+                        let val = enc.encode(&elems[i])?;
+                        if let (Some(vi), Some(ri)) = (z3_vars[offset].as_int(), val.as_int()) {
+                            solver.assert(vi.eq(&ri));
+                        } else if let (Some(vb), Some(rb)) =
+                            (z3_vars[offset].as_bool(), val.as_bool())
+                        {
+                            solver.assert(vb.eq(&rb));
+                        }
+                    } else {
+                        let slot_vars = &z3_vars[offset..offset + stride];
+                        encode_init_compound_body(
+                            solver, &mut enc, &elems[i], slot_vars, kind, consts,
+                        )?;
+                    }
+                    offset += stride;
+                }
+                Ok(())
+            }
+            _ => Err(SymbolicError::Encoding(format!(
+                "unsupported Tuple init rhs: {:?}",
+                std::mem::discriminant(rhs)
+            ))),
+        },
+        VarKind::ExplodedRecord {
+            field_names,
+            field_kinds,
+        } => {
+            // Records are initialized with DictLit-like expressions or direct field assignments
+            // For now, support the general encoding path
+            let mut enc = EncoderCtx {
+                layout,
+                consts,
+                step_vars,
+                current_step: 0,
+                next_step: 0,
+                params: &[],
+                locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
+            };
+            // If it's a DictLit, match field names to assignments
+            if let CompiledExpr::DictLit(pairs) = rhs {
+                let mut offset = 0;
+                for (fname, fkind) in field_names.iter().zip(field_kinds.iter()) {
+                    let stride = fkind.z3_var_count();
+                    // Find matching pair by field name
+                    let val_expr = pairs
+                        .iter()
+                        .find(|(k, _)| matches!(k, CompiledExpr::String(s) if s == fname))
+                        .map(|(_, v)| v);
+                    if let Some(val_expr) = val_expr {
+                        if stride == 1 {
+                            let val = enc.encode(val_expr)?;
+                            if let (Some(vi), Some(ri)) = (z3_vars[offset].as_int(), val.as_int()) {
+                                solver.assert(vi.eq(&ri));
+                            } else if let (Some(vb), Some(rb)) =
+                                (z3_vars[offset].as_bool(), val.as_bool())
+                            {
+                                solver.assert(vb.eq(&rb));
+                            }
+                        } else {
+                            let slot_vars = &z3_vars[offset..offset + stride];
+                            encode_init_compound_body(
+                                solver, &mut enc, val_expr, slot_vars, fkind, consts,
+                            )?;
+                        }
+                    }
+                    offset += stride;
+                }
+                Ok(())
+            } else {
+                Err(SymbolicError::Encoding(format!(
+                    "unsupported Record init rhs: {:?}",
+                    std::mem::discriminant(rhs)
+                )))
+            }
+        }
     }
 }
 
@@ -918,6 +1069,144 @@ fn encode_primed_assignment(
                 }
                 _ => Err(SymbolicError::Encoding(format!(
                     "unsupported seq effect rhs: {:?}",
+                    std::mem::discriminant(rhs)
+                ))),
+            }
+        }
+        VarKind::ExplodedOption { inner_kind } => {
+            let curr_vars = &step_vars[step][var_idx];
+            let next_present = next_vars[0].as_bool().unwrap();
+            let inner_stride = inner_kind.z3_var_count();
+            let inner_next = &next_vars[1..1 + inner_stride];
+            let inner_curr = &curr_vars[1..1 + inner_stride];
+
+            match rhs {
+                // None assignment
+                CompiledExpr::Bool(false) => {
+                    let mut conjuncts = vec![next_present.eq(Bool::from_bool(false))];
+                    // Frame inner value
+                    for (n, c) in inner_next.iter().zip(inner_curr.iter()) {
+                        conjuncts.push(eq_dynamic(n, c)?);
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                // TupleLit [present, value] encoding
+                CompiledExpr::TupleLit(elems) if elems.len() == 2 => {
+                    let present_z3 = enc.encode_bool(&elems[0])?;
+                    let val_z3 = enc.encode(&elems[1])?;
+                    let mut conjuncts = vec![next_present.eq(&present_z3)];
+                    if let (Some(ni), Some(ri)) = (inner_next[0].as_int(), val_z3.as_int()) {
+                        conjuncts.push(ni.eq(&ri));
+                    } else if let (Some(nb), Some(rb)) = (inner_next[0].as_bool(), val_z3.as_bool())
+                    {
+                        conjuncts.push(nb.eq(&rb));
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                _ => Err(SymbolicError::Encoding(format!(
+                    "unsupported Option effect rhs: {:?}",
+                    std::mem::discriminant(rhs)
+                ))),
+            }
+        }
+        VarKind::ExplodedTuple { element_kinds } => match rhs {
+            CompiledExpr::TupleLit(elems) => {
+                let mut conjuncts = Vec::new();
+                let mut offset = 0;
+                for (i, kind) in element_kinds.iter().enumerate() {
+                    let stride = kind.z3_var_count();
+                    if stride == 1 {
+                        let val = enc.encode(&elems[i])?;
+                        conjuncts.push(eq_dynamic(&next_vars[offset], &val)?);
+                    } else {
+                        let curr_vars = &step_vars[step][var_idx];
+                        let slot_next = &next_vars[offset..offset + stride];
+                        let slot_curr = &curr_vars[offset..offset + stride];
+                        let vals =
+                            encode_compound_update_for_slot(enc, &elems[i], slot_curr, kind)?;
+                        for (j, val) in vals.iter().enumerate() {
+                            conjuncts.push(eq_dynamic(&slot_next[j], val)?);
+                        }
+                    }
+                    offset += stride;
+                }
+                Ok(Bool::and(&conjuncts))
+            }
+            _ => Err(SymbolicError::Encoding(format!(
+                "unsupported Tuple effect rhs: {:?}",
+                std::mem::discriminant(rhs)
+            ))),
+        },
+        VarKind::ExplodedRecord {
+            field_names,
+            field_kinds,
+        } => {
+            let curr_vars = &step_vars[step][var_idx];
+            match rhs {
+                // Record update: base | { field: value, ... }
+                // In practice this comes through as RecordUpdate or Union
+                CompiledExpr::RecordUpdate { base: _, updates } => {
+                    let mut conjuncts = Vec::new();
+                    let mut offset = 0;
+                    for (fname, fkind) in field_names.iter().zip(field_kinds.iter()) {
+                        let stride = fkind.z3_var_count();
+                        let slot_next = &next_vars[offset..offset + stride];
+                        let slot_curr = &curr_vars[offset..offset + stride];
+                        // Check if this field is updated
+                        let update_val = updates.iter().find(|(n, _)| n == fname).map(|(_, v)| v);
+                        if let Some(val_expr) = update_val {
+                            if stride == 1 {
+                                let val = enc.encode(val_expr)?;
+                                conjuncts.push(eq_dynamic(&slot_next[0], &val)?);
+                            } else {
+                                let vals = encode_compound_update_for_slot(
+                                    enc, val_expr, slot_curr, fkind,
+                                )?;
+                                for (j, val) in vals.iter().enumerate() {
+                                    conjuncts.push(eq_dynamic(&slot_next[j], val)?);
+                                }
+                            }
+                        } else {
+                            // Frame: field unchanged
+                            for (n, c) in slot_next.iter().zip(slot_curr.iter()) {
+                                conjuncts.push(eq_dynamic(n, c)?);
+                            }
+                        }
+                        offset += stride;
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                // DictLit-style record literal
+                CompiledExpr::DictLit(pairs) => {
+                    let mut conjuncts = Vec::new();
+                    let mut offset = 0;
+                    for (fname, fkind) in field_names.iter().zip(field_kinds.iter()) {
+                        let stride = fkind.z3_var_count();
+                        let slot_next = &next_vars[offset..offset + stride];
+                        let val_expr = pairs
+                            .iter()
+                            .find(|(k, _)| matches!(k, CompiledExpr::String(s) if s == fname))
+                            .map(|(_, v)| v);
+                        if let Some(val_expr) = val_expr {
+                            if stride == 1 {
+                                let val = enc.encode(val_expr)?;
+                                conjuncts.push(eq_dynamic(&slot_next[0], &val)?);
+                            } else {
+                                let slot_curr = &curr_vars[offset..offset + stride];
+                                let vals = encode_compound_update_for_slot(
+                                    enc, val_expr, slot_curr, fkind,
+                                )?;
+                                for (j, val) in vals.iter().enumerate() {
+                                    conjuncts.push(eq_dynamic(&slot_next[j], val)?);
+                                }
+                            }
+                        }
+                        offset += stride;
+                    }
+                    Ok(Bool::and(&conjuncts))
+                }
+                _ => Err(SymbolicError::Encoding(format!(
+                    "unsupported Record effect rhs: {:?}",
                     std::mem::discriminant(rhs)
                 ))),
             }

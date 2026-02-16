@@ -50,6 +50,18 @@ pub enum VarKind {
         max_len: usize,
         elem_kind: Box<VarKind>,
     },
+    /// Option[T]: present Bool + inner value.
+    /// Z3 layout: [present, inner_0, inner_1, ...]
+    ExplodedOption { inner_kind: Box<VarKind> },
+    /// Tuple: flattened element variables.
+    /// Z3 layout: [elem_0_vars..., elem_1_vars..., ...]
+    ExplodedTuple { element_kinds: Vec<VarKind> },
+    /// Record: sorted field names with flattened variables.
+    /// Z3 layout: [field_0_vars..., field_1_vars..., ...]
+    ExplodedRecord {
+        field_names: Vec<String>,
+        field_kinds: Vec<VarKind>,
+    },
 }
 
 impl VarLayout {
@@ -190,16 +202,36 @@ fn type_to_kind(
                 elem_kind: Box::new(elem_kind),
             })
         }
-        Type::Tuple(elems) => Err(crate::SymbolicError::Unsupported(format!(
-            "Tuple type ({} elements) not yet supported in symbolic mode",
-            elems.len()
-        ))),
-        Type::Record(_) => Err(crate::SymbolicError::Unsupported(
-            "Record type not yet supported in symbolic mode".into(),
-        )),
-        Type::Option(_) => Err(crate::SymbolicError::Unsupported(
-            "Option[T] type not yet supported in symbolic mode".into(),
-        )),
+        Type::Tuple(elems) => {
+            let kinds = elems
+                .iter()
+                .map(|t| type_to_kind(t, var_idx, spec, consts, string_table, seq_bound))
+                .collect::<SymbolicResult<Vec<_>>>()?;
+            Ok(VarKind::ExplodedTuple {
+                element_kinds: kinds,
+            })
+        }
+        Type::Record(rec) => {
+            let mut field_names: Vec<String> = rec.fields.keys().cloned().collect();
+            field_names.sort();
+            let field_kinds = field_names
+                .iter()
+                .map(|name| {
+                    let ty = &rec.fields[name];
+                    type_to_kind(ty, var_idx, spec, consts, string_table, seq_bound)
+                })
+                .collect::<SymbolicResult<Vec<_>>>()?;
+            Ok(VarKind::ExplodedRecord {
+                field_names,
+                field_kinds,
+            })
+        }
+        Type::Option(inner) => {
+            let inner_kind = type_to_kind(inner, var_idx, spec, consts, string_table, seq_bound)?;
+            Ok(VarKind::ExplodedOption {
+                inner_kind: Box::new(inner_kind),
+            })
+        }
         _ => Err(crate::SymbolicError::Unsupported(format!(
             "variable type: {:?}",
             ty
@@ -345,16 +377,36 @@ fn type_to_kind_simple(ty: &Type, seq_bound: usize) -> SymbolicResult<VarKind> {
                 elem_kind: Box::new(elem_kind),
             })
         }
-        Type::Tuple(elems) => Err(crate::SymbolicError::Unsupported(format!(
-            "Tuple type ({} elements) not yet supported in symbolic mode",
-            elems.len()
-        ))),
-        Type::Record(_) => Err(crate::SymbolicError::Unsupported(
-            "Record type not yet supported in symbolic mode".into(),
-        )),
-        Type::Option(_) => Err(crate::SymbolicError::Unsupported(
-            "Option[T] type not yet supported in symbolic mode".into(),
-        )),
+        Type::Tuple(elems) => {
+            let kinds = elems
+                .iter()
+                .map(|t| type_to_kind_simple(t, seq_bound))
+                .collect::<SymbolicResult<Vec<_>>>()?;
+            Ok(VarKind::ExplodedTuple {
+                element_kinds: kinds,
+            })
+        }
+        Type::Record(rec) => {
+            let mut field_names: Vec<String> = rec.fields.keys().cloned().collect();
+            field_names.sort();
+            let field_kinds = field_names
+                .iter()
+                .map(|name| {
+                    let ty = &rec.fields[name];
+                    type_to_kind_simple(ty, seq_bound)
+                })
+                .collect::<SymbolicResult<Vec<_>>>()?;
+            Ok(VarKind::ExplodedRecord {
+                field_names,
+                field_kinds,
+            })
+        }
+        Type::Option(inner) => {
+            let inner_kind = type_to_kind_simple(inner, seq_bound)?;
+            Ok(VarKind::ExplodedOption {
+                inner_kind: Box::new(inner_kind),
+            })
+        }
         _ => Err(crate::SymbolicError::Unsupported(format!(
             "value type in container: {:?}",
             ty
@@ -638,7 +690,14 @@ impl VarKind {
                 num_keys * value_kind.z3_var_count()
             }
             VarKind::ExplodedSet { lo, hi } => (*hi - *lo + 1) as usize,
-            VarKind::ExplodedSeq { max_len, elem_kind } => 1 + max_len * elem_kind.z3_var_count(), // len + elements
+            VarKind::ExplodedSeq { max_len, elem_kind } => 1 + max_len * elem_kind.z3_var_count(),
+            VarKind::ExplodedOption { inner_kind } => 1 + inner_kind.z3_var_count(),
+            VarKind::ExplodedTuple { element_kinds } => {
+                element_kinds.iter().map(|k| k.z3_var_count()).sum()
+            }
+            VarKind::ExplodedRecord { field_kinds, .. } => {
+                field_kinds.iter().map(|k| k.z3_var_count()).sum()
+            }
         }
     }
 }

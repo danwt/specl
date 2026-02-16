@@ -156,7 +156,7 @@ fn run_golem_with_timeout(
         }
     }
 
-    child.wait_with_output().map_err(|e| {
-        crate::SymbolicError::Internal(format!("Golem output read error: {e}"))
-    })
+    child
+        .wait_with_output()
+        .map_err(|e| crate::SymbolicError::Internal(format!("Golem output read error: {e}")))
 }

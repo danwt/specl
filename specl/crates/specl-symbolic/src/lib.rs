@@ -118,14 +118,17 @@ pub fn check(
     match config.mode {
         SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth, sb, timeout),
         SymbolicMode::Inductive => inductive::check_inductive(spec, consts, sb, timeout),
-        SymbolicMode::KInduction(k) => {
-            k_induction::check_k_induction(spec, consts, k, sb, timeout)
-        }
+        SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k, sb, timeout),
         SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb, config.spacer_profile, timeout),
         SymbolicMode::Golem => golem::check_golem(spec, consts, sb, timeout),
-        SymbolicMode::Smart => {
-            smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile, timeout)
-        }
+        SymbolicMode::Smart => smart::check_smart(
+            spec,
+            consts,
+            config.depth,
+            sb,
+            config.spacer_profile,
+            timeout,
+        ),
         SymbolicMode::Portfolio => portfolio::check_portfolio(
             spec,
             consts,

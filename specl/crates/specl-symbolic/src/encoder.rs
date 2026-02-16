@@ -249,14 +249,12 @@ impl<'a> EncoderCtx<'a> {
             CompiledExpr::Call { .. } => Err(SymbolicError::Unsupported(
                 "function calls should be inlined by the compiler; this is a bug".into(),
             )),
-            CompiledExpr::Field { .. } => Err(SymbolicError::Unsupported(
-                "record field access not yet supported in symbolic mode".into(),
+            CompiledExpr::Field { base, field } => self.encode_field_access(base, field),
+            CompiledExpr::RecordUpdate { .. } => Err(SymbolicError::Encoding(
+                "RecordUpdate should be handled at the effect level".into(),
             )),
-            CompiledExpr::RecordUpdate { .. } => Err(SymbolicError::Unsupported(
-                "record update not yet supported in symbolic mode".into(),
-            )),
-            CompiledExpr::TupleLit(_) => Err(SymbolicError::Unsupported(
-                "tuple literal not yet supported in symbolic mode".into(),
+            CompiledExpr::TupleLit(_) => Err(SymbolicError::Encoding(
+                "TupleLit should be handled at the init/effect level".into(),
             )),
         }
     }
@@ -269,8 +267,71 @@ impl<'a> EncoderCtx<'a> {
             }
             VarKind::ExplodedDict { .. }
             | VarKind::ExplodedSet { .. }
-            | VarKind::ExplodedSeq { .. } => Err(SymbolicError::Encoding(format!(
-                "compound variable '{}' accessed directly (use index/len/head operator)",
+            | VarKind::ExplodedSeq { .. }
+            | VarKind::ExplodedOption { .. }
+            | VarKind::ExplodedTuple { .. }
+            | VarKind::ExplodedRecord { .. } => Err(SymbolicError::Encoding(format!(
+                "compound variable '{}' accessed directly (use field/option operator)",
+                entry.name
+            ))),
+        }
+    }
+
+    fn encode_field_access(&mut self, base: &CompiledExpr, field: &str) -> SymbolicResult<Dynamic> {
+        let (specl_var_idx, step) = self.extract_var_step(base)?;
+        let entry = &self.layout.entries[specl_var_idx];
+        let z3_vars = &self.step_vars[step][specl_var_idx];
+
+        match &entry.kind {
+            VarKind::ExplodedTuple { element_kinds } => {
+                let idx: usize = field.parse().map_err(|_| {
+                    SymbolicError::Encoding(format!("invalid tuple field: {}", field))
+                })?;
+                if idx >= element_kinds.len() {
+                    return Err(SymbolicError::Encoding(format!(
+                        "tuple index {} out of bounds (tuple has {} elements)",
+                        idx,
+                        element_kinds.len()
+                    )));
+                }
+                let mut offset = 0;
+                for kind in &element_kinds[..idx] {
+                    offset += kind.z3_var_count();
+                }
+                let stride = element_kinds[idx].z3_var_count();
+                if stride == 1 {
+                    Ok(z3_vars[offset].clone())
+                } else {
+                    Err(SymbolicError::Encoding(
+                        "tuple element is compound; use nested field access".into(),
+                    ))
+                }
+            }
+            VarKind::ExplodedRecord {
+                field_names,
+                field_kinds,
+            } => {
+                let field_idx = field_names.iter().position(|n| n == field).ok_or_else(|| {
+                    SymbolicError::Encoding(format!(
+                        "unknown record field '{}' (available: {:?})",
+                        field, field_names
+                    ))
+                })?;
+                let mut offset = 0;
+                for kind in &field_kinds[..field_idx] {
+                    offset += kind.z3_var_count();
+                }
+                let stride = field_kinds[field_idx].z3_var_count();
+                if stride == 1 {
+                    Ok(z3_vars[offset].clone())
+                } else {
+                    Err(SymbolicError::Encoding(
+                        "record field is compound; use nested field access".into(),
+                    ))
+                }
+            }
+            _ => Err(SymbolicError::Encoding(format!(
+                "field access on non-record/tuple variable '{}'",
                 entry.name
             ))),
         }
@@ -763,6 +824,15 @@ impl<'a> EncoderCtx<'a> {
             VarKind::Bool | VarKind::Int { .. } => {
                 Err(SymbolicError::Encoding("index on scalar variable".into()))
             }
+            VarKind::ExplodedOption { .. } => Err(SymbolicError::Encoding(
+                "cannot index into Option (use field access)".into(),
+            )),
+            VarKind::ExplodedTuple { .. } => Err(SymbolicError::Encoding(
+                "cannot index into Tuple (use field access, e.g. t.0)".into(),
+            )),
+            VarKind::ExplodedRecord { .. } => Err(SymbolicError::Encoding(
+                "cannot index into Record (use field access, e.g. r.field)".into(),
+            )),
         }
     }
 
@@ -1939,6 +2009,34 @@ fn create_var_z3(entry: &VarEntry, step: usize) -> Vec<Dynamic> {
             }
             vars
         }
+        VarKind::ExplodedOption { inner_kind } => {
+            let mut vars = Vec::new();
+            // present flag
+            vars.push(Dynamic::from_ast(&Bool::new_const(format!(
+                "{}_present_s{}",
+                entry.name, step
+            ))));
+            // inner value vars
+            create_vars_for_kind(inner_kind, &format!("{}_val", entry.name), step, &mut vars);
+            vars
+        }
+        VarKind::ExplodedTuple { element_kinds } => {
+            let mut vars = Vec::new();
+            for (i, kind) in element_kinds.iter().enumerate() {
+                create_vars_for_kind(kind, &format!("{}_{}", entry.name, i), step, &mut vars);
+            }
+            vars
+        }
+        VarKind::ExplodedRecord {
+            field_names,
+            field_kinds,
+        } => {
+            let mut vars = Vec::new();
+            for (name, kind) in field_names.iter().zip(field_kinds.iter()) {
+                create_vars_for_kind(kind, &format!("{}_{}", entry.name, name), step, &mut vars);
+            }
+            vars
+        }
     }
 }
 
@@ -1981,6 +2079,26 @@ fn create_vars_for_kind(kind: &VarKind, prefix: &str, step: usize, out: &mut Vec
                     "{}_{}_s{}",
                     prefix, k, step
                 ))));
+            }
+        }
+        VarKind::ExplodedOption { inner_kind } => {
+            out.push(Dynamic::from_ast(&Bool::new_const(format!(
+                "{}_present_s{}",
+                prefix, step
+            ))));
+            create_vars_for_kind(inner_kind, &format!("{}_val", prefix), step, out);
+        }
+        VarKind::ExplodedTuple { element_kinds } => {
+            for (i, kind) in element_kinds.iter().enumerate() {
+                create_vars_for_kind(kind, &format!("{}_{}", prefix, i), step, out);
+            }
+        }
+        VarKind::ExplodedRecord {
+            field_names,
+            field_kinds,
+        } => {
+            for (name, kind) in field_names.iter().zip(field_kinds.iter()) {
+                create_vars_for_kind(kind, &format!("{}_{}", prefix, name), step, out);
             }
         }
     }
@@ -2035,5 +2153,27 @@ fn assert_var_range(solver: &Solver, kind: &VarKind, z3_vars: &[Dynamic]) {
             }
         }
         VarKind::Bool | VarKind::ExplodedSet { .. } => {}
+        VarKind::ExplodedOption { inner_kind } => {
+            // No range constraint on the present Bool (vars[0]).
+            // Apply range constraints to inner value.
+            let inner_stride = inner_kind.z3_var_count();
+            assert_var_range(solver, inner_kind, &z3_vars[1..1 + inner_stride]);
+        }
+        VarKind::ExplodedTuple { element_kinds } => {
+            let mut offset = 0;
+            for kind in element_kinds {
+                let stride = kind.z3_var_count();
+                assert_var_range(solver, kind, &z3_vars[offset..offset + stride]);
+                offset += stride;
+            }
+        }
+        VarKind::ExplodedRecord { field_kinds, .. } => {
+            let mut offset = 0;
+            for kind in field_kinds {
+                let stride = kind.z3_var_count();
+                assert_var_range(solver, kind, &z3_vars[offset..offset + stride]);
+                offset += stride;
+            }
+        }
     }
 }

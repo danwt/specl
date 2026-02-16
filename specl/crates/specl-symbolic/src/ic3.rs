@@ -67,7 +67,7 @@ pub fn build_chc_system(
     let init_rule = mk_forall(ctx, &apps0, init_body);
     fp.add_rule(init_rule);
 
-    // === Transition rule: forall vars0,vars1. Reach(vars0) ∧ range(vars1) ∧ trans => Reach(vars1) ===
+    // === Transition rule: forall vars0,vars1. Reach(vars0) ∧ range(vars1) ∧ trans ∧ aux(vars1) => Reach(vars1) ===
     let trans = encode_transition(spec, consts, layout, &all_step_vars, 0)?;
     let trans_raw = trans.get_z3_ast();
     inc_ref(ctx, trans_raw);
@@ -76,7 +76,28 @@ pub fn build_chc_system(
     assert_range_constraints(&range_solver, layout, &all_step_vars, 1);
     let range_formula = solver_conjunction_raw(ctx, &range_solver);
 
-    let trans_body = mk_and3(ctx, reach_0, range_formula, trans_raw);
+    let mut trans_body = mk_and3(ctx, reach_0, range_formula, trans_raw);
+
+    // Constrain Reach to states satisfying all auxiliary invariants (at step 1 = post-transition)
+    for aux in &spec.auxiliary_invariants {
+        let mut enc_aux = EncoderCtx {
+            layout,
+            consts,
+            step_vars: &all_step_vars,
+            current_step: 1,
+            next_step: 1,
+            params: &[],
+            locals: Vec::new(),
+            compound_locals: Vec::new(),
+            set_locals: Vec::new(),
+            whole_var_locals: Vec::new(),
+        };
+        let aux_encoded = enc_aux.encode_bool(&aux.body)?;
+        let aux_raw = aux_encoded.get_z3_ast();
+        inc_ref(ctx, aux_raw);
+        trans_body = mk_and2(ctx, trans_body, aux_raw);
+    }
+
     let trans_impl = mk_implies(ctx, trans_body, reach_1);
     let trans_rule = mk_forall(ctx, &all_apps, trans_impl);
     fp.add_rule(trans_rule);
@@ -401,6 +422,20 @@ fn collect_sorts_for_kind(
             out.push(int_sort); // len
             for _ in 0..*max_len {
                 collect_sorts_for_kind(elem_kind, bool_sort, int_sort, out);
+            }
+        }
+        VarKind::ExplodedOption { inner_kind } => {
+            out.push(bool_sort); // present flag
+            collect_sorts_for_kind(inner_kind, bool_sort, int_sort, out);
+        }
+        VarKind::ExplodedTuple { element_kinds } => {
+            for kind in element_kinds {
+                collect_sorts_for_kind(kind, bool_sort, int_sort, out);
+            }
+        }
+        VarKind::ExplodedRecord { field_kinds, .. } => {
+            for kind in field_kinds {
+                collect_sorts_for_kind(kind, bool_sort, int_sort, out);
             }
         }
     }

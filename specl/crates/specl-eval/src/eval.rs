@@ -253,7 +253,15 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     .get(field)
                     .cloned()
                     .ok_or_else(|| EvalError::KeyNotFound(field.clone())),
-                _ => Err(type_mismatch("Record", &base_val)),
+                VK::Tuple(t) => {
+                    let idx: usize = field.parse().map_err(|_| {
+                        EvalError::Internal(format!("invalid tuple field: {field}"))
+                    })?;
+                    t.get(idx)
+                        .cloned()
+                        .ok_or_else(|| EvalError::KeyNotFound(field.clone()))
+                }
+                _ => Err(type_mismatch("Record or Tuple", &base_val)),
             }
         }
 

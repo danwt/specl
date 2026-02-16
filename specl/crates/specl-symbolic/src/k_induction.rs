@@ -156,7 +156,7 @@ fn check_inductive_step(
     for inv in &spec.invariants {
         solver.push();
 
-        // Assert I(s_0), ..., I(s_{K-1})
+        // Assert I(s_0), ..., I(s_{K-1}) and auxiliary invariants at assumption steps
         for step in 0..k {
             let mut enc = EncoderCtx {
                 layout,
@@ -172,6 +172,23 @@ fn check_inductive_step(
             };
             let inv_at_step = enc.encode_bool(&inv.body)?;
             solver.assert(&inv_at_step);
+
+            for aux in &spec.auxiliary_invariants {
+                let mut enc_aux = EncoderCtx {
+                    layout,
+                    consts,
+                    step_vars: &all_step_vars,
+                    current_step: step,
+                    next_step: step,
+                    params: &[],
+                    locals: Vec::new(),
+                    compound_locals: Vec::new(),
+                    set_locals: Vec::new(),
+                    whole_var_locals: Vec::new(),
+                };
+                let aux_at_step = enc_aux.encode_bool(&aux.body)?;
+                solver.assert(&aux_at_step);
+            }
         }
 
         // Assert ¬I(s_K)
@@ -225,8 +242,7 @@ fn check_inductive_step(
                     }
 
                     // Generalize: drop inessential literals via push/pop probing
-                    let essential_mask =
-                        generalize_blocking_clause(&solver, &equalities);
+                    let essential_mask = generalize_blocking_clause(&solver, &equalities);
 
                     let total = equalities.len();
                     let essential_count = essential_mask.iter().filter(|&&e| e).count();
@@ -323,10 +339,7 @@ fn extract_equalities<'a>(
 /// - If UNSAT: no CTI matches the reduced pattern → i is essential (must keep it)
 ///
 /// Returns a boolean mask: true = essential (keep), false = inessential (dropped).
-fn generalize_blocking_clause(
-    solver: &Solver,
-    equalities: &[CtiEquality],
-) -> Vec<bool> {
+fn generalize_blocking_clause(solver: &Solver, equalities: &[CtiEquality]) -> Vec<bool> {
     let n = equalities.len();
     let mut essential = vec![true; n];
 

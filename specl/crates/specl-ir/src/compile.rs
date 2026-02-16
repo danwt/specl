@@ -453,6 +453,15 @@ impl Compiler {
                         }
                         return Ok(result);
                     }
+
+                    // Some(x) → TupleLit([Bool(true), x])
+                    if name == "Some" && args.len() == 1 {
+                        let inner = self.compile_expr(&args[0])?;
+                        return Ok(CompiledExpr::TupleLit(vec![
+                            CompiledExpr::Bool(true),
+                            inner,
+                        ]));
+                    }
                 }
 
                 CompiledExpr::Call {
@@ -728,6 +737,14 @@ impl Compiler {
         // Check state variables
         if let Some(&idx) = self.var_indices.get(name) {
             return Ok(CompiledExpr::Var(idx));
+        }
+
+        // None → TupleLit([Bool(false), Int(0)])
+        if name == "None" {
+            return Ok(CompiledExpr::TupleLit(vec![
+                CompiledExpr::Bool(false),
+                CompiledExpr::Int(0),
+            ]));
         }
 
         Err(CompileError::UndefinedVariable(name.to_string()))
