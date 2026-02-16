@@ -18,7 +18,7 @@ use specl_mc::{
     CheckConfig, CheckOutcome, Explorer, Fingerprint, ProgressCounters, SimulateOutcome, State,
     StateStore,
 };
-use specl_symbolic::{SpacerProfile, SymbolicConfig, SymbolicMode, SymbolicOutcome};
+use specl_symbolic::{SpacerProfile, SymbolicConfig, SymbolicError, SymbolicMode, SymbolicOutcome};
 use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
 use std::fs;
@@ -1969,8 +1969,15 @@ fn cmd_check_symbolic(
     let start = Instant::now();
 
     let result =
-        specl_symbolic::check(&spec, &consts, &config).map_err(|e| CliError::CheckError {
-            message: e.to_string(),
+        specl_symbolic::check(&spec, &consts, &config).map_err(|e| {
+            let hint = if matches!(e, SymbolicError::Unsupported(_)) {
+                "\n  hint: use `--bfs` to check with explicit-state BFS instead"
+            } else {
+                ""
+            };
+            CliError::CheckError {
+                message: format!("{e}{hint}"),
+            }
         })?;
 
     let elapsed = start.elapsed();
