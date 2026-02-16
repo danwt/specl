@@ -214,13 +214,20 @@ fn hash_intmap2(idx: usize, inner_size: u32, data: &[Value]) -> u64 {
 
 /// Compute per-variable hashes and the decomposable fingerprint.
 /// Returns (var_hashes, fingerprint).
-fn compute_var_hashes_and_fingerprint(vars: &[Value]) -> (Vec<u64>, Fingerprint) {
+/// If `view_mask` is provided, only variables where view_mask[i] == true
+/// are included in the fingerprint XOR.
+fn compute_var_hashes_and_fingerprint(
+    vars: &[Value],
+    view_mask: Option<&[bool]>,
+) -> (Vec<u64>, Fingerprint) {
     let mut hashes = Vec::with_capacity(vars.len());
     let mut fp: u64 = 0;
     for (i, var) in vars.iter().enumerate() {
         let h = hash_var(i, var);
         hashes.push(h);
-        fp ^= h;
+        if view_mask.map_or(true, |m| m[i]) {
+            fp ^= h;
+        }
     }
     (hashes, Fingerprint(fp))
 }
@@ -251,7 +258,18 @@ impl Eq for State {}
 impl State {
     /// Create a new state from variable values.
     pub fn new(vars: Vec<Value>) -> Self {
-        let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars);
+        let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars, None);
+        Self {
+            vars: Arc::new(vars),
+            var_hashes: Arc::from(hashes),
+            fp,
+        }
+    }
+
+    /// Create a new state with a view mask (for state abstraction).
+    /// Only view variables are included in the fingerprint.
+    pub fn new_with_view(vars: Vec<Value>, view_mask: &[bool]) -> Self {
+        let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars, Some(view_mask));
         Self {
             vars: Arc::new(vars),
             var_hashes: Arc::from(hashes),
@@ -313,7 +331,7 @@ impl State {
 
     /// Compute the canonical form of this state under the given symmetry groups.
     /// Two states that are equivalent under symmetry will have the same canonical form.
-    pub fn canonicalize(&self, groups: &[SymmetryGroup]) -> State {
+    pub fn canonicalize(&self, groups: &[SymmetryGroup], view_mask: Option<&[bool]>) -> State {
         if groups.is_empty() {
             return self.clone();
         }
@@ -330,7 +348,11 @@ impl State {
             apply_permutation(&mut vars, group, &perm);
         }
 
-        State::new(vars)
+        if let Some(mask) = view_mask {
+            State::new_with_view(vars, mask)
+        } else {
+            State::new(vars)
+        }
     }
 }
 

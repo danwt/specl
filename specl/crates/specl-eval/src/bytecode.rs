@@ -3113,14 +3113,15 @@ fn vm_eval_inner(
                 let base_val = stack.pop().unwrap();
                 match base_val.kind() {
                     VK::Seq(seq) => {
+                        let len = seq.len();
                         let start = lo.max(0) as usize;
                         let end = if hi < 0 {
                             0
                         } else {
-                            (hi as usize).min(seq.len())
+                            (hi as usize).min(len)
                         };
                         if start >= end {
-                            stack.push(Value::seq(Vec::new()));
+                            stack.push(Value::empty_seq());
                         } else {
                             stack.push(Value::seq(seq[start..end].to_vec()));
                         }
@@ -3145,8 +3146,13 @@ fn vm_eval_inner(
             Op::SeqTail => {
                 let seq_val = stack.pop().unwrap();
                 match seq_val.kind() {
-                    VK::Seq(s) if !s.is_empty() => stack.push(Value::seq(s[1..].to_vec())),
-                    VK::Seq(_) => stack.push(Value::seq(vec![])),
+                    VK::Seq(s) => {
+                        if s.is_empty() {
+                            stack.push(Value::seq(vec![]));
+                        } else {
+                            stack.push(Value::seq(s[1..].to_vec()));
+                        }
+                    }
                     _ => return Err(type_mismatch("Seq", &seq_val)),
                 }
             }

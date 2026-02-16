@@ -94,6 +94,8 @@ pub enum TokenKind {
     Fairness,
     /// `func` - user-defined helper function
     Func,
+    /// `view` - state abstraction for dedup
+    View,
 
     // === Logical keywords ===
     /// `and`
@@ -312,6 +314,7 @@ impl TokenKind {
                 | TokenKind::Property
                 | TokenKind::Fairness
                 | TokenKind::Func
+                | TokenKind::View
                 | TokenKind::And
                 | TokenKind::Or
                 | TokenKind::Not
@@ -375,6 +378,7 @@ impl TokenKind {
             "property" => TokenKind::Property,
             "fairness" => TokenKind::Fairness,
             "func" => TokenKind::Func,
+            "view" => TokenKind::View,
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,
@@ -445,6 +449,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Property => write!(f, "property"),
             TokenKind::Fairness => write!(f, "fairness"),
             TokenKind::Func => write!(f, "func"),
+            TokenKind::View => write!(f, "view"),
             TokenKind::And => write!(f, "and"),
             TokenKind::Or => write!(f, "or"),
             TokenKind::Not => write!(f, "not"),

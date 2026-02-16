@@ -151,6 +151,8 @@ pub struct StateStore {
     collisions: AtomicUsize,
     /// Cached state count — incremented atomically on insert, avoids DashMap::len() overhead.
     count: AtomicUsize,
+    /// When true, same-fingerprint states with different vars are expected (VIEW mode).
+    view_mode: bool,
 }
 
 // SAFETY: AtomicFPSet uses AtomicU64 internally, which is Sync.
@@ -178,6 +180,7 @@ impl StateStore {
             },
             collisions: AtomicUsize::new(0),
             count: AtomicUsize::new(0),
+            view_mode: false,
         }
     }
 
@@ -188,6 +191,7 @@ impl StateStore {
             backend: StorageBackend::Bloom(BloomFilter::from_log2_bits(log2_bits, num_hashes)),
             collisions: AtomicUsize::new(0),
             count: AtomicUsize::new(0),
+            view_mode: false,
         }
     }
 
@@ -202,6 +206,7 @@ impl StateStore {
             },
             collisions: AtomicUsize::new(0),
             count: AtomicUsize::new(0),
+            view_mode: false,
         }
     }
 
@@ -216,6 +221,7 @@ impl StateStore {
             },
             collisions: AtomicUsize::new(0),
             count: AtomicUsize::new(0),
+            view_mode: false,
         }
     }
 
@@ -226,7 +232,13 @@ impl StateStore {
             backend: StorageBackend::Full,
             collisions: AtomicUsize::new(0),
             count: AtomicUsize::new(0),
+            view_mode: false,
         }
+    }
+
+    /// Enable view mode (suppress collision warnings for VIEW abstraction).
+    pub fn set_view_mode(&mut self, enabled: bool) {
+        self.view_mode = enabled;
     }
 
     /// Check if a state has been seen before.
@@ -273,7 +285,7 @@ impl StateStore {
                 use dashmap::mapref::entry::Entry;
                 match self.states.entry(fp) {
                     Entry::Occupied(occupied) => {
-                        if occupied.get().state != state {
+                        if !self.view_mode && occupied.get().state != state {
                             let n = self.collisions.fetch_add(1, Ordering::Relaxed);
                             if n == 0 {
                                 error!(

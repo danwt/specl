@@ -10,7 +10,7 @@ use memory_stats::memory_stats;
 use rayon::prelude::*;
 use smallvec::SmallVec;
 use specl_eval::bytecode::{compile_expr, vm_eval_bool, vm_eval_bool_reuse, Bytecode, Op, VmBufs};
-use specl_eval::{eval, EvalContext, EvalError, VK, Value};
+use specl_eval::{eval, EvalContext, EvalError, Value, VK};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
 use std::cell::RefCell;
@@ -333,7 +333,7 @@ struct PcDispatchTable {
 /// Returns Some if the majority of actions share a common `(var_idx, param_idx)` pattern
 /// and the total action count is large enough to benefit from dispatch.
 fn detect_pc_dispatch(compiled_guards: &[Bytecode], n_actions: usize) -> Option<PcDispatchTable> {
-    if n_actions < 10000 {
+    if n_actions < 10 {
         return None;
     }
 
@@ -359,7 +359,6 @@ fn detect_pc_dispatch(compiled_guards: &[Bytecode], n_actions: usize) -> Option<
         }
     }
 
-
     // Find the most common (var_idx, param_idx) pattern
     let best = pattern_counts
         .iter()
@@ -371,8 +370,7 @@ fn detect_pc_dispatch(compiled_guards: &[Bytecode], n_actions: usize) -> Option<
         return None;
     }
 
-    let mut dispatch: std::collections::HashMap<i64, Vec<usize>> =
-        std::collections::HashMap::new();
+    let mut dispatch: std::collections::HashMap<i64, Vec<usize>> = std::collections::HashMap::new();
     for &(action_idx, pc_value) in actions_with_pattern {
         dispatch.entry(pc_value).or_default().push(action_idx);
     }
@@ -458,6 +456,9 @@ pub struct Explorer {
     active_invariants: Vec<bool>,
     /// PC-indexed dispatch table for skipping actions whose guard can't fire.
     pc_dispatch: Option<PcDispatchTable>,
+    /// View mask for state abstraction. view_mask[i] == true means var i is in the view.
+    /// None means all variables are in the view (no abstraction).
+    view_mask: Option<Vec<bool>>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -1082,7 +1083,7 @@ impl Explorer {
     /// Create a new explorer.
     pub fn new(spec: CompiledSpec, consts: Vec<Value>, config: CheckConfig) -> Self {
         // Choose storage backend: bloom > tree > collapse > fast_check > full tracking
-        let store = if config.bloom {
+        let mut store = if config.bloom {
             StateStore::with_bloom(config.bloom_bits, 3)
         } else if config.tree {
             StateStore::with_tree(spec.vars.len())
@@ -1091,6 +1092,9 @@ impl Explorer {
         } else {
             StateStore::with_tracking(!config.fast_check)
         };
+        if spec.view_variables.is_some() {
+            store.set_view_mode(true);
+        }
 
         // Precompute effect assignments for each action
         let cached_effects = spec
@@ -1317,6 +1321,18 @@ impl Explorer {
             deadline,
             active_invariants,
             pc_dispatch,
+            view_mask: spec.view_variables.as_ref().map(|view_vars| {
+                let mut mask = vec![false; spec.vars.len()];
+                for &idx in view_vars {
+                    mask[idx] = true;
+                }
+                info!(
+                    view_vars = view_vars.len(),
+                    total_vars = spec.vars.len(),
+                    "VIEW abstraction enabled"
+                );
+                mask
+            }),
         };
 
         // Precompute action names for trace reconstruction
@@ -1800,7 +1816,7 @@ impl Explorer {
     /// Canonicalize a state if symmetry reduction is enabled.
     fn maybe_canonicalize(&self, state: State) -> State {
         if self.config.use_symmetry && !self.spec.symmetry_groups.is_empty() {
-            state.canonicalize(&self.spec.symmetry_groups)
+            state.canonicalize(&self.spec.symmetry_groups, self.view_mask.as_deref())
         } else {
             state
         }
@@ -2860,7 +2876,12 @@ impl Explorer {
         F: FnMut(State),
     {
         if var_idx >= domains.len() {
-            callback(State::new(current));
+            let state = if let Some(ref mask) = self.view_mask {
+                State::new_with_view(current, mask)
+            } else {
+                State::new(current)
+            };
+            callback(state);
             return;
         }
 
@@ -3796,6 +3817,7 @@ impl Explorer {
                 &action.effect,
                 effect_bufs,
                 var_hashes_buf,
+                self.view_mask.as_deref(),
             ) {
                 if let Some(fp) = result {
                     if !self.store.contains(&fp) {
@@ -4261,6 +4283,7 @@ impl Explorer {
             .collect();
 
         let mut next_states = Vec::new();
+        let view_mask = self.view_mask.as_deref();
 
         self.enumerate_changed(
             &changed_domains,
@@ -4273,7 +4296,12 @@ impl Explorer {
                     .and_then(|v| v.as_bool())
                     == Some(true)
                 {
-                    next_states.push(State::new(next_vars));
+                    let state = if let Some(mask) = view_mask {
+                        State::new_with_view(next_vars, mask)
+                    } else {
+                        State::new(next_vars)
+                    };
+                    next_states.push(state);
                 }
             },
             &action.changes,

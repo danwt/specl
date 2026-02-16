@@ -788,6 +788,10 @@ fn cmd_parse(file: &PathBuf, verbose: bool) -> CliResult<()> {
                     println!("    fairness ({} constraints)", d.constraints.len())
                 }
                 specl_syntax::Decl::Use(_) => println!("    use"),
+                specl_syntax::Decl::View(d) => {
+                    let names: Vec<_> = d.variables.iter().map(|v| v.name.as_str()).collect();
+                    println!("    view {{ {} }}", names.join(", "))
+                }
             }
         }
     }

@@ -395,6 +395,7 @@ pub fn compute_effects_bytecode_reuse(
     effect: &CompiledExpr,
     vm_bufs: &mut VmBufs,
     var_hashes_buf: &mut Vec<u64>,
+    view_mask: Option<&[bool]>,
 ) -> Result<Option<crate::state::Fingerprint>, EvalError> {
     next_vars_buf.clear();
     next_vars_buf.extend_from_slice(&state.vars);
@@ -406,7 +407,9 @@ pub fn compute_effects_bytecode_reuse(
         let value = vm_eval_reuse(bc, &state.vars, next_vars_buf, consts, params, vm_bufs)?;
         let old_hash = var_hashes_buf[*var_idx];
         let new_hash = hash_var(*var_idx, &value);
-        fp ^= old_hash ^ new_hash;
+        if view_mask.map_or(true, |m| m[*var_idx]) {
+            fp ^= old_hash ^ new_hash;
+        }
         var_hashes_buf[*var_idx] = new_hash;
         next_vars_buf[*var_idx] = value;
     }

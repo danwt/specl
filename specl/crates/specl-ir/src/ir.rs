@@ -24,6 +24,9 @@ pub struct CompiledSpec {
     pub refinable_pairs: Vec<Vec<bool>>,
     /// Symmetry groups for symmetry reduction.
     pub symmetry_groups: Vec<SymmetryGroup>,
+    /// View variable indices for state abstraction. When set, only these
+    /// variables are included in fingerprint/dedup. None means all variables.
+    pub view_variables: Option<Vec<usize>>,
 }
 
 /// Source of a Dict key access in an action, for instance-level POR.

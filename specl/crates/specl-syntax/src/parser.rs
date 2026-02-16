@@ -85,6 +85,7 @@ impl Parser {
             TokenKind::Invariant => self.parse_invariant_decl().map(Decl::Invariant),
             TokenKind::Property => self.parse_property_decl().map(Decl::Property),
             TokenKind::Fairness => self.parse_fairness_decl().map(Decl::Fairness),
+            TokenKind::View => self.parse_view_decl().map(Decl::View),
             _ => Err(ParseError::UnexpectedToken {
                 expected: "declaration".to_string(),
                 found: self.peek_kind().to_string(),
@@ -405,6 +406,24 @@ impl Parser {
         self.expect(TokenKind::RBrace)?;
         let span = start.merge(self.prev_span());
         Ok(PropertyDecl { name, body, span })
+    }
+
+    fn parse_view_decl(&mut self) -> ParseResult<ViewDecl> {
+        let start = self.current_span();
+        self.expect(TokenKind::View)?;
+        self.expect(TokenKind::LBrace)?;
+
+        let mut variables = Vec::new();
+        if !self.check(TokenKind::RBrace) {
+            variables.push(self.parse_ident()?);
+            while self.match_token(TokenKind::Comma) {
+                variables.push(self.parse_ident()?);
+            }
+        }
+
+        self.expect(TokenKind::RBrace)?;
+        let span = start.merge(self.prev_span());
+        Ok(ViewDecl { variables, span })
     }
 
     fn parse_fairness_decl(&mut self) -> ParseResult<FairnessDecl> {

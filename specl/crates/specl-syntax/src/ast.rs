@@ -54,6 +54,8 @@ pub enum Decl {
     Property(PropertyDecl),
     /// `fairness { ... }`
     Fairness(FairnessDecl),
+    /// `view { var1, var2, ... }`
+    View(ViewDecl),
 }
 
 impl Decl {
@@ -69,6 +71,7 @@ impl Decl {
             Decl::Invariant(d) => d.span,
             Decl::Property(d) => d.span,
             Decl::Fairness(d) => d.span,
+            Decl::View(d) => d.span,
         }
     }
 }
@@ -187,6 +190,13 @@ pub struct PropertyDecl {
 #[derive(Debug, Clone)]
 pub struct FairnessDecl {
     pub constraints: Vec<FairnessConstraint>,
+    pub span: Span,
+}
+
+/// `view { var1, var2, ... }` — state abstraction for dedup.
+#[derive(Debug, Clone)]
+pub struct ViewDecl {
+    pub variables: Vec<Ident>,
     pub span: Span,
 }
 

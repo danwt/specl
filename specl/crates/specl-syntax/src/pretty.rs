@@ -86,7 +86,19 @@ impl PrettyPrinter {
             Decl::Invariant(d) => self.print_invariant_decl(d),
             Decl::Property(d) => self.print_property_decl(d),
             Decl::Fairness(d) => self.print_fairness_decl(d),
+            Decl::View(d) => self.print_view_decl(d),
         }
+    }
+
+    fn print_view_decl(&mut self, decl: &ViewDecl) {
+        self.write("view { ");
+        for (i, var) in decl.variables.iter().enumerate() {
+            if i > 0 {
+                self.write(", ");
+            }
+            self.write(&var.name);
+        }
+        self.writeln(" }");
     }
 
     fn print_use_decl(&mut self, decl: &UseDecl) {

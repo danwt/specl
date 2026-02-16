@@ -165,6 +165,22 @@ impl Compiler {
             }
         }
 
+        // Resolve view variables
+        let mut view_variables = None;
+        for decl in &module.decls {
+            if let Decl::View(d) = decl {
+                let mut indices = Vec::new();
+                for var in &d.variables {
+                    let idx = self
+                        .var_indices
+                        .get(&var.name)
+                        .ok_or_else(|| CompileError::UndefinedVariable(var.name.clone()))?;
+                    indices.push(*idx);
+                }
+                view_variables = Some(indices);
+            }
+        }
+
         // Compute independence matrix for POR
         // Actions A and B are independent if:
         // writes(A) ∩ (reads(B) ∪ writes(B)) = ∅ AND writes(B) ∩ (reads(A) ∪ writes(A)) = ∅
@@ -227,6 +243,7 @@ impl Compiler {
             independent,
             refinable_pairs,
             symmetry_groups,
+            view_variables,
         })
     }
 
