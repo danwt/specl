@@ -2007,11 +2007,6 @@ impl Translator {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    fn translate_effect(&self, expr: &TlaExpr) -> Result<specl::Expr, TranslateError> {
-        self.translate_effect_with_subs(expr, &std::collections::HashMap::new())
-    }
-
     fn translate_effect_with_subs(
         &self,
         expr: &TlaExpr,
