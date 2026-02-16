@@ -1,8 +1,9 @@
 //! Portfolio symbolic checking: run multiple strategies in parallel.
 //!
-//! Spawns BMC, k-induction, and IC3/Spacer in separate threads.
-//! The first strategy to produce a definitive result (Ok or InvariantViolation)
-//! wins. Each thread creates its own Z3 context (Z3 is not thread-safe).
+//! Spawns BMC, k-induction, and multiple IC3/Spacer configurations in separate
+//! threads. The first strategy to produce a definitive result (Ok or
+//! InvariantViolation) wins. Each thread creates its own Z3 context (Z3 is not
+//! thread-safe).
 
 use crate::{SymbolicOutcome, SymbolicResult};
 use specl_eval::Value;
@@ -20,42 +21,63 @@ enum StrategyResult {
     Inconclusive(String),
 }
 
-/// Run portfolio symbolic checking: BMC, k-induction, and IC3 in parallel.
-/// First definitive result wins.
+/// Run portfolio symbolic checking with diversified strategies.
+/// Threads: BMC, k-induction, IC3(user profile), IC3(Fast), IC3(MbpAggressive), Golem.
 pub fn check_portfolio(
     spec: &CompiledSpec,
     consts: &[Value],
     bmc_depth: usize,
     seq_bound: usize,
     spacer_profile: crate::SpacerProfile,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!("portfolio: launching parallel symbolic strategies");
 
     let done = Arc::new(AtomicBool::new(false));
 
-    // Clone data for each thread (CompiledSpec and consts are Send)
+    // Helper to spawn an IC3 thread with a given profile and label
+    fn spawn_ic3(
+        spec: &CompiledSpec,
+        consts: &[Value],
+        seq_bound: usize,
+        profile: crate::SpacerProfile,
+        timeout_ms: Option<u64>,
+        done: &Arc<AtomicBool>,
+        label: &'static str,
+    ) -> thread::JoinHandle<StrategyResult> {
+        let spec = spec.clone();
+        let consts = consts.to_vec();
+        let done = Arc::clone(done);
+        thread::spawn(move || {
+            if done.load(Ordering::Relaxed) {
+                return StrategyResult::Inconclusive("cancelled".into());
+            }
+            match crate::ic3::check_ic3(&spec, &consts, seq_bound, profile, timeout_ms) {
+                Ok(SymbolicOutcome::Ok { .. }) => {
+                    done.store(true, Ordering::Relaxed);
+                    StrategyResult::Done(SymbolicOutcome::Ok { method: label })
+                }
+                Ok(SymbolicOutcome::InvariantViolation { invariant, trace }) => {
+                    done.store(true, Ordering::Relaxed);
+                    StrategyResult::Done(SymbolicOutcome::InvariantViolation { invariant, trace })
+                }
+                Ok(SymbolicOutcome::Unknown { reason }) => {
+                    StrategyResult::Inconclusive(format!("{label}: {reason}"))
+                }
+                Err(e) => StrategyResult::Inconclusive(format!("{label} error: {e}")),
+            }
+        })
+    }
+
+    // Thread 1: BMC
     let spec_bmc = spec.clone();
     let consts_bmc = consts.to_vec();
     let done_bmc = Arc::clone(&done);
-
-    let spec_kind = spec.clone();
-    let consts_kind = consts.to_vec();
-    let done_kind = Arc::clone(&done);
-
-    let spec_ic3 = spec.clone();
-    let consts_ic3 = consts.to_vec();
-    let done_ic3 = Arc::clone(&done);
-
-    let spec_golem = spec.clone();
-    let consts_golem = consts.to_vec();
-    let done_golem = Arc::clone(&done);
-
-    // Thread 1: BMC (good at finding bugs quickly)
     let bmc_handle = thread::spawn(move || {
         if done_bmc.load(Ordering::Relaxed) {
             return StrategyResult::Inconclusive("cancelled".into());
         }
-        match crate::bmc::check_bmc(&spec_bmc, &consts_bmc, bmc_depth, seq_bound) {
+        match crate::bmc::check_bmc(&spec_bmc, &consts_bmc, bmc_depth, seq_bound, timeout_ms) {
             Ok(SymbolicOutcome::Ok { .. }) => {
                 done_bmc.store(true, Ordering::Relaxed);
                 StrategyResult::Done(SymbolicOutcome::Ok {
@@ -73,13 +95,22 @@ pub fn check_portfolio(
         }
     });
 
-    // Thread 2: k-induction cascade (k=2,3,4,5) — proves properties
+    // Thread 2: k-induction cascade
+    let spec_kind = spec.clone();
+    let consts_kind = consts.to_vec();
+    let done_kind = Arc::clone(&done);
     let kind_handle = thread::spawn(move || {
         for k in [2, 3, 4, 5] {
             if done_kind.load(Ordering::Relaxed) {
                 return StrategyResult::Inconclusive("cancelled".into());
             }
-            match crate::k_induction::check_k_induction(&spec_kind, &consts_kind, k, seq_bound) {
+            match crate::k_induction::check_k_induction(
+                &spec_kind,
+                &consts_kind,
+                k,
+                seq_bound,
+                timeout_ms,
+            ) {
                 Ok(SymbolicOutcome::Ok { .. }) => {
                     done_kind.store(true, Ordering::Relaxed);
                     return StrategyResult::Done(SymbolicOutcome::Ok {
@@ -93,46 +124,55 @@ pub fn check_portfolio(
                         trace,
                     });
                 }
-                Ok(SymbolicOutcome::Unknown { .. }) => {
-                    // Try higher k
-                }
-                Err(_) => {
-                    // Try higher k
-                }
+                Ok(SymbolicOutcome::Unknown { .. }) => {}
+                Err(_) => {}
             }
         }
         StrategyResult::Inconclusive("k-induction: all k exhausted".into())
     });
 
-    // Thread 3: IC3/Spacer (unbounded, most powerful)
-    let ic3_handle = thread::spawn(move || {
-        if done_ic3.load(Ordering::Relaxed) {
-            return StrategyResult::Inconclusive("cancelled".into());
-        }
-        match crate::ic3::check_ic3(&spec_ic3, &consts_ic3, seq_bound, spacer_profile) {
-            Ok(SymbolicOutcome::Ok { .. }) => {
-                done_ic3.store(true, Ordering::Relaxed);
-                StrategyResult::Done(SymbolicOutcome::Ok {
-                    method: "portfolio(IC3)",
-                })
-            }
-            Ok(SymbolicOutcome::InvariantViolation { invariant, trace }) => {
-                done_ic3.store(true, Ordering::Relaxed);
-                StrategyResult::Done(SymbolicOutcome::InvariantViolation { invariant, trace })
-            }
-            Ok(SymbolicOutcome::Unknown { reason }) => {
-                StrategyResult::Inconclusive(format!("IC3: {reason}"))
-            }
-            Err(e) => StrategyResult::Inconclusive(format!("IC3 error: {e}")),
-        }
-    });
+    // Thread 3: IC3 with user-selected profile
+    let ic3_handle = spawn_ic3(
+        spec,
+        consts,
+        seq_bound,
+        spacer_profile,
+        timeout_ms,
+        &done,
+        "portfolio(IC3)",
+    );
 
-    // Thread 4: Golem CHC solver (external, different algorithms from Spacer)
+    // Thread 4: IC3 with Fast profile (diversification)
+    let ic3_fast_handle = spawn_ic3(
+        spec,
+        consts,
+        seq_bound,
+        crate::SpacerProfile::Fast,
+        timeout_ms,
+        &done,
+        "portfolio(IC3-Fast)",
+    );
+
+    // Thread 5: IC3 with MbpAggressive profile (diversification)
+    let ic3_mbp_handle = spawn_ic3(
+        spec,
+        consts,
+        seq_bound,
+        crate::SpacerProfile::MbpAggressive,
+        timeout_ms,
+        &done,
+        "portfolio(IC3-MbpAggressive)",
+    );
+
+    // Thread 6: Golem
+    let spec_golem = spec.clone();
+    let consts_golem = consts.to_vec();
+    let done_golem = Arc::clone(&done);
     let golem_handle = thread::spawn(move || {
         if done_golem.load(Ordering::Relaxed) {
             return StrategyResult::Inconclusive("cancelled".into());
         }
-        match crate::golem::check_golem(&spec_golem, &consts_golem, seq_bound) {
+        match crate::golem::check_golem(&spec_golem, &consts_golem, seq_bound, timeout_ms) {
             Ok(SymbolicOutcome::Ok { .. }) => {
                 done_golem.store(true, Ordering::Relaxed);
                 StrategyResult::Done(SymbolicOutcome::Ok {
@@ -150,7 +190,7 @@ pub fn check_portfolio(
         }
     });
 
-    // Collect results: first definitive result wins
+    // Collect results
     let results = [
         bmc_handle
             .join()
@@ -161,6 +201,14 @@ pub fn check_portfolio(
         ic3_handle
             .join()
             .unwrap_or(StrategyResult::Inconclusive("IC3 thread panic".into())),
+        ic3_fast_handle
+            .join()
+            .unwrap_or(StrategyResult::Inconclusive("IC3-Fast thread panic".into())),
+        ic3_mbp_handle
+            .join()
+            .unwrap_or(StrategyResult::Inconclusive(
+                "IC3-MbpAggressive thread panic".into(),
+            )),
         golem_handle
             .join()
             .unwrap_or(StrategyResult::Inconclusive("Golem thread panic".into())),

@@ -20,6 +20,16 @@ pub use fixedpoint::SpacerProfile;
 use specl_eval::Value;
 use specl_ir::CompiledSpec;
 use thiserror::Error;
+use z3::Solver;
+
+/// Apply timeout to a Z3 solver if configured.
+pub(crate) fn apply_solver_timeout(solver: &Solver, timeout_ms: Option<u64>) {
+    if let Some(ms) = timeout_ms {
+        let mut params = z3::Params::new();
+        params.set_u32("timeout", ms.min(u32::MAX as u64) as u32);
+        solver.set_params(&params);
+    }
+}
 
 /// Symbolic checking error.
 #[derive(Debug, Error)]
@@ -74,6 +84,8 @@ pub struct SymbolicConfig {
     pub seq_bound: usize,
     /// Spacer parameter profile for IC3/CHC solving.
     pub spacer_profile: SpacerProfile,
+    /// Per-solver timeout in milliseconds (None = no timeout).
+    pub timeout_ms: Option<u64>,
 }
 
 /// Symbolic checking mode.
@@ -102,17 +114,25 @@ pub fn check(
     config: &SymbolicConfig,
 ) -> SymbolicResult<SymbolicOutcome> {
     let sb = config.seq_bound;
+    let timeout = config.timeout_ms;
     match config.mode {
-        SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth, sb),
-        SymbolicMode::Inductive => inductive::check_inductive(spec, consts, sb),
-        SymbolicMode::KInduction(k) => k_induction::check_k_induction(spec, consts, k, sb),
-        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb, config.spacer_profile),
-        SymbolicMode::Golem => golem::check_golem(spec, consts, sb),
+        SymbolicMode::Bmc => bmc::check_bmc(spec, consts, config.depth, sb, timeout),
+        SymbolicMode::Inductive => inductive::check_inductive(spec, consts, sb, timeout),
+        SymbolicMode::KInduction(k) => {
+            k_induction::check_k_induction(spec, consts, k, sb, timeout)
+        }
+        SymbolicMode::Ic3 => ic3::check_ic3(spec, consts, sb, config.spacer_profile, timeout),
+        SymbolicMode::Golem => golem::check_golem(spec, consts, sb, timeout),
         SymbolicMode::Smart => {
-            smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile)
+            smart::check_smart(spec, consts, config.depth, sb, config.spacer_profile, timeout)
         }
-        SymbolicMode::Portfolio => {
-            portfolio::check_portfolio(spec, consts, config.depth, sb, config.spacer_profile)
-        }
+        SymbolicMode::Portfolio => portfolio::check_portfolio(
+            spec,
+            consts,
+            config.depth,
+            sb,
+            config.spacer_profile,
+            timeout,
+        ),
     }
 }

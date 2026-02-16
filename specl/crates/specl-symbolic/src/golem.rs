@@ -27,6 +27,7 @@ pub fn check_golem(
     spec: &CompiledSpec,
     consts: &[Value],
     seq_bound: usize,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!("starting Golem CHC verification");
 
@@ -60,15 +61,7 @@ pub fn check_golem(
         let path = tmpfile.path().to_str().unwrap_or("");
         info!(invariant = inv.name, path, "invoking Golem");
 
-        let output = Command::new("golem")
-            .arg("--engine")
-            .arg("split-tpa")
-            .arg("-l")
-            .arg("QF_LIA")
-            .arg("--input")
-            .arg(path)
-            .output()
-            .map_err(|e| crate::SymbolicError::Internal(format!("failed to invoke Golem: {e}")))?;
+        let output = run_golem_with_timeout(path, timeout_ms, &inv.name)?;
 
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -89,7 +82,7 @@ pub fn check_golem(
             // Golem confirms violation; use BMC to find trace
             let mut trace = Vec::new();
             for depth in [1, 2, 4, 8, 16, 32] {
-                match crate::bmc::check_bmc(spec, consts, depth, seq_bound) {
+                match crate::bmc::check_bmc(spec, consts, depth, seq_bound, timeout_ms) {
                     Ok(SymbolicOutcome::InvariantViolation {
                         trace: bmc_trace, ..
                     }) => {
@@ -117,4 +110,53 @@ pub fn check_golem(
 
     info!("all invariants verified by Golem");
     Ok(SymbolicOutcome::Ok { method: "Golem" })
+}
+
+/// Run golem as a subprocess with optional timeout.
+fn run_golem_with_timeout(
+    smt2_path: &str,
+    timeout_ms: Option<u64>,
+    inv_name: &str,
+) -> Result<std::process::Output, crate::SymbolicError> {
+    let mut child = Command::new("golem")
+        .arg("--engine")
+        .arg("split-tpa")
+        .arg("-l")
+        .arg("QF_LIA")
+        .arg("--input")
+        .arg(smt2_path)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| crate::SymbolicError::Internal(format!("failed to invoke Golem: {e}")))?;
+
+    if let Some(ms) = timeout_ms {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_millis(ms);
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => break,
+                Ok(None) => {
+                    if std::time::Instant::now() >= deadline {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(crate::SymbolicError::Internal(format!(
+                            "Golem timed out after {}ms for invariant '{}'",
+                            ms, inv_name
+                        )));
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                Err(e) => {
+                    let _ = child.kill();
+                    return Err(crate::SymbolicError::Internal(format!(
+                        "Golem wait error: {e}"
+                    )));
+                }
+            }
+        }
+    }
+
+    child.wait_with_output().map_err(|e| {
+        crate::SymbolicError::Internal(format!("Golem output read error: {e}"))
+    })
 }

@@ -21,11 +21,13 @@ pub fn check_inductive(
     spec: &CompiledSpec,
     consts: &[Value],
     seq_bound: usize,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!("starting inductive invariant checking");
 
     let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let solver = Solver::new();
+    crate::apply_solver_timeout(&solver, timeout_ms);
 
     let step0_vars = create_step_vars(&layout, 0);
     let step1_vars = create_step_vars(&layout, 1);

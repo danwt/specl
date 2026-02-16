@@ -122,12 +122,13 @@ pub fn check_ic3(
     consts: &[Value],
     seq_bound: usize,
     spacer_profile: crate::SpacerProfile,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!(?spacer_profile, "starting IC3/CHC verification");
 
     let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let ctx = Context::thread_local().get_z3_context();
-    let fp = Fixedpoint::with_profile(spacer_profile);
+    let fp = Fixedpoint::with_profile(spacer_profile, timeout_ms);
 
     // Collect sorts for all flattened state variables
     let sorts = collect_sorts(&layout, ctx);
@@ -222,7 +223,7 @@ pub fn check_ic3(
                 );
                 let mut trace = Vec::new();
                 for depth in [1, 2, 4, 8, 16, 32] {
-                    match crate::bmc::check_bmc(spec, consts, depth, seq_bound) {
+                    match crate::bmc::check_bmc(spec, consts, depth, seq_bound, timeout_ms) {
                         Ok(SymbolicOutcome::InvariantViolation {
                             trace: bmc_trace, ..
                         }) => {

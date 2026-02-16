@@ -8,8 +8,9 @@
 //! Both UNSAT → proven for all reachable states.
 //!
 //! CTI learning: when the inductive step fails (SAT), extract the counterexample
-//! state, block it as an auxiliary lemma, and retry. This strengthens the invariant
-//! until either proven or iteration limit reached.
+//! state, generalize it via drop-literal minimization, block it as an auxiliary
+//! lemma, and retry. This strengthens the invariant until either proven or
+//! iteration limit reached.
 
 use crate::encoder::{assert_range_constraints, create_step_vars, EncoderCtx};
 use crate::state_vars::VarLayout;
@@ -23,7 +24,9 @@ use z3::ast::{Bool, Dynamic};
 use z3::{SatResult, Solver};
 
 /// Maximum number of CTI learning iterations per invariant.
-const MAX_CTI_ITERATIONS: usize = 50;
+/// With generalized blocking clauses each iteration blocks more states,
+/// so fewer iterations are needed in practice.
+const MAX_CTI_ITERATIONS: usize = 200;
 
 /// Run k-induction checking with the given strengthening depth.
 pub fn check_k_induction(
@@ -31,6 +34,7 @@ pub fn check_k_induction(
     consts: &[Value],
     k: usize,
     seq_bound: usize,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     info!(k, "starting k-induction");
 
@@ -38,13 +42,13 @@ pub fn check_k_induction(
 
     // === Base case: BMC to depth K ===
     info!(k, "k-induction base case");
-    if let Some(outcome) = check_base_case(spec, consts, &layout, k)? {
+    if let Some(outcome) = check_base_case(spec, consts, &layout, k, timeout_ms)? {
         return Ok(outcome);
     }
 
     // === Inductive step with CTI learning ===
     info!(k, "k-induction inductive step");
-    check_inductive_step(spec, consts, &layout, k)
+    check_inductive_step(spec, consts, &layout, k, timeout_ms)
 }
 
 /// Base case: init + transitions for K steps, check ¬I at each step.
@@ -53,8 +57,10 @@ fn check_base_case(
     consts: &[Value],
     layout: &VarLayout,
     k: usize,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<Option<SymbolicOutcome>> {
     let solver = Solver::new();
+    crate::apply_solver_timeout(&solver, timeout_ms);
 
     let mut all_step_vars = Vec::new();
     for step in 0..=k {
@@ -120,18 +126,16 @@ fn check_base_case(
     Ok(None)
 }
 
-/// Inductive step with CTI learning.
-///
-/// K+1 states (0..=K), assert I at 0..K-1, transitions, ¬I at K.
-/// When SAT (CTI found), extract the counterexample state, add it as
-/// a blocking clause (lemma), and retry.
+/// Inductive step with CTI learning and drop-literal generalization.
 fn check_inductive_step(
     spec: &CompiledSpec,
     consts: &[Value],
     layout: &VarLayout,
     k: usize,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     let solver = Solver::new();
+    crate::apply_solver_timeout(&solver, timeout_ms);
 
     // K+1 states: 0..=K
     let mut all_step_vars = Vec::new();
@@ -207,22 +211,10 @@ fn check_inductive_step(
                     }
 
                     let model = solver.get_model().unwrap();
-                    info!(
-                        invariant = inv.name,
-                        k, cti_count, "CTI found, extracting blocking clause"
-                    );
 
-                    // Extract CTI state at step K and block it at all steps
-                    let blocking = extract_blocking_clause(&model, layout, &all_step_vars, k);
-                    if let Some(clause) = blocking {
-                        // Block this state at step K (strengthen the goal)
-                        solver.assert(&clause.at_k);
-                        // Block at assumption steps 0..K-1 (strengthen the hypothesis)
-                        for lemma in &clause.at_assumptions {
-                            solver.assert(lemma);
-                        }
-                    } else {
-                        // Could not extract blocking clause — give up
+                    // Extract concrete equalities at step K
+                    let equalities = extract_equalities(&model, &all_step_vars, k);
+                    if equalities.is_empty() {
                         solver.pop(1);
                         return Ok(SymbolicOutcome::Unknown {
                             reason: format!(
@@ -230,6 +222,30 @@ fn check_inductive_step(
                                 inv.name, k
                             ),
                         });
+                    }
+
+                    // Generalize: drop inessential literals via push/pop probing
+                    let essential_mask =
+                        generalize_blocking_clause(&solver, &equalities);
+
+                    let total = equalities.len();
+                    let essential_count = essential_mask.iter().filter(|&&e| e).count();
+                    info!(
+                        invariant = inv.name,
+                        k,
+                        cti_count,
+                        total,
+                        essential = essential_count,
+                        dropped = total - essential_count,
+                        "CTI generalized"
+                    );
+
+                    // Build and assert blocking clause from essential equalities
+                    let blocking =
+                        build_blocking_clause(&equalities, &essential_mask, &all_step_vars, k);
+                    solver.assert(&blocking.at_k);
+                    for lemma in &blocking.at_assumptions {
+                        solver.assert(lemma);
                     }
                 }
                 SatResult::Unsat => {
@@ -266,6 +282,91 @@ fn check_inductive_step(
     })
 }
 
+/// A concrete equality: z3_var at step K = model value.
+struct CtiEquality<'a> {
+    var_idx: usize,
+    sub_idx: usize,
+    z3_var: &'a Dynamic,
+    val: Dynamic,
+}
+
+/// Extract all concrete equalities from a CTI model at step K.
+fn extract_equalities<'a>(
+    model: &z3::Model,
+    all_step_vars: &'a [Vec<Vec<Dynamic>>],
+    k: usize,
+) -> Vec<CtiEquality<'a>> {
+    let mut equalities = Vec::new();
+    for (var_idx, var_z3s) in all_step_vars[k].iter().enumerate() {
+        for (sub_idx, z3_var) in var_z3s.iter().enumerate() {
+            if let Some(val) = model.eval(z3_var, true) {
+                equalities.push(CtiEquality {
+                    var_idx,
+                    sub_idx,
+                    z3_var,
+                    val,
+                });
+            }
+        }
+    }
+    equalities
+}
+
+/// Drop-literal generalization: determine which equalities are essential.
+///
+/// For each equality, check if removing it still allows a CTI to exist.
+/// Uses the solver's existing context (inductive hypothesis + transitions + ¬I).
+///
+/// Algorithm:
+/// - For each equality i, assert all OTHER essential equalities (the "reduced pattern")
+/// - If SAT: a CTI exists even without constraining variable i → i is inessential
+/// - If UNSAT: no CTI matches the reduced pattern → i is essential (must keep it)
+///
+/// Returns a boolean mask: true = essential (keep), false = inessential (dropped).
+fn generalize_blocking_clause(
+    solver: &Solver,
+    equalities: &[CtiEquality],
+) -> Vec<bool> {
+    let n = equalities.len();
+    let mut essential = vec![true; n];
+
+    for i in 0..n {
+        if !essential[i] {
+            continue;
+        }
+
+        // Try without equality i: force step K to match the reduced pattern
+        solver.push();
+
+        // Assert all currently-essential equalities EXCEPT i
+        for j in 0..n {
+            if j == i || !essential[j] {
+                continue;
+            }
+            let eq = equalities[j].z3_var.eq(&equalities[j].val);
+            solver.assert(&eq);
+        }
+
+        match solver.check() {
+            SatResult::Sat => {
+                // A CTI exists even without constraining variable i
+                // → variable i's specific value is inessential, drop it
+                essential[i] = false;
+            }
+            SatResult::Unsat => {
+                // No CTI matches without variable i → must keep it
+            }
+            SatResult::Unknown => {
+                // Conservatively keep it
+            }
+        }
+
+        solver.pop(1);
+    }
+
+    essential
+}
+
 /// A blocking clause that prevents a CTI state from appearing in the trace.
 struct BlockingClause {
     /// Clause blocking the CTI at step K.
@@ -274,52 +375,51 @@ struct BlockingClause {
     at_assumptions: Vec<Bool>,
 }
 
-/// Extract a blocking clause from a CTI model.
+/// Build a blocking clause from essential equalities.
 ///
-/// For each Z3 variable at step K, evaluate its model value and create
-/// an equality. The blocking clause is the negation of the conjunction
-/// (= at least one variable must differ from the CTI).
-fn extract_blocking_clause(
-    model: &z3::Model,
-    _layout: &VarLayout,
+/// The blocking clause is NOT(AND(essential equalities)), applied at step K
+/// and at each assumption step 0..K-1.
+fn build_blocking_clause(
+    equalities: &[CtiEquality],
+    essential_mask: &[bool],
     all_step_vars: &[Vec<Vec<Dynamic>>],
     k: usize,
-) -> Option<BlockingClause> {
-    // Collect equalities: each variable at step K equals its CTI model value
-    let mut equalities_at_k = Vec::new();
-    for (var_idx, var_z3s) in all_step_vars[k].iter().enumerate() {
-        for (sub_idx, z3_var) in var_z3s.iter().enumerate() {
-            if let Some(val) = model.eval(z3_var, true) {
-                let eq = z3_var.eq(&val);
-                equalities_at_k.push((var_idx, sub_idx, eq, val));
-            }
+) -> BlockingClause {
+    // Collect essential equalities at step K
+    let mut eq_at_k = Vec::new();
+    for (i, eq) in equalities.iter().enumerate() {
+        if essential_mask[i] {
+            eq_at_k.push(eq.z3_var.eq(&eq.val));
         }
     }
 
-    if equalities_at_k.is_empty() {
-        return None;
-    }
+    let eq_refs: Vec<&Bool> = eq_at_k.iter().collect();
+    let at_k = if eq_refs.is_empty() {
+        Bool::from_bool(true).not() // shouldn't happen, but safe fallback
+    } else {
+        Bool::and(&eq_refs).not()
+    };
 
-    // Blocking clause at step K: NOT(all variables match CTI)
-    let eq_refs: Vec<&Bool> = equalities_at_k.iter().map(|(_, _, eq, _)| eq).collect();
-    let conjunction = Bool::and(&eq_refs);
-    let at_k = conjunction.not();
-
-    // Blocking clauses at assumption steps 0..K-1: same state is blocked
+    // Build blocking clauses at assumption steps 0..K-1
     let mut at_assumptions = Vec::new();
     for step_vars in &all_step_vars[..k] {
         let mut step_eqs = Vec::new();
-        for (var_idx, sub_idx, _, val) in &equalities_at_k {
-            let step_var = &step_vars[*var_idx][*sub_idx];
-            step_eqs.push(step_var.eq(val));
+        for (i, eq) in equalities.iter().enumerate() {
+            if essential_mask[i] {
+                let step_var = &step_vars[eq.var_idx][eq.sub_idx];
+                step_eqs.push(step_var.eq(&eq.val));
+            }
         }
         let eq_refs: Vec<&Bool> = step_eqs.iter().collect();
-        let conjunction = Bool::and(&eq_refs);
-        at_assumptions.push(conjunction.not());
+        if eq_refs.is_empty() {
+            at_assumptions.push(Bool::from_bool(true).not());
+        } else {
+            at_assumptions.push(Bool::and(&eq_refs).not());
+        }
     }
 
-    Some(BlockingClause {
+    BlockingClause {
         at_k,
         at_assumptions,
-    })
+    }
 }

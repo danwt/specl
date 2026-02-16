@@ -19,6 +19,7 @@ pub fn check_bmc(
     consts: &[Value],
     max_depth: usize,
     seq_bound: usize,
+    timeout_ms: Option<u64>,
 ) -> SymbolicResult<SymbolicOutcome> {
     let effective_max = if max_depth == 0 {
         DEFAULT_MAX_DEPTH
@@ -29,6 +30,7 @@ pub fn check_bmc(
 
     let layout = VarLayout::from_spec(spec, consts, seq_bound)?;
     let solver = Solver::new();
+    crate::apply_solver_timeout(&solver, timeout_ms);
 
     let mut all_step_vars = Vec::new();
 
