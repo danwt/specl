@@ -1300,6 +1300,24 @@ pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
     val.as_set().ok_or_else(|| type_mismatch("Set", val))
 }
 
+/// Convert an IntMap or IntMap2 value to an IntMap Arc.
+/// IntMap2 is dematerialized: each row becomes an IntMap value.
+fn dematerialize_to_intmap(val: &Value) -> Arc<Vec<Value>> {
+    match val.kind() {
+        VK::IntMap(_) => val.clone().into_intmap_arc(),
+        VK::IntMap2(inner_size, data) => {
+            let sz = inner_size as usize;
+            let outer_size = data.len() / sz;
+            Arc::new(
+                (0..outer_size)
+                    .map(|i| Value::intmap(Arc::new(data[i * sz..(i + 1) * sz].to_vec())))
+                    .collect(),
+            )
+        }
+        _ => unreachable!("dematerialize_to_intmap called on non-IntMap/IntMap2"),
+    }
+}
+
 /// Extract elements for domain iteration: Set elements, Dict/Fn keys, or IntMap indices.
 /// Use this for quantifier/comprehension domains where iterating over a Dict yields its keys.
 fn extract_domain_elements(val: &Value) -> EvalResult<Vec<Value>> {
