@@ -6,7 +6,7 @@
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
-use clap::{Parser, Subcommand, ValueEnum};
+use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{Diagnostic, NamedSource, SourceSpan};
 use notify::{RecursiveMode, Watcher};
@@ -230,20 +230,9 @@ enum Commands {
 
     /// Model check a Specl file
     #[command(
-        long_about = "\
-Model check a Specl file.
-
-The checker exhaustively explores every reachable state of your spec, starting \
-from the initial state and trying every possible action at each step (breadth-first \
-search). If any state violates an invariant, you get the shortest sequence of \
-actions that reproduces the bug. If all states pass, you have a guarantee that \
-the invariant holds for every reachable state.
-
-By default, Specl auto-selects the best checking mode (explicit-state or symbolic) \
-based on your spec, and auto-enables optimizations like POR and symmetry when they \
-are beneficial. You can override these choices with the flags below.
-
-Use 'specl check --help' to see detailed explanations of every flag.",
+        disable_help_flag = true,
+        after_help = "\
+Use -v with -h for detailed explanations of every flag and a strategy guide.",
         after_long_help = "\
 CHOOSING A STRATEGY
   1. Start small:       specl check spec.specl -c N=2
@@ -272,9 +261,13 @@ EXAMPLES
   CI pipeline:          specl check raft.specl -c N=2 --max-time 60 --output json"
     )]
     Check {
+        /// Print help (use -v for detailed flag explanations)
+        #[arg(short = 'h', long)]
+        help: bool,
+
         /// Input file
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
+        #[arg(value_name = "FILE", required_unless_present = "help")]
+        file: Option<PathBuf>,
 
         /// Constant assignments (name=value)
         #[arg(short, long, value_name = "CONST=VALUE",
@@ -963,6 +956,7 @@ fn main() {
         Commands::Typecheck { file } => cmd_typecheck(&file),
         Commands::Info { file, constant } => cmd_info(&file, &constant),
         Commands::Check {
+            help,
             file,
             constant,
             bfs,
@@ -1001,7 +995,59 @@ fn main() {
             profile,
             check_only,
             diff,
+        } if help => {
+            let mut cmd = Cli::command();
+            let check_cmd = cmd.find_subcommand_mut("check").unwrap();
+            if verbose {
+                check_cmd.write_long_help(&mut std::io::stdout()).unwrap();
+            } else {
+                check_cmd.write_help(&mut std::io::stdout()).unwrap();
+            }
+            println!();
+            Ok(())
+        }
+        Commands::Check {
+            file,
+            constant,
+            bfs,
+            symbolic,
+            max_states,
+            max_depth,
+            memory_limit,
+            max_time,
+            no_deadlock,
+            no_parallel,
+            threads,
+            por,
+            symmetry,
+            fast,
+            bloom,
+            bloom_bits,
+            collapse,
+            tree,
+            directed,
+            incremental,
+            swarm,
+            bmc,
+            bmc_depth,
+            inductive,
+            k_induction,
+            ic3,
+            portfolio,
+            golem,
+            seq_bound,
+            spacer_profile,
+            timeout,
+            verbose,
+            quiet,
+            no_auto,
+            output,
+            profile,
+            check_only,
+            diff,
+            ..
         } => {
+            let file = file.unwrap();
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
 
