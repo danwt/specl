@@ -9,10 +9,10 @@ use specl_symbolic::{
     SpacerProfile, SymbolicConfig, SymbolicMode, SymbolicOutcome, SymbolicResult,
 };
 
-/// Resolve the path to a showcase spec relative to the workspace root.
-fn showcase_path(name: &str) -> String {
+/// Resolve the path to a spec in examples/other/ relative to the workspace root.
+fn example_path(name: &str) -> String {
     let manifest_dir = env!("CARGO_MANIFEST_DIR");
-    format!("{}/../../examples/showcase/{}", manifest_dir, name)
+    format!("{}/../../examples/other/{}", manifest_dir, name)
 }
 
 /// Parse constants from a list of "NAME=VALUE" strings against a compiled spec.
@@ -45,7 +45,7 @@ fn run_symbolic(
     consts: &[(&str, i64)],
     mode: SymbolicMode,
 ) -> SymbolicResult<SymbolicOutcome> {
-    let path = showcase_path(spec_file);
+    let path = example_path(spec_file);
     let source =
         std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("failed to read {path}: {e}"));
     let module = specl_syntax::parse(&source)
