@@ -473,13 +473,6 @@ enum Commands {
         output: OutputFormat,
     },
 
-    /// Show reference of all available checking techniques and when to use them
-    Techniques {
-        /// Show extended plain-English explanations for each technique
-        #[arg(short, long)]
-        verbose: bool,
-    },
-
     /// Show comprehensive performance guide for writing fast specs and choosing flags
     PerfGuide,
 
@@ -755,7 +748,6 @@ fn main() {
             no_deadlock,
         } => cmd_watch(&file, &constant, max_states, max_depth, !no_deadlock),
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
-        Commands::Techniques { verbose } => cmd_techniques(verbose),
         Commands::PerfGuide => cmd_perf_guide(),
         Commands::Estimate { file, constant } => cmd_estimate(&file, &constant),
         Commands::Test {
@@ -1188,7 +1180,7 @@ fn cmd_check(
                     actual_fast = true;
                     if !quiet {
                         println!(
-                            "Auto-enabled: --fast (estimated {} states, fingerprint-only saves memory)",
+                            "Auto-enabled: --fast (estimated {} states, fingerprint-only saves memory). Traces unavailable in this mode.",
                             format_large_number(estimated)
                         );
                     }
@@ -1634,6 +1626,7 @@ fn cmd_check(
                 println!("  States explored: {}", states_explored);
                 println!("  Max depth: {}", max_depth);
                 println!("  Time: {:.2}s", secs);
+                println!("  No violations found within this limit. Increase with --max-states <N> or use 0 for unlimited.");
                 2
             }
             CheckOutcome::MemoryLimitReached {
@@ -1647,6 +1640,7 @@ fn cmd_check(
                 println!("  States explored: {}", states_explored);
                 println!("  Max depth: {}", max_depth);
                 println!("  Time: {:.2}s", secs);
+                println!("  Try --fast (fingerprint-only, 10x less memory) or reduce constants.");
                 2
             }
             CheckOutcome::TimeLimitReached {
@@ -1658,6 +1652,7 @@ fn cmd_check(
                 println!("  States explored: {}", states_explored);
                 println!("  Max depth: {}", max_depth);
                 println!("  Time: {:.2}s", secs);
+                println!("  Increase with --max-time <N> (seconds) or use 0 for unlimited.");
                 2
             }
         };
@@ -1968,17 +1963,19 @@ fn cmd_check_symbolic(
     info!(mode = mode_str, "checking...");
     let start = Instant::now();
 
-    let result =
-        specl_symbolic::check(&spec, &consts, &config).map_err(|e| {
-            let hint = if matches!(e, SymbolicError::Unsupported(_)) {
-                "\n  hint: use `--bfs` to check with explicit-state BFS instead"
-            } else {
-                ""
-            };
-            CliError::CheckError {
-                message: format!("{e}{hint}"),
-            }
-        })?;
+    let result = specl_symbolic::check(&spec, &consts, &config).map_err(|e| {
+        let hint = if matches!(
+            e,
+            SymbolicError::Unsupported(_) | SymbolicError::Encoding(_)
+        ) {
+            "\n  hint: use `--bfs` to check with explicit-state BFS instead"
+        } else {
+            ""
+        };
+        CliError::CheckError {
+            message: format!("{e}{hint}"),
+        }
+    })?;
 
     let elapsed = start.elapsed();
 
@@ -2048,7 +2045,7 @@ fn cmd_check_symbolic(
                     println!("  CTI trace: {} steps", trace.len());
                     println!("  Note: this is NOT a reachable violation. The invariant is not inductive,");
                     println!("  meaning it cannot be proved by single-step induction alone.");
-                    println!("  Use --symbolic or --k-induction for a stronger proof attempt.");
+                    println!("  Try --k-induction 3 or --ic3 for a stronger proof, or --bfs for exhaustive checking.");
                     std::process::exit(2);
                 } else {
                     println!("Result: INVARIANT VIOLATION");
@@ -2071,6 +2068,7 @@ fn cmd_check_symbolic(
                 println!();
                 println!("Result: UNKNOWN");
                 println!("  Reason: {}", reason);
+                println!("  hint: try --bfs for explicit-state checking, or increase --timeout");
                 std::process::exit(2);
             }
         }
@@ -3882,162 +3880,6 @@ fn format_memory(mb: f64) -> String {
 
 fn factorial(n: u64) -> u64 {
     (1..=n).fold(1u64, |acc, x| acc.saturating_mul(x))
-}
-
-fn cmd_techniques(verbose: bool) -> CliResult<()> {
-    if verbose {
-        print!(
-            "\
-EXPLICIT-STATE CHECKING (default)
-  The checker explores every reachable state of your spec, one by one, using
-  breadth-first search (BFS). This guarantees that if a bug exists, it finds the
-  shortest sequence of actions that triggers it.
-
-  State spaces grow exponentially with the number of variables and their ranges.
-  For example, 3 variables each with 100 possible values = 1,000,000 states.
-  The optimizations below reduce the number of states the checker must visit.
-
-  --por          Partial Order Reduction
-                 When two actions don't affect each other (e.g., process A updates its
-                 own state and process B updates its own state), the checker normally
-                 tries both orderings: A-then-B and B-then-A. Both lead to the same
-                 result, so one is redundant. POR detects these independent actions and
-                 skips the redundant orderings.
-                 Typical reduction: 2-10x fewer states.
-                 Auto-enabled when >30% of action pairs are independent.
-                 Safe to always enable — no overhead when actions are dependent.
-
-  --symmetry     Symmetry Reduction
-                 When your spec models N identical processes (e.g., Dict[0..N, State]),
-                 many states are just rearrangements of each other. For example, with
-                 3 processes, \"process 0 is leader, others are followers\" is equivalent
-                 to \"process 2 is leader, others are followers\" — the identity of the
-                 leader doesn't matter, only that exactly one exists.
-                 Symmetry reduction groups these equivalent states and only explores one
-                 representative from each group.
-                 Typical reduction: up to N! (factorial) — for N=4 that's 24x fewer states.
-                 Auto-enabled when symmetric Dict patterns are detected.
-
-  --fast         Fingerprint-Only Mode
-                 Normally the checker stores the full data for every visited state so it
-                 can reconstruct the exact steps leading to a bug. This uses a lot of
-                 memory for large state spaces.
-                 Fast mode stores only a compact 8-byte hash (fingerprint) per state,
-                 using roughly 10x less memory. The tradeoff: if a bug is found, the
-                 checker must re-run with full storage to reconstruct the trace.
-                 Best for: specs where you're running out of memory before exploring all
-                 states, or initial exploration of very large state spaces.
-
-  --no-deadlock  Skip Deadlock Check
-                 A deadlock is a state where no action can fire. The checker reports
-                 these by default because they sometimes indicate bugs. However, most
-                 protocols naturally reach quiescent states where nothing happens (e.g.,
-                 all messages delivered, consensus reached). Use this flag to suppress
-                 false deadlock reports.
-
-SYMBOLIC CHECKING (Z3-backed)
-  Instead of exploring states one by one, symbolic checking encodes your entire spec
-  as mathematical formulas and uses an SMT solver (Z3) to reason about them. This can
-  handle specs with very large or unbounded state spaces that would be impossible to
-  explore exhaustively.
-
-  --bmc          Bounded Model Checking (BMC)
-                 Asks: \"can a bug happen within K steps?\" by encoding K transitions as
-                 a formula and asking Z3 to find a satisfying assignment. Fast for bugs
-                 that occur within a few steps. Set the bound with --bmc-depth (default: unlimited).
-                 If no bug is found within K steps, that does NOT prove the spec is safe
-                 — the bug might require more steps.
-
-  --inductive    Inductive Invariant Checking
-                 Tries to prove your invariant holds forever using mathematical induction:
-                 \"if the invariant holds in the current state, does it still hold after
-                 any single action?\" This is very fast when it works, but many real-world
-                 invariants aren't directly inductive — they need additional strengthening
-                 invariants to make the induction step go through.
-
-  --k-induction K  k-Induction
-                 A more powerful version of induction. Instead of assuming the invariant
-                 held for just one step, it assumes it held for K consecutive steps. This
-                 can prove invariants that simple induction cannot. Try K=2 first, then
-                 increase to 3, 4, 5 if needed.
-                 If k-induction succeeds, the invariant is guaranteed to hold in ALL
-                 reachable states, regardless of depth.
-
-  --ic3          IC3/CHC (Property Directed Reachability)
-                 The most powerful automated verification technique available. IC3 builds
-                 up a proof layer by layer, discovering exactly which states are reachable
-                 and which are not. It can prove invariants hold forever without needing
-                 any depth bound. However, it may take a long time or return \"unknown\"
-                 for very complex specs.
-
-  When no specific symbolic flag is given, Specl automatically tries techniques
-  in order: induction, k-induction (K=2..5), IC3, then BMC fallback.
-
-CHOOSING A STRATEGY
-  1. Start small:          specl check spec.specl -c N=2
-  2. Analyze first:        specl info spec.specl -c N=2
-     This shows state space estimates and recommended flags.
-  3. Specl auto-selects BFS or symbolic based on spec types.
-  4. Specl auto-enables POR and symmetry when beneficial.
-  5. For large state spaces (>10M states): add --fast
-  6. Scale up gradually: N=2 first, then N=3. State spaces grow exponentially.
-"
-        );
-    } else {
-        print!(
-            "\
-EXPLICIT-STATE CHECKING (default)
-  BFS exhaustive exploration. Finds shortest counterexample traces.
-
-  --por          Partial Order Reduction
-                 Exploits action independence to skip redundant interleavings.
-                 Best for: specs with many independent actions (e.g., per-process updates).
-                 Typical reduction: 2-10x. No overhead when unhelpful.
-                 Auto-enabled when >30% of action pairs are independent.
-
-  --symmetry     Symmetry Reduction
-                 Identifies symmetric processes and explores one representative per orbit.
-                 Best for: specs with Dict[0..N, T] where processes are interchangeable.
-                 Typical reduction: N! (factorial). Auto-enabled when detected.
-
-  --fast         Fingerprint-Only Mode
-                 Uses 8 bytes/state instead of full state storage. 10x less memory.
-                 Tradeoff: Cannot produce counterexample traces directly.
-                 Re-runs with traces if a violation is found.
-                 Best for: large state spaces where memory is the bottleneck.
-
-  --no-deadlock  Skip Deadlock Check
-                 Most protocols have quiescent states. Use unless testing liveness.
-
-SYMBOLIC CHECKING (Z3-backed)
-  Encodes spec as SMT formulas. Can handle unbounded/huge state spaces.
-
-  --bmc          Bounded Model Checking (BMC)
-                 Unrolls transitions to --bmc-depth steps. Fast for shallow bugs.
-
-  --inductive    Inductive Invariant Checking
-                 Single-step induction proof. Fast but may fail for non-inductive invariants.
-
-  --k-induction K  k-Induction
-                 Proves invariants hold for all reachable states (if k is sufficient).
-                 Stronger than simple induction. Try K=2..5.
-
-  --ic3          IC3/CHC (Property Directed Reachability)
-                 Unbounded verification via Z3 Spacer. Most powerful symbolic mode.
-                 Can prove invariants hold for ALL depths. May return \"unknown\" for hard specs.
-
-  When no specific symbolic flag is given, Specl automatically cascades:
-  induction -> k-induction(2..5) -> IC3 -> BMC fallback.
-
-CHOOSING A STRATEGY
-  Start with:           specl check spec.specl -c N=2
-  Specl auto-selects BFS or symbolic, and auto-enables POR and symmetry.
-  For large state spaces: add --fast
-  Use `specl info` to analyze your spec before a long run.
-"
-        );
-    }
-    Ok(())
 }
 
 fn cmd_translate(file: &PathBuf, output: Option<&PathBuf>) -> CliResult<()> {

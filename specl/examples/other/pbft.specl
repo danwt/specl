@@ -1,164 +1,122 @@
 module PBFT
 
-// Practical Byzantine Fault Tolerance (normal case + view change)
-// From: Castro & Liskov, "Practical Byzantine Fault Tolerance" (OSDI 1999)
-// N+1 replicas (0..N), tolerating F Byzantine faults where N+1 >= 3F+1
-// Simplified: bounded views, bounded sequence numbers, crash-only faults
-// Use: specl check pbft.specl -c N=3 -c F=1 -c MaxView=0 -c MaxSeq=0 -c V=1 --no-deadlock
-// Verified: N=3 F=1 MaxView=0 MaxSeq=0 V=1 -> 10065 states, Agreement + Validity OK
+// Simplified PBFT (Practical Byzantine Fault Tolerance) for one consensus slot.
+// N+1 replicas (3f+1, with at most f Byzantine faults).
+//
+// Protocol phases:
+// 1. Pre-prepare: primary (replica 0) proposes a value
+// 2. Prepare: replicas broadcast prepare messages; 2f+1 prepares = "prepared"
+// 3. Commit: replicas broadcast commit messages; 2f+1 commits = "committed"
+//
+// Byzantine replicas can send arbitrary messages (modeled by nondeterministic
+// prepare/commit for any value). Honest replicas follow the protocol.
+//
+// N=3 gives 4 replicas, f=1 fault. Quorum = 2f+1 = 3.
+//
+// Use: specl check pbft.specl -c N=3 -c F=1 -c MaxVal=1 --no-deadlock --no-auto --bfs
+// Verified: N=3 F=1 MaxVal=1 -> OK (2.6K states, 0.0s)
 
-const N: Int
-const F: Int
-const MaxView: Int
-const MaxSeq: Int
-const V: Int
+const N: 1..6
+const F: 0..2
+const MaxVal: 0..2
 
-// Per replica: current view
-var view: Dict[Int, Int]
-// Per replica: status (0=Normal, 1=ViewChange)
-var status: Dict[Int, Int]
+// Which replicas are Byzantine (fixed set, up to F of them)
+var byzantine: Dict[0..N, Bool]
+var byz_count: 0..F
 
-// Per view per seq: pre-prepared value (-1 = none)
-var prePrepared: Dict[Int, Dict[Int, Int]]
-// Per view per seq per replica: prepared? (sent prepare)
-var prepared: Dict[Int, Dict[Int, Dict[Int, Bool]]]
-// Per view per seq per replica: committed? (sent commit)
-var committed: Dict[Int, Dict[Int, Dict[Int, Bool]]]
+// Messages: prepare[r] = value r prepared for, commit[r] = value r committed for
+// -1 (represented as MaxVal+1 would be ideal but we use a flag instead)
+var prepared_val: Dict[0..N, 0..MaxVal]
+var has_prepared: Dict[0..N, Bool]
+var committed_val: Dict[0..N, 0..MaxVal]
+var has_committed: Dict[0..N, Bool]
 
-// Per replica per seq: executed value (-1 = none)
-var executed: Dict[Int, Dict[Int, Int]]
+// Primary's proposal
+var proposed: Bool
+var proposal: 0..MaxVal
 
-// Per replica: whether it has crashed
-var crashed: Dict[Int, Bool]
-
-// View change messages: per target-view per replica: has sent view-change?
-var vcSent: Dict[Int, Dict[Int, Bool]]
-// Per target-view: new-view sent?
-var nvSent: Dict[Int, Bool]
-
-func Primary(v) { v % (N + 1) }
-
-func PrepareCount(v, seq, val) {
-    len({r in 0..N if prepared[v][seq][r] and prePrepared[v][seq] == val})
-}
-
-func CommitCount(v, seq, val) {
-    len({r in 0..N if committed[v][seq][r] and prePrepared[v][seq] == val})
-}
-
-func VCCount(v) {
-    len({r in 0..N if vcSent[v][r]})
-}
+// Final decisions
+var decided: Dict[0..N, Bool]
+var decision: Dict[0..N, 0..MaxVal]
 
 init {
-    view = {r: 0 for r in 0..N};
-    status = {r: 0 for r in 0..N};
-    prePrepared = {v: {s: -1 for s in 0..MaxSeq} for v in 0..MaxView};
-    prepared = {v: {s: {r: false for r in 0..N} for s in 0..MaxSeq} for v in 0..MaxView};
-    committed = {v: {s: {r: false for r in 0..N} for s in 0..MaxSeq} for v in 0..MaxView};
-    executed = {r: {s: -1 for s in 0..MaxSeq} for r in 0..N};
-    crashed = {r: false for r in 0..N};
-    vcSent = {v: {r: false for r in 0..N} for v in 0..MaxView};
-    nvSent = {v: false for v in 0..MaxView};
+    byzantine = {r: false for r in 0..N};
+    byz_count = 0;
+    prepared_val = {r: 0 for r in 0..N};
+    has_prepared = {r: false for r in 0..N};
+    committed_val = {r: 0 for r in 0..N};
+    has_committed = {r: false for r in 0..N};
+    proposed = false;
+    proposal = 0;
+    decided = {r: false for r in 0..N};
+    decision = {r: 0 for r in 0..N};
 }
 
-// Replica crashes (at most F can crash)
-action Crash(r: 0..N) {
-    require not crashed[r];
-    require len({i in 0..N if crashed[i]}) < F;
-    crashed = crashed | {r: true};
+// Designate replica r as Byzantine (up to F total)
+action MakeByzantine(r: 0..N) {
+    require byzantine[r] == false;
+    require byz_count < F;
+    byzantine = byzantine | {r: true};
+    byz_count = byz_count + 1;
 }
 
-// Primary pre-prepares a value for a sequence number
-action PrePrepare(v: 0..MaxView, seq: 0..MaxSeq, val: 0..V) {
-    require not crashed[Primary(v)];
-    require view[Primary(v)] == v;
-    require status[Primary(v)] == 0;
-    require prePrepared[v][seq] == -1;
-    prePrepared = prePrepared | {v: (prePrepared[v] | {seq: val})};
+// Primary (replica 0) proposes a value
+action Propose(v: 0..MaxVal) {
+    require proposed == false;
+    require byzantine[0] == false;
+    proposed = true;
+    proposal = v;
 }
 
-// Backup replica sends prepare (accepts the pre-prepare)
-action SendPrepare(r: 0..N, v: 0..MaxView, seq: 0..MaxSeq) {
-    require not crashed[r];
-    require r != Primary(v);
-    require view[r] == v;
-    require status[r] == 0;
-    require prePrepared[v][seq] != -1;
-    require not prepared[v][seq][r];
-    prepared = prepared | {v: (prepared[v] | {seq: (prepared[v][seq] | {r: true})})};
+// Honest replica r prepares the proposed value
+action HonestPrepare(r: 0..N) {
+    require proposed == true;
+    require byzantine[r] == false;
+    require has_prepared[r] == false;
+    prepared_val = prepared_val | {r: proposal};
+    has_prepared = has_prepared | {r: true};
 }
 
-// Primary implicitly prepares (its pre-prepare counts as prepare)
-// We model this by the primary also marking prepared
-action PrimaryPrepare(v: 0..MaxView, seq: 0..MaxSeq) {
-    require not crashed[Primary(v)];
-    require view[Primary(v)] == v;
-    require status[Primary(v)] == 0;
-    require prePrepared[v][seq] != -1;
-    require not prepared[v][seq][Primary(v)];
-    prepared = prepared | {v: (prepared[v] | {seq: (prepared[v][seq] | {Primary(v): true})})};
+// Byzantine replica r prepares any value
+action ByzantinePrepare(r: 0..N, v: 0..MaxVal) {
+    require byzantine[r] == true;
+    require has_prepared[r] == false;
+    prepared_val = prepared_val | {r: v};
+    has_prepared = has_prepared | {r: true};
 }
 
-// Replica sends commit after seeing 2F prepares + pre-prepare
-action SendCommit(r: 0..N, v: 0..MaxView, seq: 0..MaxSeq) {
-    require not crashed[r];
-    require view[r] == v;
-    require status[r] == 0;
-    require prePrepared[v][seq] != -1;
-    require PrepareCount(v, seq, prePrepared[v][seq]) >= 2 * F;
-    require not committed[v][seq][r];
-    committed = committed | {v: (committed[v] | {seq: (committed[v][seq] | {r: true})})};
+// Honest replica r commits after seeing 2f+1 matching prepares
+action HonestCommit(r: 0..N) {
+    require byzantine[r] == false;
+    require has_prepared[r] == true;
+    require has_committed[r] == false;
+    // Need 2f+1 prepares for the same value as r's prepare
+    require len({q in 0..N if has_prepared[q] and prepared_val[q] == prepared_val[r]}) * 1 >= 2 * F + 1;
+    committed_val = committed_val | {r: prepared_val[r]};
+    has_committed = has_committed | {r: true};
 }
 
-// Replica executes after seeing 2F+1 commits
-action Execute(r: 0..N, v: 0..MaxView, seq: 0..MaxSeq) {
-    require not crashed[r];
-    require executed[r][seq] == -1;
-    require prePrepared[v][seq] != -1;
-    require CommitCount(v, seq, prePrepared[v][seq]) >= 2 * F + 1;
-    executed = executed | {r: (executed[r] | {seq: prePrepared[v][seq]})};
+// Byzantine replica r commits any value
+action ByzantineCommit(r: 0..N, v: 0..MaxVal) {
+    require byzantine[r] == true;
+    require has_committed[r] == false;
+    committed_val = committed_val | {r: v};
+    has_committed = has_committed | {r: true};
 }
 
-// Replica initiates view change (non-deterministic timeout)
-action StartViewChange(r: 0..N, v: 0..MaxView) {
-    require not crashed[r];
-    require view[r] == v;
-    require v < MaxView;
-    require not vcSent[v + 1][r];
-    status = status | {r: 1};
-    vcSent = vcSent | {v + 1: (vcSent[v + 1] | {r: true})};
+// Honest replica r decides after seeing 2f+1 matching commits
+action Decide(r: 0..N) {
+    require byzantine[r] == false;
+    require has_committed[r] == true;
+    require decided[r] == false;
+    require len({q in 0..N if has_committed[q] and committed_val[q] == committed_val[r]}) * 1 >= 2 * F + 1;
+    decided = decided | {r: true};
+    decision = decision | {r: committed_val[r]};
 }
 
-// New primary for view v+1 sends new-view after 2F view-change messages
-action SendNewView(v: 0..MaxView) {
-    require v > 0;
-    require not nvSent[v];
-    require not crashed[Primary(v)];
-    require VCCount(v) >= 2 * F + 1;
-    nvSent = nvSent | {v: true};
-}
-
-// Replica enters new view after new-view message
-action EnterNewView(r: 0..N, v: 0..MaxView) {
-    require not crashed[r];
-    require v > 0;
-    require nvSent[v];
-    require view[r] < v;
-    view = view | {r: v};
-    status = status | {r: 0};
-}
-
-// Agreement: no two non-crashed replicas execute different values for the same seq
+// Agreement: all honest decided replicas agree
 invariant Agreement {
-    all r1 in 0..N: all r2 in 0..N: all s in 0..MaxSeq:
-        (not crashed[r1] and not crashed[r2]
-         and executed[r1][s] != -1 and executed[r2][s] != -1)
-        implies executed[r1][s] == executed[r2][s]
-}
-
-// Validity: executed values are in valid range
-invariant Validity {
-    all r in 0..N: all s in 0..MaxSeq:
-        executed[r][s] != -1 implies (executed[r][s] >= 0 and executed[r][s] <= V)
+    all i in 0..N: all j in 0..N:
+        (decided[i] and decided[j] and byzantine[i] == false and byzantine[j] == false)
+        implies decision[i] == decision[j]
 }

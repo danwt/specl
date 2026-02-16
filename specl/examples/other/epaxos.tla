@@ -1,134 +1,161 @@
 ---------------------------- MODULE epaxos -----------------------------
-(* Egalitarian Paxos (EPaxos) - core consensus with fast/slow paths
-   From: Moraru, Andersen & Kaminsky (SOSP 2013)
-   R+1 replicas (0..R), each owns instances in its column.
-   MaxInst+1 instances per replica (0..MaxInst).
-   All commands interfere (conservative). Crash-free. *)
+(* Faithful model of one EPaxos consensus instance with 3 replicas.
 
-EXTENDS Integers, FiniteSets
+   Command leader: replica 0. Fast quorum: {0, 1}. Classic quorum: any 2 of 3.
 
-CONSTANTS R, MaxInst, Cmd
+   Models the full instance lifecycle: pre-accept, fast commit, accept
+   propagation, recovery (with fast-path detection), and slow commit.
+   The value being agreed on represents the dependency set for a command:
+   0 = no dependencies, 1 = has dependencies.
 
-VARIABLES instCmd, instDeps, instSeq, instStatus,
-          crtInst, preAcceptReplied, preAcceptAgreed, acceptReplied
+   UseFix toggles the Sutra 2019 correction:
+     UseFix=0: Recovery compares bal (inflated by prepares) - BUG, finds violation.
+     UseFix=1: Recovery compares vbal (actual acceptance ballot) - FIX, passes.
 
-vars == <<instCmd, instDeps, instSeq, instStatus,
-          crtInst, preAcceptReplied, preAcceptAgreed, acceptReplied>>
+   Run with TLC:
+     java -jar tla2tools.jar -deadlock -config epaxos_bug.cfg epaxos
+     java -jar tla2tools.jar -deadlock -config epaxos_fix.cfg epaxos *)
 
-Replicas == 0..R
-Instances == 0..MaxInst
-Commands == 0..Cmd
+EXTENDS Integers
 
-FastQuorum == (3 * (R + 1)) \div 4 + 1
-SlowQuorum == (R + 1) \div 2 + 1
+CONSTANTS MaxBal, NB, UseFix
+
+VARIABLES status, bal, vbal, val, next_bal, initial_val
+
+vars == <<status, bal, vbal, val, next_bal, initial_val>>
+
+Replicas == 0..2
 
 Init ==
-    /\ instCmd = [o \in Replicas |-> [s \in Instances |-> -1]]
-    /\ instDeps = [o \in Replicas |-> [s \in Instances |->
-         [do2 \in Replicas |-> [ds \in Instances |-> FALSE]]]]
-    /\ instSeq = [o \in Replicas |-> [s \in Instances |-> 0]]
-    /\ instStatus = [o \in Replicas |-> [s \in Instances |-> 0]]
-    /\ crtInst = [o \in Replicas |-> 0]
-    /\ preAcceptReplied = [o \in Replicas |-> [s \in Instances |->
-         [r \in Replicas |-> FALSE]]]
-    /\ preAcceptAgreed = [o \in Replicas |-> [s \in Instances |->
-         [r \in Replicas |-> FALSE]]]
-    /\ acceptReplied = [o \in Replicas |-> [s \in Instances |->
-         [r \in Replicas |-> FALSE]]]
+    /\ status = [r \in Replicas |-> 0]
+    /\ bal = [r \in Replicas |-> 0]
+    /\ vbal = [r \in Replicas |-> 0]
+    /\ val = [r \in Replicas |-> 0]
+    /\ next_bal = 1
+    /\ initial_val = 0
 
-Propose(leader, slot, cmd) ==
-    /\ crtInst[leader] = slot
-    /\ instStatus[leader][slot] = 0
-       /\ instCmd' = [instCmd EXCEPT ![leader] = [instCmd[leader] EXCEPT ![slot] = cmd]]
-       /\ instDeps' = [instDeps EXCEPT ![leader] = [instDeps[leader] EXCEPT ![slot] =
-            [do2 \in Replicas |-> [ds \in Instances |->
-              instStatus[do2][ds] # 0 /\ ~(do2 = leader /\ ds = slot)]]]]
-       /\ instSeq' = [instSeq EXCEPT ![leader] = [instSeq[leader] EXCEPT ![slot] = 1]]
-       /\ instStatus' = [instStatus EXCEPT ![leader] = [instStatus[leader] EXCEPT ![slot] = 1]]
-       /\ crtInst' = [crtInst EXCEPT ![leader] = slot + 1]
-       /\ preAcceptReplied' = [preAcceptReplied EXCEPT ![leader] =
-            [preAcceptReplied[leader] EXCEPT ![slot] =
-              [preAcceptReplied[leader][slot] EXCEPT ![leader] = TRUE]]]
-       /\ preAcceptAgreed' = [preAcceptAgreed EXCEPT ![leader] =
-            [preAcceptAgreed[leader] EXCEPT ![slot] =
-              [preAcceptAgreed[leader][slot] EXCEPT ![leader] = TRUE]]]
-       /\ UNCHANGED acceptReplied
+(* Command leader (r0) initiates pre-accept with value v. *)
+LeaderPreAccept(v) ==
+    /\ status[0] = 0
+    /\ bal[0] = 0
+    /\ status' = [status EXCEPT ![0] = 1]
+    /\ val' = [val EXCEPT ![0] = v]
+    /\ initial_val' = v
+    /\ UNCHANGED <<bal, vbal, next_bal>>
 
-PreAcceptReply(replica, owner, slot) ==
-    /\ replica # owner
-    /\ instStatus[owner][slot] = 1
-    /\ ~preAcceptReplied[owner][slot][replica]
-    /\ LET hasExtraDep == \E do2 \in Replicas : \E ds \in Instances :
-            instStatus[do2][ds] # 0 /\ ~(do2 = owner /\ ds = slot)
-            /\ ~instDeps[owner][slot][do2][ds]
-       IN
-       /\ preAcceptReplied' = [preAcceptReplied EXCEPT ![owner] =
-            [preAcceptReplied[owner] EXCEPT ![slot] =
-              [preAcceptReplied[owner][slot] EXCEPT ![replica] = TRUE]]]
-       /\ preAcceptAgreed' = [preAcceptAgreed EXCEPT ![owner] =
-            [preAcceptAgreed[owner] EXCEPT ![slot] =
-              [preAcceptAgreed[owner][slot] EXCEPT ![replica] = ~hasExtraDep]]]
-    /\ UNCHANGED <<instCmd, instDeps, instSeq, instStatus, crtInst, acceptReplied>>
+(* Fast quorum member (r1) responds to pre-accept.
+   May reply with different deps due to local conflicts. *)
+FastQuorumPreAccept(v) ==
+    /\ status[0] >= 1
+    /\ status[1] = 0
+    /\ bal[1] = 0
+    /\ status' = [status EXCEPT ![1] = 1]
+    /\ val' = [val EXCEPT ![1] = v]
+    /\ UNCHANGED <<bal, vbal, next_bal, initial_val>>
 
-FastPathCommit(owner, slot) ==
-    /\ instStatus[owner][slot] = 1
-    /\ Cardinality({r \in Replicas : preAcceptAgreed[owner][slot][r]}) >= FastQuorum
-    /\ instStatus' = [instStatus EXCEPT ![owner] = [instStatus[owner] EXCEPT ![slot] = 3]]
-    /\ UNCHANGED <<instCmd, instDeps, instSeq, crtInst,
-                   preAcceptReplied, preAcceptAgreed, acceptReplied>>
+(* Fast-path commit: fast quorum {0, 1} agrees at ballot 0. *)
+FastCommit(r) ==
+    /\ r <= 1
+    /\ status[r] >= 1
+    /\ status[r] # 3
+    /\ bal[r] = 0
+    /\ status[0] >= 1 /\ status[1] >= 1
+    /\ val[0] = val[1]
+    /\ bal[0] = 0 /\ bal[1] = 0
+    /\ status' = [status EXCEPT ![r] = 3]
+    /\ UNCHANGED <<bal, vbal, val, next_bal, initial_val>>
 
-StartSlowPath(owner, slot) ==
-    /\ instStatus[owner][slot] = 1
-    /\ Cardinality({r \in Replicas : preAcceptReplied[owner][slot][r]}) >= SlowQuorum
-    /\ Cardinality({r \in Replicas : preAcceptAgreed[owner][slot][r]}) < FastQuorum
-    /\ instDeps' = [instDeps EXCEPT ![owner] = [instDeps[owner] EXCEPT ![slot] =
-         [do2 \in Replicas |-> [ds \in Instances |->
-           instDeps[owner][slot][do2][ds]
-           \/ (instStatus[do2][ds] # 0 /\ ~(do2 = owner /\ ds = slot))]]]]
-    /\ instStatus' = [instStatus EXCEPT ![owner] = [instStatus[owner] EXCEPT ![slot] = 2]]
-    /\ UNCHANGED <<instCmd, instSeq, crtInst,
-                   preAcceptReplied, preAcceptAgreed, acceptReplied>>
+(* Process a Prepare from some recovery attempt.
+   Inflates bal without changing vbal, status, or value. *)
+ReceivePrepare(r) ==
+    /\ next_bal <= MaxBal
+    /\ next_bal > bal[r]
+    /\ status[r] # 3
+    /\ bal' = [bal EXCEPT ![r] = next_bal]
+    /\ next_bal' = next_bal + 1
+    /\ UNCHANGED <<status, vbal, val, initial_val>>
 
-AcceptReply(replica, owner, slot) ==
-    /\ replica # owner
-    /\ instStatus[owner][slot] = 2
-    /\ ~acceptReplied[owner][slot][replica]
-    /\ acceptReplied' = [acceptReplied EXCEPT ![owner] =
-         [acceptReplied[owner] EXCEPT ![slot] =
-           [acceptReplied[owner][slot] EXCEPT ![replica] = TRUE]]]
-    /\ UNCHANGED <<instCmd, instDeps, instSeq, instStatus, crtInst,
-                   preAcceptReplied, preAcceptAgreed>>
+(* Recovery value decision logic.
+   BUG/FIX: "both accepted" comparison uses bal (UseFix=0) or vbal (UseFix=1). *)
+RecoveryVal(leader, other, pick) ==
+    \* Committed: adopt
+    IF status[other] = 3 THEN val[other]
+    \* Both accepted: highest ballot wins
+    ELSE IF status[leader] = 2 /\ status[other] = 2 THEN
+        IF UseFix = 1 THEN
+            IF vbal[leader] > vbal[other] THEN val[leader]
+            ELSE IF vbal[other] > vbal[leader] THEN val[other]
+            ELSE val[leader]
+        ELSE
+            IF bal[leader] > bal[other] THEN val[leader]
+            ELSE IF bal[other] > bal[leader] THEN val[other]
+            ELSE val[leader]
+    \* One accepted: adopt
+    ELSE IF status[other] = 2 THEN val[other]
+    ELSE IF status[leader] = 2 THEN val[leader]
+    \* Fast-path detection: if any pre-accept matches initial_val,
+    \* the fast path might have committed - adopt conservatively.
+    ELSE IF (status[leader] = 1 /\ val[leader] = initial_val)
+            \/ (status[other] = 1 /\ val[other] = initial_val)
+        THEN initial_val
+    \* No fast-path evidence: pre-accept tie-breaking
+    ELSE IF status[leader] = 1 /\ status[other] = 1 THEN
+        IF val[leader] = val[other] THEN val[leader] ELSE pick
+    ELSE IF status[leader] = 1 THEN val[leader]
+    ELSE IF status[other] = 1 THEN val[other]
+    ELSE pick
 
-SlowPathCommit(owner, slot) ==
-    /\ instStatus[owner][slot] = 2
-    /\ Cardinality({r \in Replicas : acceptReplied[owner][slot][r]}) + 1 >= SlowQuorum
-    /\ instStatus' = [instStatus EXCEPT ![owner] = [instStatus[owner] EXCEPT ![slot] = 3]]
-    /\ UNCHANGED <<instCmd, instDeps, instSeq, crtInst,
-                   preAcceptReplied, preAcceptAgreed, acceptReplied>>
+(* Recovery: leader collects state from quorum {leader, other} and decides. *)
+Recovery(leader, other, pick) ==
+    /\ leader # other
+    /\ next_bal <= MaxBal
+    /\ next_bal > bal[leader]
+    /\ next_bal > bal[other]
+    /\ status[leader] # 3
+    /\ status[leader] >= 1 \/ status[other] >= 1
+    /\ val' = [val EXCEPT ![leader] = RecoveryVal(leader, other, pick)]
+    /\ status' = [status EXCEPT ![leader] = 2]
+    /\ bal' = [bal EXCEPT ![leader] = next_bal, ![other] = next_bal]
+    /\ vbal' = [vbal EXCEPT ![leader] = next_bal]
+    /\ next_bal' = next_bal + 1
+    /\ UNCHANGED initial_val
+
+(* Phase 2: propagate accepted value to another replica. *)
+Accept(src, dst) ==
+    /\ src # dst
+    /\ status[src] = 2
+    /\ status[dst] # 3
+    /\ vbal[src] = bal[src]
+    /\ bal[src] >= bal[dst]
+    /\ status' = [status EXCEPT ![dst] = 2]
+    /\ bal' = [bal EXCEPT ![dst] = bal[src]]
+    /\ vbal' = [vbal EXCEPT ![dst] = vbal[src]]
+    /\ val' = [val EXCEPT ![dst] = val[src]]
+    /\ UNCHANGED <<next_bal, initial_val>>
+
+(* Slow-path commit: quorum of 2 accepted replicas agree. *)
+SlowCommit(r) ==
+    /\ status[r] = 2
+    /\ vbal[r] = bal[r]
+    /\ \E r2 \in Replicas :
+        r2 # r /\ status[r2] >= 2 /\ vbal[r2] = vbal[r] /\ val[r2] = val[r]
+    /\ status' = [status EXCEPT ![r] = 3]
+    /\ UNCHANGED <<bal, vbal, val, next_bal, initial_val>>
 
 Next ==
-    \/ \E leader \in Replicas, slot \in Instances, cmd \in Commands : Propose(leader, slot, cmd)
-    \/ \E replica \in Replicas, owner \in Replicas, slot \in Instances :
-         PreAcceptReply(replica, owner, slot)
-    \/ \E owner \in Replicas, slot \in Instances : FastPathCommit(owner, slot)
-    \/ \E owner \in Replicas, slot \in Instances : StartSlowPath(owner, slot)
-    \/ \E replica \in Replicas, owner \in Replicas, slot \in Instances :
-         AcceptReply(replica, owner, slot)
-    \/ \E owner \in Replicas, slot \in Instances : SlowPathCommit(owner, slot)
+    \/ \E v \in 0..1 : LeaderPreAccept(v)
+    \/ \E v \in 0..1 : FastQuorumPreAccept(v)
+    \/ \E r \in Replicas : FastCommit(r)
+    \/ \E r \in Replicas : ReceivePrepare(r)
+    \/ \E leader \in Replicas : \E other \in Replicas : \E pick \in 0..1 :
+        Recovery(leader, other, pick)
+    \/ \E src \in Replicas : \E dst \in Replicas : Accept(src, dst)
+    \/ \E r \in Replicas : SlowCommit(r)
 
 Spec == Init /\ [][Next]_vars
 
-(* No committed instance has empty command *)
-Nontriviality ==
-    \A o \in Replicas : \A s \in Instances :
-        instStatus[o][s] = 3 => instCmd[o][s] # -1
-
-(* For any two committed instances, at least one is in the other's deps *)
-CommittedVisibility ==
-    \A o1 \in Replicas : \A s1 \in Instances : \A o2 \in Replicas : \A s2 \in Instances :
-        (instStatus[o1][s1] = 3 /\ instStatus[o2][s2] = 3
-         /\ ~(o1 = o2 /\ s1 = s2)
-         /\ instCmd[o1][s1] # -1 /\ instCmd[o2][s2] # -1)
-        => (instDeps[o1][s1][o2][s2] \/ instDeps[o2][s2][o1][s1])
+Agreement ==
+    \A r1 \in Replicas : \A r2 \in Replicas :
+        (status[r1] = 3 /\ status[r2] = 3) => val[r1] = val[r2]
 
 =====================================================================

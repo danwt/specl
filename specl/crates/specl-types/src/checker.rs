@@ -279,7 +279,35 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::Binary { op, left, right } => self.infer_binary(*op, left, right)?,
+            ExprKind::Binary { op, left, right } => {
+                // Flatten left spine of binary expressions to iterate instead of recurse.
+                // The parser builds left-leaning trees for left-associative operators,
+                // so `a and b and c and ...` with 80+ conjuncts would overflow the stack
+                // in debug builds without this.
+                let mut chain: Vec<(BinOp, &Expr)> = vec![(*op, right)];
+                let mut leftmost: &Expr = left;
+                while let ExprKind::Binary {
+                    op: inner_op,
+                    left: inner_left,
+                    right: inner_right,
+                } = &leftmost.kind
+                {
+                    chain.push((*inner_op, inner_right));
+                    leftmost = inner_left;
+                }
+                let mut result_ty = self.infer_expr(leftmost)?;
+                for (op, right_expr) in chain.into_iter().rev() {
+                    let right_ty = self.infer_expr(right_expr)?;
+                    result_ty = self.check_binary_types(
+                        op,
+                        &result_ty,
+                        leftmost.span,
+                        &right_ty,
+                        right_expr.span,
+                    )?;
+                }
+                result_ty
+            }
 
             ExprKind::Unary { op, operand } => self.infer_unary(*op, operand)?,
 
@@ -873,35 +901,39 @@ impl TypeChecker {
         Ok(ty)
     }
 
-    /// Infer type of binary operation.
-    fn infer_binary(&mut self, op: BinOp, left: &Expr, right: &Expr) -> TypeResult<Type> {
-        let left_ty = self.infer_expr(left)?;
-        let right_ty = self.infer_expr(right)?;
-
+    /// Check types of a binary operation given already-inferred operand types.
+    fn check_binary_types(
+        &mut self,
+        op: BinOp,
+        left_ty: &Type,
+        left_span: Span,
+        right_ty: &Type,
+        right_span: Span,
+    ) -> TypeResult<Type> {
         match op {
             // Logical operators
             BinOp::And | BinOp::Or | BinOp::Implies | BinOp::Iff => {
-                self.expect_bool(&left_ty, left.span)?;
-                self.expect_bool(&right_ty, right.span)?;
+                self.expect_bool(left_ty, left_span)?;
+                self.expect_bool(right_ty, right_span)?;
                 Ok(Type::Bool)
             }
 
             // Comparison operators
             BinOp::Eq | BinOp::Ne => {
-                self.unify(&left_ty, &right_ty, right.span)?;
+                self.unify(left_ty, right_ty, right_span)?;
                 Ok(Type::Bool)
             }
 
             BinOp::Lt | BinOp::Le | BinOp::Gt | BinOp::Ge => {
-                self.expect_numeric(&left_ty, left.span)?;
-                self.expect_numeric(&right_ty, right.span)?;
+                self.expect_numeric(left_ty, left_span)?;
+                self.expect_numeric(right_ty, right_span)?;
                 Ok(Type::Bool)
             }
 
             // Arithmetic operators
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
-                self.expect_numeric(&left_ty, left.span)?;
-                self.expect_numeric(&right_ty, right.span)?;
+                self.expect_numeric(left_ty, left_span)?;
+                self.expect_numeric(right_ty, right_span)?;
                 // Return the more general numeric type
                 if matches!(left_ty, Type::Int) || matches!(right_ty, Type::Int) {
                     Ok(Type::Int)
@@ -912,77 +944,77 @@ impl TypeChecker {
 
             // Set membership
             BinOp::In | BinOp::NotIn => {
-                let resolved = self.env.resolve_type(&right_ty);
+                let resolved = self.env.resolve_type(right_ty);
                 match resolved {
                     Type::Set(elem_ty) => {
-                        self.unify(&left_ty, &elem_ty, left.span)?;
+                        self.unify(left_ty, &elem_ty, left_span)?;
                         Ok(Type::Bool)
                     }
                     Type::Fn(key_ty, _val_ty) => {
-                        self.unify(&left_ty, &key_ty, left.span)?;
+                        self.unify(left_ty, &key_ty, left_span)?;
                         Ok(Type::Bool)
                     }
                     _ => Err(TypeError::NotIterable {
-                        ty: right_ty,
-                        span: right.span,
+                        ty: right_ty.clone(),
+                        span: right_span,
                     }),
                 }
             }
 
             // Set and dict operations
             BinOp::Union | BinOp::Intersect | BinOp::Diff => {
-                let resolved_left = self.env.resolve_type(&left_ty);
-                let resolved_right = self.env.resolve_type(&right_ty);
+                let resolved_left = self.env.resolve_type(left_ty);
+                let resolved_right = self.env.resolve_type(right_ty);
 
                 match (&resolved_left, &resolved_right) {
                     (Type::Set(_), Type::Set(_)) => {
-                        self.unify(&left_ty, &right_ty, right.span)?;
-                        Ok(left_ty)
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(left_ty.clone())
                     }
                     (Type::Fn(_, _), Type::Fn(_, _)) => {
                         // Dict merge with | operator
-                        self.unify(&left_ty, &right_ty, right.span)?;
-                        Ok(left_ty)
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(left_ty.clone())
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: Type::Set(Box::new(self.var_gen.fresh_type())),
-                        found: left_ty,
-                        span: left.span,
+                        found: left_ty.clone(),
+                        span: left_span,
                     }),
                 }
             }
 
             BinOp::SubsetOf => {
-                let resolved_left = self.env.resolve_type(&left_ty);
-                let resolved_right = self.env.resolve_type(&right_ty);
+                let resolved_left = self.env.resolve_type(left_ty);
+                let resolved_right = self.env.resolve_type(right_ty);
 
                 match (&resolved_left, &resolved_right) {
                     (Type::Set(_), Type::Set(_)) => {
-                        self.unify(&left_ty, &right_ty, right.span)?;
+                        self.unify(left_ty, right_ty, right_span)?;
                         Ok(Type::Bool)
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: Type::Set(Box::new(self.var_gen.fresh_type())),
-                        found: left_ty,
-                        span: left.span,
+                        found: left_ty.clone(),
+                        span: left_span,
                     }),
                 }
             }
 
             // Sequence concatenation
             BinOp::Concat => {
-                let resolved_left = self.env.resolve_type(&left_ty);
-                let resolved_right = self.env.resolve_type(&right_ty);
+                let resolved_left = self.env.resolve_type(left_ty);
+                let resolved_right = self.env.resolve_type(right_ty);
 
                 match (&resolved_left, &resolved_right) {
                     (Type::Seq(_), Type::Seq(_)) => {
-                        self.unify(&left_ty, &right_ty, right.span)?;
-                        Ok(left_ty)
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(left_ty.clone())
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: Type::Seq(Box::new(self.var_gen.fresh_type())),
-                        found: left_ty,
-                        span: left.span,
+                        found: left_ty.clone(),
+                        span: left_span,
                     }),
                 }
             }

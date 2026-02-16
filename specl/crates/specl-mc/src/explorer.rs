@@ -39,7 +39,7 @@ pub enum CheckError {
     #[error("deadlock: no enabled actions")]
     Deadlock { state: State },
 
-    #[error("no initial states satisfy init predicate")]
+    #[error("no initial states satisfy init predicate. Check that your init block is satisfiable with the given constants")]
     NoInitialStates,
 
     #[error("constant '{name}' not provided")]
