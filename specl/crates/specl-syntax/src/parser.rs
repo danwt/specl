@@ -871,6 +871,11 @@ impl Parser {
                 }
                 Ok(Expr::new(ExprKind::Ident(name), start))
             }
+            // 'view' is a contextual keyword — treat as identifier in expressions
+            TokenKind::View => {
+                self.advance();
+                Ok(Expr::new(ExprKind::Ident("view".into()), start))
+            }
             TokenKind::LParen => {
                 self.advance();
                 let first = self.parse_expr()?;
@@ -1335,6 +1340,11 @@ impl Parser {
             TokenKind::String_ => {
                 self.advance();
                 Ok(Ident::new("String", span))
+            }
+            // Allow 'view' as identifier (contextual keyword)
+            TokenKind::View => {
+                self.advance();
+                Ok(Ident::new("view", span))
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "identifier".to_string(),
