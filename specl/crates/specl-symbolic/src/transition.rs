@@ -6,6 +6,7 @@ use crate::{SymbolicError, SymbolicResult};
 use specl_eval::Value;
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec};
 use specl_types::Type;
+use std::collections::HashMap;
 use z3::ast::{Bool, Dynamic, Int};
 use z3::Solver;
 
@@ -376,6 +377,10 @@ fn encode_init_compound_body(
 
 /// Encode the transition relation for one step: step → step+1.
 /// Returns a Bool that is the disjunction of all enabled actions.
+///
+/// Uses shared frame factoring: actions with the same `changes` set share a
+/// single frame encoding. This reduces formula size proportional to the number
+/// of actions sharing a frame.
 pub fn encode_transition(
     spec: &CompiledSpec,
     consts: &[Value],
@@ -383,14 +388,30 @@ pub fn encode_transition(
     step_vars: &[Vec<Vec<Dynamic>>],
     step: usize,
 ) -> SymbolicResult<Bool> {
-    let mut action_encodings = Vec::new();
-
+    // Group actions by their changes set (actions with identical changes share a frame)
+    let mut groups: HashMap<Vec<usize>, Vec<&CompiledAction>> = HashMap::new();
     for action in &spec.actions {
-        let action_enc = encode_action(action, spec, consts, layout, step_vars, step)?;
-        action_encodings.push(action_enc);
+        let mut key = action.changes.clone();
+        key.sort_unstable();
+        groups.entry(key).or_default().push(action);
     }
 
-    Ok(Bool::or(&action_encodings))
+    let mut group_encodings = Vec::new();
+
+    for (changes, actions) in &groups {
+        let frame = encode_frame_for_changes(changes, layout, step_vars, step)?;
+
+        let mut guard_effects = Vec::new();
+        for action in actions {
+            let ge = encode_action_guard_effect(action, spec, consts, layout, step_vars, step)?;
+            guard_effects.push(ge);
+        }
+
+        let group_disjunction = Bool::or(&guard_effects);
+        group_encodings.push(Bool::and(&[frame, group_disjunction]));
+    }
+
+    Ok(Bool::or(&group_encodings))
 }
 
 /// Encode a specific action instance (with given params) as guard AND effect AND frame.
@@ -423,7 +444,9 @@ pub fn encode_action_instance(
     Ok(Bool::and(&[guard, effect, frame]))
 }
 
-fn encode_action(
+/// Encode guard ∧ effect for an action (without frame).
+/// Returns a disjunction over all parameter combinations.
+fn encode_action_guard_effect(
     action: &CompiledAction,
     spec: &CompiledSpec,
     consts: &[Value],
@@ -439,7 +462,6 @@ fn encode_action(
             Type::Range(lo, hi) => Ok((*lo, *hi)),
             Type::Nat => Ok((0, 100)),
             Type::Int => {
-                // Try resolving from AST type expressions (handles const-dependent ranges)
                 if let Some(type_expr) = action.param_type_exprs.get(i) {
                     crate::state_vars::eval_type_expr_range(type_expr, spec, consts)
                         .ok_or_else(|| SymbolicError::Unsupported("unbounded Int parameter".into()))
@@ -480,9 +502,8 @@ fn encode_action(
 
         let guard = enc.encode_bool(&action.guard)?;
         let effect = encode_effect(action, consts, layout, step_vars, step, &[])?;
-        let frame = encode_frame(action, layout, step_vars, step)?;
 
-        Ok(Bool::and(&[guard, effect, frame]))
+        Ok(Bool::and(&[guard, effect]))
     } else {
         let mut combos = Vec::new();
         enumerate_param_combos(&param_ranges, 0, &mut Vec::new(), &mut combos);
@@ -509,9 +530,8 @@ fn encode_action(
 
             let guard = enc.encode_bool(&action.guard)?;
             let effect = encode_effect(action, consts, layout, step_vars, step, &z3_params)?;
-            let frame = encode_frame(action, layout, step_vars, step)?;
 
-            disjuncts.push(Bool::and(&[guard, effect, frame]));
+            disjuncts.push(Bool::and(&[guard, effect]));
         }
 
         Ok(Bool::or(&disjuncts))
@@ -1268,10 +1288,21 @@ fn encode_frame(
     step_vars: &[Vec<Vec<Dynamic>>],
     step: usize,
 ) -> SymbolicResult<Bool> {
+    encode_frame_for_changes(&action.changes, layout, step_vars, step)
+}
+
+/// Encode frame constraints for a given set of changed variable indices.
+/// All variables NOT in `changes` are constrained to be equal between step and step+1.
+fn encode_frame_for_changes(
+    changes: &[usize],
+    layout: &VarLayout,
+    step_vars: &[Vec<Vec<Dynamic>>],
+    step: usize,
+) -> SymbolicResult<Bool> {
     let mut conjuncts = Vec::new();
 
     for (var_idx, _entry) in layout.entries.iter().enumerate() {
-        if action.changes.contains(&var_idx) {
+        if changes.contains(&var_idx) {
             continue;
         }
 

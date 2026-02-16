@@ -8,6 +8,7 @@ use crate::{SymbolicOutcome, SymbolicResult};
 use specl_eval::Value;
 use specl_ir::CompiledSpec;
 use tracing::info;
+use z3::ast::Ast;
 use z3::{SatResult, Solver};
 
 /// Maximum depth when no bound is specified (safety net).
@@ -43,7 +44,10 @@ pub fn check_bmc(
             encode_init(&solver, spec, consts, &layout, &all_step_vars)?;
         } else {
             let trans = encode_transition(spec, consts, &layout, &all_step_vars, k - 1)?;
-            solver.assert(&trans);
+            // Z3's built-in simplifier: constant folding, Boolean simplification,
+            // redundant conjunct elimination. Free performance win.
+            let simplified = trans.simplify();
+            solver.assert(&simplified);
         }
 
         // Check each invariant at step k
