@@ -1251,12 +1251,6 @@ fn cmd_check(
 
     // --- Auto-correct flags that only work in sequential mode (#22, #23) ---
     let mut parallel = parallel;
-    if actual_por && parallel {
-        if !quiet {
-            eprintln!("Note: --por requires sequential mode, disabling parallel exploration");
-        }
-        parallel = false;
-    }
     if profile && parallel {
         if !quiet {
             eprintln!("Note: --profile requires sequential mode, disabling parallel exploration");
