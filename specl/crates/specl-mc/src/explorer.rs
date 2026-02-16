@@ -9,8 +9,8 @@ use crate::store::StateStore;
 use memory_stats::memory_stats;
 use rayon::prelude::*;
 use smallvec::SmallVec;
-use specl_eval::bytecode::{compile_expr, vm_eval_bool, vm_eval_bool_reuse, Bytecode, VmBufs};
-use specl_eval::{eval, EvalContext, EvalError, Value};
+use specl_eval::bytecode::{compile_expr, vm_eval_bool, vm_eval_bool_reuse, Bytecode, Op, VmBufs};
+use specl_eval::{eval, EvalContext, EvalError, VK, Value};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec, KeySource, UnaryOp};
 use specl_syntax::{ExprKind, TypeExpr};
 use std::cell::RefCell;
@@ -314,6 +314,95 @@ pub struct ProfileData {
     pub time_store: Duration,
 }
 
+/// PC-indexed dispatch table for specs where actions guard on `require pc[p] == N`.
+/// Maps PC values to the action indices that can fire for that value. Actions without
+/// the PC guard pattern are always tried (fallback).
+#[allow(dead_code)]
+struct PcDispatchTable {
+    /// The state variable index for the PC dict (e.g., `pc`).
+    var_idx: u16,
+    /// The parameter index for the process ID (e.g., `p`).
+    param_idx: u16,
+    /// Map from PC value -> list of action indices with that guard.
+    dispatch: std::collections::HashMap<i64, Vec<usize>>,
+    /// Actions that don't have the PC guard pattern (always tried).
+    fallback: Vec<usize>,
+}
+
+/// Detect a PC dispatch table by scanning guard bytecode for `VarParamDictGetIntEq`.
+/// Returns Some if the majority of actions share a common `(var_idx, param_idx)` pattern
+/// and the total action count is large enough to benefit from dispatch.
+fn detect_pc_dispatch(compiled_guards: &[Bytecode], n_actions: usize) -> Option<PcDispatchTable> {
+    if n_actions < 10000 {
+        return None;
+    }
+
+    // For each action, find the first VarParamDictGetIntEq in its guard bytecode
+    let mut pattern_counts: std::collections::HashMap<(u16, u16), Vec<(usize, i64)>> =
+        std::collections::HashMap::new();
+    let mut no_pattern: Vec<usize> = Vec::new();
+
+    for (action_idx, guard) in compiled_guards.iter().enumerate() {
+        let mut found = false;
+        for op in &guard.ops {
+            if let Op::VarParamDictGetIntEq(var_idx, param_idx, pc_value) = op {
+                pattern_counts
+                    .entry((*var_idx, *param_idx))
+                    .or_default()
+                    .push((action_idx, *pc_value));
+                found = true;
+                break;
+            }
+        }
+        if !found {
+            no_pattern.push(action_idx);
+        }
+    }
+
+
+    // Find the most common (var_idx, param_idx) pattern
+    let best = pattern_counts
+        .iter()
+        .max_by_key(|(_, actions)| actions.len())?;
+
+    let ((var_idx, param_idx), actions_with_pattern) = best;
+    // Only build dispatch if at least half the actions share the pattern
+    if actions_with_pattern.len() < n_actions / 2 {
+        return None;
+    }
+
+    let mut dispatch: std::collections::HashMap<i64, Vec<usize>> =
+        std::collections::HashMap::new();
+    for &(action_idx, pc_value) in actions_with_pattern {
+        dispatch.entry(pc_value).or_default().push(action_idx);
+    }
+
+    // Fallback includes actions without the pattern AND actions with a different (var, param)
+    let best_key = (*var_idx, *param_idx);
+    let mut fallback = no_pattern;
+    for (key, actions) in &pattern_counts {
+        if *key != best_key {
+            for &(action_idx, _) in actions {
+                fallback.push(action_idx);
+            }
+        }
+    }
+
+    info!(
+        dispatched = actions_with_pattern.len(),
+        fallback = fallback.len(),
+        pc_values = dispatch.len(),
+        "PC dispatch enabled"
+    );
+
+    Some(PcDispatchTable {
+        var_idx: *var_idx,
+        param_idx: *param_idx,
+        dispatch,
+        fallback,
+    })
+}
+
 /// Model checker explorer.
 pub struct Explorer {
     /// Compiled specification.
@@ -367,6 +456,8 @@ pub struct Explorer {
     deadline: Option<Instant>,
     /// Which invariants are active (true = check, false = skip). Empty config = all active.
     active_invariants: Vec<bool>,
+    /// PC-indexed dispatch table for skipping actions whose guard can't fire.
+    pc_dispatch: Option<PcDispatchTable>,
 }
 
 /// Precomputed effect assignments for an action.
@@ -1123,6 +1214,9 @@ impl Explorer {
             );
         }
 
+        // Detect PC-indexed dispatch table from guard bytecode
+        let pc_dispatch = detect_pc_dispatch(&compiled_guards, spec.actions.len());
+
         // Precompute independence bitmasks for sleep set propagation
         let n_actions = spec.actions.len();
         let independent_masks: Vec<u64> = (0..n_actions)
@@ -1222,6 +1316,7 @@ impl Explorer {
             profile_data: None,
             deadline,
             active_invariants,
+            pc_dispatch,
         };
 
         // Precompute action names for trace reconstruction
@@ -3048,6 +3143,50 @@ impl Explorer {
         result
     }
 
+    /// Compute the set of action indices to explore using the PC dispatch table.
+    /// Returns None if PC dispatch is not available or the state's PC variable
+    /// has an unexpected representation (falls back to default action order).
+    fn get_pc_dispatched_actions(&self, state: &State) -> Option<SmallVec<[usize; 32]>> {
+        let table = self.pc_dispatch.as_ref()?;
+        let pc_dict = &state.vars[table.var_idx as usize];
+
+        // Collect distinct PC values present in the current state
+        let mut distinct: SmallVec<[i64; 8]> = SmallVec::new();
+        match pc_dict.kind() {
+            VK::IntMap(arr) => {
+                for v in arr {
+                    if let Some(n) = v.as_int() {
+                        if !distinct.contains(&n) {
+                            distinct.push(n);
+                        }
+                    }
+                }
+            }
+            VK::Fn(pairs) => {
+                for (_, v) in pairs {
+                    if let Some(n) = v.as_int() {
+                        if !distinct.contains(&n) {
+                            distinct.push(n);
+                        }
+                    }
+                }
+            }
+            _ => return None,
+        }
+
+        // Gather actions: each action appears in exactly one dispatch bucket or fallback
+        let mut result: SmallVec<[usize; 32]> =
+            SmallVec::with_capacity(table.fallback.len() + distinct.len() * 4);
+        for pc_val in &distinct {
+            if let Some(action_indices) = table.dispatch.get(pc_val) {
+                result.extend_from_slice(action_indices);
+            }
+        }
+        result.extend_from_slice(&table.fallback);
+
+        Some(result)
+    }
+
     /// Generate successor states from a state.
     /// Successor: (next_state, action_index, params) - name formatting deferred.
     /// Uses per-thread operation cache to skip redundant evaluations.
@@ -3116,6 +3255,19 @@ impl Explorer {
             self.apply_template_actions(
                 state,
                 &actions_to_explore,
+                buf,
+                next_vars_buf,
+                sleep_set,
+                guard_bufs,
+                effect_bufs,
+                var_hashes_buf,
+                op_caches,
+                params_buf,
+            )
+        } else if let Some(ref pc_actions) = self.get_pc_dispatched_actions(state) {
+            self.apply_template_actions(
+                state,
+                pc_actions,
                 buf,
                 next_vars_buf,
                 sleep_set,
