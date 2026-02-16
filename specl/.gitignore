@@ -1,7 +1,8 @@
 /target/
 
-# Z3 trace files
+# Z3 solver outputs
 .z3-trace
+*.smt2
 
 # TLC model checker outputs
 states/
@@ -11,3 +12,6 @@ states/
 MC.out
 MC*.out
 .deps/
+
+# Benchmark results (machine-specific)
+baseline-results.txt
