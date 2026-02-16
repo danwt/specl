@@ -26,11 +26,11 @@ fn load_spec(path: &str, constants: &[(&str, i64)]) -> (specl_ir::CompiledSpec, 
     specl_types::check_module(&module).unwrap();
     let spec = compile(&module).unwrap();
 
-    let mut const_values = vec![Value::None; spec.consts.len()];
+    let mut const_values = vec![Value::none(); spec.consts.len()];
     for const_decl in &spec.consts {
         for &(name, val) in constants {
             if const_decl.name == name {
-                const_values[const_decl.index] = Value::Int(val);
+                const_values[const_decl.index] = Value::int(val);
             }
         }
     }
