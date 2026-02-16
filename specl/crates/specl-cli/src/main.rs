@@ -353,6 +353,10 @@ enum Commands {
         #[arg(long, default_value = "default", help_heading = "Symbolic (Z3)")]
         spacer_profile: String,
 
+        /// Timeout in seconds for symbolic solvers (0 = no timeout)
+        #[arg(long, default_value = "0", help_heading = "Symbolic (Z3)")]
+        timeout: u64,
+
         /// Show verbose output
         #[arg(short, long)]
         verbose: bool,
@@ -575,6 +579,7 @@ fn main() {
             golem,
             seq_bound,
             spacer_profile,
+            timeout,
             verbose,
             quiet,
             no_auto,
@@ -621,6 +626,12 @@ fn main() {
             let sp = match spacer_profile.as_str() {
                 "fast" => SpacerProfile::Fast,
                 "thorough" => SpacerProfile::Thorough,
+                "mbp" | "mbp-aggressive" => SpacerProfile::MbpAggressive,
+                "pdr" | "pdr-flexible" => SpacerProfile::PdrFlexible,
+                s if s.starts_with("seed:") => {
+                    let seed = s[5..].parse::<u32>().unwrap_or(42);
+                    SpacerProfile::Seeded(seed)
+                }
                 _ => SpacerProfile::Default,
             };
 
@@ -637,6 +648,7 @@ fn main() {
                     golem,
                     seq_bound,
                     sp,
+                    timeout,
                     json,
                 )
             } else if use_bfs {
@@ -677,7 +689,7 @@ fn main() {
                     }
                     cmd_check_symbolic(
                         &file, &constant, bmc_depth, false, false, None, false, false, false,
-                        seq_bound, sp, json,
+                        seq_bound, sp, timeout, json,
                     )
                 } else {
                     cmd_check(
@@ -1877,6 +1889,7 @@ fn cmd_check_symbolic(
     golem: bool,
     seq_bound: usize,
     spacer_profile: SpacerProfile,
+    timeout: u64,
     json: bool,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
@@ -1918,6 +1931,11 @@ fn cmd_check_symbolic(
         depth: bmc_depth,
         seq_bound,
         spacer_profile,
+        timeout_ms: if timeout == 0 {
+            None
+        } else {
+            Some(timeout * 1000)
+        },
     };
 
     let mode_str = if portfolio {
