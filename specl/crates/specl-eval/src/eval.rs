@@ -929,6 +929,10 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                     let k = expect_int(&index_val)? as usize;
                     arr[k].as_int().ok_or_else(|| type_mismatch("Int", &arr[k]))
                 }
+                VK::IntMap2(_, _) => {
+                    // IntMap2[k] returns a row (IntMap), not an Int — fall through
+                    expect_int(&eval(expr, ctx)?)
+                }
                 VK::Fn(map) => match Value::fn_get(map, &index_val) {
                     Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
                     None => Err(EvalError::KeyNotFound(index_val.to_string())),
@@ -967,6 +971,9 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                 VK::Seq(s) => Ok(s.len() as i64),
                 VK::Fn(f) => Ok(f.len() as i64),
                 VK::IntMap(arr) => Ok(arr.len() as i64),
+                VK::IntMap2(inner_size, data) => {
+                    Ok((data.len() / inner_size as usize) as i64)
+                }
                 _ => Err(type_mismatch("Set, Seq, or Fn", &val)),
             }
         }
@@ -1212,6 +1219,10 @@ fn eval_binary(
                 let k = expect_int(&left_val)? as usize;
                 Ok(Value::bool(k < arr.len()))
             }
+            VK::IntMap2(inner_size, data) => {
+                let k = expect_int(&left_val)? as usize;
+                Ok(Value::bool(k < data.len() / inner_size as usize))
+            }
             _ => Err(type_mismatch("Set or Dict", &right_val)),
         },
         BinOp::NotIn => match right_val.kind() {
@@ -1220,6 +1231,10 @@ fn eval_binary(
             VK::IntMap(arr) => {
                 let k = expect_int(&left_val)? as usize;
                 Ok(Value::bool(k >= arr.len()))
+            }
+            VK::IntMap2(inner_size, data) => {
+                let k = expect_int(&left_val)? as usize;
+                Ok(Value::bool(k >= data.len() / inner_size as usize))
             }
             _ => Err(type_mismatch("Set or Dict", &right_val)),
         },
@@ -1246,10 +1261,11 @@ fn eval_binary(
                 } else {
                     Ok(Value::set(Arc::new(sorted_vec_union(&a, &b))))
                 }
-            } else if left_val.is_intmap() && right_val.is_intmap() {
-                let mut a = left_val.into_intmap_arc();
-                let b = right_val.into_intmap_arc();
-                // Right overrides left for IntMap union
+            } else if (left_val.is_intmap() || left_val.is_intmap2())
+                && (right_val.is_intmap() || right_val.is_intmap2())
+            {
+                let mut a = dematerialize_to_intmap(&left_val);
+                let b = dematerialize_to_intmap(&right_val);
                 let arr = Arc::make_mut(&mut a);
                 for (i, v) in b.iter().enumerate() {
                     if i < arr.len() {
@@ -1380,6 +1396,10 @@ fn extract_domain_elements(val: &Value) -> EvalResult<Vec<Value>> {
         VK::Set(s) => Ok(s.to_vec()),
         VK::Fn(m) => Ok(m.iter().map(|(k, _)| k.clone()).collect()),
         VK::IntMap(arr) => Ok((0..arr.len() as i64).map(Value::int).collect()),
+        VK::IntMap2(inner_size, data) => {
+            let outer_size = data.len() / inner_size as usize;
+            Ok((0..outer_size as i64).map(Value::int).collect())
+        }
         _ => Err(type_mismatch("Set or Dict", val)),
     }
 }
