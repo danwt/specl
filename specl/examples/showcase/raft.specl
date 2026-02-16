@@ -1,7 +1,9 @@
 module RaftVanlightly
-// Use: specl check raft.specl -c N=2 -c MaxVal=1 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=3 --no-deadlock --fast
-// N=1 (2 servers) is too small — no real quorum. Use N=2 (3 servers) minimum.
-// N=2 at these params: >5 min check (large state space)
+// Quick BFS:      specl check raft.specl -c N=1 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=2 --no-deadlock
+//                 956 states, <1s
+// Strenuous BFS:  specl check raft.specl -c N=2 -c MaxVal=1 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=3 --no-deadlock --fast
+//                 166M states, ~4 min
+// Note: symbolic mode not supported (uses Set[Seq[T]] for message passing)
 
 // ============================================================================
 // Vanlightly's Model-Checking Optimized Raft Specification
