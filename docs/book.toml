@@ -1,0 +1,19 @@
+[book]
+title = "Specl Documentation"
+authors = ["Daniel Tisdall"]
+description = "Specification language and model checker for concurrent and distributed systems"
+language = "en"
+src = "src"
+
+[build]
+build-dir = "book"
+
+[output.html]
+default-theme = "coal"
+preferred-dark-theme = "coal"
+git-repository-url = "https://github.com/danwt/specl"
+additional-css = ["theme/specl.css"]
+additional-js = ["theme/specl-highlight.js"]
+
+[output.html.search]
+enable = true

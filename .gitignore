@@ -1,5 +1,6 @@
 # Build
 /specl/target/
+/docs/book/
 
 # Dependencies
 /specl/.deps/
