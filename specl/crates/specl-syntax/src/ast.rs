@@ -170,12 +170,14 @@ pub struct Param {
     pub span: Span,
 }
 
-/// `invariant NAME { expr }`
+/// `invariant NAME { expr }` or `auxiliary invariant NAME { expr }`
 #[derive(Debug, Clone)]
 pub struct InvariantDecl {
     pub name: Ident,
     pub body: Expr,
     pub span: Span,
+    /// Auxiliary invariants are assumed as hypotheses, not checked as proof goals.
+    pub is_auxiliary: bool,
 }
 
 /// `property NAME { expr }`

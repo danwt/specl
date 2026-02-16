@@ -82,7 +82,11 @@ impl Parser {
             TokenKind::Func => self.parse_func_decl().map(Decl::Func),
             TokenKind::Init => self.parse_init_decl().map(Decl::Init),
             TokenKind::Action => self.parse_action_decl().map(Decl::Action),
-            TokenKind::Invariant => self.parse_invariant_decl().map(Decl::Invariant),
+            TokenKind::Invariant => self.parse_invariant_decl(false).map(Decl::Invariant),
+            TokenKind::Auxiliary => {
+                self.advance(); // consume 'auxiliary'
+                self.parse_invariant_decl(true).map(Decl::Invariant)
+            }
             TokenKind::Property => self.parse_property_decl().map(Decl::Property),
             TokenKind::Fairness => self.parse_fairness_decl().map(Decl::Fairness),
             TokenKind::View => self.parse_view_decl().map(Decl::View),
@@ -386,7 +390,7 @@ impl Parser {
             .unwrap_or_else(|| Expr::new(ExprKind::Bool(true), fallback_span))
     }
 
-    fn parse_invariant_decl(&mut self) -> ParseResult<InvariantDecl> {
+    fn parse_invariant_decl(&mut self, is_auxiliary: bool) -> ParseResult<InvariantDecl> {
         let start = self.current_span();
         self.expect(TokenKind::Invariant)?;
         let name = self.parse_ident()?;
@@ -394,7 +398,12 @@ impl Parser {
         let body = self.parse_expr()?;
         self.expect(TokenKind::RBrace)?;
         let span = start.merge(self.prev_span());
-        Ok(InvariantDecl { name, body, span })
+        Ok(InvariantDecl {
+            name,
+            body,
+            span,
+            is_auxiliary,
+        })
     }
 
     fn parse_property_decl(&mut self) -> ParseResult<PropertyDecl> {

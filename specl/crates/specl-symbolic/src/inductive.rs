@@ -57,6 +57,24 @@ pub fn check_inductive(
         let inv_at_0 = enc0.encode_bool(&inv.body)?;
         solver.assert(&inv_at_0);
 
+        // Assert auxiliary invariants at step 0 as hypotheses
+        for aux in &spec.auxiliary_invariants {
+            let mut enc_aux = crate::encoder::EncoderCtx {
+                layout: &layout,
+                consts,
+                step_vars: &all_step_vars,
+                current_step: 0,
+                next_step: 0,
+                params: &[],
+                locals: Vec::new(),
+                compound_locals: Vec::new(),
+                set_locals: Vec::new(),
+                whole_var_locals: Vec::new(),
+            };
+            let aux_at_0 = enc_aux.encode_bool(&aux.body)?;
+            solver.assert(&aux_at_0);
+        }
+
         let mut enc1 = crate::encoder::EncoderCtx {
             layout: &layout,
             consts,

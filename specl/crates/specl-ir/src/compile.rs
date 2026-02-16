@@ -82,6 +82,7 @@ impl Compiler {
         let mut consts = Vec::new();
         let mut actions = Vec::new();
         let mut invariants = Vec::new();
+        let mut auxiliary_invariants = Vec::new();
         let mut init = CompiledExpr::Bool(true);
 
         // First pass: collect declarations and build indices
@@ -156,10 +157,15 @@ impl Compiler {
                 }
                 Decl::Invariant(d) => {
                     let body = self.compile_expr(&d.body)?;
-                    invariants.push(CompiledInvariant {
+                    let compiled = CompiledInvariant {
                         name: d.name.name.clone(),
                         body,
-                    });
+                    };
+                    if d.is_auxiliary {
+                        auxiliary_invariants.push(compiled);
+                    } else {
+                        invariants.push(compiled);
+                    }
                 }
                 _ => {}
             }
@@ -240,6 +246,7 @@ impl Compiler {
             init,
             actions,
             invariants,
+            auxiliary_invariants,
             independent,
             refinable_pairs,
             symmetry_groups,

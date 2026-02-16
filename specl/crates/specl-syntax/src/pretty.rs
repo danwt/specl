@@ -222,6 +222,9 @@ impl PrettyPrinter {
     }
 
     fn print_invariant_decl(&mut self, decl: &InvariantDecl) {
+        if decl.is_auxiliary {
+            self.write("auxiliary ");
+        }
         self.write("invariant ");
         self.write(&decl.name.name);
         self.writeln(" {");

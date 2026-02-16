@@ -2082,6 +2082,7 @@ impl Translator {
             name: specl::Ident::new(escape_ident(&name.name), translate_span(name.span)),
             body: body_expr,
             span: translate_span(span),
+            is_auxiliary: false,
         })
     }
 

@@ -14,8 +14,10 @@ pub struct CompiledSpec {
     pub init: CompiledExpr,
     /// Actions.
     pub actions: Vec<CompiledAction>,
-    /// Invariants.
+    /// Invariants (checked as proof goals).
     pub invariants: Vec<CompiledInvariant>,
+    /// Auxiliary invariants (assumed as hypotheses, not checked).
+    pub auxiliary_invariants: Vec<CompiledInvariant>,
     /// Independence matrix for POR: independent[i][j] = true if actions i and j are independent.
     pub independent: Vec<Vec<bool>>,
     /// Refinable pairs for instance-level POR: refinable_pairs[i][j] = true iff templates i,j

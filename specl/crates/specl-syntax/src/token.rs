@@ -96,6 +96,8 @@ pub enum TokenKind {
     Func,
     /// `view` - state abstraction for dedup
     View,
+    /// `auxiliary` - modifier for invariant declarations
+    Auxiliary,
 
     // === Logical keywords ===
     /// `and`
@@ -315,6 +317,7 @@ impl TokenKind {
                 | TokenKind::Fairness
                 | TokenKind::Func
                 | TokenKind::View
+                | TokenKind::Auxiliary
                 | TokenKind::And
                 | TokenKind::Or
                 | TokenKind::Not
@@ -379,6 +382,7 @@ impl TokenKind {
             "fairness" => TokenKind::Fairness,
             "func" => TokenKind::Func,
             "view" => TokenKind::View,
+            "auxiliary" => TokenKind::Auxiliary,
             "and" => TokenKind::And,
             "or" => TokenKind::Or,
             "not" => TokenKind::Not,
@@ -450,6 +454,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Fairness => write!(f, "fairness"),
             TokenKind::Func => write!(f, "func"),
             TokenKind::View => write!(f, "view"),
+            TokenKind::Auxiliary => write!(f, "auxiliary"),
             TokenKind::And => write!(f, "and"),
             TokenKind::Or => write!(f, "or"),
             TokenKind::Not => write!(f, "not"),
