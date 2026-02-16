@@ -935,7 +935,9 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
             );
             if *depth >= 3 {
                 println!("    Dict[K1, Dict[K2, Dict[K3, V]]] has |V|^(K1*K2*K3) states");
-                println!("    Consider flattening to Dict[(K1,K2,K3), V] or using a simpler encoding");
+                println!(
+                    "    Consider flattening to Dict[(K1,K2,K3), V] or using a simpler encoding"
+                );
             } else {
                 println!("    OK for most specs, but watch state space with large ranges");
             }
@@ -2432,15 +2434,22 @@ fn value_to_json(v: &Value) -> serde_json::Value {
         VK::Tuple(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
         VK::None => serde_json::Value::Null,
         VK::IntMap2(inner_size, data) => {
-            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+            let outer_size = if inner_size > 0 {
+                data.len() / inner_size as usize
+            } else {
+                0
+            };
             let obj: serde_json::Map<String, serde_json::Value> = (0..outer_size)
                 .map(|i| {
-                    let inner_obj: serde_json::Map<String, serde_json::Value> =
-                        (0..inner_size as usize)
-                            .map(|j| {
-                                (j.to_string(), value_to_json(&data[i * inner_size as usize + j]))
-                            })
-                            .collect();
+                    let inner_obj: serde_json::Map<String, serde_json::Value> = (0..inner_size
+                        as usize)
+                        .map(|j| {
+                            (
+                                j.to_string(),
+                                value_to_json(&data[i * inner_size as usize + j]),
+                            )
+                        })
+                        .collect();
                     (i.to_string(), serde_json::Value::Object(inner_obj))
                 })
                 .collect();
@@ -2495,7 +2504,11 @@ fn value_to_itf(v: &Value) -> serde_json::Value {
         }
         VK::None => serde_json::json!({"tag": "None", "value": serde_json::json!({})}),
         VK::IntMap2(inner_size, data) => {
-            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+            let outer_size = if inner_size > 0 {
+                data.len() / inner_size as usize
+            } else {
+                0
+            };
             let entries: Vec<serde_json::Value> = (0..outer_size)
                 .map(|i| {
                     let inner_entries: Vec<serde_json::Value> = (0..inner_size as usize)
@@ -2760,7 +2773,11 @@ fn format_value_compact(v: &Value) -> String {
         }
         VK::None => "None".to_string(),
         VK::IntMap2(inner_size, data) => {
-            let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+            let outer_size = if inner_size > 0 {
+                data.len() / inner_size as usize
+            } else {
+                0
+            };
             let inner: Vec<String> = (0..outer_size)
                 .map(|i| {
                     let vals: Vec<String> = (0..inner_size as usize)

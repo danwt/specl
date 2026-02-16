@@ -971,9 +971,7 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                 VK::Seq(s) => Ok(s.len() as i64),
                 VK::Fn(f) => Ok(f.len() as i64),
                 VK::IntMap(arr) => Ok(arr.len() as i64),
-                VK::IntMap2(inner_size, data) => {
-                    Ok((data.len() / inner_size as usize) as i64)
-                }
+                VK::IntMap2(inner_size, data) => Ok((data.len() / inner_size as usize) as i64),
                 _ => Err(type_mismatch("Set, Seq, or Fn", &val)),
             }
         }

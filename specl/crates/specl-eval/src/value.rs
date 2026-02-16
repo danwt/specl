@@ -726,9 +726,10 @@ impl PartialEq for Value {
                 (VK::IntMap2(is_a, da), VK::IntMap2(is_b, db)) => is_a == is_b && da == db,
                 (VK::IntMap(arr), VK::Fn(pairs)) | (VK::Fn(pairs), VK::IntMap(arr)) => {
                     arr.len() == pairs.len()
-                        && pairs.iter().enumerate().all(|(i, (k, v))| {
-                            k.as_int() == Some(i as i64) && *v == arr[i]
-                        })
+                        && pairs
+                            .iter()
+                            .enumerate()
+                            .all(|(i, (k, v))| k.as_int() == Some(i as i64) && *v == arr[i])
                 }
                 // IntMap2 vs IntMap/Fn: expand IntMap2 to logical nested representation
                 (VK::IntMap2(inner_size, data), VK::IntMap(arr))
@@ -742,8 +743,7 @@ impl PartialEq for Value {
                         return false;
                     }
                     for i in 0..outer_size {
-                        let slice =
-                            &data[i * inner_size as usize..(i + 1) * inner_size as usize];
+                        let slice = &data[i * inner_size as usize..(i + 1) * inner_size as usize];
                         match arr[i].kind() {
                             VK::IntMap(inner) => {
                                 if inner != slice {
@@ -881,12 +881,10 @@ impl Ord for Value {
                 }
                 pairs.len().cmp(&arr.len())
             }
-            (VK::IntMap2(is_a, da), VK::IntMap2(is_b, db)) => {
-                match is_a.cmp(&is_b) {
-                    Ordering::Equal => da.cmp(db),
-                    other => other,
-                }
-            }
+            (VK::IntMap2(is_a, da), VK::IntMap2(is_b, db)) => match is_a.cmp(&is_b) {
+                Ordering::Equal => da.cmp(db),
+                other => other,
+            },
             // IntMap2 vs IntMap/Fn: materialize IntMap2 rows for comparison
             (VK::IntMap2(..), _) | (_, VK::IntMap2(..)) => {
                 // Fallback: convert both to canonical Fn representation and compare

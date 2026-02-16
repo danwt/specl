@@ -3061,7 +3061,7 @@ impl Explorer {
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
         var_hashes_buf: &mut Vec<u64>,
-        op_caches: &mut Vec<OpCache>,
+        op_caches: &mut [OpCache],
         params_buf: &mut Vec<Value>,
     ) -> CheckResult<()> {
         buf.clear();
@@ -3166,7 +3166,7 @@ impl Explorer {
         guard_bufs: &mut VmBufs,
         effect_bufs: &mut VmBufs,
         var_hashes_buf: &mut Vec<u64>,
-        op_caches: &mut Vec<OpCache>,
+        op_caches: &mut [OpCache],
         params_buf: &mut Vec<Value>,
     ) -> CheckResult<()> {
         let orbit_reps: SmallVec<[Vec<usize>; 4]> =
@@ -3257,15 +3257,19 @@ impl Explorer {
             );
         } else {
             let mut params_buf = SmallVec::new();
-            self.enumerate_params(&param_domains, &mut params_buf, &mut |params: &[Value]| {
-                if !enabled {
-                    if let Ok(true) =
-                        vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
-                    {
-                        enabled = true;
+            self.enumerate_params(
+                &param_domains,
+                &mut params_buf,
+                &mut |params: &[Value]| {
+                    if !enabled {
+                        if let Ok(true) =
+                            vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                        {
+                            enabled = true;
+                        }
                     }
-                }
-            });
+                },
+            );
         }
 
         Ok(enabled)
@@ -3385,13 +3389,17 @@ impl Explorer {
             );
         } else {
             let mut params_buf = SmallVec::new();
-            self.enumerate_params(&param_domains, &mut params_buf, &mut |params: &[Value]| {
-                if vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
-                    .unwrap_or(false)
-                {
-                    instances.push((action_idx, params.to_vec()));
-                }
-            });
+            self.enumerate_params(
+                &param_domains,
+                &mut params_buf,
+                &mut |params: &[Value]| {
+                    if vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
+                        .unwrap_or(false)
+                    {
+                        instances.push((action_idx, params.to_vec()));
+                    }
+                },
+            );
         }
 
         Ok(instances)
@@ -3804,11 +3812,8 @@ impl Explorer {
                                     let wnh = xor_hash_vars(var_hashes_buf, changes);
                                     cache.store(key, wnh);
                                     if !self.store.contains(&fp) {
-                                        let next_state = take_computed_state(
-                                            next_vars_buf,
-                                            fp,
-                                            var_hashes_buf,
-                                        );
+                                        let next_state =
+                                            take_computed_state(next_vars_buf, fp, var_hashes_buf);
                                         let pvals = if needs_pvals {
                                             params_to_i64s(params)
                                         } else {
@@ -3838,11 +3843,8 @@ impl Explorer {
                             ) {
                                 if let Some(fp) = result {
                                     if !self.store.contains(&fp) {
-                                        let next_state = take_computed_state(
-                                            next_vars_buf,
-                                            fp,
-                                            var_hashes_buf,
-                                        );
+                                        let next_state =
+                                            take_computed_state(next_vars_buf, fp, var_hashes_buf);
                                         let pvals = if needs_pvals {
                                             params_to_i64s(params)
                                         } else {
@@ -3914,11 +3916,8 @@ impl Explorer {
                                 let wnh = xor_hash_vars(var_hashes_buf, changes);
                                 cache.store(key, wnh);
                                 if !self.store.contains(&fp) {
-                                    let next_state = take_computed_state(
-                                        next_vars_buf,
-                                        fp,
-                                        var_hashes_buf,
-                                    );
+                                    let next_state =
+                                        take_computed_state(next_vars_buf, fp, var_hashes_buf);
                                     let pvals = if needs_pvals {
                                         params_to_i64s(params)
                                     } else {
@@ -3960,11 +3959,8 @@ impl Explorer {
                         ) {
                             if let Some(fp) = result {
                                 if !self.store.contains(&fp) {
-                                    let next_state = take_computed_state(
-                                        next_vars_buf,
-                                        fp,
-                                        var_hashes_buf,
-                                    );
+                                    let next_state =
+                                        take_computed_state(next_vars_buf, fp, var_hashes_buf);
                                     let pvals = if needs_pvals {
                                         params_to_i64s(params)
                                     } else {

@@ -157,7 +157,11 @@ fn hash_intmap2(idx: usize, inner_size: u32, data: &[Value]) -> u64 {
     const K1: u64 = 0x517cc1b727220a95;
     const K2: u64 = 0x9e3779b97f4a7c15;
 
-    let outer_size = if inner_size > 0 { data.len() / inner_size as usize } else { 0 };
+    let outer_size = if inner_size > 0 {
+        data.len() / inner_size as usize
+    } else {
+        0
+    };
     let is = inner_size as usize;
 
     let mut h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(K2);

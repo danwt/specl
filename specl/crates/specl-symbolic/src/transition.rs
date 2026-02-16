@@ -279,6 +279,7 @@ fn encode_init_assignment(
 }
 
 /// Recursively encode init for compound value bodies (inner dict, set, seq).
+#[allow(clippy::only_used_in_recursion)]
 fn encode_init_compound_body(
     solver: &Solver,
     enc: &mut EncoderCtx,
