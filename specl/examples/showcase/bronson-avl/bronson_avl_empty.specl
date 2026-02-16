@@ -156,13 +156,24 @@ func LH1(n1) { TH1(left[n1]) }
 func RH1(n1) { TH1(rite[n1]) }
 func TrueHeight(e0) { if e0 == 101 then 0 else if RH1(e0) < LH1(e0) then LH1(e0) + 1 else RH1(e0) + 1 }
 
-// Find first unused node address (key == Null)
+// Find first unused node address (key == Null). Returns MaxAddr+1 (overflow) if none.
+// Unrolled chain — guards against out-of-bounds for small MaxAddr values.
 func UnusedAddr() {
-    if key[1] == 101 then 1 else if key[2] == 101 then 2 else if key[3] == 101 then 3
-    else if key[4] == 101 then 4 else if key[5] == 101 then 5 else if key[6] == 101 then 6
-    else if key[7] == 101 then 7 else if key[8] == 101 then 8 else if key[9] == 101 then 9
-    else if key[10] == 101 then 10 else if key[11] == 101 then 11 else if key[12] == 101 then 12
-    else if key[13] == 101 then 13 else 14
+    if key[1] == 101 then 1
+    else if MaxAddr >= 2 and key[2] == 101 then 2
+    else if MaxAddr >= 3 and key[3] == 101 then 3
+    else if MaxAddr >= 4 and key[4] == 101 then 4
+    else if MaxAddr >= 5 and key[5] == 101 then 5
+    else if MaxAddr >= 6 and key[6] == 101 then 6
+    else if MaxAddr >= 7 and key[7] == 101 then 7
+    else if MaxAddr >= 8 and key[8] == 101 then 8
+    else if MaxAddr >= 9 and key[9] == 101 then 9
+    else if MaxAddr >= 10 and key[10] == 101 then 10
+    else if MaxAddr >= 11 and key[11] == 101 then 11
+    else if MaxAddr >= 12 and key[12] == 101 then 12
+    else if MaxAddr >= 13 and key[13] == 101 then 13
+    else if MaxAddr >= 14 and key[14] == 101 then 14
+    else 101
 }
 
 // ======== Initial state ========
