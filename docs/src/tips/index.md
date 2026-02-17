@@ -54,8 +54,8 @@ action Act(i: 0..LIMIT) { ... }
 // WRONG: v not in scope
 let v = any v in 0..N: state[v] == 2 in state[v]
 
-// RIGHT: use choose to bind a value
-let v = choose v in 0..N: state[v] == 2
+// RIGHT: use fix to bind a value
+let v = fix v in 0..N: state[v] == 2
 ```
 
 ### `implies` precedence in nested quantifiers

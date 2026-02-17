@@ -4,7 +4,7 @@ hljs.registerLanguage("specl", function(hljs) {
         keyword:
             "module const var type action init invariant property fairness use require " +
             "if then else let in for fn func " +
-            "all any forall exists choose " +
+            "all any forall exists fix " +
             "always eventually leads_to " +
             "weak strong Some None",
         built_in:

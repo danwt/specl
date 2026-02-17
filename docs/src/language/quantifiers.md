@@ -43,10 +43,10 @@ state[v]
 require any v in 0..N: state[v] == 2
 ```
 
-To pick a specific value satisfying a predicate, use `choose`:
+To pick a specific value satisfying a predicate, use `fix`:
 
 ```specl
-let v = choose v in 0..N: state[v] == 2
+let v = fix v in 0..N: state[v] == 2
 ```
 
 ## Precedence with `implies`

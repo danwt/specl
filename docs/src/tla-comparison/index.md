@@ -18,7 +18,7 @@ Specl is a modern replacement for TLA+/TLC. If you're coming from TLA+, this pag
 | `\notin` | `not in` | Set non-membership |
 | `\A x \in S: P(x)` | `all x in S: P(x)` | Universal quantifier |
 | `\E x \in S: P(x)` | `any x in S: P(x)` | Existential quantifier |
-| `CHOOSE x \in S: P(x)` | `choose x in S: P(x)` | Deterministic choice |
+| `CHOOSE x \in S: P(x)` | `fix x in S: P(x)` | Deterministic choice |
 | `[f EXCEPT ![k] = v]` | `f \| { k: v }` | Dict update |
 | `[f EXCEPT ![k][j] = v]` | `f \| {k: f[k] \| {j: v}}` | Nested dict update |
 | `{x \in S : P(x)}` | `{x in S if P(x)}` | Set comprehension |

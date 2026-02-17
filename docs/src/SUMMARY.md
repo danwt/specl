@@ -30,7 +30,7 @@
 - [Quantifiers](./language/quantifiers.md)
 - [Functions and Let Bindings](./language/functions-and-let.md)
 - [Operators](./language/operators.md)
-- [Conditionals and Choose](./language/conditionals-and-choose.md)
+- [Conditionals and Fix](./language/conditionals-and-choose.md)
 - [Invariants and Properties](./language/invariants-and-properties.md)
 - [Not Yet Implemented](./language/not-yet-implemented.md)
 

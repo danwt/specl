@@ -1,4 +1,4 @@
-# Conditionals and Choose
+# Conditionals and Fix
 
 ## Conditional expressions
 
@@ -27,20 +27,20 @@ invariant Safe {
 
 Since `if/then/else` is an expression (not a statement), it can appear anywhere a value is expected: in dict comprehensions, function bodies, guards, invariants, and assignments.
 
-## Choose expressions
+## Fix expressions
 
-`choose x in S: P(x)` picks a value from set `S` satisfying predicate `P`. The chosen value is nondeterministic — the checker explores all valid choices.
+`fix x in S: P(x)` picks a value from set `S` satisfying predicate `P`. The result is deterministic — the first satisfying element (in sorted order) is returned.
 
 ```specl
-let leader = choose i in 0..N: role[i] == 2
+let leader = fix i in 0..N: role[i] == 2
 ```
 
-Use `choose` when you need to bind a specific value to a variable, as opposed to `any` which only returns a boolean.
+Use `fix` when you need to bind a specific value to a variable, as opposed to `any` which only returns a boolean.
 
 ```specl
 // any: boolean — does a leader exist?
 require any i in 0..N: role[i] == 2
 
-// choose: value — bind a specific leader
-let leader = choose i in 0..N: role[i] == 2
+// fix: value — bind a specific leader
+let leader = fix i in 0..N: role[i] == 2
 ```
