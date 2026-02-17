@@ -44,3 +44,10 @@ hljs.registerLanguage("specl", function(hljs) {
         ]
     };
 });
+
+// Re-highlight specl blocks (mdBook runs hljs before this script loads)
+document.querySelectorAll("code.language-specl").forEach(function(block) {
+    block.classList.remove("hljs");
+    block.removeAttribute("data-highlighted");
+    hljs.highlightElement(block);
+});
