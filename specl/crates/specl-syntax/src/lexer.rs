@@ -629,7 +629,7 @@ mod tests {
             vec![
                 TokenKind::All,
                 TokenKind::Any,
-                TokenKind::Choose,
+                TokenKind::Fix,
                 TokenKind::In,
                 TokenKind::Eof
             ]

@@ -1,19 +1,17 @@
 module Prisoners
 
 // The famous Prisoners puzzle (from TLA+ examples / Quint translation).
-// N+1 prisoners total: prisoner 0 is the "counter", prisoners 1..N are non-counters.
+// M+1 non-counters (0..M) plus 1 counter = M+2 prisoners total.
 // A room has two switches (A and B). Prisoners are brought in one at a time.
 // Non-counters: flip A up if it's down and they haven't flipped it 2x yet; else flip B.
 // Counter: flip A down and increment count if A is up; else flip B.
-// Done when count == 2*(N+1) - 1 = 2*N + 1, meaning every prisoner has visited.
+// Done when count == 2*(M+1) + 1, meaning every prisoner has visited.
 //
 // The nondeterministic initial switch state is modeled via a Setup action
 // that tries all 4 combinations before the main protocol begins.
 //
-// M = number of non-counter prisoners (M=2 means 3 total prisoners).
-// Non-counters are indexed 0..M-1 internally (parameter M is last index + 1).
-// Use: specl check prisoners.specl -c M=2 --no-deadlock --bfs
-// Verified: M=2 -> OK (71 states)
+// Use: specl check prisoners.specl -c M=1 --no-deadlock --bfs
+// Verified: M=1 -> OK (71 states)
 
 const M: Int
 
@@ -39,22 +37,35 @@ action Setup(a: 0..1, b: 0..1) {
     started = true;
 }
 
-// Non-counter p enters the room
-action NonCounterStep(p: 0..M) {
+// Non-counter p flips switch A up (can flip, wants to flip)
+action NonCounterFlipA(p: 0..M) {
     require started;
-    let flipA = not switchA and timesSwitched[p] < 2;
-    switchA = if flipA then true else switchA;
-    timesSwitched = timesSwitched | {p: if flipA then timesSwitched[p] + 1 else timesSwitched[p]};
-    switchB = if flipA then switchB else not switchB;
+    require not switchA;
+    require timesSwitched[p] < 2;
+    switchA = true;
+    timesSwitched = timesSwitched | {p: timesSwitched[p] + 1};
 }
 
-// Counter enters the room
-action CounterStep() {
+// Non-counter p flips switch B (can't or won't flip A)
+action NonCounterFlipB(p: 0..M) {
     require started;
-    let flipDown = switchA;
-    switchA = if flipDown then false else switchA;
-    count = if flipDown then count + 1 else count;
-    switchB = if flipDown then switchB else not switchB;
+    require switchA or timesSwitched[p] >= 2;
+    switchB = not switchB;
+}
+
+// Counter flips A down and increments count
+action CounterFlipA() {
+    require started;
+    require switchA;
+    switchA = false;
+    count = count + 1;
+}
+
+// Counter flips B (A is already down)
+action CounterFlipB() {
+    require started;
+    require not switchA;
+    switchB = not switchB;
 }
 
 func Done() { count == 2 * (M + 1) + 1 }

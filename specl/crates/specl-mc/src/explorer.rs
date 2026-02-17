@@ -1634,10 +1634,6 @@ impl Explorer {
                 => {
                     has_asymmetric_literal(e, sym_var_domain, sym_params)
                 }
-                CompiledExpr::Fix { domain, predicate } => {
-                    let d = domain.as_ref().and_then(|d| has_asymmetric_literal(d, sym_var_domain, sym_params));
-                    d.or_else(|| has_asymmetric_literal(predicate, sym_var_domain, sym_params))
-                }
                 CompiledExpr::Field { base, .. } => {
                     has_asymmetric_literal(base, sym_var_domain, sym_params)
                 }
@@ -1832,12 +1828,6 @@ impl Explorer {
             | CompiledExpr::SeqTail(e)
             => {
                 Self::collect_var_refs(e, vars);
-            }
-            CompiledExpr::Fix { domain, predicate } => {
-                if let Some(domain) = domain {
-                    Self::collect_var_refs(domain, vars);
-                }
-                Self::collect_var_refs(predicate, vars);
             }
             CompiledExpr::Call { func, args } => {
                 Self::collect_var_refs(func, vars);
