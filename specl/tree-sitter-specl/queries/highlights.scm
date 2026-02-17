@@ -33,7 +33,7 @@
   "any"
   "forall"
   "exists"
-  "choose"
+  "fix"
 ] @keyword.control
 
 ; Temporal operators

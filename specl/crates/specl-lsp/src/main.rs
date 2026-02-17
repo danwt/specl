@@ -1285,7 +1285,7 @@ impl SpeclLanguageServer {
                 | TokenKind::Iff
                 | TokenKind::All
                 | TokenKind::Any
-                | TokenKind::Choose
+                | TokenKind::Fix
                 | TokenKind::In
                 | TokenKind::For
                 | TokenKind::If

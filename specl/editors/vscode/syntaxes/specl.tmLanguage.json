@@ -57,7 +57,7 @@
         },
         {
           "name": "keyword.control.quantifier.specl",
-          "match": "\\b(forall|exists|choose|all|any)\\b"
+          "match": "\\b(forall|exists|fix|all|any)\\b"
         },
         {
           "name": "keyword.control.temporal.specl",

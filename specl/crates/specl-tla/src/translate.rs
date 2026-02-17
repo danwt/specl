@@ -2811,21 +2811,11 @@ impl Translator {
                 let wrapped_pred =
                     specl::Expr::new(specl::ExprKind::Paren(Box::new(pred_expr)), span);
 
-                if let Some(dom) = domain {
-                    let domain_expr = self.translate_expr(dom, in_action)?;
-                    specl::ExprKind::Choose {
-                        var: specl::Ident::new(escape_ident(&var.name), translate_span(var.span)),
-                        domain: Box::new(domain_expr),
-                        predicate: Box::new(wrapped_pred),
-                    }
-                } else {
-                    // CHOOSE without domain - try to extract domain from predicate
-                    // Common pattern: CHOOSE x : x \notin S means any value not in S
-                    // For now, emit as a "fix" (unique value satisfying predicate)
-                    specl::ExprKind::Fix {
-                        var: specl::Ident::new(escape_ident(&var.name), translate_span(var.span)),
-                        predicate: Box::new(wrapped_pred),
-                    }
+                let domain_expr = domain.as_ref().map(|dom| self.translate_expr(dom, in_action)).transpose()?;
+                specl::ExprKind::Fix {
+                    var: specl::Ident::new(escape_ident(&var.name), translate_span(var.span)),
+                    domain: domain_expr.map(Box::new),
+                    predicate: Box::new(wrapped_pred),
                 }
             }
 

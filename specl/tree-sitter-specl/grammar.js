@@ -217,7 +217,7 @@ module.exports = grammar({
         $.fn_lit,
         $.set_comprehension,
         $.quantifier_expr,
-        $.choose_expr,
+        $.fix_expr,
         $.let_expr,
         $.if_expr,
         $.changes_expr,
@@ -293,9 +293,9 @@ module.exports = grammar({
         field("body", $.expression)
       ),
 
-    choose_expr: ($) =>
+    fix_expr: ($) =>
       seq(
-        "choose",
+        "fix",
         field("var", $.identifier),
         "in",
         field("domain", $.expression),
