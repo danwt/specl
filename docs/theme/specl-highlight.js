@@ -3,13 +3,13 @@ hljs.registerLanguage("specl", function(hljs) {
     var KEYWORDS = {
         keyword:
             "module const var type action init invariant property fairness use require " +
-            "if then else let in for fn func " +
+            "if then else let in for func with view auxiliary " +
             "all any forall exists fix " +
-            "always eventually leads_to " +
-            "weak strong Some None",
+            "always eventually leads_to enabled changes " +
+            "weak_fair strong_fair Some None",
         built_in:
-            "changes enabled head tail len keys values powerset union_all",
-        type: "Bool Nat Int String Set Seq Dict Fn Option",
+            "head tail len keys values powerset union_all",
+        type: "Bool Nat Int String Set Seq Dict Option",
         literal: "true false",
         operator:
             "and or not implies iff union intersect diff subset_of in"
@@ -39,7 +39,7 @@ hljs.registerLanguage("specl", function(hljs) {
             },
             {
                 className: "operator",
-                begin: /=>|<=>|==|!=|<=|>=|\.\.|[+\-*/%<>|]/
+                begin: /=>|<=>|==|!=|<=|>=|\+\+|\.\.|[+\-*/%<>|]/
             }
         ]
     };
