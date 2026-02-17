@@ -274,6 +274,8 @@ All notable changes to this project will be documented in this file.
 - Simplify value checks and fix borrow errors by @danwt ([11bd940](https://github.com/danwt/specl/commit/11bd940c961f1884cd39c25cbc7942b1a8b4b9a6))
 - Rename showcase_path to example_path by @danwt ([d84cc3f](https://github.com/danwt/specl/commit/d84cc3f7c73f8712d1ffc13d24fef2e5083cbbcf))
 - Relocate showcase specs to other by @danwt ([6a32877](https://github.com/danwt/specl/commit/6a3287728f064935b98828f6dbaf74635f234967))
+- Rename template fields to remote by @danwt ([ce887cb](https://github.com/danwt/specl/commit/ce887cb00daf7a12a337cf0908a2e247095dde5d))
+- Replace Choose with Fix token and AST node by @danwt ([d033d83](https://github.com/danwt/specl/commit/d033d83232f34b52a28196a902cec9cbc0db01c8))
 
 ### Documentation
 
@@ -288,6 +290,7 @@ All notable changes to this project will be documented in this file.
 - Add performance benchmarks to Paxos and Raft specs by @danwt ([64b14ab](https://github.com/danwt/specl/commit/64b14ab3fec38e057fed15d61f69a1f3c083a260))
 - Enhance help messages for model checking by @danwt ([9e3d7a7](https://github.com/danwt/specl/commit/9e3d7a7bdc7af898fc06a8709a6fb5e972c1243e))
 - Revamp examples README with detailed showcase and verification tables by @danwt ([aa534b7](https://github.com/danwt/specl/commit/aa534b732adfcdcc08c705a1589cf8cace4be215))
+- Add project changelog file by @danwt ([18940d7](https://github.com/danwt/specl/commit/18940d73cddeb6c151fd180392586302f2da5bff))
 
 ### Testing
 
@@ -316,6 +319,7 @@ All notable changes to this project will be documented in this file.
 - Enable debug info in release profile by @danwt ([5540879](https://github.com/danwt/specl/commit/55408794e504b56fb2efcd4bb128c49ae25987c6))
 - Remove tracked wasm artifact from vscode extension by @danwt ([366c54f](https://github.com/danwt/specl/commit/366c54fe224d869072ab5efdea32cfa37204f9f9))
 - Add GitHub release workflow by @danwt ([45525c8](https://github.com/danwt/specl/commit/45525c828e3e6ad49e671b223b60b83093c16f82))
+- Add release automation script by @danwt ([a4fcdb4](https://github.com/danwt/specl/commit/a4fcdb48aa70895d40f3e7466e9e8ceb8062921d))
 
 ### Style
 
