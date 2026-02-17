@@ -12,7 +12,7 @@
 
 A specification language and model checker for concurrent and distributed systems. Modern alternative to TLA+/TLC: clean syntax, implicit frame semantics, fast Rust engine.
 
-**[Full manual](https://danieltisdall.com/specl)** | **[Announcement](https://danieltisdall.com/blog/2026-02-11-0028)** | **[VSCode Extension](https://marketplace.visualstudio.com/items?itemName=specl.specl)**
+**[Full manual](https://specl.danieltisdall.com)** | **[Announcement](https://danieltisdall.com/blog/2026-02-11-0028)** | **[VSCode Extension](https://marketplace.visualstudio.com/items?itemName=specl.specl)**
 
 ## Quick start
 

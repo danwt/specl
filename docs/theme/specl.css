@@ -183,6 +183,132 @@ code, pre, .hljs {
     font-size: 0.88em;
 }
 
+/* Light theme — warm parchment */
+.light {
+    --bg: #faf6f0;
+    --fg: #2c2433;
+
+    --sidebar-bg: #f0ebe3;
+    --sidebar-fg: #4a3d5c;
+    --sidebar-non-existant: #9a8aaa;
+    --sidebar-active: #b87d14;
+    --sidebar-spacer: #ddd6cc;
+
+    --scrollbar: #ccc5b8;
+
+    --icons: #7a6d90;
+    --icons-hover: #b87d14;
+
+    --links: #b87d14;
+
+    --inline-code-color: #5a3d1a;
+
+    --theme-popup-bg: #f0ebe3;
+    --theme-popup-border: #ddd6cc;
+    --theme-hover: #e8e0d5;
+
+    --quote-bg: #f0ebe3;
+    --quote-border: #ddd6cc;
+
+    --table-border-color: #ddd6cc;
+    --table-header-bg: #ede7dd;
+    --table-alternate-bg: #f5f0e8;
+
+    --searchbar-border-color: #ddd6cc;
+    --searchbar-bg: #fff;
+    --searchbar-fg: #2c2433;
+    --searchbar-shadow-color: #d0c8ba;
+    --searchresults-header-fg: #5a3d1a;
+    --searchresults-border-color: #ddd6cc;
+    --searchresults-li-bg: #f0ebe3;
+    --search-mark-bg: #e8a31740;
+}
+
+.light h1, .light h2, .light h3, .light h4, .light h5, .light h6 {
+    color: #2c2433;
+}
+
+.light pre {
+    background-color: #ede7dd;
+    border: 1px solid #ddd6cc;
+    border-radius: 4px;
+}
+
+.light code {
+    background-color: #ede7dd;
+    border-radius: 3px;
+    padding: 1px 4px;
+}
+
+.light pre > code {
+    background-color: transparent;
+    padding: 0;
+}
+
+.light .hljs-keyword {
+    color: #a06b0a;
+    font-weight: 600;
+}
+
+.light .hljs-built_in {
+    color: #7b4db8;
+}
+
+.light .hljs-type {
+    color: #2a7d9e;
+}
+
+.light .hljs-literal {
+    color: #c45a2c;
+}
+
+.light .hljs-string {
+    color: #4a8c50;
+}
+
+.light .hljs-number {
+    color: #c45a2c;
+}
+
+.light .hljs-comment {
+    color: #9a8aaa;
+    font-style: italic;
+}
+
+.light .hljs-title {
+    color: #2c2433;
+}
+
+.light .hljs-operator {
+    color: #a06b0a;
+}
+
+.light table th {
+    background-color: #ede7dd;
+    color: #2c2433;
+    font-weight: 600;
+}
+
+.light table td, .light table th {
+    border: 1px solid #ddd6cc;
+    padding: 8px 12px;
+}
+
+.light table tr:nth-child(even) {
+    background-color: #f5f0e8;
+}
+
+.light .nav-chapters:hover {
+    color: #b87d14;
+}
+
+.light mark {
+    background-color: #e8a31740;
+    color: #2c2433;
+    border-radius: 2px;
+    padding: 1px 3px;
+}
+
 /* Smooth link hover transitions */
 a {
     transition: color 0.15s ease;

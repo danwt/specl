@@ -11,6 +11,7 @@ build-dir = "book"
 [output.html]
 default-theme = "coal"
 preferred-dark-theme = "coal"
+curly-quotes = true
 git-repository-url = "https://github.com/danwt/specl"
 additional-css = ["theme/specl.css"]
 additional-js = ["theme/specl-highlight.js"]
