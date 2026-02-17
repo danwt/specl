@@ -116,8 +116,8 @@ pub enum TokenKind {
     All,
     /// `any` (existential quantifier, Python-like)
     Any,
-    /// `choose` (deterministic selection)
-    Choose,
+    /// `fix` (deterministic selection)
+    Fix,
 
     // === Control flow ===
     /// `in`
@@ -325,7 +325,7 @@ impl TokenKind {
                 | TokenKind::Iff
                 | TokenKind::All
                 | TokenKind::Any
-                | TokenKind::Choose
+                | TokenKind::Fix
                 | TokenKind::In
                 | TokenKind::For
                 | TokenKind::If
@@ -390,7 +390,7 @@ impl TokenKind {
             "iff" => TokenKind::Iff,
             "all" => TokenKind::All,
             "any" => TokenKind::Any,
-            "fix" => TokenKind::Choose,
+            "fix" => TokenKind::Fix,
             "in" => TokenKind::In,
             "for" => TokenKind::For,
             "if" => TokenKind::If,
@@ -462,7 +462,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Iff => write!(f, "iff"),
             TokenKind::All => write!(f, "all"),
             TokenKind::Any => write!(f, "any"),
-            TokenKind::Choose => write!(f, "choose"),
+            TokenKind::Fix => write!(f, "fix"),
             TokenKind::In => write!(f, "in"),
             TokenKind::For => write!(f, "for"),
             TokenKind::If => write!(f, "if"),

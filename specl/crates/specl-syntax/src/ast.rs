@@ -334,14 +334,12 @@ pub enum ExprKind {
         bindings: Vec<Binding>,
         body: Box<Expr>,
     },
-    /// Choose `choose x in S: P`.
-    Choose {
+    /// Fix `fix x in S: P` (with domain) or `fix x: P` (without domain).
+    Fix {
         var: Ident,
-        domain: Box<Expr>,
+        domain: Option<Box<Expr>>,
         predicate: Box<Expr>,
     },
-    /// Fix `fix x: P` - picks an arbitrary value satisfying P (used for CHOOSE without domain).
-    Fix { var: Ident, predicate: Box<Expr> },
 
     /// Let binding `let x = e1 in e2`.
     Let {
