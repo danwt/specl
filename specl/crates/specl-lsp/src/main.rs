@@ -956,10 +956,12 @@ impl SpeclLanguageServer {
                 }
                 Self::walk_expr(body, visitor);
             }
-            ExprKind::Choose {
+            ExprKind::Fix {
                 domain, predicate, ..
             } => {
-                Self::walk_expr(domain, visitor);
+                if let Some(domain) = domain {
+                    Self::walk_expr(domain, visitor);
+                }
                 Self::walk_expr(predicate, visitor);
             }
             ExprKind::SetComprehension {
@@ -1023,9 +1025,6 @@ impl SpeclLanguageServer {
             ExprKind::FnLit { domain, body, .. } => {
                 Self::walk_expr(domain, visitor);
                 Self::walk_expr(body, visitor);
-            }
-            ExprKind::Fix { predicate, .. } => {
-                Self::walk_expr(predicate, visitor);
             }
             _ => {}
         }

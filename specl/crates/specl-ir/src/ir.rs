@@ -238,13 +238,11 @@ pub enum CompiledExpr {
         domain: Box<CompiledExpr>,
         body: Box<CompiledExpr>,
     },
-    /// Choose (deterministic selection).
-    Choose {
-        domain: Box<CompiledExpr>,
+    /// Fix (deterministic selection): `fix x in S: P` or `fix x: P`.
+    Fix {
+        domain: Option<Box<CompiledExpr>>,
         predicate: Box<CompiledExpr>,
     },
-    /// Fix (deterministic selection without domain).
-    Fix { predicate: Box<CompiledExpr> },
 
     // === Control ===
     /// Let binding.
@@ -353,8 +351,10 @@ impl CompiledExpr {
                     .as_ref()
                     .map(|f| Box::new(f.shift_locals_inner(amount, depth + 1))),
             },
-            CompiledExpr::Choose { domain, predicate } => CompiledExpr::Choose {
-                domain: Box::new(domain.shift_locals_inner(amount, depth)),
+            CompiledExpr::Fix { domain, predicate } => CompiledExpr::Fix {
+                domain: domain
+                    .as_ref()
+                    .map(|d| Box::new(d.shift_locals_inner(amount, depth))),
                 predicate: Box::new(predicate.shift_locals_inner(amount, depth + 1)),
             },
             CompiledExpr::Call { func, args } => CompiledExpr::Call {
@@ -430,9 +430,6 @@ impl CompiledExpr {
             CompiledExpr::Field { base, field } => CompiledExpr::Field {
                 base: Box::new(base.shift_locals_inner(amount, depth)),
                 field: field.clone(),
-            },
-            CompiledExpr::Fix { predicate } => CompiledExpr::Fix {
-                predicate: Box::new(predicate.shift_locals_inner(amount, depth + 1)),
             },
             // Leaves: no locals to shift
             CompiledExpr::Bool(_)

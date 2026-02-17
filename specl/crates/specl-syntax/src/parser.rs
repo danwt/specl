@@ -921,7 +921,7 @@ impl Parser {
             TokenKind::LBracket => self.parse_seq_lit(),
             TokenKind::All => self.parse_quantifier(QuantifierKind::Forall),
             TokenKind::Any => self.parse_quantifier(QuantifierKind::Exists),
-            TokenKind::Choose => self.parse_choose(),
+            TokenKind::Fix => self.parse_fix(),
             TokenKind::Let => self.parse_let(),
             TokenKind::If => self.parse_if(),
             TokenKind::Require => {
@@ -1237,9 +1237,9 @@ impl Parser {
         ))
     }
 
-    fn parse_choose(&mut self) -> ParseResult<Expr> {
+    fn parse_fix(&mut self) -> ParseResult<Expr> {
         let start = self.current_span();
-        self.expect(TokenKind::Choose)?;
+        self.expect(TokenKind::Fix)?;
         let var = self.parse_ident()?;
         self.expect(TokenKind::In)?;
         // Don't allow `in` as binary op in domain to avoid ambiguity with outer `let...in`
@@ -1249,9 +1249,9 @@ impl Parser {
         let predicate = self.parse_expr_no_in()?;
         let span = start.merge(predicate.span);
         Ok(Expr::new(
-            ExprKind::Choose {
+            ExprKind::Fix {
                 var,
-                domain: Box::new(domain),
+                domain: Some(Box::new(domain)),
                 predicate: Box::new(predicate),
             },
             span,

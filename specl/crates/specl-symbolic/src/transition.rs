@@ -1389,24 +1389,35 @@ fn encode_compound_update_for_slot(
                     right: concat_right,
                 } => {
                     if let CompiledExpr::SeqLit(elems) = concat_right.as_ref() {
-                        if elems.len() == 1 {
-                            let new_len =
-                                Dynamic::from_ast(&Int::add(&[&curr_len, &Int::from_i64(1)]));
-                            let appended = enc.encode(&elems[0])?;
-                            let mut result = vec![new_len];
-                            for j in 0..max_len {
-                                let j_z3 = Int::from_i64(j as i64);
-                                let is_append = curr_len.eq(&j_z3);
-                                let updated =
-                                    ite_dynamic(&is_append, &appended, &slot_curr[1 + j])?;
-                                result.push(updated);
+                        let n = elems.len();
+                        let new_len = Dynamic::from_ast(&Int::add(&[
+                            &curr_len,
+                            &Int::from_i64(n as i64),
+                        ]));
+                        let encoded_elems: Vec<Dynamic> = elems
+                            .iter()
+                            .map(|e| enc.encode(e))
+                            .collect::<SymbolicResult<_>>()?;
+                        let mut result = vec![new_len];
+                        for j in 0..max_len {
+                            let j_z3 = Int::from_i64(j as i64);
+                            let mut elem = slot_curr[1 + j].clone();
+                            for (offset, enc_elem) in encoded_elems.iter().enumerate().rev() {
+                                let append_pos = Int::add(&[
+                                    &curr_len,
+                                    &Int::from_i64(offset as i64),
+                                ]);
+                                let is_this = append_pos.eq(&j_z3);
+                                elem = ite_dynamic(&is_this, enc_elem, &elem)?;
                             }
-                            return Ok(result);
+                            result.push(elem);
                         }
+                        Ok(result)
+                    } else {
+                        Err(SymbolicError::Encoding(
+                            "dict-of-seq merge: concat right side must be a seq literal".into(),
+                        ))
                     }
-                    Err(SymbolicError::Encoding(
-                        "dict-of-seq merge: only single-element append supported".into(),
-                    ))
                 }
                 CompiledExpr::SeqTail(_) => {
                     let new_len = Dynamic::from_ast(&Int::sub(&[&curr_len, &Int::from_i64(1)]));
@@ -1429,6 +1440,25 @@ fn encode_compound_update_for_slot(
                     }
                     while result.len() < stride {
                         result.push(slot_curr[result.len()].clone());
+                    }
+                    Ok(result)
+                }
+                CompiledExpr::Slice { base: _, lo, hi } => {
+                    let lo_z3 = enc.encode_int(lo)?;
+                    let hi_z3 = enc.encode_int(hi)?;
+                    let new_len = Dynamic::from_ast(&Int::sub(&[&hi_z3, &lo_z3]));
+                    let mut result = vec![new_len];
+                    for j in 0..max_len {
+                        let j_z3 = Int::from_i64(j as i64);
+                        let src_idx = Int::add(&[&lo_z3, &j_z3]);
+                        // ITE chain: select source element at position (lo + j)
+                        let mut elem = slot_curr[1 + j].clone();
+                        for i in (0..max_len).rev() {
+                            let i_z3 = Int::from_i64(i as i64);
+                            let cond = src_idx.eq(&i_z3);
+                            elem = ite_dynamic(&cond, &slot_curr[1 + i], &elem)?;
+                        }
+                        result.push(elem);
                     }
                     Ok(result)
                 }

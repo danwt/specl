@@ -498,21 +498,17 @@ impl PrettyPrinter {
                 self.write(": ");
                 self.print_expr(body);
             }
-            ExprKind::Choose {
+            ExprKind::Fix {
                 var,
                 domain,
                 predicate,
             } => {
                 self.write("fix ");
                 self.write(&var.name);
-                self.write(" in ");
-                self.print_expr(domain);
-                self.write(": ");
-                self.print_expr(predicate);
-            }
-            ExprKind::Fix { var, predicate } => {
-                self.write("fix ");
-                self.write(&var.name);
+                if let Some(domain) = domain {
+                    self.write(" in ");
+                    self.print_expr(domain);
+                }
                 self.write(": ");
                 self.print_expr(predicate);
             }

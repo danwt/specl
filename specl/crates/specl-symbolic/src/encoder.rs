@@ -215,8 +215,11 @@ impl<'a> EncoderCtx<'a> {
                 "Slice should be handled at the effect level".into(),
             )),
 
-            // === Choose ===
-            CompiledExpr::Choose { domain, predicate } => self.encode_choose(domain, predicate),
+            // === Fix ===
+            CompiledExpr::Fix { domain: Some(domain), predicate } => self.encode_choose(domain, predicate),
+            CompiledExpr::Fix { domain: None, .. } => Err(SymbolicError::Encoding(
+                "fix without domain not supported in symbolic mode".into(),
+            )),
 
             // === Keys/Values (set-returning — error in scalar context) ===
             CompiledExpr::Keys(_) => Err(SymbolicError::Encoding(

@@ -672,12 +672,13 @@ fn collect_param_refs_recursive(
         | CompiledExpr::Powerset(e)
         | CompiledExpr::BigUnion(e)
         | CompiledExpr::SeqHead(e)
-        | CompiledExpr::SeqTail(e)
-        | CompiledExpr::Fix { predicate: e } => {
+        | CompiledExpr::SeqTail(e) => {
             collect_param_refs_recursive(e, params);
         }
-        CompiledExpr::Choose { domain, predicate } => {
-            collect_param_refs_recursive(domain, params);
+        CompiledExpr::Fix { domain, predicate } => {
+            if let Some(domain) = domain {
+                collect_param_refs_recursive(domain, params);
+            }
             collect_param_refs_recursive(predicate, params);
         }
         CompiledExpr::Range { lo, hi } => {
@@ -1589,8 +1590,11 @@ impl Explorer {
                     has_asymmetric_literal(k, sym_var_domain, sym_params)
                         .or_else(|| has_asymmetric_literal(v, sym_var_domain, sym_params))
                 }),
-                CompiledExpr::Choose { domain, predicate }
-                | CompiledExpr::Let {
+                CompiledExpr::Fix { domain, predicate } => {
+                    let d = domain.as_ref().and_then(|d| has_asymmetric_literal(d, sym_var_domain, sym_params));
+                    d.or_else(|| has_asymmetric_literal(predicate, sym_var_domain, sym_params))
+                }
+                CompiledExpr::Let {
                     value: domain,
                     body: predicate,
                 } => has_asymmetric_literal(domain, sym_var_domain, sym_params)
@@ -1765,8 +1769,10 @@ impl Explorer {
                 Self::collect_var_refs(domain, vars);
                 Self::collect_var_refs(body, vars);
             }
-            CompiledExpr::Choose { domain, predicate } => {
-                Self::collect_var_refs(domain, vars);
+            CompiledExpr::Fix { domain, predicate } => {
+                if let Some(domain) = domain {
+                    Self::collect_var_refs(domain, vars);
+                }
                 Self::collect_var_refs(predicate, vars);
             }
             CompiledExpr::If {

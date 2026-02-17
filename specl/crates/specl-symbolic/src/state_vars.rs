@@ -666,10 +666,12 @@ fn collect_strings_from_expr(expr: &CompiledExpr, out: &mut Vec<String>) {
                 collect_strings_from_expr(v, out);
             }
         }
-        CompiledExpr::Choose {
+        CompiledExpr::Fix {
             domain, predicate, ..
         } => {
-            collect_strings_from_expr(domain, out);
+            if let Some(domain) = domain {
+                collect_strings_from_expr(domain, out);
+            }
             collect_strings_from_expr(predicate, out);
         }
         _ => {}

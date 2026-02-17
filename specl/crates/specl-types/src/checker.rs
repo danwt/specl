@@ -664,13 +664,17 @@ impl TypeChecker {
                 Type::Bool
             }
 
-            ExprKind::Choose {
+            ExprKind::Fix {
                 var,
                 domain,
                 predicate,
             } => {
-                let domain_ty = self.infer_expr(domain)?;
-                let elem_ty = self.element_type(&domain_ty, domain.span)?;
+                let elem_ty = if let Some(domain) = domain {
+                    let domain_ty = self.infer_expr(domain)?;
+                    self.element_type(&domain_ty, domain.span)?
+                } else {
+                    Type::Int
+                };
 
                 self.env.push_scope();
                 self.env.bind_local(var.name.clone(), elem_ty.clone());
@@ -680,20 +684,6 @@ impl TypeChecker {
 
                 self.env.pop_scope();
                 elem_ty
-            }
-
-            ExprKind::Fix { var, predicate } => {
-                // Fix expression: fix x: P - returns any value x satisfying P
-                // We can't determine the type statically without more context
-                // For now, return Int as a default
-                self.env.push_scope();
-                self.env.bind_local(var.name.clone(), Type::Int);
-
-                let pred_ty = self.infer_expr(predicate)?;
-                self.expect_bool(&pred_ty, predicate.span)?;
-
-                self.env.pop_scope();
-                Type::Int
             }
 
             ExprKind::Let { var, value, body } => {

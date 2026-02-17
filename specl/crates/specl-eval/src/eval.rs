@@ -21,8 +21,8 @@ pub enum EvalError {
     #[error("division by zero")]
     DivisionByZero,
 
-    #[error("no satisfying value for choose")]
-    ChooseFailed,
+    #[error("no satisfying value for fix")]
+    FixFailed,
 
     #[error("undefined variable at index {0}")]
     UndefinedVariable(usize),
@@ -483,27 +483,22 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             Ok(Value::bool(false))
         }
 
-        CompiledExpr::Choose { domain, predicate } => {
-            let domain_val = eval(domain, ctx)?;
-            let domain_elems = extract_domain_elements(&domain_val)?;
+        CompiledExpr::Fix { domain, predicate } => {
+            if let Some(domain) = domain {
+                let domain_val = eval(domain, ctx)?;
+                let domain_elems = extract_domain_elements(&domain_val)?;
 
-            // Find the first satisfying element (deterministic due to sorted ordering)
-            for item in &domain_elems {
-                ctx.push_local(item.clone());
-                let result = expect_bool(&eval(predicate, ctx)?)?;
-                ctx.pop_local();
-                if result {
-                    return Ok(item.clone());
+                for item in &domain_elems {
+                    ctx.push_local(item.clone());
+                    let result = expect_bool(&eval(predicate, ctx)?)?;
+                    ctx.pop_local();
+                    if result {
+                        return Ok(item.clone());
+                    }
                 }
             }
 
-            Err(EvalError::ChooseFailed)
-        }
-
-        CompiledExpr::Fix { predicate: _ } => {
-            // Fix without domain cannot be evaluated directly -
-            // the spec needs to be rewritten with an explicit domain
-            Err(EvalError::ChooseFailed)
+            Err(EvalError::FixFailed)
         }
 
         CompiledExpr::Let { value, body } => {

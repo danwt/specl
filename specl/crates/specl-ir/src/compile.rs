@@ -616,26 +616,17 @@ impl Compiler {
                 result
             }
 
-            ExprKind::Choose {
+            ExprKind::Fix {
                 var,
                 domain,
                 predicate,
             } => {
-                let compiled_domain = self.compile_expr(domain)?;
-                self.locals.push(var.name.clone());
-                let compiled_pred = self.compile_expr(predicate)?;
-                self.locals.pop();
-                CompiledExpr::Choose {
-                    domain: Box::new(compiled_domain),
-                    predicate: Box::new(compiled_pred),
-                }
-            }
-
-            ExprKind::Fix { var, predicate } => {
+                let compiled_domain = domain.as_ref().map(|d| self.compile_expr(d)).transpose()?;
                 self.locals.push(var.name.clone());
                 let compiled_pred = self.compile_expr(predicate)?;
                 self.locals.pop();
                 CompiledExpr::Fix {
+                    domain: compiled_domain.map(Box::new),
                     predicate: Box::new(compiled_pred),
                 }
             }
@@ -813,13 +804,15 @@ impl Compiler {
             }
             CompiledExpr::FnLit { domain, body }
             | CompiledExpr::Forall { domain, body }
-            | CompiledExpr::Exists { domain, body }
-            | CompiledExpr::Choose {
-                domain,
-                predicate: body,
-            } => {
+            | CompiledExpr::Exists { domain, body } => {
                 self.collect_changes_impl(domain, changes);
                 self.collect_changes_impl(body, changes);
+            }
+            CompiledExpr::Fix { domain, predicate } => {
+                if let Some(domain) = domain {
+                    self.collect_changes_impl(domain, changes);
+                }
+                self.collect_changes_impl(predicate, changes);
             }
             CompiledExpr::SetComprehension {
                 element,
@@ -932,8 +925,10 @@ impl Compiler {
                 self.collect_reads_impl(domain, reads);
                 self.collect_reads_impl(body, reads);
             }
-            CompiledExpr::Choose { domain, predicate } => {
-                self.collect_reads_impl(domain, reads);
+            CompiledExpr::Fix { domain, predicate } => {
+                if let Some(domain) = domain {
+                    self.collect_reads_impl(domain, reads);
+                }
                 self.collect_reads_impl(predicate, reads);
             }
             CompiledExpr::SetComprehension {
@@ -1227,8 +1222,10 @@ impl Compiler {
                 Self::collect_read_keys_impl(domain, info);
                 Self::collect_read_keys_impl(body, info);
             }
-            CompiledExpr::Choose { domain, predicate } => {
-                Self::collect_read_keys_impl(domain, info);
+            CompiledExpr::Fix { domain, predicate } => {
+                if let Some(domain) = domain {
+                    Self::collect_read_keys_impl(domain, info);
+                }
                 Self::collect_read_keys_impl(predicate, info);
             }
             CompiledExpr::SetComprehension {
@@ -1444,8 +1441,11 @@ fn expr_cost(expr: &CompiledExpr) -> u32 {
         CompiledExpr::Forall { domain, body }
         | CompiledExpr::Exists { domain, body }
         | CompiledExpr::FnLit { domain, body } => 10 + expr_cost(domain) * expr_cost(body),
-        CompiledExpr::Choose { domain, predicate }
-        | CompiledExpr::SetComprehension {
+        CompiledExpr::Fix { domain, predicate } => {
+            let domain_cost = domain.as_ref().map_or(1, |d| expr_cost(d));
+            10 + domain_cost * expr_cost(predicate)
+        }
+        CompiledExpr::SetComprehension {
             domain,
             filter: Some(predicate),
             ..
@@ -1455,7 +1455,6 @@ fn expr_cost(expr: &CompiledExpr) -> u32 {
             element,
             filter: None,
         } => 10 + expr_cost(domain) * expr_cost(element),
-        CompiledExpr::Fix { predicate } => 10 + expr_cost(predicate),
 
         // Access operations
         CompiledExpr::Slice { base, lo, hi } => 3 + expr_cost(base) + expr_cost(lo) + expr_cost(hi),
