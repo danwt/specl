@@ -237,9 +237,6 @@ impl<'a> EncoderCtx<'a> {
             CompiledExpr::BigUnion(_) => Err(SymbolicError::Unsupported(
                 "union_all requires set-of-sets encoding".into(),
             )),
-            CompiledExpr::Fix { .. } => Err(SymbolicError::Unsupported(
-                "fix expression requires unbounded domain".into(),
-            )),
             CompiledExpr::Changes(_) => Err(SymbolicError::Unsupported(
                 "changes() is a temporal operator".into(),
             )),
