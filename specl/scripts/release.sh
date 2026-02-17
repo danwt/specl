@@ -58,7 +58,7 @@ cargo check --workspace
 
 echo "Committing..."
 cd "$REPO_ROOT"
-git add specl/Cargo.toml
+git add specl/Cargo.toml specl/Cargo.lock
 git commit -m "chore(release): v$VERSION"
 git tag -a "v$VERSION" -m "v$VERSION"
 
