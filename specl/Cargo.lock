@@ -2268,7 +2268,7 @@ dependencies = [
 
 [[package]]
 name = "specl-cli"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "clap",
  "indicatif",
@@ -2291,7 +2291,7 @@ dependencies = [
 
 [[package]]
 name = "specl-eval"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "num-bigint",
  "proptest",
@@ -2301,7 +2301,7 @@ dependencies = [
 
 [[package]]
 name = "specl-ir"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "proptest",
  "specl-syntax",
@@ -2311,7 +2311,7 @@ dependencies = [
 
 [[package]]
 name = "specl-lsp"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "dashmap 6.1.0",
  "ropey",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "specl-mc"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "ahash",
  "criterion",
@@ -2350,7 +2350,7 @@ dependencies = [
 
 [[package]]
 name = "specl-symbolic"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "specl-eval",
  "specl-ir",
@@ -2365,7 +2365,7 @@ dependencies = [
 
 [[package]]
 name = "specl-syntax"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "proptest",
  "thiserror 1.0.69",
@@ -2373,7 +2373,7 @@ dependencies = [
 
 [[package]]
 name = "specl-tla"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "proptest",
  "specl-syntax",
@@ -2382,7 +2382,7 @@ dependencies = [
 
 [[package]]
 name = "specl-types"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "proptest",
  "specl-syntax",
