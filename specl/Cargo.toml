@@ -16,7 +16,7 @@ exclude = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "2.0.0"
 edition = "2021"
 license-file = "../LICENSE"
 authors = ["Daniel"]
@@ -24,13 +24,13 @@ repository = "https://github.com/danwt/specl"
 
 [workspace.dependencies]
 # Internal crates
-specl-syntax = { path = "crates/specl-syntax", version = "0.1.0" }
-specl-types = { path = "crates/specl-types", version = "0.1.0" }
-specl-ir = { path = "crates/specl-ir", version = "0.1.0" }
-specl-eval = { path = "crates/specl-eval", version = "0.1.0" }
-specl-mc = { path = "crates/specl-mc", version = "0.1.0" }
-specl-tla = { path = "crates/specl-tla", version = "0.1.0" }
-specl-symbolic = { path = "crates/specl-symbolic", version = "0.1.0" }
+specl-syntax = { path = "crates/specl-syntax", version = "2.0.0" }
+specl-types = { path = "crates/specl-types", version = "2.0.0" }
+specl-ir = { path = "crates/specl-ir", version = "2.0.0" }
+specl-eval = { path = "crates/specl-eval", version = "2.0.0" }
+specl-mc = { path = "crates/specl-mc", version = "2.0.0" }
+specl-tla = { path = "crates/specl-tla", version = "2.0.0" }
+specl-symbolic = { path = "crates/specl-symbolic", version = "2.0.0" }
 
 # Core
 thiserror = "1"
