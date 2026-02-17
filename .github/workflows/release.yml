@@ -1,0 +1,120 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: specl
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: specl
+      - run: cargo test --workspace --exclude specl-tla
+      - run: cargo test -p specl-tla --test translate_corpus -- --skip benchmark_tla_files_translate
+
+  build-linux:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install cross
+        run: cargo install cross --locked
+      - name: Build
+        run: cross build --release --target ${{ matrix.target }} -p specl-cli
+        working-directory: specl
+      - name: Package
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          ARCHIVE="specl-${TAG}-${{ matrix.target }}.tar.gz"
+          mkdir staging
+          cp specl/target/${{ matrix.target }}/release/specl staging/
+          cp LICENSE staging/
+          tar -czf "$ARCHIVE" -C staging .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  build-macos:
+    needs: test
+    runs-on: macos-latest
+    strategy:
+      matrix:
+        target:
+          - x86_64-apple-darwin
+          - aarch64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: specl
+      - name: Build
+        run: cargo build --release --target ${{ matrix.target }} -p specl-cli
+        working-directory: specl
+      - name: Package
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          ARCHIVE="specl-${TAG}-${{ matrix.target }}.tar.gz"
+          mkdir staging
+          cp specl/target/${{ matrix.target }}/release/specl staging/
+          cp LICENSE staging/
+          tar -czf "$ARCHIVE" -C staging .
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binary-${{ matrix.target }}
+          path: ${{ env.ARCHIVE }}
+
+  release:
+    needs: [build-linux, build-macos]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install git-cliff
+        run: cargo install git-cliff --locked
+      - name: Generate changelog
+        run: |
+          git cliff --latest --strip header > RELEASE_NOTES.md
+        working-directory: specl
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          body_path: specl/RELEASE_NOTES.md
+          files: artifacts/*.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

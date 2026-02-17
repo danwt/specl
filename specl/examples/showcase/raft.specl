@@ -382,6 +382,6 @@ invariant LeaderHasAllAckedValues {
         implies not (any i in 0..N:
             state[i] == 2
             and not (any l in 0..N: l != i and currentTerm[l] > currentTerm[i])
-            and not (any idx in 0..N:
+            and not (any idx in 0..MaxLogLen:
                 idx < len(logValue[i]) and logValue[i][idx] == v))
 }
