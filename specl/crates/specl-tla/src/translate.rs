@@ -2811,7 +2811,10 @@ impl Translator {
                 let wrapped_pred =
                     specl::Expr::new(specl::ExprKind::Paren(Box::new(pred_expr)), span);
 
-                let domain_expr = domain.as_ref().map(|dom| self.translate_expr(dom, in_action)).transpose()?;
+                let domain_expr = domain
+                    .as_ref()
+                    .map(|dom| self.translate_expr(dom, in_action))
+                    .transpose()?;
                 specl::ExprKind::Fix {
                     var: specl::Ident::new(escape_ident(&var.name), translate_span(var.span)),
                     domain: domain_expr.map(Box::new),

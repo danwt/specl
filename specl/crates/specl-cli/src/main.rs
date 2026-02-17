@@ -270,19 +270,25 @@ EXAMPLES
         file: Option<PathBuf>,
 
         /// Constant assignments (name=value)
-        #[arg(short, long, value_name = "CONST=VALUE",
+        #[arg(
+            short,
+            long,
+            value_name = "CONST=VALUE",
             long_help = "\
 Set compile-time constants defined in your spec. Repeatable.
 
 Most specs define constants like `const N: Int` for the number of processes.
 You must supply values for all unset constants at check time.
 
-Example: specl check raft.specl -c N=3 -c MAX_TERM=5")]
+Example: specl check raft.specl -c N=3 -c MAX_TERM=5"
+        )]
         constant: Vec<String>,
 
         // -- Mode selection --
         /// Force BFS explicit-state checking
-        #[arg(long, help_heading = "Mode",
+        #[arg(
+            long,
+            help_heading = "Mode",
             long_help = "\
 Force explicit-state checking using breadth-first search (BFS).
 
@@ -292,11 +298,14 @@ counterexample trace if a bug exists.
 
 You normally don't need this flag — Specl auto-selects the best mode. Use it
 to override auto-selection when you want exhaustive exploration even if Specl
-would choose symbolic mode.")]
+would choose symbolic mode."
+        )]
         bfs: bool,
 
         /// Force symbolic checking (auto-cascades: induction → k-induction → IC3 → BMC)
-        #[arg(long, help_heading = "Mode",
+        #[arg(
+            long,
+            help_heading = "Mode",
             long_help = "\
 Force symbolic checking using the Z3 SMT solver.
 
@@ -313,12 +322,16 @@ increasing power:
   3. IC3 — most powerful, can prove almost anything provable
   4. BMC fallback — searches for bugs up to a bounded depth
 
-You can also pick a specific technique with the flags below.")]
+You can also pick a specific technique with the flags below."
+        )]
         symbolic: bool,
 
         // -- Explicit-state options --
         /// Maximum states to explore (0 = unlimited)
-        #[arg(long, default_value = "0", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Explicit-State",
             long_help = "\
 Stop exploration after visiting this many states. 0 means no limit.
 
@@ -327,22 +340,30 @@ states are explored, the result is \"OK (bounded)\" — meaning no bug was
 found within the explored portion, but unexplored states may still contain
 bugs.
 
-Example: specl check spec.specl -c N=3 --max-states 1000000")]
+Example: specl check spec.specl -c N=3 --max-states 1000000"
+        )]
         max_states: usize,
 
         /// Maximum depth to explore (0 = unlimited)
-        #[arg(long, default_value = "0", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Explicit-State",
             long_help = "\
 Stop exploration at this BFS depth. 0 means no limit.
 
 Depth is the number of action steps from the initial state. A depth limit
 of 20 means the checker will explore all states reachable within 20 steps,
 but not beyond. Useful for bounding the search when you only care about
-short-horizon bugs.")]
+short-horizon bugs."
+        )]
         max_depth: usize,
 
         /// Maximum memory in MB (0 = unlimited)
-        #[arg(long, default_value = "0", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Explicit-State",
             long_help = "\
 Stop exploration if memory usage exceeds this limit (in megabytes). 0 means
 no limit.
@@ -352,22 +373,29 @@ For large state spaces this can use many gigabytes. Set a memory limit to
 prevent the checker from consuming all available RAM.
 
 If you're hitting memory limits, consider --fast (10x less memory per state),
---collapse, or --tree for compression.")]
+--collapse, or --tree for compression."
+        )]
         memory_limit: usize,
 
         /// Maximum time in seconds (0 = unlimited)
-        #[arg(long, default_value = "0", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Explicit-State",
             long_help = "\
 Stop exploration after this many seconds. 0 means no limit.
 
 Useful for CI pipelines or quick smoke checks. If the time limit is hit,
 the result is \"OK (bounded)\" — no bug was found within the time budget.
 
-Example: specl check spec.specl -c N=3 --max-time 60")]
+Example: specl check spec.specl -c N=3 --max-time 60"
+        )]
         max_time: u64,
 
         /// Disable deadlock checking
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Don't report states where no action can fire (deadlocks).
 
@@ -379,30 +407,40 @@ However, most protocol specs naturally have \"finished\" states where nothing
 happens (e.g., consensus reached, all messages delivered). These are harmless
 deadlocks. Use --no-deadlock to suppress these false positives.
 
-This is one of the most commonly needed flags for protocol specs.")]
+This is one of the most commonly needed flags for protocol specs."
+        )]
         no_deadlock: bool,
 
         /// Disable parallel exploration
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Run the checker on a single thread instead of using all available cores.
 
 By default the checker parallelizes BFS exploration across all CPU cores for
 speed. Single-threaded mode produces deterministic results and is useful for
-debugging or benchmarking.")]
+debugging or benchmarking."
+        )]
         no_parallel: bool,
 
         /// Number of threads (0 = all available)
-        #[arg(long, default_value = "0", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Explicit-State",
             long_help = "\
 Set the number of threads for parallel exploration. 0 means use all
 available CPU cores (the default).
 
-Use this to limit CPU usage, e.g., --threads 4 to use only 4 cores.")]
+Use this to limit CPU usage, e.g., --threads 4 to use only 4 cores."
+        )]
         threads: usize,
 
         /// Partial order reduction — skip redundant interleavings
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Skip redundant orderings of independent actions.
 
@@ -417,11 +455,14 @@ without missing any bugs.
   Typical reduction: 2-10x fewer states
   Best for: specs where processes mostly update their own state
   Safe to always enable — no overhead when actions are all dependent
-  Auto-enabled when Specl detects >30% of action pairs are independent")]
+  Auto-enabled when Specl detects >30% of action pairs are independent"
+        )]
         por: bool,
 
         /// Symmetry reduction — collapse equivalent process permutations
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Group equivalent states that differ only in process identity.
 
@@ -436,11 +477,14 @@ representative from each group.
 
   Typical reduction: up to N! (factorial). For N=4 that's 24x fewer states
   Best for: specs using Dict[0..N, T] where processes are interchangeable
-  Auto-enabled when Specl detects symmetric Dict patterns")]
+  Auto-enabled when Specl detects symmetric Dict patterns"
+        )]
         symmetry: bool,
 
         /// Fingerprint-only mode — 10x less memory, re-explores for traces on violation
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Store only a compact 8-byte hash (fingerprint) per state instead of the
 full state data.
@@ -455,11 +499,14 @@ full storage to reconstruct the counterexample trace. This re-run happens
 automatically.
 
   Best for: large state spaces where you're running out of memory
-  Example: specl check spec.specl -c N=3 --fast")]
+  Example: specl check spec.specl -c N=3 --fast"
+        )]
         fast: bool,
 
         /// Bloom filter — fixed memory, probabilistic. UNSOUND: may miss bugs
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Use a bloom filter for visited-state tracking instead of a hash table.
 
@@ -474,11 +521,15 @@ on very large state spaces where you can't afford the memory for exact
 tracking. Never rely on a bloom-filter OK result as proof of correctness.
 
   Memory: fixed at 2^bloom-bits bits (default: 128 MiB)
-  Use with: --bloom-bits to control memory/accuracy tradeoff")]
+  Use with: --bloom-bits to control memory/accuracy tradeoff"
+        )]
         bloom: bool,
 
         /// Bloom filter size as log2(bits). Only with --bloom
-        #[arg(long, default_value = "30", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            default_value = "30",
+            help_heading = "Explicit-State",
             long_help = "\
 Set the bloom filter size as log2(number of bits). Only used with --bloom.
 
@@ -491,11 +542,14 @@ Set the bloom filter size as log2(number of bits). Only used with --bloom.
 
 Larger filters have lower false-positive rates (fewer skipped states) but
 use more memory. The default of 128 MiB works well for most exploratory
-checks.")]
+checks."
+        )]
         bloom_bits: u32,
 
         /// Collapse compression — per-variable interning, traces supported
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Compress stored states by interning each variable's value separately.
 
@@ -506,11 +560,14 @@ memory.
 
   Memory savings: typically 2-5x vs full storage
   Traces: fully supported (unlike --fast)
-  Best for: specs with many variables where most don't change each step")]
+  Best for: specs with many variables where most don't change each step"
+        )]
         collapse: bool,
 
         /// Tree compression — hierarchical hash table, best compression, traces supported
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Compress stored states using a hierarchical hash table (LTSmin-style tree
 compression).
@@ -523,11 +580,14 @@ common subtrees across states.
   Traces: fully supported
   Overhead: slightly slower than uncompressed due to tree lookups
   Best for: very large state spaces where you need both memory efficiency
-  and counterexample traces")]
+  and counterexample traces"
+        )]
         tree: bool,
 
         /// Directed checking — prioritize states closest to violation
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Use a priority queue instead of a plain FIFO queue for BFS exploration,
 exploring states that look closest to an invariant violation first.
@@ -539,11 +599,14 @@ require specific combinations of variable values.
 
   Best for: finding bugs quickly in large state spaces
   Tradeoff: if no bug exists, explores the same number of states as BFS
-  Note: counterexample traces may not be the shortest possible")]
+  Note: counterexample traces may not be the shortest possible"
+        )]
         directed: bool,
 
         /// Incremental checking — cache fingerprints to disk across runs
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Save explored state fingerprints to disk so subsequent runs can skip
 previously explored states.
@@ -555,11 +618,15 @@ from the previous run and skips any states that were already explored.
   Best for: iterative development where you check, edit, re-check
   Cache location: .specl-cache/ in the current directory
   Note: only valid if spec semantics haven't changed; Specl invalidates
-  the cache when it detects structural spec changes")]
+  the cache when it detects structural spec changes"
+        )]
         incremental: bool,
 
         /// Swarm verification — N parallel instances with shuffled action orders
-        #[arg(long, value_name = "N", help_heading = "Explicit-State",
+        #[arg(
+            long,
+            value_name = "N",
+            help_heading = "Explicit-State",
             long_help = "\
 Run N independent checker instances in parallel, each exploring actions in
 a different random order.
@@ -571,12 +638,15 @@ the state space in parallel. The first instance to find a bug reports it.
 
   Best for: large state spaces where you suspect a bug exists but standard
   BFS is too slow to reach it
-  Example: specl check spec.specl -c N=3 --swarm 8")]
+  Example: specl check spec.specl -c N=3 --swarm 8"
+        )]
         swarm: Option<usize>,
 
         // -- Symbolic (Z3) options --
         /// Bounded model checking — search for bugs up to K steps deep
-        #[arg(long, help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Search for invariant violations within a bounded number of steps.
 
@@ -590,11 +660,15 @@ checker incrementally increases K until it finds a bug or times out).
 
   Best for: finding bugs quickly, especially shallow ones (< 20 steps)
   Does NOT prove correctness — only that no bug exists within K steps
-  Example: specl check spec.specl --bmc --bmc-depth 10")]
+  Example: specl check spec.specl --bmc --bmc-depth 10"
+        )]
         bmc: bool,
 
         /// BMC depth bound (0 = unlimited)
-        #[arg(long, default_value = "0", help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Maximum depth for bounded model checking (number of transition steps to
 unroll). 0 means no limit — the checker increases depth incrementally
@@ -602,11 +676,14 @@ until a bug is found or the solver times out.
 
 Only used with --bmc or when symbolic auto-cascade falls back to BMC.
 
-Example: --bmc --bmc-depth 20 checks all executions up to 20 steps.")]
+Example: --bmc --bmc-depth 20 checks all executions up to 20 steps."
+        )]
         bmc_depth: usize,
 
         /// Inductive invariant checking — single-step proof
-        #[arg(long, help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Try to prove your invariant holds forever using a single induction step.
 
@@ -623,11 +700,15 @@ k-induction or IC3.
 
   Speed: very fast (single solver call)
   Proves: invariant holds forever (all reachable states, any depth)
-  Limitation: fails for non-inductive invariants (common in practice)")]
+  Limitation: fails for non-inductive invariants (common in practice)"
+        )]
         inductive: bool,
 
         /// k-induction — stronger induction with K-step base case
-        #[arg(long, value_name = "K", help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            value_name = "K",
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Prove your invariant holds forever using k-step induction.
 
@@ -642,11 +723,14 @@ ALL reachable states at ANY depth — it's a complete proof of correctness.
   Try K=2 first, then increase to 3, 4, 5 if it fails
   Proves: invariant holds forever (complete proof)
   Slower than plain induction, faster than IC3
-  Example: specl check spec.specl --k-induction 3")]
+  Example: specl check spec.specl --k-induction 3"
+        )]
         k_induction: Option<usize>,
 
         /// IC3 — unbounded verification, most powerful symbolic technique
-        #[arg(long, help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Prove your invariant holds forever using IC3 (also called PDR / Property
 Directed Reachability).
@@ -664,11 +748,14 @@ long the solver runs.
   Proves: invariant holds forever (complete proof, no depth bound)
   May return \"unknown\" for very complex specs
   Use --timeout to limit solver time
-  Example: specl check spec.specl --ic3 --timeout 300")]
+  Example: specl check spec.specl --ic3 --timeout 300"
+        )]
         ic3: bool,
 
         /// Portfolio — run BMC, k-induction, IC3 in parallel, first result wins
-        #[arg(long, help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Run BMC, k-induction, and IC3 simultaneously in parallel. The first
 technique to produce a result (either a proof or a counterexample) wins,
@@ -678,11 +765,14 @@ This is useful when you don't know which technique will work best for your
 spec. It uses more CPU but minimizes wall-clock time.
 
   Best for: when you want the fastest possible answer and have CPU to spare
-  Example: specl check spec.specl --portfolio --timeout 300")]
+  Example: specl check spec.specl --portfolio --timeout 300"
+        )]
         portfolio: bool,
 
         /// Golem CHC solver — external alternative to Z3 Spacer
-        #[arg(long, help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Use the Golem CHC solver instead of Z3's built-in Spacer engine for IC3.
 
@@ -690,21 +780,29 @@ Golem is an external solver that sometimes succeeds where Z3 Spacer fails
 (and vice versa). Requires the `golem` binary to be installed and on your
 PATH.
 
-  Best for: specs where --ic3 returns \"unknown\" — try Golem as an alternative")]
+  Best for: specs where --ic3 returns \"unknown\" — try Golem as an alternative"
+        )]
         golem: bool,
 
         /// Max sequence length for symbolic Seq[T] encoding
-        #[arg(long, default_value = "5", help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            default_value = "5",
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Maximum length of Seq[T] (list) values in symbolic mode.
 
 Symbolic solvers can't handle unbounded-length sequences, so Specl encodes
 them as fixed-capacity arrays. This sets the maximum length. Increase if
-your spec uses longer sequences; decrease for faster solving.")]
+your spec uses longer sequences; decrease for faster solving."
+        )]
         seq_bound: usize,
 
         /// Spacer parameter profile: default, fast, or thorough
-        #[arg(long, default_value = "default", help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            default_value = "default",
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Tuning profile for Z3's Spacer engine, used by --ic3.
 
@@ -712,11 +810,15 @@ Tuning profile for Z3's Spacer engine, used by --ic3.
   fast     — aggressive timeouts, less thorough but faster
   thorough — more patient, explores more proof strategies
 
-Only affects --ic3 and --portfolio modes.")]
+Only affects --ic3 and --portfolio modes."
+        )]
         spacer_profile: String,
 
         /// Symbolic solver timeout in seconds (0 = no timeout)
-        #[arg(long, default_value = "0", help_heading = "Symbolic (Z3)",
+        #[arg(
+            long,
+            default_value = "0",
+            help_heading = "Symbolic (Z3)",
             long_help = "\
 Time limit for the Z3 symbolic solver, in seconds. 0 means no limit.
 
@@ -724,7 +826,8 @@ When using symbolic techniques (especially --ic3), the solver may run for
 a very long time without producing a result. Set a timeout to get back
 control. If the solver times out, the result is \"unknown\".
 
-Example: specl check spec.specl --ic3 --timeout 60")]
+Example: specl check spec.specl --ic3 --timeout 60"
+        )]
         timeout: u64,
 
         /// Show verbose output
@@ -732,17 +835,21 @@ Example: specl check spec.specl --ic3 --timeout 60")]
         verbose: bool,
 
         /// Suppress spec analysis and recommendations
-        #[arg(short, long,
+        #[arg(
+            short,
+            long,
             long_help = "\
 Suppress the spec analysis summary that is printed before checking begins.
 
 By default, Specl prints a brief analysis of your spec (number of variables,
 actions, estimated state space) and recommends optimization flags. Use -q
-to hide this and only show the check result.")]
+to hide this and only show the check result."
+        )]
         quiet: bool,
 
         /// Disable auto-enabling of optimizations (POR, symmetry)
-        #[arg(long,
+        #[arg(
+            long,
             long_help = "\
 Prevent Specl from automatically enabling POR and symmetry reduction.
 
@@ -751,11 +858,15 @@ it detects independent actions, and --symmetry when it detects symmetric
 process patterns. Use --no-auto to disable this behavior and only use
 optimizations you explicitly request.
 
-Useful for benchmarking or when auto-detection makes incorrect choices.")]
+Useful for benchmarking or when auto-detection makes incorrect choices."
+        )]
         no_auto: bool,
 
         /// Output format: text, json, itf, mermaid, dot
-        #[arg(long, value_enum, default_value = "text",
+        #[arg(
+            long,
+            value_enum,
+            default_value = "text",
             long_help = "\
 Choose the output format for check results and counterexample traces.
 
@@ -763,18 +874,22 @@ Choose the output format for check results and counterexample traces.
   json    — machine-readable JSON for CI/scripting
   itf     — Informal Trace Format, compatible with Apalache tooling
   mermaid — Mermaid sequence diagram for visualizing traces
-  dot     — Graphviz DOT graph of the explored state space (small specs only)")]
+  dot     — Graphviz DOT graph of the explored state space (small specs only)"
+        )]
         output: OutputFormat,
 
         /// Show per-action firing counts and phase timing
-        #[arg(long, help_heading = "Explicit-State",
+        #[arg(
+            long,
+            help_heading = "Explicit-State",
             long_help = "\
 Print a profiling breakdown after checking completes.
 
 Shows how many times each action fired, how much time was spent in each
 phase (compilation, exploration, trace reconstruction), and per-action
 timing. Useful for understanding which actions dominate the state space
-and where time is spent.")]
+and where time is spent."
+        )]
         profile: bool,
 
         /// Only check specific invariants (repeatable, by name)
@@ -794,13 +909,15 @@ Example: specl check spec.specl --check-only Safety --check-only Liveness"
         check_only: Vec<String>,
 
         /// Show only changed variables in traces
-        #[arg(long,
+        #[arg(
+            long,
             long_help = "\
 In counterexample traces, only show variables whose values changed in each
 step, rather than printing the full state.
 
 Makes long traces much easier to read by highlighting what actually changed
-at each action step. Unchanged variables are omitted.")]
+at each action step. Unchanged variables are omitted."
+        )]
         diff: bool,
     },
 

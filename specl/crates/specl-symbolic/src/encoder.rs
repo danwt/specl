@@ -216,7 +216,10 @@ impl<'a> EncoderCtx<'a> {
             )),
 
             // === Fix ===
-            CompiledExpr::Fix { domain: Some(domain), predicate } => self.encode_choose(domain, predicate),
+            CompiledExpr::Fix {
+                domain: Some(domain),
+                predicate,
+            } => self.encode_choose(domain, predicate),
             CompiledExpr::Fix { domain: None, .. } => Err(SymbolicError::Encoding(
                 "fix without domain not supported in symbolic mode".into(),
             )),

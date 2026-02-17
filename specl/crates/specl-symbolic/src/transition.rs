@@ -1390,10 +1390,8 @@ fn encode_compound_update_for_slot(
                 } => {
                     if let CompiledExpr::SeqLit(elems) = concat_right.as_ref() {
                         let n = elems.len();
-                        let new_len = Dynamic::from_ast(&Int::add(&[
-                            &curr_len,
-                            &Int::from_i64(n as i64),
-                        ]));
+                        let new_len =
+                            Dynamic::from_ast(&Int::add(&[&curr_len, &Int::from_i64(n as i64)]));
                         let encoded_elems: Vec<Dynamic> = elems
                             .iter()
                             .map(|e| enc.encode(e))
@@ -1403,10 +1401,8 @@ fn encode_compound_update_for_slot(
                             let j_z3 = Int::from_i64(j as i64);
                             let mut elem = slot_curr[1 + j].clone();
                             for (offset, enc_elem) in encoded_elems.iter().enumerate().rev() {
-                                let append_pos = Int::add(&[
-                                    &curr_len,
-                                    &Int::from_i64(offset as i64),
-                                ]);
+                                let append_pos =
+                                    Int::add(&[&curr_len, &Int::from_i64(offset as i64)]);
                                 let is_this = append_pos.eq(&j_z3);
                                 elem = ite_dynamic(&is_this, enc_elem, &elem)?;
                             }
