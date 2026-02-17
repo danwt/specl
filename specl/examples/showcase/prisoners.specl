@@ -1,0 +1,64 @@
+module Prisoners
+
+// The famous Prisoners puzzle (from TLA+ examples / Quint translation).
+// N+1 prisoners total: prisoner 0 is the "counter", prisoners 1..N are non-counters.
+// A room has two switches (A and B). Prisoners are brought in one at a time.
+// Non-counters: flip A up if it's down and they haven't flipped it 2x yet; else flip B.
+// Counter: flip A down and increment count if A is up; else flip B.
+// Done when count == 2*(N+1) - 1 = 2*N + 1, meaning every prisoner has visited.
+//
+// The nondeterministic initial switch state is modeled via a Setup action
+// that tries all 4 combinations before the main protocol begins.
+//
+// Use: specl check prisoners.specl -c N=2 --no-deadlock
+// Verified: N=2 -> OK
+
+const N: Int
+
+var started: Bool
+var switchA: Bool
+var switchB: Bool
+var timesSwitched: Dict[Int, Int]
+var count: Int
+
+init {
+    started = false;
+    switchA = false;
+    switchB = false;
+    timesSwitched = {p: 0 for p in 1..N};
+    count = 0;
+}
+
+// Nondeterministic initial switch positions (4 combinations)
+action Setup(a: 0..1, b: 0..1) {
+    require not started;
+    switchA = a == 1;
+    switchB = b == 1;
+    started = true;
+}
+
+// Non-counter p enters the room
+action NonCounterStep(p: 1..N) {
+    require started;
+    let flipA = not switchA and timesSwitched[p] < 2;
+    switchA = if flipA then true else switchA;
+    timesSwitched = if flipA then timesSwitched | {p: timesSwitched[p] + 1} else timesSwitched;
+    switchB = if flipA then switchB else not switchB;
+}
+
+// Counter (prisoner 0) enters the room
+action CounterStep() {
+    require started;
+    let flipDown = switchA;
+    switchA = if flipDown then false else switchA;
+    count = if flipDown then count + 1 else count;
+    switchB = if flipDown then switchB else not switchB;
+}
+
+func Done() { count == 2 * N + 1 }
+
+// Safety: if done, every non-counter has flipped switch A at least once
+invariant Safety {
+    Done() implies all p in 1..N: timesSwitched[p] > 0
+}
+
