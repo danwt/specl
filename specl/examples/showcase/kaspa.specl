@@ -17,8 +17,8 @@ module KaspaBridge
 // Executed withdrawals persist: they are on-chain on Kaspa. Hub
 // compare-and-set is the sole mechanism preventing re-confirmation.
 //
-// Quick:     specl check kaspa.specl -c N=3 --no-deadlock --bfs
-// Strenuous: specl check kaspa.specl -c N=5 --no-deadlock --bfs --fast
+// Quick:     specl check kaspa.specl -c N=3 --no-deadlock --bfs --no-auto
+// Strenuous: specl check kaspa.specl -c N=5 --no-deadlock --bfs --no-auto --fast
 
 const N: Int
 
@@ -33,6 +33,7 @@ var hub_O: 0..N         // O: current anchor outpoint (UTXO ID on Kaspa)
 var hub_L: 0..N         // L: last withdrawal index confirmed as bridged to Kaspa
 var hub_queue: 0..N     // total withdrawal requests (indices 1..hub_queue)
 var hub_seen: Set[Int]  // deposit outpoints already credited (anti-replay)
+var hub_minted: 0..N    // total deposit credits executed (counts every HubCredit call)
 
 // === KASPA CHAIN STATE ===
 var unspent: Set[Int]   // unspent transaction outputs (UTXO 0 is the seed)
@@ -60,6 +61,7 @@ init {
     hub_L = 0;
     hub_queue = 0;
     hub_seen = {};
+    hub_minted = 0;
     unspent = {0};
     next_id = 1;
     escrow = 1;
@@ -92,8 +94,9 @@ action RelayDeposit(id: 1..N) {
 // Hub credits wrapped KAS. Seen-set prevents double-crediting.
 action HubCredit(id: 1..N) {
     require id in deposit_msgs;
-    require not (id in hub_seen);
+    require not (id in hub_seen);       // SAFETY: anti-replay
     hub_seen = hub_seen union {id};
+    hub_minted = hub_minted + 1;
     deposit_msgs = deposit_msgs diff {id};
 }
 
@@ -112,13 +115,12 @@ action UserWithdraw() {
 }
 
 // Validator signs a Kaspa TX processing withdrawals.
-// Checks: anchor live, L advances, within queue, escrow sufficient.
 action ValidatorSignWithdrawal(target_L: 1..N) {
     require next_id < N;
-    require hub_O in unspent;
-    require hub_L < target_L;
-    require target_L <= hub_queue;
-    require escrow >= target_L - hub_L;
+    require hub_O in unspent;           // LIVENESS: don't sign for spent anchor
+    require hub_L < target_L;           // SAFETY: withdrawal range must advance
+    require target_L <= hub_queue;      // SAFETY: can't process nonexistent withdrawals
+    require escrow >= target_L - hub_L; // SAFETY: sufficient escrow for release
     signed_withdrawals = signed_withdrawals union {[hub_O, next_id, hub_L, target_L]};
     next_id = next_id + 1;
 }
@@ -129,7 +131,7 @@ action ValidatorSignWithdrawal(target_L: 1..N) {
 // The UTXO check is the sole mechanism preventing double-execution.
 action KaspaExecute(msg: Seq[Int]) {
     require msg in signed_withdrawals;
-    require msg[0] in unspent;
+    require msg[0] in unspent;          // SAFETY: Kaspa UTXO uniqueness
     unspent = (unspent diff {msg[0]}) union {msg[1]};
     released = released union {w in 1..N if w > msg[2] and w <= msg[3]};
     escrow = escrow - (msg[3] - msg[2]);
@@ -137,11 +139,10 @@ action KaspaExecute(msg: Seq[Int]) {
 }
 
 // Hub confirms a Kaspa execution. Validator verifies the on-chain trace.
-// Compare-and-set on O prevents stale or reordered updates.
 action HubConfirm(msg: Seq[Int]) {
     require msg in executed_withdrawals;
-    require msg[0] == hub_O;
-    require hub_L < msg[3];
+    require msg[0] == hub_O;            // LIVENESS: compare-and-set, sequential confirmation order
+    require hub_L < msg[3];             // LIVENESS: L advances (redundant with ValidatorSign L check for safety)
     hub_O = msg[1];
     hub_L = msg[3];
 }
@@ -159,7 +160,7 @@ action DropDepositMsg(id: 1..N) {
 }
 
 // ================================================================
-// INVARIANTS
+// SAFETY INVARIANTS
 // ================================================================
 
 // Every released withdrawal index is a valid request
@@ -182,15 +183,35 @@ invariant PegWithdrawalSafety {
     len(released) <= hub_queue
 }
 
-// Can't credit more deposits than made
+// Can't credit more deposits than made.
+// Note: PegDepositSafety checks the seen-set (a Set, so idempotent).
+// NoDoubleMint checks the counter (increments on every call).
+// Together they ensure both uniqueness and count correctness.
 invariant PegDepositSafety {
     len(hub_seen) <= len(deposits)
 }
 
-// UTXO uniqueness ensures escrow is never overdrafted.
+// Escrow never goes negative.
 // Removing `require msg[0] in unspent` from KaspaExecute violates this:
-// two withdrawals from the same epoch (same spend UTXO) would both execute,
+// two withdrawals spending the same anchor would both execute,
 // each deducting from escrow, draining it below zero.
 invariant EscrowNonNegative {
     escrow >= 0
+}
+
+// Exact peg accounting: escrow = seed + deposits - releases.
+// Removing `require hub_L < target_L` from ValidatorSignWithdrawal violates this:
+// a backward withdrawal range (target_L < hub_L) causes escrow to increase
+// without any deposit, inflating the escrow balance.
+invariant PegBalance {
+    escrow == 1 + len(deposits) - len(released)
+}
+
+// Every HubCredit execution corresponds to a unique deposit.
+// Removing `require not (id in hub_seen)` from HubCredit violates this:
+// repeated credits for the same deposit would mint unbacked wKAS.
+// Note: PegDepositSafety alone can't detect this because hub_seen is a
+// Set (idempotent under union). This counter tracks actual mint operations.
+invariant NoDoubleMint {
+    hub_minted <= len(deposits)
 }
