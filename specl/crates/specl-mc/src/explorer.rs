@@ -2882,6 +2882,9 @@ impl Explorer {
                         max_depth: d,
                     } => {
                         *max_depth = (*max_depth).max(d);
+                        if let Some(ref p) = self.config.progress {
+                            p.depth.store(*max_depth, Ordering::Relaxed);
+                        }
                         queue.extend(new_entries);
                     }
                 }
