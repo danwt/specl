@@ -38,6 +38,8 @@ struct Translator {
     helper_ops: std::collections::HashMap<String, (Vec<String>, TlaExpr)>,
     /// Init predicate operators (no params, conjunctions of var = expr, for inlining in Init).
     init_predicates: std::collections::HashMap<String, TlaExpr>,
+    /// Zero-arg non-primed operators (including stateful predicates) to inline at use sites.
+    zero_arg_ops: std::collections::HashMap<String, TlaExpr>,
     /// Inferred types for variables from Init expression.
     var_types: std::collections::HashMap<String, specl::TypeExpr>,
     /// Constants that are used as set domains (e.g., Server, Value).
@@ -60,6 +62,7 @@ impl Translator {
             constant_ops: std::collections::HashMap::new(),
             helper_ops: std::collections::HashMap::new(),
             init_predicates: std::collections::HashMap::new(),
+            zero_arg_ops: std::collections::HashMap::new(),
             var_types: std::collections::HashMap::new(),
             set_constants: std::collections::HashSet::new(),
             stateful_predicates: std::collections::HashMap::new(),
@@ -1390,6 +1393,28 @@ impl Translator {
             }
         }
 
+        // Select the module's init predicate operator.
+        // Prefer a canonical `Init`; otherwise fall back to a single no-arg `*Init` operator.
+        let mut init_operator_name: Option<String> = None;
+        for decl in &module.declarations {
+            if let TlaDecl::Operator { name, params, .. } = decl {
+                if params.is_empty() && name.name == "Init" {
+                    init_operator_name = Some(name.name.clone());
+                    break;
+                }
+            }
+        }
+        if init_operator_name.is_none() {
+            for decl in &module.declarations {
+                if let TlaDecl::Operator { name, params, .. } = decl {
+                    if params.is_empty() && name.name.ends_with("Init") {
+                        init_operator_name = Some(name.name.clone());
+                        break;
+                    }
+                }
+            }
+        }
+
         // Second pass: collect constant, helper, and init predicate operators (for inlining)
         for decl in &module.declarations {
             if let TlaDecl::Operator {
@@ -1399,6 +1424,14 @@ impl Translator {
                 // Track recursive operators — these must not be inlined
                 if Translator::body_references_self(&name.name, body) {
                     translator.recursive_ops.insert(name.name.clone());
+                }
+                if params.is_empty()
+                    && !translator.contains_primed_var(body)
+                    && !translator.recursive_ops.contains(&name.name)
+                {
+                    translator
+                        .zero_arg_ops
+                        .insert(name.name.clone(), body.clone());
                 }
                 if translator.is_constant_operator(params, body) {
                     translator
@@ -1432,10 +1465,13 @@ impl Translator {
             }
         }
 
-        // Third pass: Find Init and infer variable types, and collect set constants
+        // Third pass: infer variable types from the selected init operator, and collect set constants
         for decl in &module.declarations {
             if let TlaDecl::Operator { name, body, .. } = decl {
-                if name.name == "Init" {
+                if init_operator_name
+                    .as_ref()
+                    .is_some_and(|init_name| init_name == &name.name)
+                {
                     translator.infer_types_from_init(body);
                     translator.collect_set_constants(body);
                 }
@@ -1514,7 +1550,10 @@ impl Translator {
                 name, body, span, ..
             } = decl
             {
-                if name.name == "Init" {
+                if init_operator_name
+                    .as_ref()
+                    .is_some_and(|init_name| init_name == &name.name)
+                {
                     let init_expr = translator.translate_init_expr(body)?;
                     decls.push(specl::Decl::Init(specl::InitDecl {
                         body: init_expr,
@@ -1535,6 +1574,12 @@ impl Translator {
                 span,
             } = decl
             {
+                if init_operator_name
+                    .as_ref()
+                    .is_some_and(|init_name| init_name == &name.name)
+                {
+                    continue;
+                }
                 match name.name.as_str() {
                     // Skip Init, Spec, vars, and Next - Specl auto-generates next from actions
                     "Init" | "Spec" | "vars" | "Next" => continue,
@@ -2657,6 +2702,10 @@ impl Translator {
                 if let Some(body) = self.init_predicates.get(name).cloned() {
                     return self.translate_expr(&body, in_action);
                 }
+                // Check if this is a zero-arg operator (stateful predicate/helper) to inline
+                if let Some(body) = self.zero_arg_ops.get(name).cloned() {
+                    return self.translate_expr(&body, in_action);
+                }
                 specl::ExprKind::Ident(escape_ident(name))
             }
 
@@ -3665,36 +3714,7 @@ impl Translator {
             }
 
             TlaExprKind::Enabled(inner) => {
-                // Translate ENABLED:
-                // - For simple action name: enabled(Action)
-                // - For parameterized action: inline the guard with parameters
-                match &inner.kind {
-                    TlaExprKind::Ident(name) => specl::ExprKind::Enabled(specl::Ident::new(
-                        escape_ident(name),
-                        translate_span(inner.span),
-                    )),
-                    TlaExprKind::OpApp { name, args } => {
-                        // Check if this is an action helper with parameters
-                        if let Some((params, body)) = self.action_helpers.get(name).cloned() {
-                            // Inline the action body with parameters substituted
-                            // Then extract just the guard (non-primed parts)
-                            let inlined = self.substitute_params(&body, &params, args)?;
-                            // The guard is the conjunction of all non-primed conditions
-                            let guard = self.extract_guard(&inlined)?;
-                            return self.translate_expr(&guard, in_action);
-                        }
-                        // Fall back to simple enabled
-                        specl::ExprKind::Enabled(specl::Ident::new(
-                            escape_ident(name),
-                            translate_span(inner.span),
-                        ))
-                    }
-                    _ => {
-                        return Err(TranslateError::Unsupported {
-                            message: "complex ENABLED expression".to_string(),
-                        });
-                    }
-                }
+                return self.translate_enabled_expr(inner, in_action);
             }
 
             TlaExprKind::Unchanged(_) => {
@@ -3914,6 +3934,68 @@ impl Translator {
         };
 
         Ok(specl::Expr::new(kind, span))
+    }
+
+    fn translate_enabled_expr(
+        &self,
+        inner: &TlaExpr,
+        in_action: bool,
+    ) -> Result<specl::Expr, TranslateError> {
+        let span = translate_span(inner.span);
+        match &inner.kind {
+            TlaExprKind::Ident(name) => Ok(specl::Expr::new(
+                specl::ExprKind::Enabled(specl::Ident::new(escape_ident(name), span)),
+                span,
+            )),
+            TlaExprKind::OpApp { name, args } => {
+                // Check if this is an action helper with parameters.
+                if let Some((params, body)) = self.action_helpers.get(name).cloned() {
+                    let inlined = self.substitute_params(&body, &params, args)?;
+                    let guard = self.extract_guard(&inlined)?;
+                    return self.translate_expr(&guard, in_action);
+                }
+                Ok(specl::Expr::new(
+                    specl::ExprKind::Enabled(specl::Ident::new(escape_ident(name), span)),
+                    span,
+                ))
+            }
+            TlaExprKind::Paren(expr) => self.translate_enabled_expr(expr, in_action),
+            TlaExprKind::Binary {
+                op: TlaBinOp::Or,
+                left,
+                right,
+            } => {
+                let left_enabled = self.translate_enabled_expr(left, in_action)?;
+                let right_enabled = self.translate_enabled_expr(right, in_action)?;
+                Ok(specl::Expr::new(
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::Or,
+                        left: Box::new(left_enabled),
+                        right: Box::new(right_enabled),
+                    },
+                    span,
+                ))
+            }
+            TlaExprKind::Binary {
+                op: TlaBinOp::And,
+                left,
+                right,
+            } => {
+                let left_enabled = self.translate_enabled_expr(left, in_action)?;
+                let right_enabled = self.translate_enabled_expr(right, in_action)?;
+                Ok(specl::Expr::new(
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::And,
+                        left: Box::new(left_enabled),
+                        right: Box::new(right_enabled),
+                    },
+                    span,
+                ))
+            }
+            _ => Err(TranslateError::Unsupported {
+                message: "complex ENABLED expression".to_string(),
+            }),
+        }
     }
 
     fn translate_binding(&self, binding: &TlaBinding) -> Result<specl::Binding, TranslateError> {
