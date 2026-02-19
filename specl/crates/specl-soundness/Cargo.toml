@@ -1,0 +1,22 @@
+[package]
+name = "specl-soundness"
+version.workspace = true
+edition.workspace = true
+license-file = "../../../LICENSE"
+authors.workspace = true
+repository.workspace = true
+description = "Soundness and differential-testing harnesses for Specl"
+
+[dependencies]
+specl-syntax.workspace = true
+specl-types.workspace = true
+specl-ir.workspace = true
+specl-eval.workspace = true
+specl-mc.workspace = true
+proptest.workspace = true
+rand.workspace = true
+tree-sitter.workspace = true
+tree-sitter-tlaplus.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

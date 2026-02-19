@@ -7,6 +7,7 @@ members = [
     "crates/specl-eval",
     "crates/specl-mc",
     "crates/specl-tla",
+    "crates/specl-soundness",
     "crates/specl-symbolic",
     "crates/specl-cli",
     "crates/specl-lsp",
@@ -45,6 +46,8 @@ dashmap = "6"
 crossbeam = "0.8"
 parking_lot = "0.12"
 rayon = "1.10"
+tree-sitter = "0.25"
+tree-sitter-tlaplus = "1.5.0"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
