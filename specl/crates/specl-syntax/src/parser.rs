@@ -312,9 +312,11 @@ impl Parser {
             if self.check(TokenKind::Let) {
                 stmts.push(self.parse_statement_let()?);
                 // Pretty-printer emits a trailing semicolon for action effects.
-                // Accept it after let..in expressions too.
-                self.match_token(TokenKind::Semicolon);
-                break; // statement-let consumed all remaining statements
+                // Accept it after let..in expressions too; if present, continue parsing.
+                if !self.match_token(TokenKind::Semicolon) {
+                    break;
+                }
+                continue;
             }
             stmts.push(self.parse_expr()?);
             if !self.match_token(TokenKind::Semicolon) {

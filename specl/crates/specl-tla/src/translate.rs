@@ -564,10 +564,7 @@ impl Translator {
                 }
                 if self.set_constants.contains(name) {
                     return Some(specl::TypeExpr::Set(
-                        Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                            "_",
-                            default_span,
-                        ))),
+                        Box::new(specl::TypeExpr::Named(specl::Ident::new("_", default_span))),
                         default_span,
                     ));
                 }
@@ -597,10 +594,7 @@ impl Translator {
             TlaExprKind::SetEnum { .. } => {
                 // Empty set {} - keep element type inferred.
                 Some(specl::TypeExpr::Set(
-                    Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                        "_",
-                        default_span,
-                    ))),
+                    Box::new(specl::TypeExpr::Named(specl::Ident::new("_", default_span))),
                     default_span,
                 ))
             }
@@ -667,10 +661,7 @@ impl Translator {
             ),
             TlaExprKind::Ident(_) => {
                 // For abstract set identifiers (Server, Value, etc.), keep element type inferred.
-                Some(specl::TypeExpr::Named(specl::Ident::new(
-                    "_",
-                    default_span,
-                )))
+                Some(specl::TypeExpr::Named(specl::Ident::new("_", default_span)))
             }
             _ => {
                 // Default to Int if we can't infer
@@ -1638,6 +1629,20 @@ impl Translator {
         )
     }
 
+    fn collect_and_conjuncts(expr: &TlaExpr, out: &mut Vec<TlaExpr>) {
+        match &expr.kind {
+            TlaExprKind::Binary {
+                op: TlaBinOp::And,
+                left,
+                right,
+            } => {
+                Self::collect_and_conjuncts(left, out);
+                Self::collect_and_conjuncts(right, out);
+            }
+            _ => out.push(expr.clone()),
+        }
+    }
+
     /// Extract the guard (precondition) from an action body.
     /// Returns only the parts that don't contain primed variables.
     fn extract_guard(&self, expr: &TlaExpr) -> Result<TlaExpr, TranslateError> {
@@ -2188,6 +2193,40 @@ impl Translator {
         assignments: &std::collections::HashMap<String, TlaExpr>,
     ) -> Result<(), TranslateError> {
         match &expr.kind {
+            TlaExprKind::LetIn { defs, body } => {
+                if matches!(
+                    &body.kind,
+                    TlaExprKind::Binary {
+                        op: TlaBinOp::And,
+                        ..
+                    }
+                ) {
+                    let mut conjuncts = Vec::new();
+                    Self::collect_and_conjuncts(body, &mut conjuncts);
+                    for conjunct in conjuncts {
+                        let wrapped = TlaExpr {
+                            kind: TlaExprKind::LetIn {
+                                defs: defs.clone(),
+                                body: Box::new(conjunct),
+                            },
+                            span: expr.span,
+                        };
+                        self.extract_action_parts_with_subs(
+                            &wrapped,
+                            requires,
+                            effects,
+                            assignments,
+                        )?;
+                    }
+                    return Ok(());
+                }
+                if self.contains_primed_var(expr) {
+                    effects.push(self.translate_effect_with_subs(expr, assignments)?);
+                } else {
+                    requires.push(self.translate_expr(expr, false)?);
+                }
+                return Ok(());
+            }
             TlaExprKind::Binary {
                 op: TlaBinOp::And,
                 left,
