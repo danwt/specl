@@ -85,6 +85,13 @@ impl Translator {
                 Self::body_references_self(name, left) || Self::body_references_self(name, right)
             }
             TlaExprKind::Unary { operand, .. } => Self::body_references_self(name, operand),
+            TlaExprKind::SetEnum { elements } | TlaExprKind::Tuple { elements } => {
+                elements.iter().any(|e| Self::body_references_self(name, e))
+            }
+            TlaExprKind::Record { fields } => fields
+                .iter()
+                .any(|(_, e)| Self::body_references_self(name, e)),
+            TlaExprKind::FieldAccess { base, .. } => Self::body_references_self(name, base),
             TlaExprKind::IfThenElse {
                 cond,
                 then_branch,
@@ -97,10 +104,22 @@ impl Translator {
             TlaExprKind::Paren(inner) | TlaExprKind::Primed(inner) => {
                 Self::body_references_self(name, inner)
             }
+            TlaExprKind::Range { lo, hi } => {
+                Self::body_references_self(name, lo) || Self::body_references_self(name, hi)
+            }
             TlaExprKind::FunctionApp { func, args } => {
                 Self::body_references_self(name, func)
                     || args.iter().any(|a| Self::body_references_self(name, a))
             }
+            TlaExprKind::FunctionDef { domain, body, .. } => {
+                Self::body_references_self(name, domain) || Self::body_references_self(name, body)
+            }
+            TlaExprKind::FunctionSet { domain, range } => {
+                Self::body_references_self(name, domain) || Self::body_references_self(name, range)
+            }
+            TlaExprKind::RecordSet { fields } => fields
+                .iter()
+                .any(|(_, e)| Self::body_references_self(name, e)),
             TlaExprKind::LetIn { defs, body } => {
                 defs.iter()
                     .any(|d| Self::body_references_self(name, &d.body))
@@ -139,6 +158,37 @@ impl Translator {
                         u.path.iter().any(|p| Self::body_references_self(name, p))
                             || Self::body_references_self(name, &u.value)
                     })
+            }
+            TlaExprKind::Domain(inner)
+            | TlaExprKind::PowerSet(inner)
+            | TlaExprKind::BigUnion(inner)
+            | TlaExprKind::Always(inner)
+            | TlaExprKind::Eventually(inner)
+            | TlaExprKind::Enabled(inner) => Self::body_references_self(name, inner),
+            TlaExprKind::LeadsTo { left, right }
+            | TlaExprKind::BoxAction {
+                action: left,
+                vars: right,
+            }
+            | TlaExprKind::AngleAction {
+                action: left,
+                vars: right,
+            } => Self::body_references_self(name, left) || Self::body_references_self(name, right),
+            TlaExprKind::WeakFairness { vars, action }
+            | TlaExprKind::StrongFairness { vars, action } => {
+                Self::body_references_self(name, vars) || Self::body_references_self(name, action)
+            }
+            TlaExprKind::Unchanged(vars) => vars.iter().any(|v| v.name == name),
+            TlaExprKind::Case { arms, other } => {
+                arms.iter().any(|(cond, body)| {
+                    Self::body_references_self(name, cond) || Self::body_references_self(name, body)
+                }) || other
+                    .as_ref()
+                    .is_some_and(|e| Self::body_references_self(name, e))
+            }
+            TlaExprKind::InstanceOp { instance, args, .. } => {
+                Self::body_references_self(name, instance)
+                    || args.iter().any(|a| Self::body_references_self(name, a))
             }
             _ => false,
         }
@@ -270,6 +320,12 @@ impl Translator {
 
     /// Collect constants that are used as set domains in expressions.
     fn collect_set_constants(&mut self, expr: &TlaExpr) {
+        let mark_set_ident =
+            |e: &TlaExpr, set_constants: &mut std::collections::HashSet<String>| {
+                if let TlaExprKind::Ident(name) = &e.kind {
+                    set_constants.insert(name.clone());
+                }
+            };
         match &expr.kind {
             TlaExprKind::FunctionDef { domain, body, .. } => {
                 // [x \in S |-> e] - S is used as a set domain
@@ -313,7 +369,18 @@ impl Translator {
                 }
                 self.collect_set_constants(predicate);
             }
-            TlaExprKind::Binary { left, right, .. } => {
+            TlaExprKind::Binary { op, left, right } => {
+                match op {
+                    TlaBinOp::Cup | TlaBinOp::Cap | TlaBinOp::SetDiff | TlaBinOp::SubsetEq => {
+                        mark_set_ident(left, &mut self.set_constants);
+                        mark_set_ident(right, &mut self.set_constants);
+                    }
+                    TlaBinOp::In | TlaBinOp::NotIn => {
+                        // x \in S => S is a set.
+                        mark_set_ident(right, &mut self.set_constants);
+                    }
+                    _ => {}
+                }
                 self.collect_set_constants(left);
                 self.collect_set_constants(right);
             }
@@ -378,6 +445,12 @@ impl Translator {
             TlaExprKind::Range { lo, hi } => {
                 self.collect_set_constants(lo);
                 self.collect_set_constants(hi);
+            }
+            TlaExprKind::Domain(inner)
+            | TlaExprKind::PowerSet(inner)
+            | TlaExprKind::BigUnion(inner) => {
+                mark_set_ident(inner, &mut self.set_constants);
+                self.collect_set_constants(inner);
             }
             _ => {}
         }
@@ -488,6 +561,15 @@ impl Translator {
                 // Try to resolve constant operators
                 if let Some(body) = self.constant_ops.get(name) {
                     return self.infer_type_from_expr(body);
+                }
+                if self.set_constants.contains(name) {
+                    return Some(specl::TypeExpr::Set(
+                        Box::new(specl::TypeExpr::Named(specl::Ident::new(
+                            "Int",
+                            default_span,
+                        ))),
+                        default_span,
+                    ));
                 }
                 // For unresolved identifiers (TLA+ model values like Nil, Follower, Server, etc.),
                 // use Int since model values are represented as integers
@@ -1058,6 +1140,18 @@ impl Translator {
         types
     }
 
+    fn maybe_set_param_type(
+        &self,
+        param_names: &std::collections::HashSet<&str>,
+        types: &mut std::collections::HashMap<String, specl::TypeExpr>,
+        name: &str,
+        ty: specl::TypeExpr,
+    ) {
+        if param_names.contains(name) && !types.contains_key(name) {
+            types.insert(name.to_string(), ty);
+        }
+    }
+
     /// Recursively collect type information for parameters from expression usage.
     fn collect_param_types_from_expr(
         &self,
@@ -1136,8 +1230,89 @@ impl Translator {
                 }
                 self.collect_param_types_from_expr(predicate, param_names, types);
             }
-            // Recurse into subexpressions
-            TlaExprKind::Binary { left, right, .. } => {
+            // Infer from binary operator contexts, then recurse.
+            TlaExprKind::Binary { op, left, right } => {
+                // Set-like contexts.
+                if matches!(
+                    op,
+                    TlaBinOp::Cup | TlaBinOp::Cap | TlaBinOp::SetDiff | TlaBinOp::SubsetEq
+                ) {
+                    if let TlaExprKind::Ident(name) = &left.kind {
+                        self.maybe_set_param_type(
+                            param_names,
+                            types,
+                            name,
+                            specl::TypeExpr::Set(
+                                Box::new(specl::TypeExpr::Named(specl::Ident::new(
+                                    "Int",
+                                    default_span,
+                                ))),
+                                default_span,
+                            ),
+                        );
+                    }
+                    if let TlaExprKind::Ident(name) = &right.kind {
+                        self.maybe_set_param_type(
+                            param_names,
+                            types,
+                            name,
+                            specl::TypeExpr::Set(
+                                Box::new(specl::TypeExpr::Named(specl::Ident::new(
+                                    "Int",
+                                    default_span,
+                                ))),
+                                default_span,
+                            ),
+                        );
+                    }
+                }
+                if matches!(op, TlaBinOp::In | TlaBinOp::NotIn) {
+                    if let TlaExprKind::Ident(name) = &right.kind {
+                        self.maybe_set_param_type(
+                            param_names,
+                            types,
+                            name,
+                            specl::TypeExpr::Set(
+                                Box::new(specl::TypeExpr::Named(specl::Ident::new(
+                                    "Int",
+                                    default_span,
+                                ))),
+                                default_span,
+                            ),
+                        );
+                    }
+                }
+                // String equality/comparison contexts.
+                if matches!(
+                    op,
+                    TlaBinOp::Eq
+                        | TlaBinOp::Ne
+                        | TlaBinOp::Lt
+                        | TlaBinOp::Le
+                        | TlaBinOp::Gt
+                        | TlaBinOp::Ge
+                ) {
+                    if let (TlaExprKind::Ident(name), TlaExprKind::String(_)) =
+                        (&left.kind, &right.kind)
+                    {
+                        self.maybe_set_param_type(
+                            param_names,
+                            types,
+                            name,
+                            specl::TypeExpr::Named(specl::Ident::new("String", default_span)),
+                        );
+                    }
+                    if let (TlaExprKind::String(_), TlaExprKind::Ident(name)) =
+                        (&left.kind, &right.kind)
+                    {
+                        self.maybe_set_param_type(
+                            param_names,
+                            types,
+                            name,
+                            specl::TypeExpr::Named(specl::Ident::new("String", default_span)),
+                        );
+                    }
+                }
                 self.collect_param_types_from_expr(left, param_names, types);
                 self.collect_param_types_from_expr(right, param_names, types);
             }
@@ -1160,6 +1335,23 @@ impl Translator {
                 self.collect_param_types_from_expr(body, param_names, types);
             }
             TlaExprKind::FunctionApp { func, args } => {
+                // If p appears as index in dict_var[p], infer key type from dict_var.
+                if args.len() == 1 {
+                    if let TlaExprKind::Ident(arg_name) = &args[0].kind {
+                        if let TlaExprKind::Ident(func_name) = &func.kind {
+                            if let Some(var_ty) = self.var_types.get(func_name) {
+                                if let specl::TypeExpr::Dict(key_ty, _, _) = var_ty {
+                                    self.maybe_set_param_type(
+                                        param_names,
+                                        types,
+                                        arg_name,
+                                        (*key_ty.clone()).clone(),
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
                 self.collect_param_types_from_expr(func, param_names, types);
                 for arg in args {
                     self.collect_param_types_from_expr(arg, param_names, types);
@@ -3816,5 +4008,35 @@ Next == x' = x + 1
 "#;
         let result = translate(input).unwrap();
         assert!(result.contains("invariant TypeInvariant"));
+    }
+
+    #[test]
+    fn test_translate_recursive_operator_no_overflow() {
+        let input = r#"---- MODULE Rec ----
+EXTENDS Sequences
+RECURSIVE SeqSum(_)
+SeqSum(s) == IF Len(s) = 0 THEN 0 ELSE Head(s) + SeqSum(Tail(s))
+ASSUME SeqSum(<<1,2,3>>) = 6
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("func SeqSum("));
+    }
+
+    #[test]
+    fn test_translate_recursive_operator_under_bigunion_no_overflow() {
+        let input = r#"---- MODULE Rec2 ----
+EXTENDS Sequences
+CONSTANT N
+RECURSIVE Partitions(_ , _)
+Partitions(seq, wt) ==
+  IF Len(seq) = N
+    THEN {seq}
+    ELSE UNION { Partitions(seq, wt - 1) : x \in 1..1 }
+ASSUME TRUE
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("func Partitions("));
     }
 }
