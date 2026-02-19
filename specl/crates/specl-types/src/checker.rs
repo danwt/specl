@@ -740,6 +740,11 @@ impl TypeChecker {
                 let seq_ty = self.env.resolve_type(&seq_ty_raw);
                 match seq_ty {
                     Type::Seq(elem_ty) => *elem_ty,
+                    // TLA+ sequences are functions with domain 1..n; accept Fn[Int, T] as sequence-like.
+                    Type::Fn(key_ty, val_ty) => {
+                        self.unify(key_ty.as_ref(), &Type::Int, seq_expr.span)?;
+                        *val_ty
+                    }
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Seq(Box::new(self.var_gen.fresh_type())),
@@ -753,8 +758,13 @@ impl TypeChecker {
             ExprKind::SeqTail(seq_expr) => {
                 let seq_ty_raw = self.infer_expr(seq_expr)?;
                 let seq_ty = self.env.resolve_type(&seq_ty_raw);
-                match &seq_ty {
+                match seq_ty {
                     Type::Seq(_) => seq_ty,
+                    // Keep function form for sequence-like TLA+ functions.
+                    Type::Fn(key_ty, val_ty) => {
+                        self.unify(key_ty.as_ref(), &Type::Int, seq_expr.span)?;
+                        Type::Fn(key_ty, val_ty)
+                    }
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Seq(Box::new(self.var_gen.fresh_type())),
