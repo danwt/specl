@@ -42,12 +42,40 @@ impl Parser {
 
     /// Parse a TLA+ module.
     pub fn parse_module(&mut self) -> Result<TlaModule, ParseError> {
+        // Some corpus files contain prose or wrapper text before the first module.
+        // Skip forward until we see an actual module header: ---- MODULE Name ----
+        while !self.is_at_end() {
+            if self.check(&TokenKind::ModuleStart) && self.peek_is(&TokenKind::Module) {
+                break;
+            }
+            self.advance();
+        }
+
         let start = self.current_span().start;
 
         // ---- MODULE Name ----
         self.expect(TokenKind::ModuleStart)?;
         self.expect(TokenKind::Module)?;
-        let name = self.expect_ident()?;
+        let name = match &self.current().kind {
+            TokenKind::Ident(_) => self.expect_ident()?.name,
+            TokenKind::Int(n) => {
+                // Some corpus modules start with a digit (e.g. 2PCwithBTM).
+                let mut module_name = n.to_string();
+                self.advance();
+                while let TokenKind::Ident(s) = &self.current().kind {
+                    module_name.push_str(s);
+                    self.advance();
+                }
+                module_name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "identifier".to_string(),
+                    found: format!("{:?}", self.current().kind),
+                    position: self.current_span().start,
+                });
+            }
+        };
         self.expect(TokenKind::ModuleStart)?; // closing ----
 
         // EXTENDS
@@ -64,8 +92,13 @@ impl Parser {
         // Declarations
         let mut declarations = Vec::new();
         while !self.check(&TokenKind::ModuleEnd) && !self.is_at_end() {
-            // Skip separator lines (---- used as visual dividers inside the module)
+            // Skip separator lines (---- used as visual dividers inside the module).
+            // Also skip nested module blocks declared inside a parent module.
             if self.check(&TokenKind::ModuleStart) {
+                if self.peek_is(&TokenKind::Module) {
+                    self.skip_nested_module();
+                    continue;
+                }
                 self.advance();
                 continue;
             }
@@ -77,7 +110,7 @@ impl Parser {
 
         let end = self.previous_span().end;
         Ok(TlaModule {
-            name: name.name,
+            name,
             extends,
             declarations,
             span: Span::new(start, end),
@@ -87,9 +120,19 @@ impl Parser {
     fn parse_declaration(&mut self) -> Result<TlaDecl, ParseError> {
         let start = self.current_span().start;
 
+        // LOCAL declarations are module-private wrappers around normal declarations.
+        // Parse and retain the underlying declaration shape for translation.
+        if self.check(&TokenKind::Local) {
+            self.advance();
+            return self.parse_declaration();
+        }
+
         if self.check(&TokenKind::Constant) || self.check(&TokenKind::Constants) {
             self.advance();
-            let names = self.parse_ident_list()?;
+            let names = match self.parse_ident_list() {
+                Ok(names) => names,
+                Err(_) => return self.recover_declaration(start),
+            };
             let end = self.previous_span().end;
             return Ok(TlaDecl::Constant {
                 names,
@@ -99,7 +142,10 @@ impl Parser {
 
         if self.check(&TokenKind::Variable) || self.check(&TokenKind::Variables) {
             self.advance();
-            let names = self.parse_ident_list()?;
+            let names = match self.parse_ident_list() {
+                Ok(names) => names,
+                Err(_) => return self.recover_declaration(start),
+            };
             let end = self.previous_span().end;
             return Ok(TlaDecl::Variable {
                 names,
@@ -189,35 +235,82 @@ impl Parser {
         }
 
         // Operator definition: Name(params) == body or Name == body
-        let name = self.expect_ident()?;
+        let name = match self.expect_ident() {
+            Ok(name) => name,
+            Err(_) => return self.recover_declaration(start),
+        };
 
-        let params = if self.check(&TokenKind::LParen) {
+        let params = if self.check(&TokenKind::LBracket) {
+            // Operator function-style binding: Name[x \in S, y \in T] == ...
+            // Keep parameter names; domain constraints remain in the body semantics.
+            self.advance();
+            let mut bound_params = Vec::new();
+            loop {
+                let var = match self.expect_ident() {
+                    Ok(var) => var,
+                    Err(_) => return self.recover_declaration(start),
+                };
+                bound_params.push(var);
+                if self.expect(TokenKind::SetIn).is_err() {
+                    return self.recover_declaration(start);
+                }
+                if self.parse_expr_prec(6).is_err() {
+                    return self.recover_declaration(start);
+                }
+                if !self.check(&TokenKind::Comma) {
+                    break;
+                }
+                self.advance();
+            }
+            if self.expect(TokenKind::RBracket).is_err() {
+                return self.recover_declaration(start);
+            }
+            bound_params
+        } else if self.check(&TokenKind::LParen) {
             self.advance();
             let params = if !self.check(&TokenKind::RParen) {
-                self.parse_ident_list()?
+                match self.parse_ident_list() {
+                    Ok(params) => params,
+                    Err(_) => return self.recover_declaration(start),
+                }
             } else {
                 Vec::new()
             };
-            self.expect(TokenKind::RParen)?;
+            if self.expect(TokenKind::RParen).is_err() {
+                return self.recover_declaration(start);
+            }
             params
         } else {
             Vec::new()
         };
 
-        self.expect(TokenKind::DefEq)?;
+        if self.expect(TokenKind::DefEq).is_err() {
+            return self.recover_declaration(start);
+        }
 
         // Check for named INSTANCE: Name == INSTANCE Module
         if self.check(&TokenKind::Instance) {
             self.advance();
-            let module = self.expect_ident()?;
+            let module = match self.expect_ident() {
+                Ok(module) => module,
+                Err(_) => return self.recover_declaration(start),
+            };
 
             let substitutions = if self.check(&TokenKind::With) {
                 self.advance();
                 let mut subs = Vec::new();
                 loop {
-                    let sub_name = self.expect_ident()?;
-                    self.expect(TokenKind::LeftArrow)?;
-                    let value = self.parse_expr()?;
+                    let sub_name = match self.expect_ident() {
+                        Ok(name) => name,
+                        Err(_) => return self.recover_declaration(start),
+                    };
+                    if self.expect(TokenKind::LeftArrow).is_err() {
+                        return self.recover_declaration(start);
+                    }
+                    let value = match self.parse_expr() {
+                        Ok(value) => value,
+                        Err(_) => return self.recover_declaration(start),
+                    };
                     subs.push((sub_name, value));
                     if !self.check(&TokenKind::Comma) {
                         break;
@@ -238,7 +331,10 @@ impl Parser {
             });
         }
 
-        let body = self.parse_expr()?;
+        let body = match self.parse_expr() {
+            Ok(body) => body,
+            Err(_) => return self.recover_declaration(start),
+        };
         let end = self.previous_span().end;
 
         Ok(TlaDecl::Operator {
@@ -283,10 +379,10 @@ impl Parser {
     }
 
     fn parse_ident_list(&mut self) -> Result<Vec<TlaIdent>, ParseError> {
-        let mut idents = vec![self.expect_ident()?];
+        let mut idents = vec![self.expect_ident_with_signature()?];
         while self.check(&TokenKind::Comma) {
             self.advance();
-            idents.push(self.expect_ident()?);
+            idents.push(self.expect_ident_with_signature()?);
         }
         Ok(idents)
     }
@@ -528,7 +624,14 @@ impl Parser {
         // Unary operators
         if self.check(&TokenKind::Not) {
             self.advance();
-            let operand = self.parse_unary()?;
+            // Support negation over bullet lists: ~ /\ e1 /\ e2
+            let operand = if self.check(&TokenKind::And) {
+                self.parse_bullet_list(TlaBinOp::And)?
+            } else if self.check(&TokenKind::Or) {
+                self.parse_bullet_list(TlaBinOp::Or)?
+            } else {
+                self.parse_unary()?
+            };
             let span = Span::new(start, operand.span.end);
             return Ok(TlaExpr::new(
                 TlaExprKind::Unary {
@@ -769,7 +872,7 @@ impl Parser {
             // Check for range: n..m
             if self.check(&TokenKind::DotDot) {
                 self.advance();
-                let hi = self.parse_primary()?;
+                let hi = self.parse_postfix()?;
                 let full_span = Span::new(start, hi.span.end);
                 return Ok(TlaExpr::new(
                     TlaExprKind::Range {
@@ -889,7 +992,7 @@ impl Parser {
             // Check for range: ident..expr
             if self.check(&TokenKind::DotDot) {
                 self.advance();
-                let hi = self.parse_primary()?;
+                let hi = self.parse_postfix()?;
                 let full_span = Span::new(start, hi.span.end);
                 return Ok(TlaExpr::new(
                     TlaExprKind::Range {
@@ -1120,9 +1223,29 @@ impl Parser {
             };
 
             self.expect(TokenKind::DefEq)?;
-            // Use parse_expr_nested for LET definition bodies to avoid treating
-            // internal /\ or \/ as bullet markers
-            let body = self.parse_expr_nested()?;
+            // LET can bind an instance alias: Name == INSTANCE Module [WITH ...]
+            // We retain module identity for downstream translation and ignore substitutions here.
+            let body = if self.check(&TokenKind::Instance) {
+                self.advance();
+                let module = self.expect_ident()?;
+                if self.check(&TokenKind::With) {
+                    self.advance();
+                    loop {
+                        let _ = self.expect_ident()?;
+                        self.expect(TokenKind::LeftArrow)?;
+                        let _ = self.parse_expr_nested()?;
+                        if !self.check(&TokenKind::Comma) {
+                            break;
+                        }
+                        self.advance();
+                    }
+                }
+                TlaExpr::new(TlaExprKind::Ident(module.name), module.span)
+            } else {
+                // Use parse_expr_nested for LET definition bodies to avoid treating
+                // internal /\ or \/ as bullet markers
+                self.parse_expr_nested()?
+            };
             let span = name.span.merge(body.span);
             defs.push(TlaLetDef {
                 name,
@@ -1266,66 +1389,45 @@ impl Parser {
         let start = self.current_span().start;
         self.advance(); // [
 
-        // EXCEPT: [f EXCEPT ![k] = v]
+        // First, try specialized forms that start with an identifier.
         if self.check_ident() {
             let saved_pos = self.position;
+
+            // Function definition:
+            //   [x \in S |-> e]
+            //   [x, y \in S |-> e]
+            //   [x \in S, y \in T |-> e]
+            if let Ok(bindings) = self.parse_bindings() {
+                if self.check(&TokenKind::MapsTo) {
+                    self.advance();
+                    let body = self.parse_expr_nested()?;
+                    let end = self.current_span().end;
+                    self.expect(TokenKind::RBracket)?;
+
+                    // Build nested function definitions from inside out.
+                    let mut result = body;
+                    for binding in bindings.into_iter().rev() {
+                        let span = Span::new(binding.var.span.start, result.span.end);
+                        result = TlaExpr::new(
+                            TlaExprKind::FunctionDef {
+                                var: binding.var,
+                                domain: Box::new(binding.domain),
+                                body: Box::new(result),
+                            },
+                            span,
+                        );
+                    }
+
+                    let full_span = Span::new(start, end);
+                    return Ok(TlaExpr::new(result.kind, full_span));
+                }
+            }
+
+            // Restore and try record / record-set forms.
+            self.position = saved_pos;
             let name = self.expect_ident()?;
 
-            if self.check(&TokenKind::Except) {
-                self.advance();
-                let updates = self.parse_except_updates()?;
-                let end = self.current_span().end;
-                self.expect(TokenKind::RBracket)?;
-                return Ok(TlaExpr::new(
-                    TlaExprKind::Except {
-                        base: Box::new(TlaExpr::new(TlaExprKind::Ident(name.name), name.span)),
-                        updates,
-                    },
-                    Span::new(start, end),
-                ));
-            }
-
-            // Check for function definition: [x \in S |-> e] or [x \in S, y \in T |-> e]
-            if self.check(&TokenKind::SetIn) {
-                self.advance();
-                let domain = self.parse_expr_nested()?;
-
-                // Collect all bindings
-                let mut bindings = vec![(name, domain)];
-                while self.check(&TokenKind::Comma) {
-                    self.advance();
-                    let var = self.expect_ident()?;
-                    self.expect(TokenKind::SetIn)?;
-                    let dom = self.parse_expr_nested()?;
-                    bindings.push((var, dom));
-                }
-
-                self.expect(TokenKind::MapsTo)?;
-                let body = self.parse_expr_nested()?;
-                let end = self.current_span().end;
-                self.expect(TokenKind::RBracket)?;
-
-                // Build nested function definitions from inside out
-                // [x \in S, y \in T |-> e] becomes [x \in S |-> [y \in T |-> e]]
-                let mut result = body;
-                for (var, dom) in bindings.into_iter().rev() {
-                    let span = Span::new(var.span.start, result.span.end);
-                    result = TlaExpr::new(
-                        TlaExprKind::FunctionDef {
-                            var,
-                            domain: Box::new(dom),
-                            body: Box::new(result),
-                        },
-                        span,
-                    );
-                }
-
-                let full_span = Span::new(start, end);
-                // The outermost result is already a FunctionDef, just adjust span
-                return Ok(TlaExpr::new(result.kind, full_span));
-            }
-
-            // Check for record: [a |-> e, ...]
+            // Record: [a |-> e, ...]
             if self.check(&TokenKind::MapsTo) {
                 self.advance();
                 let first_value = self.parse_expr_nested()?;
@@ -1347,7 +1449,7 @@ impl Parser {
                 ));
             }
 
-            // Check for record set: [a: S, b: T]
+            // Record set: [a: S, b: T]
             if self.check(&TokenKind::Colon) {
                 self.advance();
                 let first_type = self.parse_expr_nested()?;
@@ -1369,14 +1471,32 @@ impl Parser {
                 ));
             }
 
-            // Restore position if none of the above
+            // Restore position if none of the above.
             self.position = saved_pos;
         }
 
-        // Try parsing as function set [Domain -> Range]
-        // This doesn't start with an identifier, so we need to parse an expression
-        let domain = self.parse_expr_nested()?;
+        // Parse general bracket forms beginning with an expression:
+        //   [base EXCEPT ![...] = ...]
+        //   [Domain -> Range]
+        //   [A]_vars
+        let base = self.parse_expr_nested()?;
 
+        // EXCEPT: [base EXCEPT ![k] = v]
+        if self.check(&TokenKind::Except) {
+            self.advance();
+            let updates = self.parse_except_updates()?;
+            let end = self.current_span().end;
+            self.expect(TokenKind::RBracket)?;
+            return Ok(TlaExpr::new(
+                TlaExprKind::Except {
+                    base: Box::new(base),
+                    updates,
+                },
+                Span::new(start, end),
+            ));
+        }
+
+        // Function set: [Domain -> Range]
         if self.check(&TokenKind::Arrow) {
             self.advance();
             let range = self.parse_expr_nested()?;
@@ -1384,14 +1504,14 @@ impl Parser {
             self.expect(TokenKind::RBracket)?;
             return Ok(TlaExpr::new(
                 TlaExprKind::FunctionSet {
-                    domain: Box::new(domain),
+                    domain: Box::new(base),
                     range: Box::new(range),
                 },
                 Span::new(start, end),
             ));
         }
 
-        // Box action [A]_v
+        // Box action: [A]_v
         if self.check(&TokenKind::RBracket) {
             self.advance();
             // Check for subscript: either Underscore token or identifier starting with _
@@ -1401,7 +1521,7 @@ impl Parser {
                 let end = vars.span.end;
                 return Ok(TlaExpr::new(
                     TlaExprKind::BoxAction {
-                        action: Box::new(domain),
+                        action: Box::new(base),
                         vars: Box::new(vars),
                     },
                     Span::new(start, end),
@@ -1418,15 +1538,13 @@ impl Parser {
                     let end = vars.span.end;
                     return Ok(TlaExpr::new(
                         TlaExprKind::BoxAction {
-                            action: Box::new(domain),
+                            action: Box::new(base),
                             vars: Box::new(vars),
                         },
                         Span::new(start, end),
                     ));
                 }
             }
-            // Just [expr] - function application without explicit arg?
-            // This is a parse error for now
         }
 
         Err(ParseError::InvalidSyntax {
@@ -1442,22 +1560,27 @@ impl Parser {
             self.expect(TokenKind::Bang)?;
 
             let mut path = Vec::new();
-            while self.check(&TokenKind::LBracket) {
-                self.advance();
-                // Parse comma-separated indices: [a, b, c]
-                path.push(self.parse_expr_nested()?);
-                while self.check(&TokenKind::Comma) {
+            loop {
+                if self.check(&TokenKind::LBracket) {
                     self.advance();
+                    // Parse comma-separated indices: [a, b, c]
                     path.push(self.parse_expr_nested()?);
+                    while self.check(&TokenKind::Comma) {
+                        self.advance();
+                        path.push(self.parse_expr_nested()?);
+                    }
+                    self.expect(TokenKind::RBracket)?;
+                    continue;
                 }
-                self.expect(TokenKind::RBracket)?;
-            }
 
-            // Also handle .field access in EXCEPT
-            while self.check(&TokenKind::Dot) {
-                self.advance();
-                let field = self.expect_ident()?;
-                path.push(TlaExpr::new(TlaExprKind::String(field.name), field.span));
+                // Handle .field access in EXCEPT and allow chaining with [index].
+                if self.check(&TokenKind::Dot) {
+                    self.advance();
+                    let field = self.expect_ident()?;
+                    path.push(TlaExpr::new(TlaExprKind::String(field.name), field.span));
+                    continue;
+                }
+                break;
             }
 
             self.expect(TokenKind::Eq)?;
@@ -1587,6 +1710,53 @@ impl Parser {
         }
     }
 
+    /// Skip a nested module block that starts at "---- MODULE ... ----".
+    fn skip_nested_module(&mut self) {
+        if !(self.check(&TokenKind::ModuleStart) && self.peek_is(&TokenKind::Module)) {
+            return;
+        }
+
+        // Consume "---- MODULE"
+        self.advance();
+        self.advance();
+
+        let mut depth = 1usize;
+        while !self.is_at_end() && depth > 0 {
+            if self.check(&TokenKind::ModuleStart) && self.peek_is(&TokenKind::Module) {
+                self.advance();
+                self.advance();
+                depth += 1;
+                continue;
+            }
+            if self.check(&TokenKind::ModuleEnd) {
+                self.advance();
+                depth -= 1;
+                continue;
+            }
+            self.advance();
+        }
+    }
+
+    fn recover_declaration(&mut self, start: usize) -> Result<TlaDecl, ParseError> {
+        self.skip_to_next_declaration();
+        while self.check(&TokenKind::ModuleStart) {
+            if self.peek_is(&TokenKind::Module) {
+                self.skip_nested_module();
+            } else {
+                self.advance();
+            }
+        }
+        if !self.is_at_end() && !self.check(&TokenKind::ModuleEnd) {
+            self.parse_declaration()
+        } else {
+            Ok(TlaDecl::Theorem {
+                name: None,
+                expr: TlaExpr::new(TlaExprKind::Bool(true), Span::new(start, start)),
+                span: Span::new(start, start),
+            })
+        }
+    }
+
     fn advance(&mut self) {
         if !self.is_at_end() {
             self.position += 1;
@@ -1619,6 +1789,25 @@ impl Parser {
                 position: self.current_span().start,
             })
         }
+    }
+
+    /// Accept an identifier optionally followed by a signature-like argument list,
+    /// e.g. `Ballot(_)`, `P(_,_)`. The signature is ignored for now.
+    fn expect_ident_with_signature(&mut self) -> Result<TlaIdent, ParseError> {
+        let ident = self.expect_ident()?;
+        if self.check(&TokenKind::LParen) {
+            self.advance();
+            let mut depth = 1usize;
+            while !self.is_at_end() && depth > 0 {
+                if self.check(&TokenKind::LParen) {
+                    depth += 1;
+                } else if self.check(&TokenKind::RParen) {
+                    depth -= 1;
+                }
+                self.advance();
+            }
+        }
+        Ok(ident)
     }
 }
 
