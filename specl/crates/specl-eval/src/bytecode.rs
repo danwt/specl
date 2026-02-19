@@ -3136,6 +3136,20 @@ fn vm_eval_inner(
                             length: 0,
                         })
                     }
+                    VK::Fn(m) if !m.is_empty() => stack.push(m[0].1.clone()),
+                    VK::Fn(_) => {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: 0,
+                            length: 0,
+                        })
+                    }
+                    VK::IntMap(arr) if !arr.is_empty() => stack.push(arr[0].clone()),
+                    VK::IntMap(_) => {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: 0,
+                            length: 0,
+                        })
+                    }
                     _ => return Err(type_mismatch("Seq", &seq_val)),
                 }
             }
@@ -3147,6 +3161,20 @@ fn vm_eval_inner(
                             stack.push(Value::seq(vec![]));
                         } else {
                             stack.push(Value::seq(s[1..].to_vec()));
+                        }
+                    }
+                    VK::Fn(m) => {
+                        if m.is_empty() {
+                            stack.push(Value::func(Arc::new(vec![])));
+                        } else {
+                            stack.push(Value::func(Arc::new(m[1..].to_vec())));
+                        }
+                    }
+                    VK::IntMap(arr) => {
+                        if arr.is_empty() {
+                            stack.push(Value::intmap(Arc::new(vec![])));
+                        } else {
+                            stack.push(Value::intmap(Arc::new(arr[1..].to_vec())));
                         }
                     }
                     _ => return Err(type_mismatch("Seq", &seq_val)),

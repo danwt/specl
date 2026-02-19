@@ -562,6 +562,16 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     index: 0,
                     length: 0,
                 }),
+                VK::Fn(m) if !m.is_empty() => Ok(m[0].1.clone()),
+                VK::Fn(_) => Err(EvalError::IndexOutOfBounds {
+                    index: 0,
+                    length: 0,
+                }),
+                VK::IntMap(arr) if !arr.is_empty() => Ok(arr[0].clone()),
+                VK::IntMap(_) => Err(EvalError::IndexOutOfBounds {
+                    index: 0,
+                    length: 0,
+                }),
                 _ => Err(type_mismatch("Seq", &seq_val)),
             }
         }
@@ -571,6 +581,12 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             match seq_val.kind() {
                 VK::Seq(s) if !s.is_empty() => Ok(Value::seq(s[1..].to_vec())),
                 VK::Seq(_) => Ok(Value::seq(vec![])),
+                VK::Fn(m) if !m.is_empty() => Ok(Value::func(Arc::new(m[1..].to_vec()))),
+                VK::Fn(_) => Ok(Value::func(Arc::new(vec![]))),
+                VK::IntMap(arr) if !arr.is_empty() => {
+                    Ok(Value::intmap(Arc::new(arr[1..].to_vec())))
+                }
+                VK::IntMap(_) => Ok(Value::intmap(Arc::new(vec![]))),
                 _ => Err(type_mismatch("Seq", &seq_val)),
             }
         }
