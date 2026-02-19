@@ -745,6 +745,8 @@ impl TypeChecker {
                         self.unify(key_ty.as_ref(), &Type::Int, seq_expr.span)?;
                         *val_ty
                     }
+                    // Generic function params may still be unconstrained here; defer by returning fresh elem type.
+                    Type::Var(_) => self.var_gen.fresh_type(),
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Seq(Box::new(self.var_gen.fresh_type())),
@@ -765,6 +767,8 @@ impl TypeChecker {
                         self.unify(key_ty.as_ref(), &Type::Int, seq_expr.span)?;
                         Type::Fn(key_ty, val_ty)
                     }
+                    // Preserve unconstrained type variables; downstream constraints/calls can refine them.
+                    Type::Var(_) => seq_ty,
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Seq(Box::new(self.var_gen.fresh_type())),
@@ -969,12 +973,20 @@ impl TypeChecker {
                 match (&resolved_left, &resolved_right) {
                     (Type::Set(_), Type::Set(_)) => {
                         self.unify(left_ty, right_ty, right_span)?;
-                        Ok(left_ty.clone())
+                        Ok(self.env.resolve_type(left_ty))
                     }
                     (Type::Fn(_, _), Type::Fn(_, _)) => {
                         // Dict merge with | operator
                         self.unify(left_ty, right_ty, right_span)?;
-                        Ok(left_ty.clone())
+                        Ok(self.env.resolve_type(left_ty))
+                    }
+                    (Type::Var(_), Type::Set(_)) | (Type::Set(_), Type::Var(_)) => {
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(self.env.resolve_type(left_ty))
+                    }
+                    (Type::Var(_), Type::Fn(_, _)) | (Type::Fn(_, _), Type::Var(_)) => {
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(self.env.resolve_type(left_ty))
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: Type::Set(Box::new(self.var_gen.fresh_type())),
@@ -990,6 +1002,10 @@ impl TypeChecker {
 
                 match (&resolved_left, &resolved_right) {
                     (Type::Set(_), Type::Set(_)) => {
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(Type::Bool)
+                    }
+                    (Type::Var(_), Type::Set(_)) | (Type::Set(_), Type::Var(_)) => {
                         self.unify(left_ty, right_ty, right_span)?;
                         Ok(Type::Bool)
                     }
@@ -1009,7 +1025,18 @@ impl TypeChecker {
                 match (&resolved_left, &resolved_right) {
                     (Type::Seq(_), Type::Seq(_)) => {
                         self.unify(left_ty, right_ty, right_span)?;
-                        Ok(left_ty.clone())
+                        Ok(self.env.resolve_type(left_ty))
+                    }
+                    (Type::Seq(_), Type::Var(_)) | (Type::Var(_), Type::Seq(_)) => {
+                        self.unify(left_ty, right_ty, right_span)?;
+                        Ok(self.env.resolve_type(left_ty))
+                    }
+                    (Type::Var(_), Type::Var(_)) => {
+                        let elem_ty = self.var_gen.fresh_type();
+                        let seq_ty = Type::Seq(Box::new(elem_ty));
+                        self.unify(left_ty, &seq_ty, left_span)?;
+                        self.unify(right_ty, &seq_ty, right_span)?;
+                        Ok(seq_ty)
                     }
                     _ => Err(TypeError::TypeMismatch {
                         expected: Type::Seq(Box::new(self.var_gen.fresh_type())),

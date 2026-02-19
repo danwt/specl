@@ -565,7 +565,7 @@ impl Translator {
                 if self.set_constants.contains(name) {
                     return Some(specl::TypeExpr::Set(
                         Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                            "Int",
+                            "_",
                             default_span,
                         ))),
                         default_span,
@@ -595,10 +595,10 @@ impl Translator {
                 self.infer_type_from_expr(&elements[0])
             }
             TlaExprKind::SetEnum { .. } => {
-                // Empty set {} - type is Set[Int] by default
+                // Empty set {} - keep element type inferred.
                 Some(specl::TypeExpr::Set(
                     Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                        "Int",
+                        "_",
                         default_span,
                     ))),
                     default_span,
@@ -666,10 +666,9 @@ impl Translator {
                 specl::TypeExpr::Named(specl::Ident::new("Int", default_span)),
             ),
             TlaExprKind::Ident(_) => {
-                // For set identifiers like Server, Value, etc., the element type is Int
-                // (TLA+ model values are represented as integers)
+                // For abstract set identifiers (Server, Value, etc.), keep element type inferred.
                 Some(specl::TypeExpr::Named(specl::Ident::new(
-                    "Int",
+                    "_",
                     default_span,
                 )))
             }
@@ -1170,7 +1169,7 @@ impl Translator {
                                 name.clone(),
                                 specl::TypeExpr::Set(
                                     Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                        "Int",
+                                        "_",
                                         default_span,
                                     ))),
                                     default_span,
@@ -1194,7 +1193,7 @@ impl Translator {
                             name.clone(),
                             specl::TypeExpr::Set(
                                 Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                    "Int",
+                                    "_",
                                     default_span,
                                 ))),
                                 default_span,
@@ -1218,7 +1217,7 @@ impl Translator {
                                 name.clone(),
                                 specl::TypeExpr::Set(
                                     Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                        "Int",
+                                        "_",
                                         default_span,
                                     ))),
                                     default_span,
@@ -1244,7 +1243,7 @@ impl Translator {
                             name,
                             specl::TypeExpr::Set(
                                 Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                    "Int",
+                                    "_",
                                     default_span,
                                 ))),
                                 default_span,
@@ -1258,7 +1257,7 @@ impl Translator {
                             name,
                             specl::TypeExpr::Set(
                                 Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                    "Int",
+                                    "_",
                                     default_span,
                                 ))),
                                 default_span,
@@ -1274,7 +1273,7 @@ impl Translator {
                             name,
                             specl::TypeExpr::Set(
                                 Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                    "Int",
+                                    "_",
                                     default_span,
                                 ))),
                                 default_span,
@@ -1467,10 +1466,10 @@ impl Translator {
             if let TlaDecl::Constant { names, span } = decl {
                 for name in names {
                     let ty = if translator.set_constants.contains(&name.name) {
-                        // Constants used as set domains are Set[Int]
+                        // Constants used as set domains are sets of model values.
                         specl::TypeExpr::Set(
                             Box::new(specl::TypeExpr::Named(specl::Ident::new(
-                                "Int",
+                                "_",
                                 translate_span(name.span),
                             ))),
                             translate_span(name.span),
@@ -1590,16 +1589,30 @@ impl Translator {
             decls.push(specl::Decl::Action(action));
         }
 
-        // Emit helper operators as func declarations
-        for (name, (params, body)) in &translator.helper_ops {
-            let func_decl = translator.translate_func(name, params, body)?;
-            decls.push(specl::Decl::Func(func_decl));
-        }
+        // Emit helper/stateful funcs only when there is executable/checkable behavior in the module.
+        // Some corpus modules are pure ASSUME/definition files; emitting unused helpers there can
+        // introduce translator-only artifacts that fail Specl type checking.
+        let has_behavioral_decl = decls.iter().any(|d| {
+            matches!(
+                d,
+                specl::Decl::Init(_)
+                    | specl::Decl::Action(_)
+                    | specl::Decl::Invariant(_)
+                    | specl::Decl::Property(_)
+            )
+        });
+        if has_behavioral_decl {
+            // Emit helper operators as func declarations
+            for (name, (params, body)) in &translator.helper_ops {
+                let func_decl = translator.translate_func(name, params, body)?;
+                decls.push(specl::Decl::Func(func_decl));
+            }
 
-        // Also emit stateful predicates as func declarations (they reference state but don't modify it)
-        for (name, (params, body)) in &translator.stateful_predicates {
-            let func_decl = translator.translate_func(name, params, body)?;
-            decls.push(specl::Decl::Func(func_decl));
+            // Also emit stateful predicates as func declarations (they reference state but don't modify it)
+            for (name, (params, body)) in &translator.stateful_predicates {
+                let func_decl = translator.translate_func(name, params, body)?;
+                decls.push(specl::Decl::Func(func_decl));
+            }
         }
 
         // Note: Specl auto-generates next from all actions, so we don't emit a next block
@@ -2486,11 +2499,13 @@ impl Translator {
                 let bindings_specl: Result<Vec<_>, _> =
                     bindings.iter().map(|b| self.translate_binding(b)).collect();
                 let body_expr = self.translate_except_value(body, in_action, at_replacement)?;
+                let wrapped_body =
+                    specl::Expr::new(specl::ExprKind::Paren(Box::new(body_expr)), span);
                 Ok(specl::Expr::new(
                     specl::ExprKind::Quantifier {
                         kind: specl::QuantifierKind::Forall,
                         bindings: bindings_specl?,
-                        body: Box::new(body_expr),
+                        body: Box::new(wrapped_body),
                     },
                     span,
                 ))
@@ -2500,11 +2515,13 @@ impl Translator {
                 let bindings_specl: Result<Vec<_>, _> =
                     bindings.iter().map(|b| self.translate_binding(b)).collect();
                 let body_expr = self.translate_except_value(body, in_action, at_replacement)?;
+                let wrapped_body =
+                    specl::Expr::new(specl::ExprKind::Paren(Box::new(body_expr)), span);
                 Ok(specl::Expr::new(
                     specl::ExprKind::Quantifier {
                         kind: specl::QuantifierKind::Exists,
                         bindings: bindings_specl?,
-                        body: Box::new(body_expr),
+                        body: Box::new(wrapped_body),
                     },
                     span,
                 ))
@@ -2677,22 +2694,25 @@ impl Translator {
                                             span,
                                         }],
                                         body: Box::new(specl::Expr::new(
-                                            specl::ExprKind::Binary {
-                                                op: specl::BinOp::In,
-                                                left: Box::new(specl::Expr::new(
-                                                    specl::ExprKind::Index {
-                                                        base: Box::new(x_k),
-                                                        index: Box::new(specl::Expr::new(
-                                                            specl::ExprKind::Ident(
-                                                                "__i".to_string(),
-                                                            ),
-                                                            span,
-                                                        )),
-                                                    },
-                                                    span,
-                                                )),
-                                                right: Box::new(elem_set),
-                                            },
+                                            specl::ExprKind::Paren(Box::new(specl::Expr::new(
+                                                specl::ExprKind::Binary {
+                                                    op: specl::BinOp::In,
+                                                    left: Box::new(specl::Expr::new(
+                                                        specl::ExprKind::Index {
+                                                            base: Box::new(x_k),
+                                                            index: Box::new(specl::Expr::new(
+                                                                specl::ExprKind::Ident(
+                                                                    "__i".to_string(),
+                                                                ),
+                                                                span,
+                                                            )),
+                                                        },
+                                                        span,
+                                                    )),
+                                                    right: Box::new(elem_set),
+                                                },
+                                                span,
+                                            ))),
                                             span,
                                         )),
                                     },
@@ -2792,7 +2812,10 @@ impl Translator {
                                     ),
                                     span,
                                 }],
-                                body: Box::new(body),
+                                body: Box::new(specl::Expr::new(
+                                    specl::ExprKind::Paren(Box::new(body)),
+                                    span,
+                                )),
                             },
                             span,
                         );
@@ -2876,20 +2899,25 @@ impl Translator {
                                         span,
                                     }],
                                     body: Box::new(specl::Expr::new(
-                                        specl::ExprKind::Binary {
-                                            op: specl::BinOp::In,
-                                            left: Box::new(specl::Expr::new(
-                                                specl::ExprKind::Index {
-                                                    base: Box::new(x),
-                                                    index: Box::new(specl::Expr::new(
-                                                        specl::ExprKind::Ident("__i".to_string()),
-                                                        span,
-                                                    )),
-                                                },
-                                                span,
-                                            )),
-                                            right: Box::new(s),
-                                        },
+                                        specl::ExprKind::Paren(Box::new(specl::Expr::new(
+                                            specl::ExprKind::Binary {
+                                                op: specl::BinOp::In,
+                                                left: Box::new(specl::Expr::new(
+                                                    specl::ExprKind::Index {
+                                                        base: Box::new(x),
+                                                        index: Box::new(specl::Expr::new(
+                                                            specl::ExprKind::Ident(
+                                                                "__i".to_string(),
+                                                            ),
+                                                            span,
+                                                        )),
+                                                    },
+                                                    span,
+                                                )),
+                                                right: Box::new(s),
+                                            },
+                                            span,
+                                        ))),
                                         span,
                                     )),
                                 },
