@@ -1935,7 +1935,7 @@ fn cmd_check(
         use_por: actual_por,
         use_symmetry: actual_symmetry,
         fast_check: actual_fast,
-        progress: Some(progress),
+        progress: Some(progress.clone()),
         action_shuffle_seed: None,
         profile,
         bloom,
@@ -1993,6 +1993,8 @@ fn cmd_check(
     }
 
     let secs = elapsed.as_secs_f64();
+    let explored_states = explorer.store().len();
+    let observed_max_depth = progress.depth.load(std::sync::atomic::Ordering::Relaxed);
 
     if output_format == OutputFormat::Dot {
         // DOT state graph output (BFS exploration tree)
@@ -2112,12 +2114,13 @@ fn cmd_check(
                 } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
                 CheckOutcome::InvariantViolation { invariant, trace } => {
                     JsonOutput::new("invariant_violation", secs)
+                        .with_states(explored_states, observed_max_depth)
                         .with_invariant(invariant)
                         .with_trace(trace_to_json(&trace, &var_names))
                 }
-                CheckOutcome::Deadlock { trace } => {
-                    JsonOutput::new("deadlock", secs).with_trace(trace_to_json(&trace, &var_names))
-                }
+                CheckOutcome::Deadlock { trace } => JsonOutput::new("deadlock", secs)
+                    .with_states(explored_states, observed_max_depth)
+                    .with_trace(trace_to_json(&trace, &var_names)),
                 CheckOutcome::StateLimitReached {
                     states_explored,
                     max_depth,
