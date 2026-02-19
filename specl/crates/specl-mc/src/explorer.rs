@@ -3774,8 +3774,18 @@ impl Explorer {
         let enabled_set: HashSet<usize> = enabled.iter().copied().collect();
         let n_actions = self.spec.actions.len();
 
-        // Deterministic key selection: first enabled action in canonical order
-        let t_key = enabled[0];
+        // Key selection: prefer actions relevant to invariants (COI) to avoid missing
+        // violation traces. If no COI-relevant action is enabled, fall back to first enabled.
+        let t_key = if let Some(ref relevant) = self.relevant_actions {
+            let relevant_set: HashSet<usize> = relevant.iter().copied().collect();
+            enabled
+                .iter()
+                .find(|a| relevant_set.contains(a))
+                .copied()
+                .unwrap_or(enabled[0])
+        } else {
+            enabled[0]
+        };
         let mut stubborn: HashSet<usize> = HashSet::with_capacity(enabled.len());
         let mut worklist: Vec<usize> = vec![t_key];
         stubborn.insert(t_key);
@@ -3808,11 +3818,29 @@ impl Explorer {
         }
 
         // Return only enabled actions in the stubborn set, preserving input order
-        let result: Vec<usize> = enabled
+        let mut result: Vec<usize> = enabled
             .iter()
             .filter(|a| stubborn.contains(a))
             .copied()
             .collect();
+
+        // Safety fix: ensure stubborn set includes at least one COI-relevant action
+        // to avoid missing invariant violation traces. If the stubborn set contains
+        // only irrelevant actions, add all enabled COI-relevant actions.
+        if let Some(ref relevant) = self.relevant_actions {
+            let relevant_set: HashSet<usize> = relevant.iter().copied().collect();
+            let has_relevant = result.iter().any(|a| relevant_set.contains(a));
+            if !has_relevant {
+                let coi_enabled: Vec<usize> = enabled
+                    .iter()
+                    .filter(|a| relevant_set.contains(a))
+                    .copied()
+                    .collect();
+                if !coi_enabled.is_empty() {
+                    result.extend(coi_enabled);
+                }
+            }
+        }
 
         result
     }
