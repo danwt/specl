@@ -311,6 +311,9 @@ impl Parser {
         while !self.check(TokenKind::RBrace) {
             if self.check(TokenKind::Let) {
                 stmts.push(self.parse_statement_let()?);
+                // Pretty-printer emits a trailing semicolon for action effects.
+                // Accept it after let..in expressions too.
+                self.match_token(TokenKind::Semicolon);
                 break; // statement-let consumed all remaining statements
             }
             stmts.push(self.parse_expr()?);
@@ -1527,6 +1530,26 @@ action Increment() {
         match &module.decls[0] {
             Decl::Action(a) => {
                 assert_eq!(a.name.name, "Increment");
+                assert_eq!(a.body.requires.len(), 1);
+                assert!(a.body.effect.is_some());
+            }
+            _ => panic!("expected action decl"),
+        }
+    }
+
+    #[test]
+    fn test_parse_action_with_let_effect_and_trailing_semicolon() {
+        let source = r#"
+module Test
+action Move() {
+    require true;
+    let x = 1 in x + 1;
+}
+"#;
+        let module = parse(source).unwrap();
+        match &module.decls[0] {
+            Decl::Action(a) => {
+                assert_eq!(a.name.name, "Move");
                 assert_eq!(a.body.requires.len(), 1);
                 assert!(a.body.effect.is_some());
             }
