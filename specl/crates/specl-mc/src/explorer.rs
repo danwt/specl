@@ -407,6 +407,11 @@ pub struct Explorer {
     spec: CompiledSpec,
     /// Constant values.
     consts: Vec<Value>,
+    /// Finite domain for explicit `String` types, built from string literals in the spec.
+    string_domain: Vec<Value>,
+    /// Finite fallback domain for unknown type variables, built from string literals
+    /// plus provided constant values.
+    var_domain: Vec<Value>,
     /// State store.
     store: StateStore,
     /// Configuration.
@@ -734,6 +739,157 @@ fn collect_param_refs_recursive(
         | CompiledExpr::Unchanged(_)
         | CompiledExpr::Changes(_)
         | CompiledExpr::Enabled(_) => {}
+    }
+}
+
+fn collect_string_literals_in_expr(
+    expr: &CompiledExpr,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match expr {
+        CompiledExpr::String(s) => {
+            out.insert(s.clone());
+        }
+        CompiledExpr::Binary { left, right, .. } => {
+            collect_string_literals_in_expr(left, out);
+            collect_string_literals_in_expr(right, out);
+        }
+        CompiledExpr::Unary { operand, .. } => {
+            collect_string_literals_in_expr(operand, out);
+        }
+        CompiledExpr::Index { base, index } => {
+            collect_string_literals_in_expr(base, out);
+            collect_string_literals_in_expr(index, out);
+        }
+        CompiledExpr::FnUpdate { base, key, value } => {
+            collect_string_literals_in_expr(base, out);
+            collect_string_literals_in_expr(key, out);
+            collect_string_literals_in_expr(value, out);
+        }
+        CompiledExpr::FnLit { domain, body } => {
+            collect_string_literals_in_expr(domain, out);
+            collect_string_literals_in_expr(body, out);
+        }
+        CompiledExpr::SetComprehension {
+            element,
+            domain,
+            filter,
+        } => {
+            collect_string_literals_in_expr(element, out);
+            collect_string_literals_in_expr(domain, out);
+            if let Some(f) = filter {
+                collect_string_literals_in_expr(f, out);
+            }
+        }
+        CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
+            collect_string_literals_in_expr(domain, out);
+            collect_string_literals_in_expr(body, out);
+        }
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
+            collect_string_literals_in_expr(cond, out);
+            collect_string_literals_in_expr(then_branch, out);
+            collect_string_literals_in_expr(else_branch, out);
+        }
+        CompiledExpr::Let { value, body } => {
+            collect_string_literals_in_expr(value, out);
+            collect_string_literals_in_expr(body, out);
+        }
+        CompiledExpr::Len(e)
+        | CompiledExpr::Keys(e)
+        | CompiledExpr::Values(e)
+        | CompiledExpr::Powerset(e)
+        | CompiledExpr::BigUnion(e)
+        | CompiledExpr::SeqHead(e)
+        | CompiledExpr::SeqTail(e) => {
+            collect_string_literals_in_expr(e, out);
+        }
+        CompiledExpr::Fix { domain, predicate } => {
+            if let Some(domain) = domain {
+                collect_string_literals_in_expr(domain, out);
+            }
+            collect_string_literals_in_expr(predicate, out);
+        }
+        CompiledExpr::Range { lo, hi } => {
+            collect_string_literals_in_expr(lo, out);
+            collect_string_literals_in_expr(hi, out);
+        }
+        CompiledExpr::Slice { base, lo, hi } => {
+            collect_string_literals_in_expr(base, out);
+            collect_string_literals_in_expr(lo, out);
+            collect_string_literals_in_expr(hi, out);
+        }
+        CompiledExpr::Call { func, args } => {
+            collect_string_literals_in_expr(func, out);
+            for a in args {
+                collect_string_literals_in_expr(a, out);
+            }
+        }
+        CompiledExpr::ActionCall { args, .. } => {
+            for a in args {
+                collect_string_literals_in_expr(a, out);
+            }
+        }
+        CompiledExpr::SetLit(elems)
+        | CompiledExpr::SeqLit(elems)
+        | CompiledExpr::TupleLit(elems) => {
+            for e in elems {
+                collect_string_literals_in_expr(e, out);
+            }
+        }
+        CompiledExpr::DictLit(pairs) => {
+            for (k, v) in pairs {
+                collect_string_literals_in_expr(k, out);
+                collect_string_literals_in_expr(v, out);
+            }
+        }
+        CompiledExpr::Field { base, .. } => {
+            collect_string_literals_in_expr(base, out);
+        }
+        CompiledExpr::RecordUpdate { base, updates } => {
+            collect_string_literals_in_expr(base, out);
+            for (_, v) in updates {
+                collect_string_literals_in_expr(v, out);
+            }
+        }
+        CompiledExpr::Bool(_)
+        | CompiledExpr::Int(_)
+        | CompiledExpr::Const(_)
+        | CompiledExpr::Var(_)
+        | CompiledExpr::PrimedVar(_)
+        | CompiledExpr::Local(_)
+        | CompiledExpr::Param(_)
+        | CompiledExpr::Unchanged(_)
+        | CompiledExpr::Changes(_)
+        | CompiledExpr::Enabled(_) => {}
+    }
+}
+
+fn collect_strings_from_value(value: &Value, out: &mut std::collections::BTreeSet<String>) {
+    if let Some(s) = value.as_string() {
+        out.insert(s.to_string());
+        return;
+    }
+    if let Some(set) = value.as_set() {
+        for v in set {
+            collect_strings_from_value(v, out);
+        }
+        return;
+    }
+    if let Some(seq) = value.as_seq() {
+        for v in seq {
+            collect_strings_from_value(v, out);
+        }
+        return;
+    }
+    if let Some(map) = value.as_fn() {
+        for (k, v) in map {
+            collect_strings_from_value(k, out);
+            collect_strings_from_value(v, out);
+        }
     }
 }
 
@@ -1337,9 +1493,40 @@ impl Explorer {
             mask
         });
 
+        // Build finite domains for explicit-state enumeration.
+        let mut string_atoms = std::collections::BTreeSet::new();
+        collect_string_literals_in_expr(&spec.init, &mut string_atoms);
+        for action in &spec.actions {
+            collect_string_literals_in_expr(&action.guard, &mut string_atoms);
+            collect_string_literals_in_expr(&action.effect, &mut string_atoms);
+        }
+        for inv in &spec.invariants {
+            collect_string_literals_in_expr(&inv.body, &mut string_atoms);
+        }
+        for inv in &spec.auxiliary_invariants {
+            collect_string_literals_in_expr(&inv.body, &mut string_atoms);
+        }
+        let string_domain: Vec<Value> = if string_atoms.is_empty() {
+            vec![Value::none()]
+        } else {
+            string_atoms.iter().cloned().map(Value::string).collect()
+        };
+
+        let mut var_atoms = string_atoms;
+        for c in &consts {
+            collect_strings_from_value(c, &mut var_atoms);
+        }
+        let var_domain: Vec<Value> = if var_atoms.is_empty() {
+            string_domain.clone()
+        } else {
+            var_atoms.into_iter().map(Value::string).collect()
+        };
+
         let mut explorer = Self {
             spec,
             consts,
+            string_domain,
+            var_domain,
             store,
             config,
             cached_effects,
@@ -3020,6 +3207,8 @@ impl Explorer {
     fn type_domain(&self, ty: &specl_types::Type) -> Vec<Value> {
         match ty {
             specl_types::Type::Bool => vec![Value::bool(false), Value::bool(true)],
+            specl_types::Type::String => self.string_domain.clone(),
+            specl_types::Type::Var(_) => self.var_domain.clone(),
             specl_types::Type::Nat | specl_types::Type::Int => {
                 unreachable!(
                     "unbounded type {:?} in explicit-state checking — should be caught by CLI before exploration",
