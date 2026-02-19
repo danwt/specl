@@ -252,6 +252,11 @@ impl<'a> Lexer<'a> {
                     TokenKind::DefEq
                 }
             }
+            Some('<') => {
+                // Accept legacy ASCII variant "=<" as "<=".
+                self.advance();
+                TokenKind::Le
+            }
             Some('>') => {
                 self.advance();
                 TokenKind::Implies
@@ -573,11 +578,12 @@ mod tests {
     #[test]
     fn test_comparison() {
         assert_eq!(
-            lex("= # < <= > >="),
+            lex("= # < <= =< > >="),
             vec![
                 TokenKind::Eq,
                 TokenKind::Neq,
                 TokenKind::Lt,
+                TokenKind::Le,
                 TokenKind::Le,
                 TokenKind::Gt,
                 TokenKind::Ge,
