@@ -2962,7 +2962,83 @@ fn parse_constants_as_pairs(constants: &[String]) -> Vec<(String, i64)> {
         .collect()
 }
 
+fn split_top_level_csv(s: &str) -> CliResult<Vec<&str>> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut brace_depth = 0i32;
+    let mut bracket_depth = 0i32;
+    let mut paren_depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for (idx, ch) in s.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+                continue;
+            }
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if ch == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' => in_string = true,
+            '{' => brace_depth += 1,
+            '}' => brace_depth -= 1,
+            '[' => bracket_depth += 1,
+            ']' => bracket_depth -= 1,
+            '(' => paren_depth += 1,
+            ')' => paren_depth -= 1,
+            ',' if brace_depth == 0 && bracket_depth == 0 && paren_depth == 0 => {
+                let part = s[start..idx].trim();
+                if !part.is_empty() {
+                    parts.push(part);
+                }
+                start = idx + 1;
+            }
+            _ => {}
+        }
+
+        if brace_depth < 0 || bracket_depth < 0 || paren_depth < 0 {
+            return Err(CliError::Other {
+                message: format!("cannot parse value '{}'", s),
+            });
+        }
+    }
+
+    if in_string || brace_depth != 0 || bracket_depth != 0 || paren_depth != 0 {
+        return Err(CliError::Other {
+            message: format!("cannot parse value '{}'", s),
+        });
+    }
+
+    let tail = s[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail);
+    }
+    Ok(parts)
+}
+
+fn is_model_value_ident(s: &str) -> bool {
+    let mut chars = s.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return false;
+    }
+    chars.all(|c| c == '_' || c.is_ascii_alphanumeric())
+}
+
 fn parse_value(s: &str) -> CliResult<Value> {
+    let s = s.trim();
+
     // Try to parse as integer
     if let Ok(n) = s.parse::<i64>() {
         return Ok(Value::int(n));
@@ -2979,6 +3055,37 @@ fn parse_value(s: &str) -> CliResult<Value> {
     // Try to parse as string (quoted)
     if s.starts_with('"') && s.ends_with('"') {
         return Ok(Value::string(s[1..s.len() - 1].to_string()));
+    }
+
+    // Parse set literal: {a, b, ...}
+    if s.starts_with('{') && s.ends_with('}') {
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return Ok(Value::set(Arc::new(Vec::new())));
+        }
+        let elems = split_top_level_csv(inner)?
+            .into_iter()
+            .map(parse_value)
+            .collect::<CliResult<Vec<_>>>()?;
+        return Ok(Value::set(Arc::new(elems)));
+    }
+
+    // Parse sequence literal: [a, b, ...]
+    if s.starts_with('[') && s.ends_with(']') {
+        let inner = s[1..s.len() - 1].trim();
+        if inner.is_empty() {
+            return Ok(Value::seq(Vec::new()));
+        }
+        let elems = split_top_level_csv(inner)?
+            .into_iter()
+            .map(parse_value)
+            .collect::<CliResult<Vec<_>>>()?;
+        return Ok(Value::seq(elems));
+    }
+
+    // Unquoted model values like c1, Nil, Follower are treated as symbols.
+    if is_model_value_ident(s) {
+        return Ok(Value::string(s.to_string()));
     }
 
     Err(CliError::Other {
