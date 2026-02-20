@@ -398,11 +398,10 @@ fn ic3_with_auxiliary_invariants_dekker() {
     let consts = parse_consts(&[], &spec);
 
     // Add a trivially true auxiliary invariant
-    spec.auxiliary_invariants
-        .push(specl_ir::CompiledInvariant {
-            name: "trivially_true".to_string(),
-            body: specl_ir::CompiledExpr::Bool(true),
-        });
+    spec.auxiliary_invariants.push(specl_ir::CompiledInvariant {
+        name: "trivially_true".to_string(),
+        body: specl_ir::CompiledExpr::Bool(true),
+    });
 
     let config = SymbolicConfig {
         mode: SymbolicMode::Ic3,
