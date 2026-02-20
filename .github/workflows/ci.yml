@@ -20,3 +20,8 @@ jobs:
       - run: cargo clippy --workspace -- -D warnings -A clippy::too_many_arguments
       - run: cargo test --workspace --exclude specl-tla
       - run: cargo test -p specl-tla --test translate_corpus -- --skip benchmark_tla_files_translate
+      - name: Lint showcase examples
+        run: |
+          for f in examples/showcase/*.specl; do
+            cargo run -q --bin specl -- fmt "$f" --lint || exit 1
+          done
