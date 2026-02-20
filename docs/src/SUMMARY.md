@@ -59,5 +59,6 @@
 
 - [TLA+ Comparison](./tla-comparison/index.md)
 - [Architecture and Performance](./architecture/index.md)
+- [Technical Status](./architecture/status.md)
 - [Tips and FAQ](./tips/index.md)
 - [Roadmap](./tips/roadmap.md)

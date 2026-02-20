@@ -35,6 +35,8 @@ action Dec() { require count > 0; count = count - 1 }
 invariant Bounded { count >= 0 and count <= MAX }
 ```
 
+A spec defines a state machine: **`const`** values are fixed at check time (`-c N=3`), **`var`** declarations are the mutable state the checker tracks, **`init`** sets the starting state, **`action`** blocks are transitions (guarded by `require`), and **`invariant`** blocks are safety properties that must hold in every reachable state. Variables not mentioned in an action stay unchanged (implicit frame). `=` assigns, `==` compares.
+
 ## Performance
 
 Faster than TLC (the standard TLA+ model checker) on all benchmarks tested. Written in Rust with a bytecode VM, incremental fingerprinting, guard indexing, and parallel BFS.
