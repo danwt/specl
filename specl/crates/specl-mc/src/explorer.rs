@@ -470,6 +470,10 @@ pub struct Explorer {
     /// NDS[t] = action indices whose firing could disable action t's guard.
     /// Same as NES for the coarse approximation.
     nds: Vec<Vec<usize>>,
+    /// Bitmask of actions that write to variables referenced by invariants.
+    /// Used for POR visibility condition: if stubborn set contains a visible action,
+    /// no reduction is allowed (must explore all enabled actions).
+    visible_actions: u64,
 }
 
 /// Precomputed effect assignments for an action.
@@ -1332,6 +1336,21 @@ impl Explorer {
             })
             .collect();
 
+        // Compute visible actions bitmask for POR visibility condition.
+        // An action is "visible" if it writes to any variable referenced by an invariant.
+        // When POR stubborn set contains a visible action, reduction is disabled (all enabled explored).
+        let inv_vars_union: u64 = inv_dep_masks.iter().fold(0u64, |acc, &m| acc | m);
+        let visible_actions: u64 = action_write_masks
+            .iter()
+            .enumerate()
+            .fold(0u64, |mask, (i, &wm)| {
+                if wm & inv_vars_union != 0 && i < 64 {
+                    mask | (1u64 << i)
+                } else {
+                    mask
+                }
+            });
+
         // Compute guard indexing for early parameter pruning
         let guard_indices: Vec<Option<GuardIndex>> = spec
             .actions
@@ -1556,6 +1575,7 @@ impl Explorer {
             view_mask,
             nes,
             nds,
+            visible_actions,
         };
 
         // Precompute action names for trace reconstruction
@@ -1707,6 +1727,7 @@ impl Explorer {
                         .or_else(|| has_asymmetric_literal(index, sym_var_domain, sym_params))
                 }
                 // Pattern 2: symmetric_param == literal or literal == symmetric_param
+                // Pattern 3: non-symmetric var == symmetric_param (scalar stores process identity)
                 CompiledExpr::Binary {
                     op: BinOp::Eq,
                     left,
@@ -1726,8 +1747,33 @@ impl Explorer {
                         }
                         None
                     };
+                    // Pattern 3: non-symmetric scalar var compared with symmetric param
+                    // (covers guards like `lock == p` and effects like `lock' == p`)
+                    let check_var_param = |a: &CompiledExpr,
+                                           b: &CompiledExpr|
+                     -> Option<String> {
+                        let var_idx = match a {
+                            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => Some(idx),
+                            _ => None,
+                        };
+                        if let Some(var_idx) = var_idx {
+                            if !sym_var_domain.contains_key(var_idx) {
+                                if let CompiledExpr::Param(p) = b {
+                                    if sym_params.contains_key(p) {
+                                        return Some(format!(
+                                            "non-symmetric var (var_idx={}) compared with symmetric param (param_idx={})",
+                                            var_idx, p
+                                        ));
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    };
                     check_param_literal(left, right)
                         .or_else(|| check_param_literal(right, left))
+                        .or_else(|| check_var_param(left, right))
+                        .or_else(|| check_var_param(right, left))
                         .or_else(|| has_asymmetric_literal(left, sym_var_domain, sym_params))
                         .or_else(|| has_asymmetric_literal(right, sym_var_domain, sym_params))
                 }
@@ -3823,6 +3869,19 @@ impl Explorer {
             .filter(|a| stubborn.contains(a))
             .copied()
             .collect();
+
+        // POR visibility condition: if the stubborn set contains any action that
+        // writes to a variable used in an invariant, the reduction is unsound because
+        // it may hide interleavings that lead to invariant violations. In that case,
+        // expand to all enabled actions (no reduction).
+        if result.len() < enabled.len() {
+            let stubborn_mask: u64 = result
+                .iter()
+                .fold(0u64, |m, &a| if a < 64 { m | (1u64 << a) } else { m });
+            if stubborn_mask & self.visible_actions != 0 {
+                return enabled.to_vec();
+            }
+        }
 
         // Safety fix: ensure stubborn set includes at least one COI-relevant action
         // to avoid missing invariant violation traces. If the stubborn set contains
