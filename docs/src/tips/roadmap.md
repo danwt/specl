@@ -16,5 +16,4 @@ These features parse and type-check. They will be implemented in the model check
 ## Planned optimizations
 
 - **Cranelift JIT** — compile guards and effects to native code via Cranelift. Estimated 3-10x additional speedup over the current bytecode VM.
-- **Swarm verification** — N independent search instances with randomized action orderings. Effective for finding bugs in very large state spaces without exhaustive exploration.
 - **Compiled verifier** — SPIN-style approach: generate Rust source code from the spec, compile with `rustc`, `dlopen` the result. Maximum performance for production verification runs.

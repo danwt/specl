@@ -104,8 +104,12 @@ Or invoke it directly:
 ## Development
 
 ```bash
-cargo test --workspace && cargo clippy --workspace
+cargo test --workspace --exclude specl-tla
+cargo test -p specl-tla --test translate_corpus -- --skip benchmark_tla_files_translate
+cargo clippy --workspace
 ```
+
+(The TLA+ translator uses deep recursion that overflows the 8MB default stack in unoptimized debug builds. CI and release builds are not affected.)
 
 ## License
 

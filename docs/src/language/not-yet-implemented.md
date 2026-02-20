@@ -41,5 +41,4 @@ Functions cannot currently call themselves.
 ## Planned future features
 
 - **Cranelift JIT** — compile guards and effects to native code via Cranelift for an estimated 3-10x additional speedup
-- **Swarm verification** — N independent searches with randomized action orderings
 - **Compiled verifier** — SPIN-style: generate Rust source, compile with `rustc`, `dlopen` the result
