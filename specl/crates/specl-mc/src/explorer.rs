@@ -1751,18 +1751,52 @@ impl Explorer {
             return warnings;
         }
 
+        // Build set of symmetric vars whose value type matches a symmetric range.
+        // These are vars like Dict[0..N, 0..N] where values reference domain elements.
+        let mut sym_var_value_overlaps: std::collections::HashSet<usize> =
+            std::collections::HashSet::new();
+        for group in &spec.symmetry_groups {
+            let sym_range = Type::Range(0, (group.domain_size - 1) as i64);
+            for &var_idx in &group.variables {
+                let var = &spec.vars[var_idx];
+                if let Type::Fn(_, v) = &var.ty {
+                    if **v == sym_range {
+                        sym_var_value_overlaps.insert(var_idx);
+                    }
+                }
+            }
+        }
+
         /// Check for asymmetric patterns in a compiled expression.
         /// `sym_params` maps param index -> domain size for params whose range matches a symmetry group.
+        /// `sym_var_value_overlaps` contains var indices whose Dict value type matches the symmetric range.
+        /// `sym_locals` tracks de Bruijn indices of locals bound to symmetric domains.
+        /// `sym_domain_sizes` contains all symmetric domain sizes for local detection.
         fn has_asymmetric_literal(
             expr: &CompiledExpr,
             sym_var_domain: &std::collections::HashMap<usize, usize>,
             sym_params: &std::collections::HashMap<usize, usize>,
+            sym_var_value_overlaps: &std::collections::HashSet<usize>,
+            sym_locals: &std::collections::HashSet<usize>,
+            sym_domain_sizes: &std::collections::HashSet<usize>,
         ) -> Option<String> {
+            let recurse = |e: &CompiledExpr| -> Option<String> {
+                has_asymmetric_literal(
+                    e,
+                    sym_var_domain,
+                    sym_params,
+                    sym_var_value_overlaps,
+                    sym_locals,
+                    sym_domain_sizes,
+                )
+            };
             match expr {
                 // Pattern 1: symmetric_var[literal_int]
+                // Pattern 4: nested dict indexing d[d[i]] — dict value used as key
                 CompiledExpr::Index { base, index } => {
                     if let CompiledExpr::Var(var_idx) = base.as_ref() {
                         if let Some(&domain_size) = sym_var_domain.get(var_idx) {
+                            // Pattern 1: literal index
                             if let CompiledExpr::Int(k) = index.as_ref() {
                                 if *k >= 0 && (*k as usize) < domain_size {
                                     return Some(format!(
@@ -1771,13 +1805,28 @@ impl Explorer {
                                     ));
                                 }
                             }
+                            // Pattern 4: index is itself a dict lookup into a symmetric var
+                            // whose value type overlaps the symmetric domain (e.g., d[d[i]])
+                            if let CompiledExpr::Index {
+                                base: inner_base, ..
+                            } = index.as_ref()
+                            {
+                                if let CompiledExpr::Var(inner_var) = inner_base.as_ref() {
+                                    if sym_var_value_overlaps.contains(inner_var) {
+                                        return Some(format!(
+                                            "nested dict indexing: symmetric var value used as key (outer_var={}, inner_var={})",
+                                            var_idx, inner_var
+                                        ));
+                                    }
+                                }
+                            }
                         }
                     }
-                    has_asymmetric_literal(base, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(index, sym_var_domain, sym_params))
+                    recurse(base).or_else(|| recurse(index))
                 }
                 // Pattern 2: symmetric_param == literal or literal == symmetric_param
                 // Pattern 3: non-symmetric var == symmetric_param (scalar stores process identity)
+                // Pattern 5: dict value from symmetric var compared with domain element
                 CompiledExpr::Binary {
                     op: BinOp::Eq,
                     left,
@@ -1818,116 +1867,231 @@ impl Explorer {
                         }
                         None
                     };
+                    // Pattern 5: dict value from symmetric var (whose value type matches
+                    // the symmetric range) compared with a symmetric param or local.
+                    // Detects `d[i] == i` or `d[i] == p` where d has value type overlapping domain.
+                    let check_index_vs_domain = |idx_expr: &CompiledExpr,
+                                                 other: &CompiledExpr|
+                     -> Option<String> {
+                        if let CompiledExpr::Index { base, .. } = idx_expr {
+                            let base_var = match base.as_ref() {
+                                CompiledExpr::Var(v) | CompiledExpr::PrimedVar(v) => Some(*v),
+                                _ => None,
+                            };
+                            if let Some(v) = base_var {
+                                if sym_var_value_overlaps.contains(&v) {
+                                    match other {
+                                        CompiledExpr::Param(p) if sym_params.contains_key(p) => {
+                                            return Some(format!(
+                                                "dict value from symmetric var (var_idx={}) compared with symmetric param (param_idx={})",
+                                                v, p
+                                            ));
+                                        }
+                                        CompiledExpr::Local(l) if sym_locals.contains(l) => {
+                                            return Some(format!(
+                                                "dict value from symmetric var (var_idx={}) compared with symmetric local (local_idx={})",
+                                                v, l
+                                            ));
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                        None
+                    };
                     check_param_literal(left, right)
                         .or_else(|| check_param_literal(right, left))
                         .or_else(|| check_var_param(left, right))
                         .or_else(|| check_var_param(right, left))
-                        .or_else(|| has_asymmetric_literal(left, sym_var_domain, sym_params))
-                        .or_else(|| has_asymmetric_literal(right, sym_var_domain, sym_params))
+                        .or_else(|| check_index_vs_domain(left, right))
+                        .or_else(|| check_index_vs_domain(right, left))
+                        .or_else(|| recurse(left))
+                        .or_else(|| recurse(right))
                 }
                 CompiledExpr::Binary { left, right, .. } => {
-                    has_asymmetric_literal(left, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(right, sym_var_domain, sym_params))
+                    recurse(left).or_else(|| recurse(right))
                 }
-                CompiledExpr::Unary { operand, .. } => {
-                    has_asymmetric_literal(operand, sym_var_domain, sym_params)
-                }
+                CompiledExpr::Unary { operand, .. } => recurse(operand),
                 CompiledExpr::Forall { domain, body, .. }
                 | CompiledExpr::Exists { domain, body, .. }
                 | CompiledExpr::FnLit { domain, body } => {
-                    has_asymmetric_literal(domain, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(body, sym_var_domain, sym_params))
+                    let domain_result = recurse(domain);
+                    if domain_result.is_some() {
+                        return domain_result;
+                    }
+                    // Check if this binder introduces a local over the symmetric domain.
+                    // If domain is Range(0, N) matching a sym group, track the new local.
+                    let mut new_sym_locals = sym_locals.clone();
+                    let is_sym_domain = matches!(
+                        domain.as_ref(),
+                        CompiledExpr::Range { lo, hi }
+                        if matches!(lo.as_ref(), CompiledExpr::Int(0))
+                            && matches!(hi.as_ref(), CompiledExpr::Int(n) if sym_domain_sizes.contains(&((*n + 1) as usize)))
+                    );
+                    // Shift existing local indices up by 1 (new binder pushes them)
+                    let shifted: std::collections::HashSet<usize> =
+                        new_sym_locals.iter().map(|i| i + 1).collect();
+                    new_sym_locals = shifted;
+                    if is_sym_domain {
+                        new_sym_locals.insert(0);
+                    }
+                    has_asymmetric_literal(
+                        body,
+                        sym_var_domain,
+                        sym_params,
+                        sym_var_value_overlaps,
+                        &new_sym_locals,
+                        sym_domain_sizes,
+                    )
                 }
                 CompiledExpr::SetComprehension {
                     domain,
                     filter,
                     element,
                     ..
-                } => has_asymmetric_literal(domain, sym_var_domain, sym_params)
-                    .or_else(|| {
-                        filter
-                            .as_ref()
-                            .and_then(|f| has_asymmetric_literal(f, sym_var_domain, sym_params))
-                    })
-                    .or_else(|| has_asymmetric_literal(element, sym_var_domain, sym_params)),
+                } => {
+                    let domain_result = recurse(domain);
+                    if domain_result.is_some() {
+                        return domain_result;
+                    }
+                    // SetComprehension also binds a local
+                    let mut new_sym_locals = sym_locals.clone();
+                    let is_sym_domain = matches!(
+                        domain.as_ref(),
+                        CompiledExpr::Range { lo, hi }
+                        if matches!(lo.as_ref(), CompiledExpr::Int(0))
+                            && matches!(hi.as_ref(), CompiledExpr::Int(n) if sym_domain_sizes.contains(&((*n + 1) as usize)))
+                    );
+                    let shifted: std::collections::HashSet<usize> =
+                        new_sym_locals.iter().map(|i| i + 1).collect();
+                    new_sym_locals = shifted;
+                    if is_sym_domain {
+                        new_sym_locals.insert(0);
+                    }
+                    filter
+                        .as_ref()
+                        .and_then(|f| {
+                            has_asymmetric_literal(
+                                f,
+                                sym_var_domain,
+                                sym_params,
+                                sym_var_value_overlaps,
+                                &new_sym_locals,
+                                sym_domain_sizes,
+                            )
+                        })
+                        .or_else(|| {
+                            has_asymmetric_literal(
+                                element,
+                                sym_var_domain,
+                                sym_params,
+                                sym_var_value_overlaps,
+                                &new_sym_locals,
+                                sym_domain_sizes,
+                            )
+                        })
+                }
                 CompiledExpr::If {
                     cond,
                     then_branch,
                     else_branch,
-                } => has_asymmetric_literal(cond, sym_var_domain, sym_params)
-                    .or_else(|| has_asymmetric_literal(then_branch, sym_var_domain, sym_params))
-                    .or_else(|| has_asymmetric_literal(else_branch, sym_var_domain, sym_params)),
-                CompiledExpr::FnUpdate { base, key, value } => {
-                    has_asymmetric_literal(base, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(key, sym_var_domain, sym_params))
-                        .or_else(|| has_asymmetric_literal(value, sym_var_domain, sym_params))
-                }
+                } => recurse(cond)
+                    .or_else(|| recurse(then_branch))
+                    .or_else(|| recurse(else_branch)),
+                CompiledExpr::FnUpdate { base, key, value } => recurse(base)
+                    .or_else(|| recurse(key))
+                    .or_else(|| recurse(value)),
                 CompiledExpr::SetLit(elems)
                 | CompiledExpr::SeqLit(elems)
-                | CompiledExpr::TupleLit(elems) => elems
+                | CompiledExpr::TupleLit(elems) => elems.iter().find_map(&recurse),
+                CompiledExpr::DictLit(pairs) => pairs
                     .iter()
-                    .find_map(|e| has_asymmetric_literal(e, sym_var_domain, sym_params)),
-                CompiledExpr::DictLit(pairs) => pairs.iter().find_map(|(k, v)| {
-                    has_asymmetric_literal(k, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(v, sym_var_domain, sym_params))
-                }),
+                    .find_map(|(k, v)| recurse(k).or_else(|| recurse(v))),
                 CompiledExpr::Fix { domain, predicate } => {
-                    let d = domain
-                        .as_ref()
-                        .and_then(|d| has_asymmetric_literal(d, sym_var_domain, sym_params));
-                    d.or_else(|| has_asymmetric_literal(predicate, sym_var_domain, sym_params))
+                    let d = domain.as_ref().and_then(|d| recurse(d));
+                    if d.is_some() {
+                        return d;
+                    }
+                    // Fix also binds a local
+                    let mut new_sym_locals: std::collections::HashSet<usize> =
+                        sym_locals.iter().map(|i| i + 1).collect();
+                    if let Some(dom) = domain {
+                        let is_sym_domain = matches!(
+                            dom.as_ref(),
+                            CompiledExpr::Range { lo, hi }
+                            if matches!(lo.as_ref(), CompiledExpr::Int(0))
+                                && matches!(hi.as_ref(), CompiledExpr::Int(n) if sym_domain_sizes.contains(&((*n + 1) as usize)))
+                        );
+                        if is_sym_domain {
+                            new_sym_locals.insert(0);
+                        }
+                    }
+                    has_asymmetric_literal(
+                        predicate,
+                        sym_var_domain,
+                        sym_params,
+                        sym_var_value_overlaps,
+                        &new_sym_locals,
+                        sym_domain_sizes,
+                    )
                 }
                 CompiledExpr::Let {
                     value: domain,
                     body: predicate,
-                } => has_asymmetric_literal(domain, sym_var_domain, sym_params)
-                    .or_else(|| has_asymmetric_literal(predicate, sym_var_domain, sym_params)),
-                CompiledExpr::Slice { base, lo, hi } => {
-                    has_asymmetric_literal(base, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(lo, sym_var_domain, sym_params))
-                        .or_else(|| has_asymmetric_literal(hi, sym_var_domain, sym_params))
+                } => {
+                    let d = recurse(domain);
+                    if d.is_some() {
+                        return d;
+                    }
+                    // Let binds a local (not over a domain range, so just shift)
+                    let new_sym_locals: std::collections::HashSet<usize> =
+                        sym_locals.iter().map(|i| i + 1).collect();
+                    has_asymmetric_literal(
+                        predicate,
+                        sym_var_domain,
+                        sym_params,
+                        sym_var_value_overlaps,
+                        &new_sym_locals,
+                        sym_domain_sizes,
+                    )
                 }
-                CompiledExpr::Range { lo, hi } => {
-                    has_asymmetric_literal(lo, sym_var_domain, sym_params)
-                        .or_else(|| has_asymmetric_literal(hi, sym_var_domain, sym_params))
-                }
+                CompiledExpr::Slice { base, lo, hi } => recurse(base)
+                    .or_else(|| recurse(lo))
+                    .or_else(|| recurse(hi)),
+                CompiledExpr::Range { lo, hi } => recurse(lo).or_else(|| recurse(hi)),
                 CompiledExpr::RecordUpdate { base, updates } => {
-                    has_asymmetric_literal(base, sym_var_domain, sym_params).or_else(|| {
-                        updates.iter().find_map(|(_, v)| {
-                            has_asymmetric_literal(v, sym_var_domain, sym_params)
-                        })
-                    })
+                    recurse(base).or_else(|| updates.iter().find_map(|(_, v)| recurse(v)))
                 }
                 CompiledExpr::Call { func, args } => {
-                    has_asymmetric_literal(func, sym_var_domain, sym_params).or_else(|| {
-                        args.iter()
-                            .find_map(|a| has_asymmetric_literal(a, sym_var_domain, sym_params))
-                    })
+                    recurse(func).or_else(|| args.iter().find_map(&recurse))
                 }
-                CompiledExpr::ActionCall { args, .. } => args
-                    .iter()
-                    .find_map(|a| has_asymmetric_literal(a, sym_var_domain, sym_params)),
+                CompiledExpr::ActionCall { args, .. } => args.iter().find_map(&recurse),
                 CompiledExpr::Len(e)
                 | CompiledExpr::Keys(e)
                 | CompiledExpr::Values(e)
                 | CompiledExpr::SeqHead(e)
                 | CompiledExpr::SeqTail(e)
                 | CompiledExpr::BigUnion(e)
-                | CompiledExpr::Powerset(e) => {
-                    has_asymmetric_literal(e, sym_var_domain, sym_params)
-                }
-                CompiledExpr::Field { base, .. } => {
-                    has_asymmetric_literal(base, sym_var_domain, sym_params)
-                }
+                | CompiledExpr::Powerset(e) => recurse(e),
+                CompiledExpr::Field { base, .. } => recurse(base),
                 _ => None,
             }
         }
 
         let mut warnings = Vec::new();
         let empty_params = std::collections::HashMap::new();
+        let empty_locals = std::collections::HashSet::new();
 
         // Check init predicate (no params)
-        if let Some(detail) = has_asymmetric_literal(&spec.init, &sym_var_domain, &empty_params) {
+        if let Some(detail) = has_asymmetric_literal(
+            &spec.init,
+            &sym_var_domain,
+            &empty_params,
+            &sym_var_value_overlaps,
+            &empty_locals,
+            &sym_domain_sizes,
+        ) {
             warnings.push(format!("symmetry may be unsound: init has {}", detail));
         }
 
@@ -1945,7 +2109,14 @@ impl Explorer {
             }
 
             for (label, expr) in [("guard", &action.guard), ("effect", &action.effect)] {
-                if let Some(detail) = has_asymmetric_literal(expr, &sym_var_domain, &sym_params) {
+                if let Some(detail) = has_asymmetric_literal(
+                    expr,
+                    &sym_var_domain,
+                    &sym_params,
+                    &sym_var_value_overlaps,
+                    &empty_locals,
+                    &sym_domain_sizes,
+                ) {
                     warnings.push(format!(
                         "symmetry may be unsound: action '{}' {} has {}",
                         action.name, label, detail
@@ -1953,6 +2124,25 @@ impl Explorer {
                 }
             }
         }
+
+        // Also scan invariants — patterns like `d[i] == i` in invariants indicate
+        // the spec semantically depends on value identity
+        for inv in &spec.invariants {
+            if let Some(detail) = has_asymmetric_literal(
+                &inv.body,
+                &sym_var_domain,
+                &empty_params,
+                &sym_var_value_overlaps,
+                &empty_locals,
+                &sym_domain_sizes,
+            ) {
+                warnings.push(format!(
+                    "symmetry may be unsound: invariant '{}' has {}",
+                    inv.name, detail
+                ));
+            }
+        }
+
         warnings
     }
 
@@ -6071,5 +6261,122 @@ invariant OwnerConsistency { all r in held: owner[r] == 1 }
                 other
             ),
         }
+    }
+
+    #[test]
+    fn test_symmetry_warning_nested_dict_indexing() {
+        // Pattern 4: d[d[i]] — nested dict indexing uses value as key
+        let source = r#"
+module NestedDictIndex
+var d: Dict[0..2, 0..2]
+init { d = {i: 0 for i in 0..2} }
+action Apply(i: 0..2) {
+    require d[d[i]] == 0
+    d = d | { i: d[i] }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+        assert!(!spec.symmetry_groups.is_empty());
+
+        let warnings = Explorer::find_symmetry_warnings(&spec);
+        assert!(
+            !warnings.is_empty(),
+            "should warn about nested dict indexing d[d[i]], got no warnings"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("nested dict indexing")),
+            "warning should mention nested dict indexing, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_symmetry_warning_value_compared_with_domain() {
+        // Pattern 5: d[i] == i — dict value compared with domain element
+        let source = r#"
+module ValueIdentity
+var mapping: Dict[0..2, 0..2]
+init { mapping = {i: i for i in 0..2} }
+action Swap(i: 0..2, j: 0..2) {
+    require i != j
+    require mapping[i] == i
+    mapping = mapping | { i: j, j: i }
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+        assert!(!spec.symmetry_groups.is_empty());
+
+        let warnings = Explorer::find_symmetry_warnings(&spec);
+        assert!(
+            !warnings.is_empty(),
+            "should warn about dict value compared with domain element, got no warnings"
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("dict value from symmetric var")),
+            "warning should mention dict value comparison, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_symmetry_warning_invariant_value_identity() {
+        // Pattern 5 in invariant: mapping[i] == i
+        let source = r#"
+module InvariantValueIdentity
+var mapping: Dict[0..2, 0..2]
+init { mapping = {i: i for i in 0..2} }
+action Noop(i: 0..2) {
+    require mapping[i] != 0
+    mapping = mapping | { i: mapping[i] }
+}
+invariant IsIdentity {
+    all i in 0..2: mapping[i] == i
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+        assert!(!spec.symmetry_groups.is_empty());
+
+        let warnings = Explorer::find_symmetry_warnings(&spec);
+        assert!(
+            !warnings.is_empty(),
+            "should warn about value identity in invariant, got no warnings"
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("invariant")),
+            "warning should mention the invariant, got: {:?}",
+            warnings
+        );
+    }
+
+    #[test]
+    fn test_symmetry_no_warning_for_dict_value_different_range() {
+        // Dict[0..2, Bool] — value type doesn't overlap symmetric domain, no Pattern 5 warning
+        let source = r#"
+module SafeValueType
+var flags: Dict[0..2, Bool]
+init { flags = {i: false for i in 0..2} }
+action Toggle(i: 0..2) {
+    require flags[i] == false
+    flags = flags | { i: true }
+}
+invariant AtLeastOneOff {
+    not (all i in 0..2: flags[i] == true)
+}
+"#;
+        let module = parse(source).unwrap();
+        let spec = compile(&module).unwrap();
+        assert!(!spec.symmetry_groups.is_empty());
+
+        let warnings = Explorer::find_symmetry_warnings(&spec);
+        assert!(
+            warnings.is_empty(),
+            "Dict[0..2, Bool] should not trigger value overlap warning, got: {:?}",
+            warnings
+        );
     }
 }
