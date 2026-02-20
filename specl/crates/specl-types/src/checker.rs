@@ -344,7 +344,11 @@ impl TypeChecker {
                             *elem_ty
                         }
                         Type::Fn(key_ty, value_ty) => {
-                            self.unify(&key_ty, &index_ty, index.span)?;
+                            // Allow subrange indexing: if key is Range(a,b) and
+                            // index is Range(c,d) where a<=c and d<=b, accept it.
+                            if !self.is_subrange(&index_ty, &key_ty) {
+                                self.unify(&key_ty, &index_ty, index.span)?;
+                            }
                             *value_ty
                         }
                         // Accept type variables for polymorphic funcs
@@ -975,10 +979,21 @@ impl TypeChecker {
                         self.unify(left_ty, right_ty, right_span)?;
                         Ok(self.env.resolve_type(left_ty))
                     }
-                    (Type::Fn(_, _), Type::Fn(_, _)) => {
+                    (Type::Fn(lk, _), Type::Fn(rk, _)) => {
                         // Dict merge with | operator
-                        self.unify(left_ty, right_ty, right_span)?;
-                        Ok(self.env.resolve_type(left_ty))
+                        // Allow subrange keys: Dict[0..3,T] | Dict[1..3,T] -> Dict[0..3,T]
+                        if self.is_subrange(rk, lk) || self.is_subrange(lk, rk) {
+                            // Unify only values, key subrange is compatible
+                            if let (Type::Fn(_, lv), Type::Fn(_, rv)) =
+                                (&resolved_left, &resolved_right)
+                            {
+                                self.unify(lv, rv, right_span)?;
+                            }
+                            Ok(self.env.resolve_type(left_ty))
+                        } else {
+                            self.unify(left_ty, right_ty, right_span)?;
+                            Ok(self.env.resolve_type(left_ty))
+                        }
                     }
                     (Type::Var(_), Type::Set(_)) | (Type::Set(_), Type::Var(_)) => {
                         self.unify(left_ty, right_ty, right_span)?;
@@ -1227,6 +1242,20 @@ impl TypeChecker {
                 found: resolved,
                 span,
             }),
+        }
+    }
+
+    /// Check if `sub` is a subrange of `sup` (both resolved).
+    /// Range(c,d) is a subrange of Range(a,b) if a <= c and d <= b.
+    /// Also allows Int/Nat as index into Range-keyed dicts.
+    fn is_subrange(&self, sub: &Type, sup: &Type) -> bool {
+        let sub = self.env.resolve_type(sub);
+        let sup = self.env.resolve_type(sup);
+        match (&sub, &sup) {
+            (Type::Range(c, d), Type::Range(a, b)) => a <= c && d <= b,
+            (Type::Int | Type::Nat, Type::Range(_, _)) => true,
+            (Type::Range(_, _), Type::Int | Type::Nat) => true,
+            _ => false,
         }
     }
 }
