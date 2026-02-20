@@ -438,21 +438,10 @@ impl Parser {
         // Restore the previous bullet_stop_kind
         self.bullet_stop_kind = prev_stop_kind;
 
-        // Fold into binary tree
-        let mut result = exprs.remove(0);
-        for expr in exprs {
-            let span = Span::new(start, expr.span.end);
-            result = TlaExpr::new(
-                TlaExprKind::Binary {
-                    op,
-                    left: Box::new(result),
-                    right: Box::new(expr),
-                },
-                span,
-            );
-        }
-
-        Ok(result)
+        // Build a balanced binary tree to keep recursion depth O(log N).
+        // Left-skewed trees from a simple fold cause O(N) stack depth in the
+        // many recursive tree-walking passes in the translator.
+        Ok(build_balanced_binary(exprs, op, start))
     }
 
     /// Parse a bullet list item, potentially containing nested bullet lists.
@@ -505,6 +494,31 @@ impl Parser {
             self.advance();
             let next_prec = if op.is_right_assoc() { prec } else { prec + 1 };
             let right = self.parse_expr_prec(next_prec)?;
+
+            // For And/Or, collect all consecutive same-op items into a balanced
+            // tree instead of building a left-skewed chain. Long chains like the
+            // 124-action Next operator in BronsonAVL.tla otherwise create O(N)-deep
+            // trees that overflow the 2 MB debug stack in every recursive tree pass.
+            if matches!(op, TlaBinOp::And | TlaBinOp::Or) {
+                let span_start = left.span.start;
+                let mut items = vec![left, right];
+                loop {
+                    if let Some(ref stop_kind) = self.bullet_stop_kind {
+                        if self.check(stop_kind) {
+                            break;
+                        }
+                    }
+                    match self.current_binop() {
+                        Some(next_op) if next_op == op && next_op.precedence() >= min_prec => {
+                            self.advance();
+                            items.push(self.parse_expr_prec(next_prec)?);
+                        }
+                        _ => break,
+                    }
+                }
+                left = build_balanced_binary(items, op, span_start);
+                continue;
+            }
 
             let span = left.span.merge(right.span);
             left = TlaExpr::new(
@@ -1809,6 +1823,34 @@ impl Parser {
         }
         Ok(ident)
     }
+}
+
+/// Build a balanced binary tree from a non-empty list of expressions.
+///
+/// Bullet lists like `/\ A /\ B /\ C ... /\ N` parse into N items. A simple
+/// left-fold creates a left-skewed tree of depth N. The translator and many
+/// analysis passes walk these trees recursively, causing O(N) stack depth.
+/// With 867 conjuncts in BronsonAVL.tla that overflows the 2 MB debug stack.
+/// A balanced tree has depth O(log N) ≈ 10 for 867 nodes, keeping all
+/// recursive passes well within stack limits without any iterative changes.
+fn build_balanced_binary(mut exprs: Vec<TlaExpr>, op: TlaBinOp, span_start: usize) -> TlaExpr {
+    assert!(!exprs.is_empty());
+    if exprs.len() == 1 {
+        return exprs.remove(0);
+    }
+    let mid = exprs.len() / 2;
+    let right_half = exprs.split_off(mid);
+    let left = build_balanced_binary(exprs, op, span_start);
+    let right = build_balanced_binary(right_half, op, span_start);
+    let span = Span::new(span_start, right.span.end);
+    TlaExpr::new(
+        TlaExprKind::Binary {
+            op,
+            left: Box::new(left),
+            right: Box::new(right),
+        },
+        span,
+    )
 }
 
 #[cfg(test)]

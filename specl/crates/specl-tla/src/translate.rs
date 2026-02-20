@@ -3049,70 +3049,30 @@ impl Translator {
                     ));
                 }
 
-                // parse_bullet_list folds /\ and \/ lists into left-skewed binary trees:
-                // `/\ A`, `/\ B`, `/\ C` → Binary(And, Binary(And, A, B), C).
-                // Translating these recursively causes O(N) stack depth — 867 conjuncts
-                // in BronsonAVL.tla overflows the 8 MB debug stack. Collect the left spine
-                // iteratively, translate each leaf, then fold left-associatively.
-                if matches!(op, TlaBinOp::And | TlaBinOp::Or) {
-                    let mut leaves: Vec<&TlaExpr> = vec![right.as_ref()];
-                    let mut cursor: &TlaExpr = left.as_ref();
-                    loop {
-                        match &cursor.kind {
-                            TlaExprKind::Binary {
-                                op: inner_op,
-                                left: inner_left,
-                                right: inner_right,
-                            } if *inner_op == *op => {
-                                leaves.push(inner_right.as_ref());
-                                cursor = inner_left.as_ref();
-                            }
-                            _ => {
-                                leaves.push(cursor);
-                                break;
-                            }
-                        }
-                    }
-                    leaves.reverse();
-                    let specl_op = translate_binop(*op);
-                    // In TLA+, /\ and \/ have the SAME precedence (unlike most languages).
-                    // TLA+ uses indentation (bullet point notation) to disambiguate.
-                    // In Specl, `and` binds tighter than `or`, so `A and B or C and D`
-                    // parses as `(A and B) or (C and D)` which matches TLA's indented form.
-                    // We wrap AND operands in parens when inside OR for clarity.
-                    let wrap_and = *op == TlaBinOp::Or;
-                    let mut translated: Vec<specl::Expr> = Vec::with_capacity(leaves.len());
-                    for leaf in leaves {
-                        let t = self.translate_expr(leaf, in_action)?;
-                        if wrap_and && self.is_and_expr(leaf) {
-                            translated
-                                .push(specl::Expr::new(specl::ExprKind::Paren(Box::new(t)), span));
-                        } else {
-                            translated.push(t);
-                        }
-                    }
-                    let mut iter = translated.into_iter();
-                    let first = iter.next().expect("chain has at least two elements");
-                    return Ok(iter.fold(first, |acc, rhs| {
-                        specl::Expr::new(
-                            specl::ExprKind::Binary {
-                                op: specl_op,
-                                left: Box::new(acc),
-                                right: Box::new(rhs),
-                            },
-                            span,
-                        )
-                    }));
-                }
-
                 let left_expr = self.translate_expr(left, in_action)?;
                 let right_expr = self.translate_expr(right, in_action)?;
                 let specl_op = translate_binop(*op);
 
+                // In TLA+, /\ and \/ have the SAME precedence (unlike most languages).
+                // TLA+ uses indentation (bullet point notation) to disambiguate.
+                // In Specl, `and` binds tighter than `or`, so `A and B or C and D`
+                // parses as `(A and B) or (C and D)` which matches TLA's indented form.
+                // We wrap AND operands in parens when inside OR for clarity.
+                let final_left = if *op == TlaBinOp::Or && self.is_and_expr(left) {
+                    specl::Expr::new(specl::ExprKind::Paren(Box::new(left_expr)), span)
+                } else {
+                    left_expr
+                };
+                let final_right = if *op == TlaBinOp::Or && self.is_and_expr(right) {
+                    specl::Expr::new(specl::ExprKind::Paren(Box::new(right_expr)), span)
+                } else {
+                    right_expr
+                };
+
                 specl::ExprKind::Binary {
                     op: specl_op,
-                    left: Box::new(left_expr),
-                    right: Box::new(right_expr),
+                    left: Box::new(final_left),
+                    right: Box::new(final_right),
                 }
             }
 

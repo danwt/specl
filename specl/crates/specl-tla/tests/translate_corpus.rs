@@ -169,3 +169,77 @@ fn benchmark_tla_files_translate() {
         );
     }
 }
+
+/// Verify that long And/Or chains produce shallow balanced trees.
+#[test]  
+fn check_tree_depth() {
+    use specl_tla::{Parser, TlaDecl, TlaExpr, TlaExprKind};
+    
+    fn max_depth(expr: &TlaExpr) -> usize {
+        match &expr.kind {
+            TlaExprKind::Binary { left, right, .. } => {
+                1 + max_depth(left).max(max_depth(right))
+            }
+            _ => 1,
+        }
+    }
+    
+    // 101 inline And operators — without fix this is depth 101, with fix depth <= 8
+    let items: Vec<String> = (0..101).map(|i| format!("x{}", i)).collect();
+    let inline_src = format!("---- MODULE Test ----\nVARIABLES {}\nA == {}\n====",
+        (0..101).map(|i| format!("x{}", i)).collect::<Vec<_>>().join(", "),
+        items.join(" /\\ "));
+    
+    let mut p = Parser::new(&inline_src);
+    if let Ok(m) = p.parse_module() {
+        for decl in &m.declarations {
+            if let TlaDecl::Operator { name, body, .. } = decl {
+                if name.name == "A" {
+                    let d = max_depth(body);
+                    eprintln!("inline 101-And chain depth: {}", d);
+                    assert!(d <= 10, "inline And chain too deep: {}", d);
+                }
+            }
+        }
+    }
+    
+    // Also check BronsonAVL depth
+    let root = repo_root();
+    let bronson = root.join("specl/examples/other/bronson-avl/BronsonAVL.tla");
+    if bronson.exists() {
+        let src = fs::read_to_string(&bronson).unwrap();
+        let mut p = Parser::new(&src);
+        if let Ok(m) = p.parse_module() {
+            let mut max = 0;
+            let mut max_name = String::new();
+            for decl in &m.declarations {
+                if let TlaDecl::Operator { name, body, .. } = decl {
+                    let d = max_depth(body);
+                    if d > max { max = d; max_name = name.name.clone(); }
+                }
+            }
+            eprintln!("BronsonAVL max tree depth: {} in '{}'", max, max_name);
+            assert!(max <= 20, "BronsonAVL tree too deep: {} in {}", max, max_name);
+        }
+    }
+}
+
+/// Translate files one at a time to identify the overflow culprit.
+#[test]
+fn identify_overflow_file() {
+    let root = repo_root();
+    let mut all_files = Vec::new();
+    all_files.extend(find_tla_files(&root.join("specl/examples/showcase")));
+    all_files.extend(find_tla_files(&root.join("specl/examples/other")));
+    all_files.sort();
+    
+    for file in &all_files {
+        let source = fs::read_to_string(file).unwrap();
+        let rel = file.strip_prefix(&root).unwrap_or(file);
+        eprint!("Translating {}... ", rel.display());
+        match specl_tla::translate(&source) {
+            Ok(_) => eprintln!("OK"),
+            Err(e) => eprintln!("ERR: {}", e),
+        }
+    }
+}
