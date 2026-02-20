@@ -1332,15 +1332,15 @@ impl Translator {
                 if args.len() == 1 {
                     if let TlaExprKind::Ident(arg_name) = &args[0].kind {
                         if let TlaExprKind::Ident(func_name) = &func.kind {
-                            if let Some(var_ty) = self.var_types.get(func_name) {
-                                if let specl::TypeExpr::Dict(key_ty, _, _) = var_ty {
-                                    self.maybe_set_param_type(
-                                        param_names,
-                                        types,
-                                        arg_name,
-                                        (*key_ty.clone()).clone(),
-                                    );
-                                }
+                            if let Some(specl::TypeExpr::Dict(key_ty, _, _)) =
+                                self.var_types.get(func_name)
+                            {
+                                self.maybe_set_param_type(
+                                    param_names,
+                                    types,
+                                    arg_name,
+                                    (*key_ty.clone()).clone(),
+                                );
                             }
                         }
                     }
