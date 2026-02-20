@@ -2693,7 +2693,88 @@ impl Translator {
         }
     }
 
+    /// Try to inline one level of an operator reference.
+    ///
+    /// Returns the inlined body and whether the result needs Paren wrapping
+    /// (OpApp inlinings need Paren for precedence safety; Ident inlinings do not).
+    /// Returns None when the expression is not an inlinable reference.
+    fn try_inline(&self, expr: &TlaExpr) -> Result<Option<(TlaExpr, bool)>, TranslateError> {
+        match &expr.kind {
+            TlaExprKind::Ident(name) => Ok(self
+                .constant_ops
+                .get(name)
+                .or_else(|| self.init_predicates.get(name))
+                .or_else(|| self.zero_arg_ops.get(name))
+                .cloned()
+                .map(|body| (body, false))),
+            TlaExprKind::OpApp { name, args } if !self.recursive_ops.contains(name) => {
+                if args.is_empty() {
+                    if let Some(body) = self.constant_ops.get(name) {
+                        return Ok(Some((body.clone(), true)));
+                    }
+                }
+                if let Some((params, body)) = self.helper_ops.get(name) {
+                    if args.len() == params.len() {
+                        return Ok(Some((self.substitute_params(body, params, args)?, true)));
+                    }
+                }
+                if let Some((params, body)) = self.stateful_predicates.get(name) {
+                    if args.len() == params.len() {
+                        return Ok(Some((self.substitute_params(body, params, args)?, true)));
+                    }
+                }
+                if let Some((params, body)) = self.action_helpers.get(name) {
+                    if args.len() == params.len() {
+                        return Ok(Some((self.substitute_params(body, params, args)?, true)));
+                    }
+                }
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// Translate a TLA+ expression to a Specl expression.
+    ///
+    /// Iteratively resolves operator inlining (constant_ops, zero_arg_ops, helper_ops,
+    /// stateful_predicates, action_helpers) before delegating to translate_expr_impl.
+    /// This avoids deep recursion from chained inlining and keeps the recursion depth
+    /// bounded by the structural AST tree depth (≤ ~9 after the balanced-tree parser fix).
     fn translate_expr(
+        &self,
+        expr: &TlaExpr,
+        in_action: bool,
+    ) -> Result<specl::Expr, TranslateError> {
+        // `owned` holds the latest inlined body so `current` can borrow from it.
+        // The initial None is a placeholder; it's always overwritten before being read.
+        #[allow(unused_assignments)]
+        let mut owned: Option<TlaExpr> = None;
+        let mut current: &TlaExpr = expr;
+        let mut wrap_paren = false;
+
+        loop {
+            match self.try_inline(current)? {
+                Some((body, needs_paren)) => {
+                    if needs_paren {
+                        wrap_paren = true;
+                    }
+                    owned = Some(body);
+                    current = owned.as_ref().unwrap();
+                }
+                None => break,
+            }
+        }
+
+        let result = self.translate_expr_impl(current, in_action)?;
+        if wrap_paren {
+            let span = translate_span(current.span);
+            Ok(specl::Expr::new(specl::ExprKind::Paren(Box::new(result)), span))
+        } else {
+            Ok(result)
+        }
+    }
+
+    fn translate_expr_impl(
         &self,
         expr: &TlaExpr,
         in_action: bool,
@@ -2704,18 +2785,8 @@ impl Translator {
             TlaExprKind::Int(n) => specl::ExprKind::Int(*n),
             TlaExprKind::String(s) => specl::ExprKind::String(s.clone()),
             TlaExprKind::Ident(name) => {
-                // Check if this is a constant operator to inline
-                if let Some(body) = self.constant_ops.get(name).cloned() {
-                    return self.translate_expr(&body, in_action);
-                }
-                // Check if this is an init predicate to inline
-                if let Some(body) = self.init_predicates.get(name).cloned() {
-                    return self.translate_expr(&body, in_action);
-                }
-                // Check if this is a zero-arg operator (stateful predicate/helper) to inline
-                if let Some(body) = self.zero_arg_ops.get(name).cloned() {
-                    return self.translate_expr(&body, in_action);
-                }
+                // Inlining is handled by the translate_expr trampoline; this arm sees
+                // only identifiers that are not in any inline map.
                 specl::ExprKind::Ident(escape_ident(name))
             }
 
@@ -2733,200 +2804,7 @@ impl Translator {
                 // Special case: x \in [S -> T] (membership in function set)
                 if *op == TlaBinOp::In {
                     if let TlaExprKind::FunctionSet { domain, range } = &right.kind {
-                        // Translate x \in [S -> T] as: keys(x) == S and forall k in keys(x): x[k] in T
-                        let x = self.translate_expr(left, in_action)?;
-                        let s = self.translate_expr(domain, in_action)?;
-
-                        // keys(x) == S
-                        let keys_eq = specl::Expr::new(
-                            specl::ExprKind::Binary {
-                                op: specl::BinOp::Eq,
-                                left: Box::new(specl::Expr::new(
-                                    specl::ExprKind::Keys(Box::new(x.clone())),
-                                    span,
-                                )),
-                                right: Box::new(s),
-                            },
-                            span,
-                        );
-
-                        // Build the body: x[k] in T
-                        // If T is Seq(S), expand to: forall i in 1..len(x[k]): x[k][i] in S
-                        let k_var = specl::Ident::new("__k", span);
-                        let x_k = specl::Expr::new(
-                            specl::ExprKind::Index {
-                                base: Box::new(x.clone()),
-                                index: Box::new(specl::Expr::new(
-                                    specl::ExprKind::Ident("__k".to_string()),
-                                    span,
-                                )),
-                            },
-                            span,
-                        );
-
-                        let body = if let TlaExprKind::OpApp { name, args } = &range.kind {
-                            if name == "Seq" && args.len() == 1 {
-                                // Range is Seq(S) - expand to forall i in 1..len(x[k]): x[k][i] in S
-                                let elem_set = self.translate_expr(&args[0], in_action)?;
-                                let i_var = specl::Ident::new("__i", span);
-                                let len_xk = specl::Expr::new(
-                                    specl::ExprKind::Len(Box::new(x_k.clone())),
-                                    span,
-                                );
-                                let i_domain = specl::Expr::new(
-                                    specl::ExprKind::Range {
-                                        lo: Box::new(specl::Expr::new(
-                                            specl::ExprKind::Int(1),
-                                            span,
-                                        )),
-                                        hi: Box::new(len_xk),
-                                    },
-                                    span,
-                                );
-                                specl::Expr::new(
-                                    specl::ExprKind::Quantifier {
-                                        kind: specl::QuantifierKind::Forall,
-                                        bindings: vec![specl::Binding {
-                                            var: i_var.clone(),
-                                            domain: i_domain,
-                                            span,
-                                        }],
-                                        body: Box::new(specl::Expr::new(
-                                            specl::ExprKind::Paren(Box::new(specl::Expr::new(
-                                                specl::ExprKind::Binary {
-                                                    op: specl::BinOp::In,
-                                                    left: Box::new(specl::Expr::new(
-                                                        specl::ExprKind::Index {
-                                                            base: Box::new(x_k),
-                                                            index: Box::new(specl::Expr::new(
-                                                                specl::ExprKind::Ident(
-                                                                    "__i".to_string(),
-                                                                ),
-                                                                span,
-                                                            )),
-                                                        },
-                                                        span,
-                                                    )),
-                                                    right: Box::new(elem_set),
-                                                },
-                                                span,
-                                            ))),
-                                            span,
-                                        )),
-                                    },
-                                    span,
-                                )
-                            } else {
-                                // Other OpApp - translate normally
-                                let t = self.translate_expr(range, in_action)?;
-                                specl::Expr::new(
-                                    specl::ExprKind::Binary {
-                                        op: specl::BinOp::In,
-                                        left: Box::new(x_k),
-                                        right: Box::new(t),
-                                    },
-                                    span,
-                                )
-                            }
-                        } else if let TlaExprKind::Ident(name) = &range.kind {
-                            // Handle standard library types
-                            match name.as_str() {
-                                "Nat" => {
-                                    // x[k] in Nat -> x[k] >= 0
-                                    specl::Expr::new(
-                                        specl::ExprKind::Binary {
-                                            op: specl::BinOp::Ge,
-                                            left: Box::new(x_k),
-                                            right: Box::new(specl::Expr::new(
-                                                specl::ExprKind::Int(0),
-                                                span,
-                                            )),
-                                        },
-                                        span,
-                                    )
-                                }
-                                "Int" => {
-                                    // x[k] in Int -> true
-                                    specl::Expr::new(specl::ExprKind::Bool(true), span)
-                                }
-                                "BOOLEAN" => {
-                                    // x[k] in BOOLEAN -> x[k] in {true, false}
-                                    specl::Expr::new(
-                                        specl::ExprKind::Binary {
-                                            op: specl::BinOp::In,
-                                            left: Box::new(x_k),
-                                            right: Box::new(specl::Expr::new(
-                                                specl::ExprKind::SetLit(vec![
-                                                    specl::Expr::new(
-                                                        specl::ExprKind::Bool(true),
-                                                        span,
-                                                    ),
-                                                    specl::Expr::new(
-                                                        specl::ExprKind::Bool(false),
-                                                        span,
-                                                    ),
-                                                ]),
-                                                span,
-                                            )),
-                                        },
-                                        span,
-                                    )
-                                }
-                                _ => {
-                                    // Other identifier - simple membership
-                                    let t = self.translate_expr(range, in_action)?;
-                                    specl::Expr::new(
-                                        specl::ExprKind::Binary {
-                                            op: specl::BinOp::In,
-                                            left: Box::new(x_k),
-                                            right: Box::new(t),
-                                        },
-                                        span,
-                                    )
-                                }
-                            }
-                        } else {
-                            // Not Seq, not Ident - simple membership
-                            let t = self.translate_expr(range, in_action)?;
-                            specl::Expr::new(
-                                specl::ExprKind::Binary {
-                                    op: specl::BinOp::In,
-                                    left: Box::new(x_k),
-                                    right: Box::new(t),
-                                },
-                                span,
-                            )
-                        };
-
-                        // forall k in keys(x): body
-                        let forall = specl::Expr::new(
-                            specl::ExprKind::Quantifier {
-                                kind: specl::QuantifierKind::Forall,
-                                bindings: vec![specl::Binding {
-                                    var: k_var.clone(),
-                                    domain: specl::Expr::new(
-                                        specl::ExprKind::Keys(Box::new(x.clone())),
-                                        span,
-                                    ),
-                                    span,
-                                }],
-                                body: Box::new(specl::Expr::new(
-                                    specl::ExprKind::Paren(Box::new(body)),
-                                    span,
-                                )),
-                            },
-                            span,
-                        );
-
-                        // Combine with and
-                        return Ok(specl::Expr::new(
-                            specl::ExprKind::Binary {
-                                op: specl::BinOp::And,
-                                left: Box::new(keys_eq),
-                                right: Box::new(forall),
-                            },
-                            span,
-                        ));
+                        return self.translate_in_fn_set(left, domain, range, in_action, span);
                     }
 
                     // Special case: x \in Nat  --> x >= 0
@@ -2970,59 +2848,9 @@ impl Translator {
                     }
 
                     // Special case: x \in Seq(S) (membership in sequence set)
-                    // Translate to: forall i in 1..len(x): x[i] in S
                     if let TlaExprKind::OpApp { name, args } = &right.kind {
                         if name == "Seq" && args.len() == 1 {
-                            let x = self.translate_expr(left, in_action)?;
-                            let s = self.translate_expr(&args[0], in_action)?;
-
-                            // forall i in 1..len(x): x[i] in S
-                            let i_var = specl::Ident::new("__i", span);
-                            let len_x =
-                                specl::Expr::new(specl::ExprKind::Len(Box::new(x.clone())), span);
-                            let domain = specl::Expr::new(
-                                specl::ExprKind::Range {
-                                    lo: Box::new(specl::Expr::new(specl::ExprKind::Int(1), span)),
-                                    hi: Box::new(len_x),
-                                },
-                                span,
-                            );
-
-                            let forall = specl::Expr::new(
-                                specl::ExprKind::Quantifier {
-                                    kind: specl::QuantifierKind::Forall,
-                                    bindings: vec![specl::Binding {
-                                        var: i_var.clone(),
-                                        domain,
-                                        span,
-                                    }],
-                                    body: Box::new(specl::Expr::new(
-                                        specl::ExprKind::Paren(Box::new(specl::Expr::new(
-                                            specl::ExprKind::Binary {
-                                                op: specl::BinOp::In,
-                                                left: Box::new(specl::Expr::new(
-                                                    specl::ExprKind::Index {
-                                                        base: Box::new(x),
-                                                        index: Box::new(specl::Expr::new(
-                                                            specl::ExprKind::Ident(
-                                                                "__i".to_string(),
-                                                            ),
-                                                            span,
-                                                        )),
-                                                    },
-                                                    span,
-                                                )),
-                                                right: Box::new(s),
-                                            },
-                                            span,
-                                        ))),
-                                        span,
-                                    )),
-                                },
-                                span,
-                            );
-
-                            return Ok(forall);
+                            return self.translate_in_seq(left, &args[0], in_action, span);
                         }
                     }
                 }
@@ -3316,58 +3144,8 @@ impl Translator {
                         specl::ExprKind::Keys(Box::new(arg))
                     }
                     _ => {
-                        // Never inline recursive operators — emit as function calls
-                        if !self.recursive_ops.contains(name) {
-                            // Check if this is a constant operator to inline
-                            if args.is_empty() {
-                                if let Some(body) = self.constant_ops.get(name).cloned() {
-                                    let inner = self.translate_expr(&body, in_action)?;
-                                    return Ok(specl::Expr::new(
-                                        specl::ExprKind::Paren(Box::new(inner)),
-                                        span,
-                                    ));
-                                }
-                            }
-                            // Check if this is a helper operator to inline
-                            if let Some((params, body)) = self.helper_ops.get(name).cloned() {
-                                if args.len() == params.len() {
-                                    let substituted =
-                                        self.substitute_params(&body, &params, args)?;
-                                    let inner = self.translate_expr(&substituted, in_action)?;
-                                    return Ok(specl::Expr::new(
-                                        specl::ExprKind::Paren(Box::new(inner)),
-                                        span,
-                                    ));
-                                }
-                            }
-                            // Check if this is a stateful predicate to inline
-                            if let Some((params, body)) =
-                                self.stateful_predicates.get(name).cloned()
-                            {
-                                if args.len() == params.len() {
-                                    let substituted =
-                                        self.substitute_params(&body, &params, args)?;
-                                    let inner = self.translate_expr(&substituted, in_action)?;
-                                    return Ok(specl::Expr::new(
-                                        specl::ExprKind::Paren(Box::new(inner)),
-                                        span,
-                                    ));
-                                }
-                            }
-                            // Check if this is an action helper to inline
-                            if let Some((params, body)) = self.action_helpers.get(name).cloned() {
-                                if args.len() == params.len() {
-                                    let substituted =
-                                        self.substitute_params(&body, &params, args)?;
-                                    let inner = self.translate_expr(&substituted, in_action)?;
-                                    return Ok(specl::Expr::new(
-                                        specl::ExprKind::Paren(Box::new(inner)),
-                                        span,
-                                    ));
-                                }
-                            }
-                        }
-                        // Regular operator call
+                        // Inlining is handled by the translate_expr trampoline; this arm sees
+                        // only operators not in any inline map (regular calls, recursive ops).
                         let func_expr =
                             specl::Expr::new(specl::ExprKind::Ident(escape_ident(name)), span);
                         let args_translated: Result<Vec<_>, _> = args
@@ -3383,112 +3161,7 @@ impl Translator {
             }
 
             TlaExprKind::Except { base, updates } => {
-                let mut result = self.translate_expr(base, in_action)?;
-                // Track the base expression for @ references
-                let base_for_at = result.clone();
-                for update in updates {
-                    if update.path.len() == 1 {
-                        let key = self.translate_expr(&update.path[0], in_action)?;
-                        // Compute @ replacement: base_for_at[key]
-                        let at_replacement = specl::Expr::new(
-                            specl::ExprKind::Index {
-                                base: Box::new(base_for_at.clone()),
-                                index: Box::new(key.clone()),
-                            },
-                            span,
-                        );
-                        // Translate value with @ context
-                        let value =
-                            self.translate_except_value(&update.value, in_action, &at_replacement)?;
-                        // Use RecordUpdate with dynamic key: result with { [key]: value }
-                        result = specl::Expr::new(
-                            specl::ExprKind::RecordUpdate {
-                                base: Box::new(result),
-                                updates: vec![specl::RecordFieldUpdate::Dynamic { key, value }],
-                            },
-                            span,
-                        );
-                    } else {
-                        // Nested update: [f EXCEPT ![a][b] = v] becomes
-                        // f with { [a]: f[a] with { [b]: v } }
-                        // Build from inside out
-                        let keys: Vec<_> = update
-                            .path
-                            .iter()
-                            .map(|k| self.translate_expr(k, in_action))
-                            .collect::<Result<_, _>>()?;
-
-                        // Compute the nested @ replacement: base[k1][k2]...[kn]
-                        let mut at_replacement = base_for_at.clone();
-                        for key in &keys {
-                            at_replacement = specl::Expr::new(
-                                specl::ExprKind::Index {
-                                    base: Box::new(at_replacement),
-                                    index: Box::new(key.clone()),
-                                },
-                                span,
-                            );
-                        }
-
-                        // Translate value with @ context
-                        let value =
-                            self.translate_except_value(&update.value, in_action, &at_replacement)?;
-
-                        // Build the nested update from inside out
-                        // Start with innermost: base[k0]...[k(n-1)] with { [kn]: value }
-                        let mut prefix = base_for_at.clone();
-                        for key in keys.iter().take(keys.len() - 1) {
-                            prefix = specl::Expr::new(
-                                specl::ExprKind::Index {
-                                    base: Box::new(prefix),
-                                    index: Box::new(key.clone()),
-                                },
-                                span,
-                            );
-                        }
-                        let mut nested = specl::Expr::new(
-                            specl::ExprKind::RecordUpdate {
-                                base: Box::new(prefix),
-                                updates: vec![specl::RecordFieldUpdate::Dynamic {
-                                    key: keys.last().unwrap().clone(),
-                                    value,
-                                }],
-                            },
-                            span,
-                        );
-
-                        // For each outer key (from second-to-last to first), wrap it
-                        // base[k1]...[ki] with { [ki+1]: nested }
-                        for i in (0..keys.len() - 1).rev() {
-                            // Build base[k1][k2]...[ki-1] (or just base if i == 0)
-                            let mut outer_prefix = base_for_at.clone();
-                            for key in keys.iter().take(i) {
-                                outer_prefix = specl::Expr::new(
-                                    specl::ExprKind::Index {
-                                        base: Box::new(outer_prefix),
-                                        index: Box::new(key.clone()),
-                                    },
-                                    span,
-                                );
-                            }
-
-                            // outer_prefix with { [keys[i]]: nested }
-                            nested = specl::Expr::new(
-                                specl::ExprKind::RecordUpdate {
-                                    base: Box::new(outer_prefix),
-                                    updates: vec![specl::RecordFieldUpdate::Dynamic {
-                                        key: keys[i].clone(),
-                                        value: nested,
-                                    }],
-                                },
-                                span,
-                            );
-                        }
-
-                        result = nested;
-                    }
-                }
-                return Ok(result);
+                return self.translate_except_arm(base, updates, in_action, span);
             }
 
             TlaExprKind::ExceptAt => {
@@ -3608,100 +3281,7 @@ impl Translator {
             }
 
             TlaExprKind::LetIn { defs, body } => {
-                // Separate different kinds of definitions
-                let mut local_ops: std::collections::HashMap<String, (Vec<String>, &TlaExpr)> =
-                    std::collections::HashMap::new();
-                let mut simple_defs: Vec<&TlaLetDef> = Vec::new();
-                let mut recursive_fns: Vec<&TlaLetDef> = Vec::new();
-
-                for def in defs {
-                    if def.recursive_binding.is_some() {
-                        // Recursive function: Name[var \in Domain] == body
-                        recursive_fns.push(def);
-                    } else if def.params.is_empty() {
-                        simple_defs.push(def);
-                    } else {
-                        // Parameterized definition - track for inlining
-                        let param_names: Vec<String> =
-                            def.params.iter().map(|p| p.name.clone()).collect();
-                        local_ops.insert(def.name.name.clone(), (param_names, &def.body));
-                    }
-                }
-
-                // Inline local operators in the body before translating
-                let inlined_body = self.inline_local_ops(body, &local_ops)?;
-                let body_expr = self.translate_expr(&inlined_body, in_action)?;
-
-                // Wrap body in parentheses to prevent scope leakage with low-precedence operators like `or`
-                let mut result =
-                    specl::Expr::new(specl::ExprKind::Paren(Box::new(body_expr)), span);
-
-                // Process simple (non-parameterized) definitions
-                for def in simple_defs.iter().rev() {
-                    // Also inline local ops in the definition's body
-                    let inlined_def_body = self.inline_local_ops(&def.body, &local_ops)?;
-                    let def_expr = self.translate_expr(&inlined_def_body, in_action)?;
-                    // Wrap in parentheses to prevent `in` ambiguity
-                    let wrapped_value = specl::Expr::new(
-                        specl::ExprKind::Paren(Box::new(def_expr)),
-                        translate_span(def.span),
-                    );
-                    result = specl::Expr::new(
-                        specl::ExprKind::Let {
-                            var: specl::Ident::new(
-                                escape_ident(&def.name.name),
-                                translate_span(def.name.span),
-                            ),
-                            value: Box::new(wrapped_value),
-                            body: Box::new(result),
-                        },
-                        translate_span(def.span),
-                    );
-                }
-
-                // Process recursive function definitions
-                // These are translated to: let F = fn(var in Domain) => body in result
-                for def in recursive_fns.iter().rev() {
-                    if let Some(binding) = &def.recursive_binding {
-                        let domain_expr = self.translate_expr(&binding.domain, in_action)?;
-                        // Inline local ops in the function body
-                        let inlined_fn_body = self.inline_local_ops(&def.body, &local_ops)?;
-                        let fn_body_expr = self.translate_expr(&inlined_fn_body, in_action)?;
-
-                        let fn_lit = specl::Expr::new(
-                            specl::ExprKind::FnLit {
-                                var: specl::Ident::new(
-                                    escape_ident(&binding.var.name),
-                                    translate_span(binding.var.span),
-                                ),
-                                domain: Box::new(domain_expr),
-                                body: Box::new(fn_body_expr),
-                            },
-                            translate_span(def.span),
-                        );
-
-                        // Wrap fn_lit in parentheses to prevent the specl parser from
-                        // consuming the outer `in` when parsing `let F = fn(...) => ... in body`
-                        let wrapped_fn_lit = specl::Expr::new(
-                            specl::ExprKind::Paren(Box::new(fn_lit)),
-                            translate_span(def.span),
-                        );
-
-                        result = specl::Expr::new(
-                            specl::ExprKind::Let {
-                                var: specl::Ident::new(
-                                    escape_ident(&def.name.name),
-                                    translate_span(def.name.span),
-                                ),
-                                value: Box::new(wrapped_fn_lit),
-                                body: Box::new(result),
-                            },
-                            translate_span(def.span),
-                        );
-                    }
-                }
-
-                return Ok(result);
+                return self.translate_let_in(defs, body, in_action, span);
             }
 
             TlaExprKind::Always(inner) => {
@@ -3944,6 +3524,378 @@ impl Translator {
         };
 
         Ok(specl::Expr::new(kind, span))
+    }
+
+    /// Translate `x \in [S -> T]` (function-set membership).
+    ///
+    /// Extracted from translate_expr_impl to reduce its stack frame size.
+    /// `x \in [S -> T]` expands to: `keys(x) == S and forall k in keys(x): x[k] in T`
+    #[inline(never)]
+    fn translate_in_fn_set(
+        &self,
+        left: &TlaExpr,
+        domain: &TlaExpr,
+        range: &TlaExpr,
+        in_action: bool,
+        span: Span,
+    ) -> Result<specl::Expr, TranslateError> {
+        let x = self.translate_expr(left, in_action)?;
+        let s = self.translate_expr(domain, in_action)?;
+
+        let keys_eq = specl::Expr::new(
+            specl::ExprKind::Binary {
+                op: specl::BinOp::Eq,
+                left: Box::new(specl::Expr::new(specl::ExprKind::Keys(Box::new(x.clone())), span)),
+                right: Box::new(s),
+            },
+            span,
+        );
+
+        let k_var = specl::Ident::new("__k", span);
+        let x_k = specl::Expr::new(
+            specl::ExprKind::Index {
+                base: Box::new(x.clone()),
+                index: Box::new(specl::Expr::new(specl::ExprKind::Ident("__k".to_string()), span)),
+            },
+            span,
+        );
+
+        let body = if let TlaExprKind::OpApp { name, args } = &range.kind {
+            if name == "Seq" && args.len() == 1 {
+                let elem_set = self.translate_expr(&args[0], in_action)?;
+                let i_var = specl::Ident::new("__i", span);
+                let len_xk = specl::Expr::new(specl::ExprKind::Len(Box::new(x_k.clone())), span);
+                let i_domain = specl::Expr::new(
+                    specl::ExprKind::Range {
+                        lo: Box::new(specl::Expr::new(specl::ExprKind::Int(1), span)),
+                        hi: Box::new(len_xk),
+                    },
+                    span,
+                );
+                specl::Expr::new(
+                    specl::ExprKind::Quantifier {
+                        kind: specl::QuantifierKind::Forall,
+                        bindings: vec![specl::Binding { var: i_var.clone(), domain: i_domain, span }],
+                        body: Box::new(specl::Expr::new(
+                            specl::ExprKind::Paren(Box::new(specl::Expr::new(
+                                specl::ExprKind::Binary {
+                                    op: specl::BinOp::In,
+                                    left: Box::new(specl::Expr::new(
+                                        specl::ExprKind::Index {
+                                            base: Box::new(x_k),
+                                            index: Box::new(specl::Expr::new(
+                                                specl::ExprKind::Ident("__i".to_string()),
+                                                span,
+                                            )),
+                                        },
+                                        span,
+                                    )),
+                                    right: Box::new(elem_set),
+                                },
+                                span,
+                            ))),
+                            span,
+                        )),
+                    },
+                    span,
+                )
+            } else {
+                let t = self.translate_expr(range, in_action)?;
+                specl::Expr::new(specl::ExprKind::Binary { op: specl::BinOp::In, left: Box::new(x_k), right: Box::new(t) }, span)
+            }
+        } else if let TlaExprKind::Ident(name) = &range.kind {
+            match name.as_str() {
+                "Nat" => specl::Expr::new(
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::Ge,
+                        left: Box::new(x_k),
+                        right: Box::new(specl::Expr::new(specl::ExprKind::Int(0), span)),
+                    },
+                    span,
+                ),
+                "Int" => specl::Expr::new(specl::ExprKind::Bool(true), span),
+                "BOOLEAN" => specl::Expr::new(
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::In,
+                        left: Box::new(x_k),
+                        right: Box::new(specl::Expr::new(
+                            specl::ExprKind::SetLit(vec![
+                                specl::Expr::new(specl::ExprKind::Bool(true), span),
+                                specl::Expr::new(specl::ExprKind::Bool(false), span),
+                            ]),
+                            span,
+                        )),
+                    },
+                    span,
+                ),
+                _ => {
+                    let t = self.translate_expr(range, in_action)?;
+                    specl::Expr::new(specl::ExprKind::Binary { op: specl::BinOp::In, left: Box::new(x_k), right: Box::new(t) }, span)
+                }
+            }
+        } else {
+            let t = self.translate_expr(range, in_action)?;
+            specl::Expr::new(specl::ExprKind::Binary { op: specl::BinOp::In, left: Box::new(x_k), right: Box::new(t) }, span)
+        };
+
+        let forall = specl::Expr::new(
+            specl::ExprKind::Quantifier {
+                kind: specl::QuantifierKind::Forall,
+                bindings: vec![specl::Binding {
+                    var: k_var.clone(),
+                    domain: specl::Expr::new(specl::ExprKind::Keys(Box::new(x.clone())), span),
+                    span,
+                }],
+                body: Box::new(specl::Expr::new(specl::ExprKind::Paren(Box::new(body)), span)),
+            },
+            span,
+        );
+
+        Ok(specl::Expr::new(
+            specl::ExprKind::Binary {
+                op: specl::BinOp::And,
+                left: Box::new(keys_eq),
+                right: Box::new(forall),
+            },
+            span,
+        ))
+    }
+
+    /// Translate `x \in Seq(S)` (membership in a sequence set).
+    ///
+    /// Extracted from translate_expr_impl to reduce its stack frame size.
+    /// `x \in Seq(S)` expands to: `forall i in 1..len(x): x[i] in S`
+    #[inline(never)]
+    fn translate_in_seq(
+        &self,
+        left: &TlaExpr,
+        elem_type: &TlaExpr,
+        in_action: bool,
+        span: Span,
+    ) -> Result<specl::Expr, TranslateError> {
+        let x = self.translate_expr(left, in_action)?;
+        let s = self.translate_expr(elem_type, in_action)?;
+
+        let i_var = specl::Ident::new("__i", span);
+        let len_x = specl::Expr::new(specl::ExprKind::Len(Box::new(x.clone())), span);
+        let domain = specl::Expr::new(
+            specl::ExprKind::Range {
+                lo: Box::new(specl::Expr::new(specl::ExprKind::Int(1), span)),
+                hi: Box::new(len_x),
+            },
+            span,
+        );
+
+        let forall = specl::Expr::new(
+            specl::ExprKind::Quantifier {
+                kind: specl::QuantifierKind::Forall,
+                bindings: vec![specl::Binding { var: i_var.clone(), domain, span }],
+                body: Box::new(specl::Expr::new(
+                    specl::ExprKind::Paren(Box::new(specl::Expr::new(
+                        specl::ExprKind::Binary {
+                            op: specl::BinOp::In,
+                            left: Box::new(specl::Expr::new(
+                                specl::ExprKind::Index {
+                                    base: Box::new(x),
+                                    index: Box::new(specl::Expr::new(
+                                        specl::ExprKind::Ident("__i".to_string()),
+                                        span,
+                                    )),
+                                },
+                                span,
+                            )),
+                            right: Box::new(s),
+                        },
+                        span,
+                    ))),
+                    span,
+                )),
+            },
+            span,
+        );
+
+        Ok(forall)
+    }
+
+    /// Translate a TLA+ LET...IN expression.
+    ///
+    /// Extracted from translate_expr_impl to reduce its stack frame size.
+    #[inline(never)]
+    fn translate_let_in(
+        &self,
+        defs: &[TlaLetDef],
+        body: &TlaExpr,
+        in_action: bool,
+        span: Span,
+    ) -> Result<specl::Expr, TranslateError> {
+        let mut local_ops: std::collections::HashMap<String, (Vec<String>, &TlaExpr)> =
+            std::collections::HashMap::new();
+        let mut simple_defs: Vec<&TlaLetDef> = Vec::new();
+        let mut recursive_fns: Vec<&TlaLetDef> = Vec::new();
+
+        for def in defs {
+            if def.recursive_binding.is_some() {
+                recursive_fns.push(def);
+            } else if def.params.is_empty() {
+                simple_defs.push(def);
+            } else {
+                let param_names: Vec<String> = def.params.iter().map(|p| p.name.clone()).collect();
+                local_ops.insert(def.name.name.clone(), (param_names, &def.body));
+            }
+        }
+
+        let inlined_body = self.inline_local_ops(body, &local_ops)?;
+        let body_expr = self.translate_expr(&inlined_body, in_action)?;
+        let mut result = specl::Expr::new(specl::ExprKind::Paren(Box::new(body_expr)), span);
+
+        for def in simple_defs.iter().rev() {
+            let inlined_def_body = self.inline_local_ops(&def.body, &local_ops)?;
+            let def_expr = self.translate_expr(&inlined_def_body, in_action)?;
+            let wrapped_value = specl::Expr::new(
+                specl::ExprKind::Paren(Box::new(def_expr)),
+                translate_span(def.span),
+            );
+            result = specl::Expr::new(
+                specl::ExprKind::Let {
+                    var: specl::Ident::new(escape_ident(&def.name.name), translate_span(def.name.span)),
+                    value: Box::new(wrapped_value),
+                    body: Box::new(result),
+                },
+                translate_span(def.span),
+            );
+        }
+
+        for def in recursive_fns.iter().rev() {
+            if let Some(binding) = &def.recursive_binding {
+                let domain_expr = self.translate_expr(&binding.domain, in_action)?;
+                let inlined_fn_body = self.inline_local_ops(&def.body, &local_ops)?;
+                let fn_body_expr = self.translate_expr(&inlined_fn_body, in_action)?;
+                let fn_lit = specl::Expr::new(
+                    specl::ExprKind::FnLit {
+                        var: specl::Ident::new(escape_ident(&binding.var.name), translate_span(binding.var.span)),
+                        domain: Box::new(domain_expr),
+                        body: Box::new(fn_body_expr),
+                    },
+                    translate_span(def.span),
+                );
+                let wrapped_fn_lit = specl::Expr::new(
+                    specl::ExprKind::Paren(Box::new(fn_lit)),
+                    translate_span(def.span),
+                );
+                result = specl::Expr::new(
+                    specl::ExprKind::Let {
+                        var: specl::Ident::new(escape_ident(&def.name.name), translate_span(def.name.span)),
+                        value: Box::new(wrapped_fn_lit),
+                        body: Box::new(result),
+                    },
+                    translate_span(def.span),
+                );
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Translate a TLA+ `[f EXCEPT ![...] = ...]` expression.
+    ///
+    /// Extracted from translate_expr_impl to reduce its stack frame size.
+    #[inline(never)]
+    fn translate_except_arm(
+        &self,
+        base: &TlaExpr,
+        updates: &[TlaExceptUpdate],
+        in_action: bool,
+        span: Span,
+    ) -> Result<specl::Expr, TranslateError> {
+        let mut result = self.translate_expr(base, in_action)?;
+        let base_for_at = result.clone();
+
+        for update in updates {
+            if update.path.len() == 1 {
+                let key = self.translate_expr(&update.path[0], in_action)?;
+                let at_replacement = specl::Expr::new(
+                    specl::ExprKind::Index {
+                        base: Box::new(base_for_at.clone()),
+                        index: Box::new(key.clone()),
+                    },
+                    span,
+                );
+                let value = self.translate_except_value(&update.value, in_action, &at_replacement)?;
+                result = specl::Expr::new(
+                    specl::ExprKind::RecordUpdate {
+                        base: Box::new(result),
+                        updates: vec![specl::RecordFieldUpdate::Dynamic { key, value }],
+                    },
+                    span,
+                );
+            } else {
+                let keys: Vec<_> = update
+                    .path
+                    .iter()
+                    .map(|k| self.translate_expr(k, in_action))
+                    .collect::<Result<_, _>>()?;
+
+                let mut at_replacement = base_for_at.clone();
+                for key in &keys {
+                    at_replacement = specl::Expr::new(
+                        specl::ExprKind::Index {
+                            base: Box::new(at_replacement),
+                            index: Box::new(key.clone()),
+                        },
+                        span,
+                    );
+                }
+
+                let value = self.translate_except_value(&update.value, in_action, &at_replacement)?;
+
+                let mut prefix = base_for_at.clone();
+                for key in keys.iter().take(keys.len() - 1) {
+                    prefix = specl::Expr::new(
+                        specl::ExprKind::Index {
+                            base: Box::new(prefix),
+                            index: Box::new(key.clone()),
+                        },
+                        span,
+                    );
+                }
+                let mut nested = specl::Expr::new(
+                    specl::ExprKind::RecordUpdate {
+                        base: Box::new(prefix),
+                        updates: vec![specl::RecordFieldUpdate::Dynamic {
+                            key: keys.last().unwrap().clone(),
+                            value,
+                        }],
+                    },
+                    span,
+                );
+
+                for i in (0..keys.len() - 1).rev() {
+                    let mut outer_prefix = base_for_at.clone();
+                    for key in keys.iter().take(i) {
+                        outer_prefix = specl::Expr::new(
+                            specl::ExprKind::Index {
+                                base: Box::new(outer_prefix),
+                                index: Box::new(key.clone()),
+                            },
+                            span,
+                        );
+                    }
+                    nested = specl::Expr::new(
+                        specl::ExprKind::RecordUpdate {
+                            base: Box::new(outer_prefix),
+                            updates: vec![specl::RecordFieldUpdate::Dynamic {
+                                key: keys[i].clone(),
+                                value: nested,
+                            }],
+                        },
+                        span,
+                    );
+                }
+
+                result = nested;
+            }
+        }
+        Ok(result)
     }
 
     fn translate_enabled_expr(

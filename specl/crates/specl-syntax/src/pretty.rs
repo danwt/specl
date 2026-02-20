@@ -307,36 +307,6 @@ impl PrettyPrinter {
     }
 
     fn print_expr(&mut self, expr: &Expr) {
-        use std::cell::Cell;
-        thread_local! {
-            static FIRST_ADDR: Cell<usize> = Cell::new(0);
-            static MAX_USAGE: Cell<usize> = Cell::new(0);
-            static DEPTH: Cell<usize> = Cell::new(0);
-            static MAX_DEPTH: Cell<usize> = Cell::new(0);
-        }
-        let stack_addr = { let l = 0usize; &l as *const usize as usize };
-        let is_root = DEPTH.with(|d| d.get() == 0);
-        if is_root { FIRST_ADDR.with(|a| a.set(stack_addr)); }
-        DEPTH.with(|d| { let n = d.get() + 1; d.set(n); MAX_DEPTH.with(|m| { if n > m.get() { m.set(n); } }); });
-        FIRST_ADDR.with(|first| {
-            let f = first.get();
-            let usage = if f > stack_addr { f - stack_addr } else { stack_addr - f };
-            MAX_USAGE.with(|m| { if usage > m.get() { m.set(usage); } });
-        });
-        struct Guard;
-        impl Drop for Guard {
-            fn drop(&mut self) {
-                DEPTH.with(|d| d.set(d.get() - 1));
-                if DEPTH.with(|d| d.get()) == 0 {
-                    let max_depth = MAX_DEPTH.with(|m| { let v = m.get(); m.set(0); v });
-                    let max_usage = MAX_USAGE.with(|m| { let v = m.get(); m.set(0); v });
-                    if max_depth > 5 {
-                        eprintln!("[print_expr] max_depth={} max_stack_usage={}KB", max_depth, max_usage / 1024);
-                    }
-                }
-            }
-        }
-        let _guard = Guard;
         self.print_expr_kind(&expr.kind);
     }
 
