@@ -1616,7 +1616,7 @@ fn translate_tla_to_temp(file: &PathBuf, quiet: bool) -> CliResult<(PathBuf, Tem
     })?;
     if !quiet {
         println!(
-            "Auto-translated: {} -> specl ({} bytes)",
+            "Note: translated {} to specl ({} bytes)",
             file.display(),
             specl_source.len()
         );
@@ -2313,7 +2313,7 @@ fn cmd_check_swarm(
 
     let n = num_workers.max(2);
     if !json {
-        println!("Swarm verification: {} workers", n);
+        println!("Swarm: {} workers", n);
     }
 
     let stop = Arc::new(AtomicBool::new(false));
@@ -2393,7 +2393,7 @@ fn cmd_check_swarm(
             CheckOutcome::InvariantViolation { invariant, .. } => {
                 if !json {
                     println!(
-                        "Swarm: found invariant violation '{}', reconstructing trace...",
+                        "Swarm: invariant violation '{}', reconstructing trace...",
                         invariant
                     );
                 }
@@ -3784,7 +3784,7 @@ fn cmd_fmt(
             message: e.to_string(),
         })?;
         if !json {
-            println!("formatted: {}", file.display());
+            println!("fmt: formatted {}", file.display());
         }
     } else if !lint {
         // Default: print formatted to stdout
@@ -3825,7 +3825,7 @@ fn cmd_fmt(
             let num_actions = spec.actions.len();
             let num_invariants = spec.invariants.len();
             println!(
-                "lint: ok ({} vars, {} actions, {} invariants) {:.3}s",
+                "fmt: lint ok ({} vars, {} actions, {} invariants) {:.3}s",
                 num_vars, num_actions, num_invariants, secs
             );
         }
@@ -3929,7 +3929,7 @@ fn run_check_iteration(
     let spec = match compile(&module) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Compile error: {}", e);
+            eprintln!("Error: compile failed: {}", e);
             return;
         }
     };
