@@ -125,17 +125,6 @@ fn translate_all_tla_files() {
 /// TLA+ files that use features the parser doesn't support yet.
 /// These are tracked so we notice when parser improvements fix them.
 const EXPECTED_TRANSLATE_FAILURES: &[&str] = &[
-    // Bracket expressions [x \in S |-> ...] not supported
-    "raft.tla",
-    "paxos.tla",
-    "pbft.tla",
-    "comet.tla",
-    "epaxos.tla",
-    "multipaxosreconfig.tla",
-    "percolator.tla",
-    "parallelcommits.tla",
-    "simplex.tla",
-    "swim.tla",
     // TLC trace spec (auto-generated, uses INSTANCE)
     "tpc_TTrace_1770669434.tla",
 ];

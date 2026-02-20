@@ -30,11 +30,10 @@ The `specl translate` command handles most TLA+ syntax:
 - Operator inlining (constant, helper, stateful)
 
 **Not yet supported:**
-- Function comprehensions (`[x \in S |-> expr]`) — affects 9 showcase specs (raft.tla, paxos.tla, pbft.tla, etc.)
 - Module composition (`EXTENDS`, `INSTANCE`)
 - Recursive functions
 
-**Test corpus:** All showcase and example `.tla` files translate successfully except 9 known failures (all due to function comprehension syntax). The translator handles ~4200 lines of TLA+ grammar.
+**Test corpus:** All showcase and example `.tla` files translate successfully. The translator handles ~4200 lines of TLA+ grammar.
 
 ## Performance vs TLC
 
