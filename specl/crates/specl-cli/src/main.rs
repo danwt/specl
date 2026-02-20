@@ -1182,8 +1182,7 @@ fn main() {
                 || max_states > 0
                 || max_depth > 0
                 || memory_limit > 0
-                || max_time > 0
-                || !check_only.is_empty();
+                || max_time > 0;
 
             let use_symbolic = symbolic || specific_symbolic;
             let use_bfs = bfs || specific_explicit;
@@ -1227,6 +1226,7 @@ fn main() {
                     sp,
                     timeout,
                     json,
+                    check_only.clone(),
                 )
             } else if use_bfs {
                 cmd_check(
@@ -1266,7 +1266,7 @@ fn main() {
                     }
                     cmd_check_symbolic(
                         &file, &constant, bmc_depth, false, false, None, false, false, false,
-                        seq_bound, sp, timeout, json,
+                        seq_bound, sp, timeout, json, check_only,
                     )
                 } else {
                     cmd_check(
@@ -2473,6 +2473,7 @@ fn cmd_check_symbolic(
     spacer_profile: SpacerProfile,
     timeout: u64,
     json: bool,
+    check_only: Vec<String>,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
@@ -2493,6 +2494,24 @@ fn cmd_check_symbolic(
     })?;
 
     let consts = parse_constants(constants, &spec)?;
+
+    // Filter invariants if --check-only is specified
+    let mut spec = spec;
+    if !check_only.is_empty() {
+        let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+        for name in &check_only {
+            if !inv_names.contains(&name.as_str()) {
+                return Err(CliError::CheckError {
+                    message: format!(
+                        "unknown invariant '{}' in --check-only (available: {:?})",
+                        name, inv_names
+                    ),
+                });
+            }
+        }
+        spec.invariants
+            .retain(|inv| check_only.contains(&inv.name));
+    }
 
     let config = SymbolicConfig {
         mode: if portfolio {
