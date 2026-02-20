@@ -94,7 +94,7 @@ impl fmt::Display for Type {
             Type::Fn(k, v) => write!(f, "dict[{}, {}]", k, v),
             Type::Option(t) => write!(f, "Option[{}]", t),
             Type::Record(r) => {
-                write!(f, "Record {{ ")?;
+                write!(f, "Dict {{ ")?;
                 for (i, (name, ty)) in r.fields.iter().enumerate() {
                     if i > 0 {
                         write!(f, ", ")?;

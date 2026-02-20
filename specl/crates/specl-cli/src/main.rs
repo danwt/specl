@@ -3196,7 +3196,7 @@ fn value_to_json(v: &Value) -> serde_json::Value {
 /// Convert a specl Value to ITF-encoded serde_json::Value.
 /// ITF uses tagged objects for non-primitive types:
 ///   Int → {"#bigint": "42"}, Set → {"#set": [...]}, Map → {"#map": [[k,v],...]},
-///   Tuple → {"#tup": [...]}, Seq → plain array, Record → plain object.
+///   Tuple → {"#tup": [...]}, Seq → plain array, Dict → plain object.
 fn value_to_itf(v: &Value) -> serde_json::Value {
     match v.kind() {
         VK::Bool(b) => serde_json::Value::Bool(b),

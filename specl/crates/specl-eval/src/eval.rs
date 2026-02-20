@@ -261,7 +261,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                         .cloned()
                         .ok_or_else(|| EvalError::KeyNotFound(field.clone()))
                 }
-                _ => Err(type_mismatch("Record or Tuple", &base_val)),
+                _ => Err(type_mismatch("Dict or Tuple", &base_val)),
             }
         }
 
@@ -315,7 +315,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
         CompiledExpr::RecordUpdate { base, updates } => {
             let base_val = eval(base, ctx)?;
             if !base_val.is_record() {
-                return Err(type_mismatch("Record", &base_val));
+                return Err(type_mismatch("Dict", &base_val));
             }
             let mut record = base_val.into_record_arc();
             let r = Arc::make_mut(&mut record);

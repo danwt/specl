@@ -140,7 +140,9 @@ fn type_to_kind(
             } else if matches!(key_ty.as_ref(), Type::Int | Type::Nat) {
                 infer_dict_range(var_idx, spec, consts).ok_or_else(|| {
                     crate::SymbolicError::Unsupported(format!(
-                        "Dict with unbounded key type {:?} (cannot infer range from init)",
+                        "Dict with unbounded key type {:?} (cannot infer range from init).\n  \
+                         Fix: use a bounded key type, e.g. change 'Dict[Int, T]' to \
+                         'Dict[0..N, T]' where N is a const",
                         key_ty
                     ))
                 })?
@@ -183,7 +185,9 @@ fn type_to_kind(
                     Ok(VarKind::ExplodedSet { lo, hi })
                 } else {
                     Err(crate::SymbolicError::Unsupported(format!(
-                        "Set with unbounded element type {:?} (cannot infer range)",
+                        "Set with unbounded element type {:?} (cannot infer range).\n  \
+                         Fix: use a bounded set type, e.g. change 'var x: Set[Int]' to \
+                         'var x: Set[0..N]' where N is a const",
                         elem_ty
                     )))
                 }
@@ -342,7 +346,9 @@ fn type_to_kind_value(
                     Ok(VarKind::ExplodedSet { lo, hi })
                 } else {
                     Err(crate::SymbolicError::Unsupported(format!(
-                        "Set with unbounded element type {:?} (cannot infer range)",
+                        "Set with unbounded element type {:?} (cannot infer range).\n  \
+                         Fix: use a bounded set type, e.g. change 'var x: Set[Int]' to \
+                         'var x: Set[0..N]' where N is a const",
                         elem_ty
                     )))
                 }

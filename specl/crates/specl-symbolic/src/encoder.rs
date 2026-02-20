@@ -254,7 +254,7 @@ impl<'a> EncoderCtx<'a> {
             )),
             CompiledExpr::Field { base, field } => self.encode_field_access(base, field),
             CompiledExpr::RecordUpdate { .. } => Err(SymbolicError::Encoding(
-                "RecordUpdate should be handled at the effect level".into(),
+                "DictUpdate should be handled at the effect level".into(),
             )),
             CompiledExpr::TupleLit(_) => Err(SymbolicError::Encoding(
                 "TupleLit should be handled at the init/effect level".into(),
@@ -316,7 +316,7 @@ impl<'a> EncoderCtx<'a> {
             } => {
                 let field_idx = field_names.iter().position(|n| n == field).ok_or_else(|| {
                     SymbolicError::Encoding(format!(
-                        "unknown record field '{}' (available: {:?})",
+                        "unknown dict field '{}' (available: {:?})",
                         field, field_names
                     ))
                 })?;
@@ -329,12 +329,12 @@ impl<'a> EncoderCtx<'a> {
                     Ok(z3_vars[offset].clone())
                 } else {
                     Err(SymbolicError::Encoding(
-                        "record field is compound; use nested field access".into(),
+                        "dict field is compound; use nested field access".into(),
                     ))
                 }
             }
             _ => Err(SymbolicError::Encoding(format!(
-                "field access on non-record/tuple variable '{}'",
+                "field access on non-dict/tuple variable '{}'",
                 entry.name
             ))),
         }
@@ -834,7 +834,7 @@ impl<'a> EncoderCtx<'a> {
                 "cannot index into Tuple (use field access, e.g. t.0)".into(),
             )),
             VarKind::ExplodedRecord { .. } => Err(SymbolicError::Encoding(
-                "cannot index into Record (use field access, e.g. r.field)".into(),
+                "cannot index into Dict (use field access, e.g. r.field)".into(),
             )),
         }
     }

@@ -337,7 +337,7 @@ impl Value {
             TAG_SET => "Set",
             TAG_SEQ => "Seq",
             TAG_FN | TAG_INTMAP | TAG_INTMAP2 => "Fn",
-            TAG_RECORD => "Record",
+            TAG_RECORD => "Dict",
             TAG_TUPLE => "Tuple",
             TAG_NONE => "None",
             TAG_SOME => "Some",
@@ -1208,7 +1208,7 @@ impl fmt::Debug for Value {
                 write!(f, "IntMap2(inner_size={}, len={})", inner_size, data.len())
             }
             VK::Record(r) => {
-                write!(f, "Record(")?;
+                write!(f, "Dict(")?;
                 f.debug_map().entries(r.iter()).finish()?;
                 write!(f, ")")
             }

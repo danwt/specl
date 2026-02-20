@@ -422,7 +422,7 @@ fn encode_init_assignment(
                 Ok(())
             } else {
                 Err(SymbolicError::Encoding(format!(
-                    "unsupported Record init rhs: {:?}",
+                    "unsupported Dict init rhs: {:?}",
                     std::mem::discriminant(rhs)
                 )))
             }
@@ -1206,7 +1206,7 @@ fn encode_primed_assignment(
                     Ok(Bool::and(&conjuncts))
                 }
                 _ => Err(SymbolicError::Encoding(format!(
-                    "unsupported Record effect rhs: {:?}",
+                    "unsupported Dict effect rhs: {:?}",
                     std::mem::discriminant(rhs)
                 ))),
             }
