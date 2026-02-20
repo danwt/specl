@@ -139,4 +139,4 @@ action Send(msg: Seq[Int]) {
 | MaxRound: +1 | 5-50x |
 | Values: +1 | 2-10x |
 
-Use `specl estimate spec.specl -c N=3` to get a rough estimate before running the full check.
+Use `specl info spec.specl -c N=3` to get state space estimates and optimization tips before running the full check.

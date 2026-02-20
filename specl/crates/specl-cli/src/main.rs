@@ -23,7 +23,7 @@ use specl_syntax::{parse, pretty_print};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -189,6 +189,14 @@ impl CliError {
 
 type CliResult<T> = Result<T, CliError>;
 
+/// Temporary file that is deleted when dropped.
+struct TempFileGuard(PathBuf);
+impl Drop for TempFileGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
+    }
+}
+
 #[derive(Parser)]
 #[command(name = "specl", version)]
 #[command(about = "Specl specification language model checker", long_about = None)]
@@ -199,29 +207,12 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Parse a Specl file and show the AST
-    Parse {
-        /// Input file
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-
-        /// Show verbose output
-        #[arg(short, long)]
-        verbose: bool,
-    },
-
-    /// Type check a Specl file
-    Typecheck {
-        /// Input file
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-    },
-
-    /// Analyze a spec and show profile, recommendations, and action details
+    /// Analyze a spec: state space breakdown, optimization tips, and estimated resources.
+    /// Without a file, prints a performance and strategy guide.
     Info {
-        /// Input file
+        /// Input file (omit for general performance guide)
         #[arg(value_name = "FILE")]
-        file: PathBuf,
+        file: Option<PathBuf>,
 
         /// Constant assignments (name=value)
         #[arg(short, long, value_name = "CONST=VALUE")]
@@ -921,15 +912,32 @@ at each action step. Unchanged variables are omitted."
         diff: bool,
     },
 
-    /// Format a Specl file
-    Format {
+    /// Format, lint, or check a Specl file.
+    /// Default: format to stdout. --write to overwrite. --check for diff check. --lint for full compile check.
+    Fmt {
         /// Input file
         #[arg(value_name = "FILE")]
         file: PathBuf,
 
-        /// Write output to file instead of stdout
-        #[arg(short, long)]
+        /// Write formatted output back to file
+        #[arg(short, long, conflicts_with = "check")]
         write: bool,
+
+        /// Check formatting without writing (exit 1 if unformatted)
+        #[arg(long, conflicts_with = "write")]
+        check: bool,
+
+        /// Also run syntax, type, and compile checks (like a fast pre-check)
+        #[arg(long)]
+        lint: bool,
+
+        /// Constant assignments for lint mode (name=value)
+        #[arg(short, long, value_name = "CONST=VALUE", requires = "lint")]
+        constant: Vec<String>,
+
+        /// Output format for lint results (text or json)
+        #[arg(long, value_enum, default_value = "text", requires = "lint")]
+        output: OutputFormat,
     },
 
     /// Watch a Specl file and re-check on changes
@@ -966,21 +974,6 @@ at each action step. Unchanged variables are omitted."
         output: Option<PathBuf>,
     },
 
-    /// Fast syntax, type, and compile check without model checking
-    Lint {
-        /// Input file
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-
-        /// Constant assignments (name=value)
-        #[arg(short, long, value_name = "CONST=VALUE")]
-        constant: Vec<String>,
-
-        /// Output format (text or json)
-        #[arg(long, value_enum, default_value = "text")]
-        output: OutputFormat,
-    },
-
     /// Simulate a random trace through the state space
     Simulate {
         /// Input file
@@ -1003,35 +996,6 @@ at each action step. Unchanged variables are omitted."
         #[arg(long, value_enum, default_value = "text")]
         output: OutputFormat,
     },
-
-    /// Show comprehensive performance guide for writing fast specs and choosing flags
-    PerfGuide,
-
-    /// Estimate state space size and resource requirements before checking
-    Estimate {
-        /// Input file
-        #[arg(value_name = "FILE")]
-        file: PathBuf,
-
-        /// Constant assignments (name=value)
-        #[arg(short, long, value_name = "CONST=VALUE")]
-        constant: Vec<String>,
-    },
-
-    /// Batch check all .specl files in a directory using their // Use: comments
-    Test {
-        /// Directory containing .specl files (default: examples/)
-        #[arg(value_name = "DIR")]
-        dir: Option<PathBuf>,
-
-        /// Maximum states per spec (overrides // Use: comment, 0 = use comment value)
-        #[arg(long, default_value = "0")]
-        max_states: usize,
-
-        /// Maximum time per spec in seconds (0 = unlimited)
-        #[arg(long, default_value = "60")]
-        max_time: u64,
-    },
 }
 
 fn main() {
@@ -1050,13 +1014,8 @@ fn main() {
     let cli = Cli::parse();
 
     // Initialize logging
-    let filter = if matches!(
-        &cli.command,
-        Commands::Parse { verbose: true, .. } | Commands::Check { verbose: true, .. }
-    ) {
+    let filter = if matches!(&cli.command, Commands::Check { verbose: true, .. }) {
         EnvFilter::new("debug")
-    } else if matches!(&cli.command, Commands::Test { .. }) {
-        EnvFilter::new("error")
     } else {
         EnvFilter::new("info")
     };
@@ -1069,9 +1028,10 @@ fn main() {
         .init();
 
     let result = match cli.command {
-        Commands::Parse { file, verbose } => cmd_parse(&file, verbose),
-        Commands::Typecheck { file } => cmd_typecheck(&file),
-        Commands::Info { file, constant } => cmd_info(&file, &constant),
+        Commands::Info { file, constant } => match file {
+            Some(f) => cmd_info(&f, &constant),
+            None => cmd_perf_guide(),
+        },
         Commands::Check {
             help,
             file,
@@ -1164,7 +1124,19 @@ fn main() {
             diff,
             ..
         } => {
-            let file = file.unwrap();
+            let orig_file = file.unwrap();
+            // TLA+ auto-translate: if file ends in .tla, translate to specl first
+            let (file, _tla_temp) = if orig_file.extension().is_some_and(|e| e == "tla") {
+                match translate_tla_to_temp(&orig_file, quiet) {
+                    Ok((path, guard)) => (path, Some(guard)),
+                    Err(e) => {
+                        eprintln!("{:?}", miette::Report::new(e));
+                        std::process::exit(1);
+                    }
+                }
+            } else {
+                (orig_file, None)
+            };
             let json = output == OutputFormat::Json;
             let quiet = quiet || output != OutputFormat::Text;
 
@@ -1259,15 +1231,66 @@ fn main() {
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
-                let auto_symbolic = auto_select_symbolic(&file, &constant);
+                let (auto_symbolic, reason) = auto_select_strategy(&file, &constant);
+                if !quiet {
+                    println!("Strategy: {}", reason);
+                }
                 if auto_symbolic {
-                    if !quiet {
-                        println!("Auto-selected: symbolic checking (unbounded types detected)");
+                    let sym_result = cmd_check_symbolic(
+                        &file,
+                        &constant,
+                        bmc_depth,
+                        false,
+                        false,
+                        None,
+                        false,
+                        false,
+                        false,
+                        seq_bound,
+                        sp,
+                        timeout,
+                        json,
+                        check_only.clone(),
+                    );
+                    // Fallback: if symbolic fails, try BFS
+                    if sym_result.is_err() {
+                        if !quiet {
+                            eprintln!();
+                            eprintln!(
+                                "Symbolic checking failed. Falling back to BFS exploration..."
+                            );
+                        }
+                        cmd_check(
+                            &file,
+                            &constant,
+                            max_states,
+                            max_depth,
+                            memory_limit,
+                            max_time,
+                            !no_deadlock,
+                            !no_parallel,
+                            threads,
+                            por,
+                            symmetry,
+                            fast,
+                            bloom,
+                            bloom_bits,
+                            collapse,
+                            tree,
+                            directed,
+                            incremental,
+                            verbose,
+                            quiet,
+                            no_auto,
+                            output,
+                            swarm,
+                            profile,
+                            check_only,
+                            diff,
+                        )
+                    } else {
+                        sym_result
                     }
-                    cmd_check_symbolic(
-                        &file, &constant, bmc_depth, false, false, None, false, false, false,
-                        seq_bound, sp, timeout, json, check_only,
-                    )
                 } else {
                     cmd_check(
                         &file,
@@ -1311,11 +1334,14 @@ fn main() {
                 inner
             }
         }
-        Commands::Lint {
+        Commands::Fmt {
             file,
+            write,
+            check,
+            lint,
             constant,
             output,
-        } => cmd_lint(&file, &constant, output),
+        } => cmd_fmt(&file, write, check, lint, &constant, output),
         Commands::Simulate {
             file,
             constant,
@@ -1323,7 +1349,6 @@ fn main() {
             seed,
             output,
         } => cmd_simulate(&file, &constant, steps, seed, output),
-        Commands::Format { file, write } => cmd_format(&file, write),
         Commands::Watch {
             file,
             constant,
@@ -1332,76 +1357,12 @@ fn main() {
             no_deadlock,
         } => cmd_watch(&file, &constant, max_states, max_depth, !no_deadlock),
         Commands::Translate { file, output } => cmd_translate(&file, output.as_ref()),
-        Commands::PerfGuide => cmd_perf_guide(),
-        Commands::Estimate { file, constant } => cmd_estimate(&file, &constant),
-        Commands::Test {
-            dir,
-            max_states,
-            max_time,
-        } => cmd_test(dir.as_ref(), max_states, max_time),
     };
 
     if let Err(e) = result {
         eprintln!("{:?}", miette::Report::new(e));
         std::process::exit(1);
     }
-}
-
-fn cmd_parse(file: &PathBuf, verbose: bool) -> CliResult<()> {
-    let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
-
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
-
-    if verbose {
-        println!("{:#?}", module);
-    } else {
-        println!("module {}", module.name.name);
-        println!("  {} declarations", module.decls.len());
-
-        for decl in &module.decls {
-            match decl {
-                specl_syntax::Decl::Const(d) => println!("    const {}", d.name.name),
-                specl_syntax::Decl::Var(d) => println!("    var {}", d.name.name),
-                specl_syntax::Decl::Type(d) => println!("    type {}", d.name.name),
-                specl_syntax::Decl::Action(d) => println!("    action {}", d.name.name),
-                specl_syntax::Decl::Func(d) => println!("    func {}", d.name.name),
-                specl_syntax::Decl::Init(_) => println!("    init"),
-                specl_syntax::Decl::Invariant(d) => println!("    invariant {}", d.name.name),
-                specl_syntax::Decl::Property(d) => println!("    property {}", d.name.name),
-                specl_syntax::Decl::Fairness(d) => {
-                    println!("    fairness ({} constraints)", d.constraints.len())
-                }
-                specl_syntax::Decl::Use(_) => println!("    use"),
-                specl_syntax::Decl::View(d) => {
-                    let names: Vec<_> = d.variables.iter().map(|v| v.name.as_str()).collect();
-                    println!("    view {{ {} }}", names.join(", "))
-                }
-            }
-        }
-    }
-
-    println!("parse: ok");
-    Ok(())
-}
-
-fn cmd_typecheck(file: &PathBuf) -> CliResult<()> {
-    let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
-
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
-
-    specl_types::check_module(&module)
-        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-
-    println!("typecheck: ok");
-    Ok(())
 }
 
 fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
@@ -1580,6 +1541,26 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
         }
     }
 
+    // Time and memory estimates (merged from estimate command)
+    if let Some(bound) = profile.state_space_bound {
+        println!();
+        println!("Estimates:");
+        let secs_single = bound as f64 / 80_000.0;
+        let secs_multi = bound as f64 / 300_000.0;
+        println!(
+            "  Time: ~{} (single-threaded) / ~{} (parallel)",
+            format_duration(secs_single),
+            format_duration(secs_multi)
+        );
+        let mem_full_mb = (bound as f64 * 80.0) / (1024.0 * 1024.0);
+        let mem_fast_mb = (bound as f64 * 8.0) / (1024.0 * 1024.0);
+        println!(
+            "  Memory: ~{} (full tracking) / ~{} (--fast)",
+            format_memory(mem_full_mb),
+            format_memory(mem_fast_mb)
+        );
+    }
+
     // Suggested command — derive flags from recommendations
     println!();
     let const_flags: Vec<String> = spec
@@ -1610,33 +1591,92 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     Ok(())
 }
 
-/// Quick analysis pass to determine if symbolic checking should be auto-selected.
-/// Returns true if the spec has unbounded types. Falls back to false on any error
-/// (the actual check command will report the error properly).
-fn auto_select_symbolic(file: &PathBuf, constants: &[String]) -> bool {
+/// Translate a TLA+ file to a temporary .specl file for checking.
+fn translate_tla_to_temp(file: &PathBuf, quiet: bool) -> CliResult<(PathBuf, TempFileGuard)> {
+    let source = fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?;
+    let specl_source = specl_tla::translate(&source).map_err(|e| CliError::TranslateError {
+        message: format!("auto-translating {}: {}", file.display(), e),
+    })?;
+    let tmp_name = format!(
+        ".specl-check-{}-{}.specl",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0)
+    );
+    let tmp_path = file
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new("."))
+        .join(&tmp_name);
+    fs::write(&tmp_path, &specl_source).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?;
+    if !quiet {
+        println!(
+            "Auto-translated: {} -> specl ({} bytes)",
+            file.display(),
+            specl_source.len()
+        );
+    }
+    let guard = TempFileGuard(tmp_path.clone());
+    Ok((tmp_path, guard))
+}
+
+/// Analyze a spec to determine the best checking strategy.
+/// Returns (use_symbolic, reason) explaining the choice.
+fn auto_select_strategy(file: &PathBuf, constants: &[String]) -> (bool, String) {
     let source = match fs::read_to_string(file) {
         Ok(s) => Arc::new(s),
-        Err(_) => return false,
+        Err(_) => return (false, "BFS".into()),
     };
     let module = match parse(&source) {
         Ok(m) => m,
-        Err(_) => return false,
+        Err(_) => return (false, "BFS".into()),
     };
     if specl_types::check_module(&module).is_err() {
-        return false;
+        return (false, "BFS".into());
     }
     let spec = match compile(&module) {
         Ok(s) => s,
-        Err(_) => return false,
+        Err(_) => return (false, "BFS".into()),
     };
     if parse_constants(constants, &spec).is_err() {
-        return false;
+        return (false, "BFS".into());
     }
     let profile = analyze(&spec);
-    profile
+
+    let has_unbounded = profile
         .warnings
         .iter()
-        .any(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
+        .any(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }));
+
+    if has_unbounded {
+        return (
+            true,
+            "symbolic (unbounded types detected — cannot enumerate all states)".into(),
+        );
+    }
+
+    match profile.state_space_bound {
+        Some(b) if b > 1_000_000_000 => (
+            false,
+            format!(
+                "BFS (finite but very large: ~{} states — consider --fast)",
+                format_large_number(b)
+            ),
+        ),
+        Some(b) => (
+            false,
+            format!(
+                "BFS (finite state space: ~{} states)",
+                format_large_number(b)
+            ),
+        ),
+        None => (false, "BFS (state space bound unknown)".into()),
+    }
 }
 
 fn cmd_check(
@@ -2498,7 +2538,11 @@ fn cmd_check_symbolic(
     // Filter invariants if --check-only is specified
     let mut spec = spec;
     if !check_only.is_empty() {
-        let inv_names: Vec<&str> = spec.invariants.iter().map(|inv| inv.name.as_str()).collect();
+        let inv_names: Vec<&str> = spec
+            .invariants
+            .iter()
+            .map(|inv| inv.name.as_str())
+            .collect();
         for name in &check_only {
             if !inv_names.contains(&name.as_str()) {
                 return Err(CliError::CheckError {
@@ -2509,8 +2553,7 @@ fn cmd_check_symbolic(
                 });
             }
         }
-        spec.invariants
-            .retain(|inv| check_only.contains(&inv.name));
+        spec.invariants.retain(|inv| check_only.contains(&inv.name));
     }
 
     let config = SymbolicConfig {
@@ -2678,87 +2721,6 @@ fn cmd_check_symbolic(
                 std::process::exit(2);
             }
         }
-    }
-
-    Ok(())
-}
-
-fn cmd_lint(file: &PathBuf, constants: &[String], output: OutputFormat) -> CliResult<()> {
-    let json = output == OutputFormat::Json;
-    let filename = file.display().to_string();
-    let start = Instant::now();
-
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
-
-    // Parse
-    let module = match parse(&source) {
-        Ok(m) => m,
-        Err(e) => {
-            let secs = start.elapsed().as_secs_f64();
-            if json {
-                let out = JsonOutput::new("error", secs).with_error(format!("parse error: {}", e));
-                println!("{}", serde_json::to_string(&out).unwrap());
-                std::process::exit(1);
-            }
-            return Err(CliError::from_parse_error(e, source.clone(), &filename));
-        }
-    };
-
-    // Type check
-    if let Err(e) = specl_types::check_module(&module) {
-        let secs = start.elapsed().as_secs_f64();
-        if json {
-            let out = JsonOutput::new("error", secs).with_error(format!("type error: {}", e));
-            println!("{}", serde_json::to_string(&out).unwrap());
-            std::process::exit(1);
-        }
-        return Err(CliError::from_type_error(e, source.clone(), &filename));
-    }
-
-    // Compile
-    let spec = match compile(&module) {
-        Ok(s) => s,
-        Err(e) => {
-            let secs = start.elapsed().as_secs_f64();
-            if json {
-                let out =
-                    JsonOutput::new("error", secs).with_error(format!("compile error: {}", e));
-                println!("{}", serde_json::to_string(&out).unwrap());
-                std::process::exit(1);
-            }
-            return Err(CliError::CompileError {
-                message: e.to_string(),
-            });
-        }
-    };
-
-    // Validate constants if provided
-    if !constants.is_empty() {
-        if let Err(e) = parse_constants(constants, &spec) {
-            let secs = start.elapsed().as_secs_f64();
-            if json {
-                let out = JsonOutput::new("error", secs).with_error(e.to_string());
-                println!("{}", serde_json::to_string(&out).unwrap());
-                std::process::exit(1);
-            }
-            return Err(e);
-        }
-    }
-
-    let secs = start.elapsed().as_secs_f64();
-    if json {
-        let out = JsonOutput::new("ok", secs);
-        println!("{}", serde_json::to_string(&out).unwrap());
-    } else {
-        let num_vars = spec.vars.len();
-        let num_actions = spec.actions.len();
-        let num_invariants = spec.invariants.len();
-        println!(
-            "lint: ok ({} vars, {} actions, {} invariants) {:.3}s",
-            num_vars, num_actions, num_invariants, secs
-        );
     }
 
     Ok(())
@@ -3781,8 +3743,18 @@ fn format_large_number(n: u128) -> String {
     }
 }
 
-fn cmd_format(file: &PathBuf, write: bool) -> CliResult<()> {
+fn cmd_fmt(
+    file: &PathBuf,
+    write: bool,
+    check: bool,
+    lint: bool,
+    constants: &[String],
+    output: OutputFormat,
+) -> CliResult<()> {
+    let json = output == OutputFormat::Json;
     let filename = file.display().to_string();
+    let start = Instant::now();
+
     let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
         message: e.to_string(),
     })?);
@@ -3792,13 +3764,71 @@ fn cmd_format(file: &PathBuf, write: bool) -> CliResult<()> {
 
     let formatted = pretty_print(&module);
 
-    if write {
+    if check {
+        // Check mode: exit 1 if file is not already formatted
+        if *source != formatted {
+            if json {
+                let out = JsonOutput::new("error", start.elapsed().as_secs_f64())
+                    .with_error("file is not formatted".into());
+                println!("{}", serde_json::to_string(&out).unwrap());
+            } else {
+                eprintln!("fmt: {} needs formatting", file.display());
+            }
+            std::process::exit(1);
+        }
+        if !json {
+            println!("fmt: ok (already formatted)");
+        }
+    } else if write {
         fs::write(file, &formatted).map_err(|e| CliError::IoError {
             message: e.to_string(),
         })?;
-        println!("formatted: {}", file.display());
-    } else {
+        if !json {
+            println!("formatted: {}", file.display());
+        }
+    } else if !lint {
+        // Default: print formatted to stdout
         print!("{}", formatted);
+    }
+
+    if lint {
+        // Also run type check + compile check
+        specl_types::check_module(&module)
+            .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
+
+        let spec = match compile(&module) {
+            Ok(s) => s,
+            Err(e) => {
+                let secs = start.elapsed().as_secs_f64();
+                if json {
+                    let out =
+                        JsonOutput::new("error", secs).with_error(format!("compile error: {}", e));
+                    println!("{}", serde_json::to_string(&out).unwrap());
+                    std::process::exit(1);
+                }
+                return Err(CliError::CompileError {
+                    message: e.to_string(),
+                });
+            }
+        };
+
+        if !constants.is_empty() {
+            parse_constants(constants, &spec)?;
+        }
+
+        let secs = start.elapsed().as_secs_f64();
+        if json {
+            let out = JsonOutput::new("ok", secs);
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else {
+            let num_vars = spec.vars.len();
+            let num_actions = spec.actions.len();
+            let num_invariants = spec.invariants.len();
+            println!(
+                "lint: ok ({} vars, {} actions, {} invariants) {:.3}s",
+                num_vars, num_actions, num_invariants, secs
+            );
+        }
     }
 
     Ok(())
@@ -4063,510 +4093,6 @@ fn run_check_iteration(
     println!("Watching for changes...");
 }
 
-fn cmd_estimate(file: &PathBuf, constants: &[String]) -> CliResult<()> {
-    let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
-
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
-    specl_types::check_module(&module)
-        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-    let spec = compile(&module).map_err(|e| CliError::CompileError {
-        message: e.to_string(),
-    })?;
-    let consts = parse_constants(constants, &spec)?;
-
-    let profile = analyze(&spec);
-
-    // Header with constants
-    let const_strs: Vec<String> = spec
-        .consts
-        .iter()
-        .map(|c| format!("{}={}", c.name, consts[c.index]))
-        .collect();
-    println!();
-    if const_strs.is_empty() {
-        println!("Estimated state space: {} ({})", module.name.name, filename);
-    } else {
-        println!(
-            "Estimated state space: {} ({})",
-            module.name.name,
-            const_strs.join(", ")
-        );
-    }
-
-    // Variable breakdown
-    println!("  Variables: {}, avg domain size: {}", profile.num_vars, {
-        let bounded: Vec<f64> = profile
-            .var_domain_sizes
-            .iter()
-            .filter_map(|(_, _, d)| d.map(|s| s as f64))
-            .collect();
-        if bounded.is_empty() {
-            "unbounded".to_string()
-        } else {
-            let avg = bounded.iter().sum::<f64>() / bounded.len() as f64;
-            format!("{:.1}", avg)
-        }
-    });
-
-    // Action branching
-    let total_combos: Option<u64> = {
-        let mut sum = 0u64;
-        let mut all_bounded = true;
-        for (_, c) in &profile.action_param_counts {
-            match c {
-                Some(n) => sum = sum.saturating_add(*n),
-                None => all_bounded = false,
-            }
-        }
-        if all_bounded {
-            Some(sum)
-        } else {
-            None
-        }
-    };
-    match total_combos {
-        Some(c) => println!(
-            "  Actions: {}, total branching factor: ~{}",
-            profile.num_actions, c
-        ),
-        None => println!(
-            "  Actions: {}, branching factor: unbounded",
-            profile.num_actions
-        ),
-    }
-
-    // State space estimate
-    match profile.state_space_bound {
-        Some(bound) => {
-            println!("  Estimated states: ~{}", format_large_number(bound));
-
-            // Time estimate: assume 80K states/s single-thread, ~300K multi-thread
-            let secs_single = bound as f64 / 80_000.0;
-            let secs_multi = bound as f64 / 300_000.0;
-            println!(
-                "  Estimated time: ~{} (single-threaded) / ~{} (parallel)",
-                format_duration(secs_single),
-                format_duration(secs_multi)
-            );
-
-            // Memory estimate: ~80 bytes/state full tracking, 8 bytes/state fast
-            let mem_full_mb = (bound as f64 * 80.0) / (1024.0 * 1024.0);
-            let mem_fast_mb = (bound as f64 * 8.0) / (1024.0 * 1024.0);
-            println!(
-                "  Memory estimate: ~{} (full tracking) / ~{} (--fast)",
-                format_memory(mem_full_mb),
-                format_memory(mem_fast_mb)
-            );
-        }
-        None => {
-            println!("  Estimated states: unbounded (cannot estimate)");
-            println!();
-            println!("  Tip: Use --bmc for symbolic bounded model checking with unbounded types,");
-            println!("       or add range bounds to variables for exhaustive checking.");
-        }
-    }
-
-    // Per-variable breakdown
-    println!();
-    println!("  Variable breakdown:");
-    for (name, ty, domain) in &profile.var_domain_sizes {
-        match domain {
-            Some(size) => println!(
-                "    {}: {} ({} values)",
-                name,
-                ty,
-                format_large_number(*size)
-            ),
-            None => println!("    {}: {} (unbounded)", name, ty),
-        }
-    }
-
-    // Tips
-    if let Some(bound) = profile.state_space_bound {
-        println!();
-        if bound > 100_000_000 {
-            println!("  Tip: Use --fast for fingerprint-only mode (10x less memory, no traces)");
-            println!("       Use --bloom for fixed-memory probabilistic mode (UNSOUND: bug finding only)");
-        }
-        if bound > 10_000_000 {
-            if profile.has_symmetry {
-                let factors: Vec<String> = profile
-                    .symmetry_domain_sizes
-                    .iter()
-                    .map(|s| format!("{}x", factorial(*s as u64)))
-                    .collect();
-                println!(
-                    "  Tip: Use --symmetry for up to {} reduction",
-                    factors.join(", ")
-                );
-            }
-            let independence_pct = (profile.independence_ratio * 100.0) as u32;
-            if independence_pct >= 20 {
-                println!(
-                    "  Tip: Use --por ({}% of action pairs are independent)",
-                    independence_pct
-                );
-            }
-        }
-    }
-
-    println!();
-    Ok(())
-}
-
-/// Parse a `// Use:` comment line from a specl file to extract check arguments.
-struct UseComment {
-    constants: Vec<String>,
-    no_deadlock: bool,
-    fast: bool,
-    max_states: usize,
-}
-
-fn parse_use_comment(source: &str) -> Option<UseComment> {
-    for line in source.lines() {
-        if !line.starts_with("// Use:") {
-            continue;
-        }
-        let rest = line.trim_start_matches("// Use:").trim();
-
-        // "No constants needed" case
-        if rest.contains("No constants needed") {
-            return Some(UseComment {
-                constants: Vec::new(),
-                no_deadlock: false,
-                fast: false,
-                max_states: 0,
-            });
-        }
-
-        let mut constants = Vec::new();
-        let mut no_deadlock = false;
-        let mut fast = false;
-        let mut max_states: usize = 0;
-
-        let parts: Vec<&str> = rest.split_whitespace().collect();
-        let mut i = 0;
-        while i < parts.len() {
-            match parts[i] {
-                "-c" => {
-                    if i + 1 < parts.len() {
-                        constants.push(parts[i + 1].to_string());
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                "--no-deadlock" => {
-                    no_deadlock = true;
-                    i += 1;
-                }
-                "--fast" => {
-                    fast = true;
-                    i += 1;
-                }
-                "--max-states" => {
-                    if i + 1 < parts.len() {
-                        max_states = parts[i + 1].parse().unwrap_or(0);
-                        i += 2;
-                    } else {
-                        i += 1;
-                    }
-                }
-                p if p.starts_with("-c") => {
-                    // Handle -cN=3 style (no space)
-                    constants.push(p.trim_start_matches("-c").to_string());
-                    i += 1;
-                }
-                _ => {
-                    i += 1;
-                }
-            }
-        }
-
-        return Some(UseComment {
-            constants,
-            no_deadlock,
-            fast,
-            max_states,
-        });
-    }
-    None
-}
-
-fn find_specl_files(dir: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    if dir.is_dir() {
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    files.extend(find_specl_files(&path));
-                } else if path.extension().is_some_and(|e| e == "specl") {
-                    files.push(path);
-                }
-            }
-        }
-    }
-    files.sort();
-    files
-}
-
-/// Skip specs that are known to be too large for quick testing
-/// or have Use: comments with intentionally small parameters.
-const TEST_SKIP: &[&str] = &[
-    "RaftMongo.specl",
-    "ChainReplication.specl",
-    "sem-santa_claus.specl", // Use: params too small for invariant (NUM_ELVES=2 < 3)
-];
-
-fn cmd_test(
-    dir: Option<&PathBuf>,
-    override_max_states: usize,
-    max_time_per_spec: u64,
-) -> CliResult<()> {
-    let test_dir = dir.cloned().unwrap_or_else(|| {
-        // Default: look for examples/ relative to current dir
-        PathBuf::from("examples")
-    });
-
-    if !test_dir.is_dir() {
-        return Err(CliError::IoError {
-            message: format!("directory not found: {}", test_dir.display()),
-        });
-    }
-
-    let files = find_specl_files(&test_dir);
-    if files.is_empty() {
-        println!("No .specl files found in {}", test_dir.display());
-        return Ok(());
-    }
-
-    println!("Testing {} specs in {}", files.len(), test_dir.display());
-    println!();
-
-    let mut passed = 0;
-    let mut failed = 0;
-    let mut skipped = 0;
-    let mut failures: Vec<String> = Vec::new();
-    let total_start = Instant::now();
-
-    for file in &files {
-        let filename = file.file_name().unwrap().to_str().unwrap();
-
-        // Skip known large specs
-        if TEST_SKIP.contains(&filename) {
-            println!("  SKIP  {}", file.display());
-            skipped += 1;
-            continue;
-        }
-
-        let source = match fs::read_to_string(file) {
-            Ok(s) => s,
-            Err(e) => {
-                println!("  FAIL  {} (read error: {})", file.display(), e);
-                failures.push(format!("{}: read error: {}", file.display(), e));
-                failed += 1;
-                continue;
-            }
-        };
-
-        // Parse Use: comment for constants and flags
-        let use_comment = parse_use_comment(&source);
-        let (constants, no_deadlock, fast, comment_max_states) = match &use_comment {
-            Some(uc) => (uc.constants.clone(), uc.no_deadlock, uc.fast, uc.max_states),
-            None => {
-                // No Use: comment — skip (can't know constants)
-                println!("  SKIP  {} (no // Use: comment)", file.display());
-                skipped += 1;
-                continue;
-            }
-        };
-
-        // Parse
-        let module = match parse(&source) {
-            Ok(m) => m,
-            Err(e) => {
-                println!("  FAIL  {} (parse: {})", file.display(), e);
-                failures.push(format!("{}: parse error: {}", file.display(), e));
-                failed += 1;
-                continue;
-            }
-        };
-
-        // Type check
-        if let Err(e) = specl_types::check_module(&module) {
-            println!("  FAIL  {} (typecheck: {})", file.display(), e);
-            failures.push(format!("{}: typecheck error: {}", file.display(), e));
-            failed += 1;
-            continue;
-        }
-
-        // Compile
-        let spec = match compile(&module) {
-            Ok(s) => s,
-            Err(e) => {
-                println!("  FAIL  {} (compile: {})", file.display(), e);
-                failures.push(format!("{}: compile error: {}", file.display(), e));
-                failed += 1;
-                continue;
-            }
-        };
-
-        // Resolve constants (default unspecified ones to 1)
-        let mut const_values = vec![Value::none(); spec.consts.len()];
-        for const_decl in &spec.consts {
-            let mut found = false;
-            for c in &constants {
-                if let Some((name, val)) = c.split_once('=') {
-                    if name == const_decl.name {
-                        if let Ok(v) = val.parse::<i64>() {
-                            const_values[const_decl.index] = Value::int(v);
-                            found = true;
-                            break;
-                        }
-                    }
-                }
-            }
-            if !found {
-                const_values[const_decl.index] = Value::int(1);
-            }
-        }
-        let consts = const_values;
-
-        let effective_max_states = if override_max_states > 0 {
-            override_max_states
-        } else if comment_max_states > 0 {
-            comment_max_states
-        } else {
-            1_000_000 // Default limit for testing
-        };
-
-        let config = CheckConfig {
-            check_deadlock: !no_deadlock,
-            max_states: effective_max_states,
-            max_depth: 0,
-            fast_check: fast,
-            max_time_secs: max_time_per_spec,
-            ..Default::default()
-        };
-
-        let start = Instant::now();
-        let mut explorer = Explorer::new(spec, consts, config);
-        let result = match explorer.check() {
-            Ok(r) => r,
-            Err(e) => {
-                println!("  FAIL  {} (check error: {})", file.display(), e);
-                failures.push(format!("{}: check error: {}", file.display(), e));
-                failed += 1;
-                continue;
-            }
-        };
-
-        let elapsed = start.elapsed();
-        let secs = elapsed.as_secs_f64();
-
-        match &result {
-            CheckOutcome::Ok {
-                states_explored, ..
-            } => {
-                println!(
-                    "  PASS  {} ({} states, {:.1}s)",
-                    file.display(),
-                    format_large_number(*states_explored as u128),
-                    secs
-                );
-                passed += 1;
-            }
-            CheckOutcome::StateLimitReached {
-                states_explored, ..
-            } => {
-                println!(
-                    "  PASS  {} ({} states [limit], {:.1}s)",
-                    file.display(),
-                    format_large_number(*states_explored as u128),
-                    secs
-                );
-                passed += 1;
-            }
-            CheckOutcome::MemoryLimitReached {
-                states_explored, ..
-            } => {
-                println!(
-                    "  PASS  {} ({} states [mem limit], {:.1}s)",
-                    file.display(),
-                    format_large_number(*states_explored as u128),
-                    secs
-                );
-                passed += 1;
-            }
-            CheckOutcome::TimeLimitReached {
-                states_explored, ..
-            } => {
-                println!(
-                    "  PASS  {} ({} states [time limit], {:.1}s)",
-                    file.display(),
-                    format_large_number(*states_explored as u128),
-                    secs
-                );
-                passed += 1;
-            }
-            CheckOutcome::InvariantViolation { invariant, .. } => {
-                // Some examples intentionally have bugs
-                if source.contains("intentional")
-                    || source.contains("bug")
-                    || source.contains("BUG")
-                {
-                    println!(
-                        "  PASS  {} (expected violation: {}, {:.1}s)",
-                        file.display(),
-                        invariant,
-                        secs
-                    );
-                    passed += 1;
-                } else {
-                    println!(
-                        "  FAIL  {} (invariant violation: {})",
-                        file.display(),
-                        invariant
-                    );
-                    failures.push(format!(
-                        "{}: invariant violation: {}",
-                        file.display(),
-                        invariant
-                    ));
-                    failed += 1;
-                }
-            }
-            CheckOutcome::Deadlock { .. } => {
-                println!("  PASS  {} (deadlock found, {:.1}s)", file.display(), secs);
-                passed += 1;
-            }
-        }
-    }
-
-    let total_secs = total_start.elapsed().as_secs_f64();
-    println!();
-    println!(
-        "Results: {} passed, {} failed, {} skipped ({:.1}s)",
-        passed, failed, skipped, total_secs
-    );
-
-    if !failures.is_empty() {
-        println!();
-        println!("Failures:");
-        for f in &failures {
-            println!("  {}", f);
-        }
-        std::process::exit(1);
-    }
-
-    Ok(())
-}
-
 fn format_duration(secs: f64) -> String {
     if secs < 1.0 {
         format!("{:.0}ms", secs * 1000.0)
@@ -4589,10 +4115,6 @@ fn format_memory(mb: f64) -> String {
     } else {
         format!("{:.1} GB", mb / 1024.0)
     }
-}
-
-fn factorial(n: u64) -> u64 {
-    (1..=n).fold(1u64, |acc, x| acc.saturating_mul(x))
 }
 
 fn cmd_translate(file: &PathBuf, output: Option<&PathBuf>) -> CliResult<()> {
@@ -4762,12 +4284,8 @@ SPECL PERFORMANCE GUIDE
 7. PROFILING YOUR SPEC
    specl info FILE -c N=2
      Static analysis: state space estimates per variable, action parameter
-     combination counts, recommended flags, detected optimizations (POR %%,
-     symmetry candidates).
-
-   specl estimate FILE -c N=2
-     Estimate total states, time, and memory requirements without running
-     the full check.
+     combination counts, time/memory estimates, recommended flags,
+     detected optimizations (POR %%, symmetry candidates).
 
    specl check FILE -c N=2 --profile
      After checking, prints per-action firing counts and timing breakdown.

@@ -137,9 +137,11 @@ pub fn check_portfolio(
                     }
                     Ok(SymbolicOutcome::InvariantViolation { invariant, trace }) => {
                         done.store(true, Ordering::Relaxed);
-                        let _ = tx.send(StrategyResult::Done(
-                            SymbolicOutcome::InvariantViolation { invariant, trace },
-                        ));
+                        let _ =
+                            tx.send(StrategyResult::Done(SymbolicOutcome::InvariantViolation {
+                                invariant,
+                                trace,
+                            }));
                         return;
                     }
                     Ok(SymbolicOutcome::Unknown { .. }) => {}
@@ -240,10 +242,7 @@ pub fn check_portfolio(
             break;
         }
         match rx.recv_timeout(remaining) {
-            Ok(StrategyResult::Done(SymbolicOutcome::InvariantViolation {
-                invariant,
-                trace,
-            })) => {
+            Ok(StrategyResult::Done(SymbolicOutcome::InvariantViolation { invariant, trace })) => {
                 info!(invariant = %invariant, "portfolio: violation found");
                 done.store(true, Ordering::Relaxed);
                 return Ok(SymbolicOutcome::InvariantViolation { invariant, trace });

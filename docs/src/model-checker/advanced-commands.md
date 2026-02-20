@@ -2,22 +2,29 @@
 
 Beyond `specl check`, the CLI provides several additional commands.
 
-## `specl info` — spec analysis
+## `specl info` — spec analysis and performance guide
 
-Analyze a spec without running the full model checker:
+Analyze a spec: state space breakdown, time/memory estimates, optimization recommendations:
 
 ```bash
 specl info spec.specl -c N=3
 ```
 
-Reports actions, variables, constants, state space characteristics, and which optimizations apply.
-
-## `specl estimate` — state space estimation
-
-Estimate the state space size and required resources before committing to a full run:
+Without a file, prints a comprehensive performance and strategy guide:
 
 ```bash
-specl estimate spec.specl -c N=3
+specl info
+```
+
+## `specl fmt` — format, lint, and check
+
+Format, lint, or validate a spec file:
+
+```bash
+specl fmt spec.specl --write     # format in place
+specl fmt spec.specl             # print formatted output to stdout
+specl fmt spec.specl --check     # exit 1 if not formatted (CI)
+specl fmt spec.specl --lint      # syntax + type + compile check
 ```
 
 ## `specl simulate` — random trace simulation
@@ -29,41 +36,6 @@ specl simulate spec.specl -c N=3
 ```
 
 Useful for quick smoke testing and understanding system behavior before running the full checker.
-
-## `specl test` — batch checking
-
-Check all `.specl` files in a directory using `// Use:` comments embedded in each file:
-
-```bash
-specl test examples/
-```
-
-Each spec file contains a comment like:
-
-```specl
-// Use: specl check this.specl -c N=2 --no-deadlock
-```
-
-The `test` command reads these comments and runs each spec with the specified flags. Useful for CI and regression testing.
-
-## `specl lint` — fast validation
-
-Quick syntax and type check without running the model checker:
-
-```bash
-specl lint spec.specl
-```
-
-Catches parse errors and type errors without exploring any states.
-
-## `specl format` — code formatter
-
-Format a spec file:
-
-```bash
-specl format spec.specl --write    # format in place
-specl format spec.specl            # print formatted output to stdout
-```
 
 ## `specl watch` — file watcher
 
@@ -79,6 +51,12 @@ Convert a TLA+ specification to Specl:
 
 ```bash
 specl translate spec.tla -o spec.specl
+```
+
+Or check a TLA+ file directly (auto-translates then checks):
+
+```bash
+specl check spec.tla -c N=3
 ```
 
 See [TLA+ Comparison](../tla-comparison/index.md) for details on the translation.

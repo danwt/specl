@@ -72,9 +72,9 @@ specl watch spec.specl -c N=3
 ## Other commands
 
 ```bash
-specl format spec.specl --write    # format in place
-specl lint spec.specl              # fast syntax + type check (no model checking)
-specl info spec.specl -c N=3       # analyze spec: actions, state space estimates
+specl fmt spec.specl --write       # format in place
+specl fmt spec.specl --lint        # fast syntax + type + compile check
+specl info spec.specl -c N=3      # analyze spec: state space, estimates, tips
 ```
 
 See [Advanced Commands](../model-checker/advanced-commands.md) for the full CLI reference.

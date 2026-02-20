@@ -35,9 +35,12 @@ specl check spec.specl --no-deadlock        # skip deadlock check (for protocols
 specl check spec.specl --fast               # fingerprint-only (10x less memory, no traces)
 specl check spec.specl --por                # partial order reduction
 specl check spec.specl --symmetry           # symmetry reduction
-specl format spec.specl --write             # auto-format
+specl fmt spec.specl --write                # auto-format
+specl fmt spec.specl --lint                # fast syntax + type + compile check
+specl info spec.specl -c N=3              # state space analysis + estimates
 specl watch spec.specl -c N=3              # re-check on save
 specl translate spec.tla -o spec.specl     # TLA+ to Specl
+specl check spec.tla -c N=3               # auto-translate TLA+ and check
 ```
 
 ### Minimal Example

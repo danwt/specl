@@ -17,8 +17,8 @@ A specification language and model checker for concurrent and distributed system
 ## Quick start
 
 ```bash
-cargo install --path crates/specl-cli
-specl check examples/other/Counter.specl -c MAX=5
+cargo install --path specl/crates/specl-cli
+specl check specl/examples/other/Counter.specl -c MAX=5
 ```
 
 ```specl
@@ -58,10 +58,11 @@ See [`examples/`](specl/examples/) for the full catalogue (100+ specs) and verif
 
 ## Toolchain
 
-- **VSCode extension** — diagnostics, hover, completion, format-on-save ([Marketplace](https://marketplace.visualstudio.com/items?itemName=specl.specl))
-- **Formatter** — `specl format spec.specl --write`
+- **VSCode extension** — diagnostics, hover, completion, rename, format-on-save ([Marketplace](https://marketplace.visualstudio.com/items?itemName=specl.specl))
+- **Formatter** — `specl fmt spec.specl --write` (also: `--check` for CI, `--lint` for full compile check)
+- **Spec analysis** — `specl info spec.specl -c N=3` (state space breakdown, time/memory estimates, optimization tips)
 - **Watch mode** — `specl watch spec.specl -c N=3`
-- **TLA+ translator** — `specl translate spec.tla -o spec.specl`
+- **TLA+ translator** — `specl translate spec.tla -o spec.specl` (or `specl check spec.tla` to auto-translate and check)
 
 ## Claude Code Integration
 

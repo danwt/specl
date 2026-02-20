@@ -45,7 +45,7 @@
       "patterns": [
         {
           "name": "keyword.control.specl",
-          "match": "\\b(module|const|var|type|action|init|invariant|property|fairness|use|require|func)\\b"
+          "match": "\\b(module|const|var|type|action|init|invariant|property|fairness|view|use|require|func)\\b"
         },
         {
           "name": "keyword.control.conditional.specl",

@@ -1340,16 +1340,17 @@ impl Explorer {
         // An action is "visible" if it writes to any variable referenced by an invariant.
         // When POR stubborn set contains a visible action, reduction is disabled (all enabled explored).
         let inv_vars_union: u64 = inv_dep_masks.iter().fold(0u64, |acc, &m| acc | m);
-        let visible_actions: u64 = action_write_masks
-            .iter()
-            .enumerate()
-            .fold(0u64, |mask, (i, &wm)| {
-                if wm & inv_vars_union != 0 && i < 64 {
-                    mask | (1u64 << i)
-                } else {
-                    mask
-                }
-            });
+        let visible_actions: u64 =
+            action_write_masks
+                .iter()
+                .enumerate()
+                .fold(0u64, |mask, (i, &wm)| {
+                    if wm & inv_vars_union != 0 && i < 64 {
+                        mask | (1u64 << i)
+                    } else {
+                        mask
+                    }
+                });
 
         // Compute guard indexing for early parameter pruning
         let guard_indices: Vec<Option<GuardIndex>> = spec
@@ -1749,9 +1750,7 @@ impl Explorer {
                     };
                     // Pattern 3: non-symmetric scalar var compared with symmetric param
                     // (covers guards like `lock == p` and effects like `lock' == p`)
-                    let check_var_param = |a: &CompiledExpr,
-                                           b: &CompiledExpr|
-                     -> Option<String> {
+                    let check_var_param = |a: &CompiledExpr, b: &CompiledExpr| -> Option<String> {
                         let var_idx = match a {
                             CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => Some(idx),
                             _ => None,
@@ -3875,9 +3874,10 @@ impl Explorer {
         // it may hide interleavings that lead to invariant violations. In that case,
         // expand to all enabled actions (no reduction).
         if result.len() < enabled.len() {
-            let stubborn_mask: u64 = result
-                .iter()
-                .fold(0u64, |m, &a| if a < 64 { m | (1u64 << a) } else { m });
+            let stubborn_mask: u64 =
+                result
+                    .iter()
+                    .fold(0u64, |m, &a| if a < 64 { m | (1u64 << a) } else { m });
             if stubborn_mask & self.visible_actions != 0 {
                 return enabled.to_vec();
             }
