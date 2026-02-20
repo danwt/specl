@@ -1702,25 +1702,42 @@ impl Explorer {
             return vec![];
         }
 
-        // Check for type-level overlap: if a NON-symmetric variable uses the
-        // symmetric domain range, canonicalization is unsound. Canonicalization
-        // only permutes Dict keys in the symmetry group; Set elements, scalars,
-        // and other variables sharing the same range are left unchanged, creating
-        // inconsistency between permuted keys and unpermuted values.
-        fn type_contains_symmetric_domain(ty: &Type, domain_size: usize) -> bool {
-            let sym_range = Type::Range(0, (domain_size - 1) as i64);
+        // Check for type-level overlap. Canonicalization only permutes Dict
+        // keys; every other occurrence of the symmetric range is left unchanged.
+        // If a non-symmetric variable's type contains the symmetric range (as a
+        // scalar, set element, tuple field, etc.), its values won't be permuted
+        // alongside the Dict keys, breaking key-value relationships.
+        //
+        // Note: Dict[0..N, 0..N] where values happen to share the key domain is
+        // NOT flagged here. That case is common and usually safe (e.g.
+        // dining-philosophers: Dict[0..N, 0..2] where values are states, not IDs).
+        // Unsoundness only arises if expressions compare Dict values against domain
+        // elements (e.g. `mapping[i] == i`), which the asymmetric-literal check
+        // below partially catches.
+        fn type_contains_range(ty: &Type, sym_range: &Type) -> bool {
             match ty {
-                t if *t == sym_range => true,
-                Type::Set(elem) => *elem.as_ref() == sym_range,
+                t if t == sym_range => true,
+                Type::Set(elem) | Type::Seq(elem) | Type::Option(elem) => {
+                    type_contains_range(elem, sym_range)
+                }
+                Type::Fn(k, v) => {
+                    type_contains_range(k, sym_range) || type_contains_range(v, sym_range)
+                }
+                Type::Tuple(elems) => elems.iter().any(|e| type_contains_range(e, sym_range)),
+                Type::Record(rec) => rec
+                    .fields
+                    .values()
+                    .any(|e| type_contains_range(e, sym_range)),
                 _ => false,
             }
         }
 
         let mut warnings = Vec::new();
         for &domain_size in &sym_domain_sizes {
+            let sym_range = Type::Range(0, (domain_size - 1) as i64);
             for var in &spec.vars {
                 if !sym_var_domain.contains_key(&var.index)
-                    && type_contains_symmetric_domain(&var.ty, domain_size)
+                    && type_contains_range(&var.ty, &sym_range)
                 {
                     warnings.push(format!(
                         "symmetry may be unsound: variable '{}' type shares symmetric domain 0..{}",
