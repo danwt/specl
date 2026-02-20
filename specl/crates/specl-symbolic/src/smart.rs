@@ -2,13 +2,13 @@
 //!
 //! Tries progressively stronger techniques with time budgets:
 //! 1. Inductive checking (fastest, but may fail for non-inductive invariants)
-//! 2. k-induction with increasing K (2..5)
-//! 3. IC3/CHC via Spacer (unbounded, most powerful)
+//! 2. k-induction with increasing K (2..5), collecting CTI lemmas
+//! 3. IC3/CHC via Spacer (unbounded, most powerful) — with CTI lemmas if available
 //! 4. BMC fallback (bounded, catches real bugs)
 
-use crate::{SymbolicOutcome, SymbolicResult};
+use crate::{CtiLemma, SymbolicOutcome, SymbolicResult};
 use specl_eval::Value;
-use specl_ir::CompiledSpec;
+use specl_ir::{CompiledInvariant, CompiledSpec};
 use std::time::Instant;
 use tracing::info;
 
@@ -58,11 +58,19 @@ pub fn check_smart(
         }
     }
 
-    // 2. Try k-induction with increasing K (budget: ~12.5% each, min 10s)
+    // 2. Try k-induction with increasing K, collecting CTI lemmas (budget: ~12.5% each, min 10s)
+    let mut cti_lemmas: Vec<CtiLemma> = Vec::new();
     for k in [2, 3, 4, 5] {
         info!(k, "smart: trying k-induction");
         let kind_timeout = strategy_timeout(timeout_ms, start, 0.125, 10_000);
-        match crate::k_induction::check_k_induction(spec, consts, k, seq_bound, kind_timeout)? {
+        let result = crate::k_induction::check_k_induction_with_cti(
+            spec,
+            consts,
+            k,
+            seq_bound,
+            kind_timeout,
+        )?;
+        match result.outcome {
             SymbolicOutcome::Ok { .. } => {
                 return Ok(SymbolicOutcome::Ok {
                     method: "smart(k-induction)",
@@ -72,15 +80,40 @@ pub fn check_smart(
                 return Ok(SymbolicOutcome::InvariantViolation { invariant, trace });
             }
             SymbolicOutcome::Unknown { .. } => {
-                // Inductive step failed at this K, try higher
+                cti_lemmas.extend(result.cti_lemmas);
             }
         }
     }
 
     // 3. Try IC3/CHC (budget: 50% of total, min 30s)
+    // If we collected CTI lemmas, inject them as auxiliary invariants to strengthen IC3.
     info!("smart: trying IC3/CHC");
     let ic3_timeout = strategy_timeout(timeout_ms, start, 0.50, 30_000);
-    match crate::ic3::check_ic3(spec, consts, seq_bound, spacer_profile, ic3_timeout)? {
+
+    let ic3_result = if !cti_lemmas.is_empty() {
+        info!(
+            lemma_count = cti_lemmas.len(),
+            "smart: injecting CTI lemmas into IC3"
+        );
+        let mut augmented_spec = spec.clone();
+        for lemma in &cti_lemmas {
+            augmented_spec.auxiliary_invariants.push(CompiledInvariant {
+                name: lemma.description.clone(),
+                body: lemma.body.clone(),
+            });
+        }
+        crate::ic3::check_ic3(
+            &augmented_spec,
+            consts,
+            seq_bound,
+            spacer_profile,
+            ic3_timeout,
+        )?
+    } else {
+        crate::ic3::check_ic3(spec, consts, seq_bound, spacer_profile, ic3_timeout)?
+    };
+
+    match ic3_result {
         SymbolicOutcome::Ok { .. } => {
             return Ok(SymbolicOutcome::Ok {
                 method: "smart(IC3)",

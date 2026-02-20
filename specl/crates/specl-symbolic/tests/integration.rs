@@ -341,3 +341,79 @@ fn bmc_option_ok() {
         "expected Ok with option type BMC, got: {outcome:?}"
     );
 }
+
+// ============================================================================
+// CTI learning tests
+// ============================================================================
+
+#[test]
+fn smart_dekker_uses_ic3() {
+    // Dekker is NOT 1-inductive and NOT naturally k-inductive (k=2..5).
+    // Smart mode should collect CTI lemmas from k-induction and pass them to IC3.
+    // The result should be Ok with method "smart(IC3)".
+    let outcome = run_symbolic("dekker.specl", &[], SymbolicMode::Smart).unwrap();
+    match outcome {
+        SymbolicOutcome::Ok { method } => {
+            assert_eq!(
+                method, "smart(IC3)",
+                "Dekker should be proved via smart(IC3), got: {method}"
+            );
+        }
+        other => panic!("expected Ok, got: {other:?}"),
+    }
+}
+
+#[test]
+fn k_induction_with_cti_extracts_lemmas() {
+    // Dekker at k=2 should fail the inductive step and extract CTI lemmas.
+    let path = example_path("dekker.specl");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let module = specl_syntax::parse(&source).unwrap();
+    let spec = specl_ir::compile(&module).unwrap();
+    let consts = parse_consts(&[], &spec);
+
+    let result =
+        specl_symbolic::k_induction::check_k_induction_with_cti(&spec, &consts, 2, 5, None)
+            .unwrap();
+
+    assert!(
+        matches!(result.outcome, SymbolicOutcome::Unknown { .. }),
+        "expected Unknown at k=2, got: {:?}",
+        result.outcome
+    );
+    assert!(
+        !result.cti_lemmas.is_empty(),
+        "expected CTI lemmas to be extracted at k=2, got none"
+    );
+}
+
+#[test]
+fn ic3_with_auxiliary_invariants_dekker() {
+    // Verify that check_ic3 correctly applies auxiliary invariants.
+    // Use a trivially true auxiliary invariant (true) and verify Dekker is still proved.
+    let path = example_path("dekker.specl");
+    let source = std::fs::read_to_string(&path).unwrap();
+    let module = specl_syntax::parse(&source).unwrap();
+    let mut spec = specl_ir::compile(&module).unwrap();
+    let consts = parse_consts(&[], &spec);
+
+    // Add a trivially true auxiliary invariant
+    spec.auxiliary_invariants
+        .push(specl_ir::CompiledInvariant {
+            name: "trivially_true".to_string(),
+            body: specl_ir::CompiledExpr::Bool(true),
+        });
+
+    let config = SymbolicConfig {
+        mode: SymbolicMode::Ic3,
+        depth: 20,
+        seq_bound: 5,
+        spacer_profile: SpacerProfile::Default,
+        timeout_ms: None,
+    };
+    let outcome = specl_symbolic::check(&spec, &consts, &config).unwrap();
+    assert!(
+        matches!(outcome, SymbolicOutcome::Ok { .. }),
+        "expected Ok with auxiliary invariant, got: {outcome:?}"
+    );
+}

@@ -66,6 +66,22 @@ pub enum SymbolicOutcome {
     Unknown { reason: String },
 }
 
+/// A candidate invariant lemma derived from CTI (counter-example to induction) analysis.
+/// The body is the negation of the CTI state: NOT(var0 == val0 AND var1 == val1 AND ...).
+/// These are NOT proven invariants — they must be verified by IC3 before being trusted.
+#[derive(Debug, Clone)]
+pub struct CtiLemma {
+    pub description: String,
+    pub body: specl_ir::CompiledExpr,
+}
+
+/// Extended result from k-induction that carries CTI lemmas alongside the outcome.
+#[derive(Debug)]
+pub struct KInductionResult {
+    pub outcome: SymbolicOutcome,
+    pub cti_lemmas: Vec<CtiLemma>,
+}
+
 /// A single step in a counterexample trace.
 #[derive(Debug, Clone)]
 pub struct TraceStep {
