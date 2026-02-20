@@ -1628,6 +1628,7 @@ impl Translator {
         // Emit helper/stateful funcs only when there is executable/checkable behavior in the module.
         // Some corpus modules are pure ASSUME/definition files; emitting unused helpers there can
         // introduce translator-only artifacts that fail Specl type checking.
+        // Exception: recursive operators are always emitted (they cannot be inlined).
         let has_behavioral_decl = decls.iter().any(|d| {
             matches!(
                 d,
@@ -1637,11 +1638,20 @@ impl Translator {
                     | specl::Decl::Property(_)
             )
         });
-        if has_behavioral_decl {
-            // Emit helper operators as func declarations
-            for (name, (params, body)) in &translator.helper_ops {
+        // Always emit recursive operators as func declarations
+        for (name, (params, body)) in &translator.helper_ops {
+            if translator.recursive_ops.contains(name) {
                 let func_decl = translator.translate_func(name, params, body)?;
                 decls.push(specl::Decl::Func(func_decl));
+            }
+        }
+        if has_behavioral_decl {
+            // Emit non-recursive helper operators as func declarations
+            for (name, (params, body)) in &translator.helper_ops {
+                if !translator.recursive_ops.contains(name) {
+                    let func_decl = translator.translate_func(name, params, body)?;
+                    decls.push(specl::Decl::Func(func_decl));
+                }
             }
 
             // Also emit stateful predicates as func declarations (they reference state but don't modify it)

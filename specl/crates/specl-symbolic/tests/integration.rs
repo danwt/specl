@@ -151,11 +151,13 @@ fn inductive_dekker_not_inductive() {
 // ============================================================================
 
 #[test]
-fn kind_dekker_ok() {
+fn kind_dekker_not_k_inductive() {
+    // Dekker is not naturally k-inductive (needs invariant strengthening).
+    // Smart mode handles it via IC3/Spacer instead.
     let outcome = run_symbolic("dekker.specl", &[], SymbolicMode::KInduction(2)).unwrap();
     assert!(
-        matches!(outcome, SymbolicOutcome::Ok { .. }),
-        "expected Ok, got: {outcome:?}"
+        matches!(outcome, SymbolicOutcome::Unknown { .. }),
+        "expected Unknown (not k-inductive), got: {outcome:?}"
     );
 }
 

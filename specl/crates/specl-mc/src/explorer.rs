@@ -1698,8 +1698,40 @@ impl Explorer {
             }
         }
 
-        if sym_var_domain.is_empty() {
+        if sym_var_domain.is_empty() || sym_domain_sizes.is_empty() {
             return vec![];
+        }
+
+        // Check for type-level overlap: if a NON-symmetric variable uses the
+        // symmetric domain range, canonicalization is unsound. Canonicalization
+        // only permutes Dict keys in the symmetry group; Set elements, scalars,
+        // and other variables sharing the same range are left unchanged, creating
+        // inconsistency between permuted keys and unpermuted values.
+        fn type_contains_symmetric_domain(ty: &Type, domain_size: usize) -> bool {
+            let sym_range = Type::Range(0, (domain_size - 1) as i64);
+            match ty {
+                t if *t == sym_range => true,
+                Type::Set(elem) => *elem.as_ref() == sym_range,
+                _ => false,
+            }
+        }
+
+        let mut warnings = Vec::new();
+        for &domain_size in &sym_domain_sizes {
+            for var in &spec.vars {
+                if !sym_var_domain.contains_key(&var.index)
+                    && type_contains_symmetric_domain(&var.ty, domain_size)
+                {
+                    warnings.push(format!(
+                        "symmetry may be unsound: variable '{}' type shares symmetric domain 0..{}",
+                        var.name,
+                        domain_size - 1
+                    ));
+                }
+            }
+        }
+        if !warnings.is_empty() {
+            return warnings;
         }
 
         /// Check for asymmetric patterns in a compiled expression.
@@ -5973,6 +6005,54 @@ action Transfer(from: 0..2, to: 0..2) {
                 assert!(states_explored > 0);
             }
             other => panic!("expected Ok, got {:?}", other),
+        }
+    }
+
+    /// Regression test: auto-symmetry must be blocked when non-symmetric variables
+    /// share the symmetric domain range. Without this check, canonicalization
+    /// permutes Dict keys but leaves Set elements and scalar variables unchanged,
+    /// producing false invariant violations.
+    #[test]
+    fn test_symmetry_blocked_for_overlapping_domain() {
+        // features.specl pattern: Dict[0..2, 0..2] + Set[0..2] + scalar 0..2
+        // The 0..2 domain is used asymmetrically (0=free, 1/2=worker identity).
+        let source = r#"
+module SymmetryRegression
+var owner: Dict[0..2, 0..2]
+var held: Set[0..2]
+var mode: 0..2
+init {
+    owner = {r: 0 for r in 0..2};
+    held = {};
+}
+action Acquire(r: 0..2) {
+    require owner[r] == 0;
+    owner = owner | {r: 1};
+    held = held union {r};
+    mode = if len(held) == 0 then 1 else mode;
+}
+action Release(r: 0..2) {
+    require r in held;
+    owner = owner | {r: 0};
+    held = held diff {r};
+    mode = 2;
+}
+invariant OwnerConsistency { all r in held: owner[r] == 1 }
+"#;
+        // With auto-symmetry, this spec produced a false OwnerConsistency violation.
+        // The fix detects that held: Set[0..2] and mode: 0..2 share the symmetric
+        // domain, blocking auto-symmetry.
+        let config = CheckConfig {
+            check_deadlock: false,
+            ..Default::default()
+        };
+        let result = check_spec_with_config(source, vec![], config);
+        match result {
+            Ok(CheckOutcome::Ok { .. }) => {}
+            other => panic!(
+                "expected Ok (symmetry should be blocked for overlapping domain), got {:?}",
+                other
+            ),
         }
     }
 }
