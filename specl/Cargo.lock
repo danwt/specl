@@ -2284,6 +2284,7 @@ dependencies = [
  "specl-symbolic",
  "specl-syntax",
  "specl-tla",
+ "specl-ts",
  "specl-types",
  "thiserror 1.0.69",
  "tracing",
@@ -2305,7 +2306,11 @@ name = "specl-ir"
 version = "2.0.1"
 dependencies = [
  "proptest",
+ "serde_json",
+ "specl-eval",
+ "specl-mc",
  "specl-syntax",
+ "specl-ts",
  "specl-types",
  "thiserror 1.0.69",
 ]
@@ -2393,6 +2398,15 @@ version = "2.0.1"
 dependencies = [
  "proptest",
  "specl-syntax",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "specl-ts"
+version = "2.0.1"
+dependencies = [
+ "serde",
+ "serde_json",
  "thiserror 1.0.69",
 ]
 

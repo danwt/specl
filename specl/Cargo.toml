@@ -4,6 +4,7 @@ members = [
     "crates/specl-syntax",
     "crates/specl-types",
     "crates/specl-ir",
+    "crates/specl-ts",
     "crates/specl-eval",
     "crates/specl-mc",
     "crates/specl-tla",
@@ -28,6 +29,7 @@ repository = "https://github.com/danwt/specl"
 specl-syntax = { path = "crates/specl-syntax", version = "2.0.1" }
 specl-types = { path = "crates/specl-types", version = "2.0.1" }
 specl-ir = { path = "crates/specl-ir", version = "2.0.1" }
+specl-ts = { path = "crates/specl-ts", version = "2.0.1" }
 specl-eval = { path = "crates/specl-eval", version = "2.0.1" }
 specl-mc = { path = "crates/specl-mc", version = "2.0.1" }
 specl-tla = { path = "crates/specl-tla", version = "2.0.1" }
