@@ -1125,6 +1125,30 @@ fn main() {
             ..
         } => {
             let orig_file = file.unwrap();
+
+            // Transition system JSON: deserialize, lower, check directly
+            if orig_file.display().to_string().ends_with(".ts.json") {
+                let inner = cmd_check_ts(
+                    &orig_file,
+                    &constant,
+                    max_states,
+                    max_depth,
+                    memory_limit,
+                    max_time,
+                    !no_deadlock,
+                    por,
+                    symmetry,
+                    quiet,
+                    output,
+                    check_only.clone(),
+                );
+                if let Err(e) = inner {
+                    eprintln!("{:?}", miette::Report::new(e));
+                    std::process::exit(1);
+                }
+                return;
+            }
+
             // TLA+ auto-translate: if file ends in .tla, translate to specl first
             let (file, _tla_temp) = if orig_file.extension().is_some_and(|e| e == "tla") {
                 match translate_tla_to_temp(&orig_file, quiet) {
@@ -1677,6 +1701,188 @@ fn auto_select_strategy(file: &PathBuf, constants: &[String]) -> (bool, String) 
         ),
         None => (false, "BFS (state space bound unknown)".into()),
     }
+}
+
+/// Check a `.ts.json` transition system file: deserialize, lower, BFS check.
+fn cmd_check_ts(
+    file: &PathBuf,
+    constants: &[String],
+    max_states: usize,
+    max_depth: usize,
+    memory_limit_mb: usize,
+    max_time_secs: u64,
+    check_deadlock: bool,
+    use_por: bool,
+    use_symmetry: bool,
+    quiet: bool,
+    output_format: OutputFormat,
+    check_only_invariants: Vec<String>,
+) -> CliResult<()> {
+    let json = output_format != OutputFormat::Text;
+    let start = Instant::now();
+
+    let content = fs::read_to_string(file).map_err(|e| CliError::IoError {
+        message: e.to_string(),
+    })?;
+
+    info!("deserializing transition system...");
+    let ts: specl_ts::TransitionSystem =
+        serde_json::from_str(&content).map_err(|e| CliError::Other {
+            message: format!("failed to parse .ts.json: {e}"),
+        })?;
+
+    info!("lowering to IR...");
+    let spec = specl_ir::from_ts::lower(&ts).map_err(|e| CliError::CompileError {
+        message: e.to_string(),
+    })?;
+
+    let consts = parse_constants(constants, &spec)?;
+
+    let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
+
+    if !quiet {
+        println!(
+            "Transition system: {} ({} vars, {} actions, {} invariants)",
+            ts.name,
+            spec.vars.len(),
+            spec.actions.len(),
+            spec.invariants.len()
+        );
+    }
+
+    let progress = Arc::new(ProgressCounters::default());
+    let config = CheckConfig {
+        check_deadlock,
+        max_states,
+        max_depth,
+        memory_limit_mb,
+        parallel: true,
+        num_threads: 0,
+        use_por,
+        use_symmetry,
+        progress: Some(progress.clone()),
+        check_only_invariants,
+        max_time_secs,
+        ..CheckConfig::default()
+    };
+
+    let mut explorer = Explorer::new(spec, consts, config);
+    let result = explorer.check().map_err(|e| CliError::CheckError {
+        message: e.to_string(),
+    })?;
+
+    let elapsed = start.elapsed();
+    let secs = elapsed.as_secs_f64();
+    let explored_states = explorer.store().len();
+
+    let observed_max_depth = progress.depth.load(std::sync::atomic::Ordering::Relaxed);
+
+    if json {
+        let out =
+            match result {
+                CheckOutcome::Ok {
+                    states_explored,
+                    max_depth,
+                } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
+                CheckOutcome::InvariantViolation { invariant, trace } => {
+                    JsonOutput::new("invariant_violation", secs)
+                        .with_states(explored_states, observed_max_depth)
+                        .with_invariant(invariant)
+                        .with_trace(trace_to_json(&trace, &var_names))
+                }
+                CheckOutcome::Deadlock { trace } => JsonOutput::new("deadlock", secs)
+                    .with_states(explored_states, observed_max_depth)
+                    .with_trace(trace_to_json(&trace, &var_names)),
+                CheckOutcome::StateLimitReached {
+                    states_explored,
+                    max_depth,
+                } => JsonOutput::new("state_limit_reached", secs)
+                    .with_states(states_explored, max_depth),
+                CheckOutcome::MemoryLimitReached {
+                    states_explored,
+                    max_depth,
+                    memory_mb,
+                } => JsonOutput::new("memory_limit_reached", secs)
+                    .with_states(states_explored, max_depth)
+                    .with_memory(memory_mb),
+                CheckOutcome::TimeLimitReached {
+                    states_explored,
+                    max_depth,
+                } => JsonOutput::new("time_limit_reached", secs)
+                    .with_states(states_explored, max_depth),
+            };
+        println!("{}", serde_json::to_string(&out).unwrap());
+        match out.result {
+            "invariant_violation" | "deadlock" => std::process::exit(1),
+            "state_limit_reached" | "memory_limit_reached" | "time_limit_reached" => {
+                std::process::exit(2)
+            }
+            _ => {}
+        }
+    } else {
+        match result {
+            CheckOutcome::Ok {
+                states_explored, ..
+            } => {
+                println!(
+                    "Result: OK ({} states explored in {:.2}s)",
+                    format_large_number(states_explored as u128),
+                    secs
+                );
+            }
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                eprintln!(
+                    "INVARIANT VIOLATION: '{}' ({} states in {:.2}s)",
+                    invariant,
+                    format_large_number(explored_states as u128),
+                    secs
+                );
+                print_text_trace(&trace, &var_names, false);
+                std::process::exit(1);
+            }
+            CheckOutcome::Deadlock { trace } => {
+                eprintln!(
+                    "DEADLOCK ({} states in {:.2}s)",
+                    format_large_number(explored_states as u128),
+                    secs
+                );
+                print_text_trace(&trace, &var_names, false);
+                std::process::exit(1);
+            }
+            CheckOutcome::StateLimitReached {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "STATE LIMIT REACHED ({} states in {:.2}s)",
+                    format_large_number(states_explored as u128),
+                    secs
+                );
+                std::process::exit(2);
+            }
+            CheckOutcome::MemoryLimitReached {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "MEMORY LIMIT REACHED ({} states in {:.2}s)",
+                    format_large_number(states_explored as u128),
+                    secs
+                );
+                std::process::exit(2);
+            }
+            CheckOutcome::TimeLimitReached {
+                states_explored, ..
+            } => {
+                eprintln!(
+                    "TIME LIMIT REACHED ({} states in {:.2}s)",
+                    format_large_number(states_explored as u128),
+                    secs
+                );
+                std::process::exit(2);
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn cmd_check(

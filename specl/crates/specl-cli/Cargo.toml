@@ -15,6 +15,7 @@ path = "src/main.rs"
 specl-syntax.workspace = true
 specl-types.workspace = true
 specl-ir.workspace = true
+specl-ts.workspace = true
 specl-eval.workspace = true
 specl-mc.workspace = true
 specl-tla.workspace = true
@@ -34,5 +35,6 @@ mimalloc = { version = "0.1", default-features = false }
 specl-syntax.workspace = true
 specl-types.workspace = true
 specl-ir.workspace = true
+specl-ts.workspace = true
 specl-eval.workspace = true
 specl-mc.workspace = true
