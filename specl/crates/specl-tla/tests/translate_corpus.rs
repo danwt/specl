@@ -169,4 +169,3 @@ fn benchmark_tla_files_translate() {
         );
     }
 }
-

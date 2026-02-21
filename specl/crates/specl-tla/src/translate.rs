@@ -2768,7 +2768,10 @@ impl Translator {
         let result = self.translate_expr_impl(current, in_action)?;
         if wrap_paren {
             let span = translate_span(current.span);
-            Ok(specl::Expr::new(specl::ExprKind::Paren(Box::new(result)), span))
+            Ok(specl::Expr::new(
+                specl::ExprKind::Paren(Box::new(result)),
+                span,
+            ))
         } else {
             Ok(result)
         }
@@ -3545,7 +3548,10 @@ impl Translator {
         let keys_eq = specl::Expr::new(
             specl::ExprKind::Binary {
                 op: specl::BinOp::Eq,
-                left: Box::new(specl::Expr::new(specl::ExprKind::Keys(Box::new(x.clone())), span)),
+                left: Box::new(specl::Expr::new(
+                    specl::ExprKind::Keys(Box::new(x.clone())),
+                    span,
+                )),
                 right: Box::new(s),
             },
             span,
@@ -3555,7 +3561,10 @@ impl Translator {
         let x_k = specl::Expr::new(
             specl::ExprKind::Index {
                 base: Box::new(x.clone()),
-                index: Box::new(specl::Expr::new(specl::ExprKind::Ident("__k".to_string()), span)),
+                index: Box::new(specl::Expr::new(
+                    specl::ExprKind::Ident("__k".to_string()),
+                    span,
+                )),
             },
             span,
         );
@@ -3575,7 +3584,11 @@ impl Translator {
                 specl::Expr::new(
                     specl::ExprKind::Quantifier {
                         kind: specl::QuantifierKind::Forall,
-                        bindings: vec![specl::Binding { var: i_var.clone(), domain: i_domain, span }],
+                        bindings: vec![specl::Binding {
+                            var: i_var.clone(),
+                            domain: i_domain,
+                            span,
+                        }],
                         body: Box::new(specl::Expr::new(
                             specl::ExprKind::Paren(Box::new(specl::Expr::new(
                                 specl::ExprKind::Binary {
@@ -3601,7 +3614,14 @@ impl Translator {
                 )
             } else {
                 let t = self.translate_expr(range, in_action)?;
-                specl::Expr::new(specl::ExprKind::Binary { op: specl::BinOp::In, left: Box::new(x_k), right: Box::new(t) }, span)
+                specl::Expr::new(
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::In,
+                        left: Box::new(x_k),
+                        right: Box::new(t),
+                    },
+                    span,
+                )
             }
         } else if let TlaExprKind::Ident(name) = &range.kind {
             match name.as_str() {
@@ -3630,12 +3650,26 @@ impl Translator {
                 ),
                 _ => {
                     let t = self.translate_expr(range, in_action)?;
-                    specl::Expr::new(specl::ExprKind::Binary { op: specl::BinOp::In, left: Box::new(x_k), right: Box::new(t) }, span)
+                    specl::Expr::new(
+                        specl::ExprKind::Binary {
+                            op: specl::BinOp::In,
+                            left: Box::new(x_k),
+                            right: Box::new(t),
+                        },
+                        span,
+                    )
                 }
             }
         } else {
             let t = self.translate_expr(range, in_action)?;
-            specl::Expr::new(specl::ExprKind::Binary { op: specl::BinOp::In, left: Box::new(x_k), right: Box::new(t) }, span)
+            specl::Expr::new(
+                specl::ExprKind::Binary {
+                    op: specl::BinOp::In,
+                    left: Box::new(x_k),
+                    right: Box::new(t),
+                },
+                span,
+            )
         };
 
         let forall = specl::Expr::new(
@@ -3646,7 +3680,10 @@ impl Translator {
                     domain: specl::Expr::new(specl::ExprKind::Keys(Box::new(x.clone())), span),
                     span,
                 }],
-                body: Box::new(specl::Expr::new(specl::ExprKind::Paren(Box::new(body)), span)),
+                body: Box::new(specl::Expr::new(
+                    specl::ExprKind::Paren(Box::new(body)),
+                    span,
+                )),
             },
             span,
         );
@@ -3689,7 +3726,11 @@ impl Translator {
         let forall = specl::Expr::new(
             specl::ExprKind::Quantifier {
                 kind: specl::QuantifierKind::Forall,
-                bindings: vec![specl::Binding { var: i_var.clone(), domain, span }],
+                bindings: vec![specl::Binding {
+                    var: i_var.clone(),
+                    domain,
+                    span,
+                }],
                 body: Box::new(specl::Expr::new(
                     specl::ExprKind::Paren(Box::new(specl::Expr::new(
                         specl::ExprKind::Binary {
@@ -3757,7 +3798,10 @@ impl Translator {
             );
             result = specl::Expr::new(
                 specl::ExprKind::Let {
-                    var: specl::Ident::new(escape_ident(&def.name.name), translate_span(def.name.span)),
+                    var: specl::Ident::new(
+                        escape_ident(&def.name.name),
+                        translate_span(def.name.span),
+                    ),
                     value: Box::new(wrapped_value),
                     body: Box::new(result),
                 },
@@ -3772,7 +3816,10 @@ impl Translator {
                 let fn_body_expr = self.translate_expr(&inlined_fn_body, in_action)?;
                 let fn_lit = specl::Expr::new(
                     specl::ExprKind::FnLit {
-                        var: specl::Ident::new(escape_ident(&binding.var.name), translate_span(binding.var.span)),
+                        var: specl::Ident::new(
+                            escape_ident(&binding.var.name),
+                            translate_span(binding.var.span),
+                        ),
                         domain: Box::new(domain_expr),
                         body: Box::new(fn_body_expr),
                     },
@@ -3784,7 +3831,10 @@ impl Translator {
                 );
                 result = specl::Expr::new(
                     specl::ExprKind::Let {
-                        var: specl::Ident::new(escape_ident(&def.name.name), translate_span(def.name.span)),
+                        var: specl::Ident::new(
+                            escape_ident(&def.name.name),
+                            translate_span(def.name.span),
+                        ),
                         value: Box::new(wrapped_fn_lit),
                         body: Box::new(result),
                     },
@@ -3820,7 +3870,8 @@ impl Translator {
                     },
                     span,
                 );
-                let value = self.translate_except_value(&update.value, in_action, &at_replacement)?;
+                let value =
+                    self.translate_except_value(&update.value, in_action, &at_replacement)?;
                 result = specl::Expr::new(
                     specl::ExprKind::RecordUpdate {
                         base: Box::new(result),
@@ -3846,7 +3897,8 @@ impl Translator {
                     );
                 }
 
-                let value = self.translate_except_value(&update.value, in_action, &at_replacement)?;
+                let value =
+                    self.translate_except_value(&update.value, in_action, &at_replacement)?;
 
                 let mut prefix = base_for_at.clone();
                 for key in keys.iter().take(keys.len() - 1) {
