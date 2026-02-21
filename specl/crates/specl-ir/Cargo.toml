@@ -10,7 +10,11 @@ description = "Intermediate representation for Specl"
 [dependencies]
 specl-syntax.workspace = true
 specl-types.workspace = true
+specl-ts.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
 proptest.workspace = true
+serde_json.workspace = true
+specl-eval.workspace = true
+specl-mc.workspace = true
