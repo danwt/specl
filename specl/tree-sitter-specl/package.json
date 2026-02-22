@@ -1,0 +1,60 @@
+{
+  "name": "tree-sitter-specl",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for Specl specification language",
+  "main": "bindings/node",
+  "types": "bindings/node",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/danwt/specl.git"
+  },
+  "keywords": [
+    "tree-sitter",
+    "specl",
+    "model-checking",
+    "specification"
+  ],
+  "files": [
+    "grammar.js",
+    "binding.gyp",
+    "prebuilds/**",
+    "bindings/node/*",
+    "queries/*",
+    "src/**"
+  ],
+  "author": "Daniel Tisdall",
+  "license": "MIT",
+  "dependencies": {
+    "node-addon-api": "^7.1.0",
+    "node-gyp-build": "^4.8.0"
+  },
+  "peerDependencies": {
+    "tree-sitter": "^0.21.0"
+  },
+  "peerDependenciesMeta": {
+    "tree_sitter": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "prebuildify": "^6.0.0",
+    "tree-sitter-cli": "^0.22.6"
+  },
+  "scripts": {
+    "generate": "tree-sitter generate",
+    "test": "tree-sitter test",
+    "parse": "tree-sitter parse",
+    "install": "node-gyp-build",
+    "prebuildify": "prebuildify --napi --strip"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.specl",
+      "file-types": [
+        "specl"
+      ],
+      "highlights": "queries/highlights.scm",
+      "injection-regex": "specl"
+    }
+  ]
+}
