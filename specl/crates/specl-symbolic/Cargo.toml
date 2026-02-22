@@ -1,0 +1,19 @@
+[package]
+name = "specl-symbolic"
+version.workspace = true
+edition.workspace = true
+license-file = "../../../LICENSE"
+authors.workspace = true
+repository.workspace = true
+description = "Symbolic model checking backend for Specl using Z3"
+
+[dependencies]
+specl-ir.workspace = true
+specl-types.workspace = true
+specl-eval.workspace = true
+specl-syntax.workspace = true
+z3 = { version = "0.19", features = ["bundled"] }
+z3-sys = "0.10.4"
+tempfile = "3"
+thiserror.workspace = true
+tracing.workspace = true

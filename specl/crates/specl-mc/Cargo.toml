@@ -1,0 +1,36 @@
+[package]
+name = "specl-mc"
+version.workspace = true
+edition.workspace = true
+license-file = "../../../LICENSE"
+authors.workspace = true
+repository.workspace = true
+description = "Model checker for Specl specifications"
+
+[dependencies]
+specl-syntax.workspace = true
+specl-types.workspace = true
+specl-ir.workspace = true
+specl-eval.workspace = true
+ahash.workspace = true
+dashmap.workspace = true
+crossbeam.workspace = true
+parking_lot.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+rayon.workspace = true
+memory-stats.workspace = true
+smallvec.workspace = true
+rand.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
+specl-syntax.workspace = true
+specl-types.workspace = true
+specl-ir.workspace = true
+specl-eval.workspace = true
+
+[[bench]]
+name = "model_check"
+harness = false
