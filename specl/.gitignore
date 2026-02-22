@@ -1,0 +1,17 @@
+/target/
+
+# Z3 solver outputs
+.z3-trace
+*.smt2
+
+# TLC model checker outputs
+states/
+*_TTrace_*.tla
+*_TTrace_*.bin
+*.toolbox/
+MC.out
+MC*.out
+.deps/
+
+# Benchmark results (machine-specific)
+baseline-results.txt
