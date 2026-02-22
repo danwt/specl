@@ -1,0 +1,152 @@
+module Redlock
+
+// Redlock distributed locking — modeled to find Kleppmann's counterexample
+// From: Antirez, "Distributed locks with Redis" (2016)
+// Analysis: Kleppmann, "How to do distributed locking" (2016)
+// N is the last Redis instance index (N+1 instances, 0..N)
+// M is the last client index (M+1 clients, 0..M)
+// TTL is the lock time-to-live in ticks
+// MaxTime bounds the global clock to keep state space finite
+// Use: specl check redlock.specl -c N=2 -c M=1 -c TTL=3 -c MaxTime=8
+// Verified: N=2 M=1 TTL=3 MaxTime=8 -> MutualExclusion VIOLATED in 15 steps
+// The counterexample demonstrates Kleppmann's attack: client 0 acquires majority,
+// time advances (locks expire), client 1 acquires majority, both enter Holding
+
+const N: Int
+const M: Int
+const TTL: Int
+const MaxTime: Int
+
+// Global time (discrete ticks, models real/wall-clock time)
+var globalTime: Int
+
+// Per client: local clock (may lag behind global time due to pauses)
+var localClock: Dict[Int, Int]
+
+// Per client: state 0=Idle, 1=Acquiring, 2=Holding, 3=Released
+var clientState: Dict[Int, Int]
+
+// Per client: which instances the client has locked
+var clientLocks: Dict[Int, Set[Int]]
+
+// Per client: local clock value at time of acquisition start
+var acquireTime: Dict[Int, Int]
+
+// Per client: next instance index to try locking (sequential acquisition)
+var nextInstance: Dict[Int, Int]
+
+// Per instance: locked by which client (-1 = unlocked)
+var instanceLock: Dict[Int, Int]
+
+// Per instance: global time at which lock expires
+var instanceExpiry: Dict[Int, Int]
+
+func Majority() { (N + 1) / 2 + 1 }
+
+init {
+    globalTime = 0;
+    localClock = {c: 0 for c in 0..M};
+    clientState = {c: 0 for c in 0..M};
+    clientLocks = {c: {} for c in 0..M};
+    acquireTime = {c: 0 for c in 0..M};
+    nextInstance = {c: 0 for c in 0..M};
+    instanceLock = {i: -1 for i in 0..N};
+    instanceExpiry = {i: 0 for i in 0..N};
+}
+
+// --- Time modeling ---
+
+// Global time advances by one tick
+action Tick() {
+    require globalTime < MaxTime;
+    globalTime = globalTime + 1;
+}
+
+// Client c's local clock advances (catches up toward global time)
+// A client that never fires ClockAdvance is effectively paused
+action ClockAdvance(c: 0..M) {
+    require localClock[c] < globalTime;
+    localClock = localClock | {c: localClock[c] + 1};
+}
+
+// --- Lock expiry ---
+
+// Instance i's lock expires (TTL exceeded in real/global time)
+action ExpireLock(i: 0..N) {
+    require instanceLock[i] != -1;
+    require globalTime >= instanceExpiry[i];
+    instanceLock = instanceLock | {i: -1};
+}
+
+// --- Client lock acquisition ---
+
+// Client c starts acquiring the lock
+action StartAcquire(c: 0..M) {
+    require clientState[c] == 0;
+    clientState = clientState | {c: 1};
+    acquireTime = acquireTime | {c: localClock[c]};
+    clientLocks = clientLocks | {c: {}};
+    nextInstance = nextInstance | {c: 0};
+}
+
+// Client c successfully locks instance i (SET NX equivalent)
+action TryLock(c: 0..M, i: 0..N) {
+    require clientState[c] == 1;
+    require nextInstance[c] == i;
+    require instanceLock[i] == -1;
+    instanceLock = instanceLock | {i: c};
+    instanceExpiry = instanceExpiry | {i: globalTime + TTL};
+    clientLocks = clientLocks | {c: clientLocks[c] union {i}};
+    nextInstance = nextInstance | {c: i + 1};
+}
+
+// Client c fails to lock instance i (already locked by another client)
+action FailLock(c: 0..M, i: 0..N) {
+    require clientState[c] == 1;
+    require nextInstance[c] == i;
+    require instanceLock[i] != -1;
+    require instanceLock[i] != c;
+    nextInstance = nextInstance | {c: i + 1};
+}
+
+// Client c finishes acquisition: majority obtained and validity remaining
+// Validity check uses LOCAL clock (this is the source of the bug)
+action FinishAcquire(c: 0..M) {
+    require clientState[c] == 1;
+    require nextInstance[c] > N;
+    require len(clientLocks[c]) >= Majority();
+    require localClock[c] - acquireTime[c] < TTL;
+    clientState = clientState | {c: 2};
+}
+
+// Client c fails acquisition: unlock all instances, return to Idle
+action FailAcquire(c: 0..M) {
+    require clientState[c] == 1;
+    require nextInstance[c] > N;
+    require len(clientLocks[c]) < Majority()
+        or localClock[c] - acquireTime[c] >= TTL
+    clientState = clientState | {c: 0};
+    clientLocks = clientLocks | {c: {}};
+    instanceLock = {i:
+        if instanceLock[i] == c then -1 else instanceLock[i]
+        for i in 0..N}
+}
+
+// Client c releases the lock (DEL on all instances if value matches)
+action ReleaseLock(c: 0..M) {
+    require clientState[c] == 2;
+    clientState = clientState | {c: 3};
+    instanceLock = {i:
+        if instanceLock[i] == c then -1 else instanceLock[i]
+        for i in 0..N}
+}
+
+// --- Safety property ---
+
+// Mutual exclusion: at most one client in Holding state
+// This SHOULD be VIOLATED — the checker finds Kleppmann's counterexample
+invariant MutualExclusion {
+    all c1 in 0..M: all c2 in 0..M:
+        (clientState[c1] == 2 and clientState[c2] == 2)
+        implies c1 == c2
+}

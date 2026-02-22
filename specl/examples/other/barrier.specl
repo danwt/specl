@@ -1,0 +1,65 @@
+module Barrier
+
+// Barrier synchronization for N+1 processes.
+// All processes must arrive at the barrier before any can proceed.
+// Uses a shared counter and a sense-reversal flag to allow reuse.
+//
+// Use: specl check barrier.specl -c N=3 --no-deadlock --no-auto --bfs
+// Verified: N=3 -> OK (510 states, 0.0s)
+
+const N: 0..4
+
+// Shared barrier state
+var count: 0..4    // number of processes that have arrived
+var sense: Bool    // current barrier phase (flips each round)
+
+// Per-process state: 0=working, 1=arrived, 2=passed
+var pc: Dict[0..N, 0..2]
+
+// Per-process local sense (opposite of global sense when waiting)
+var local_sense: Dict[0..N, Bool]
+
+init {
+    count = 0;
+    sense = false;
+    pc = {i: 0 for i in 0..N};
+    local_sense = {i: true for i in 0..N};
+}
+
+// Process p arrives at barrier
+action Arrive(p: 0..N) {
+    require pc[p] == 0;
+    count = count + 1;
+    pc = pc | {p: 1};
+}
+
+// Last process to arrive flips the sense (releases everyone)
+action Release(p: 0..N) {
+    require pc[p] == 1;
+    require count == N + 1;
+    sense = local_sense[p];
+    count = 0;
+    pc = pc | {p: 2};
+}
+
+// Process p passes the barrier (sense matches local_sense)
+action Pass(p: 0..N) {
+    require pc[p] == 1;
+    require sense == local_sense[p];
+    pc = pc | {p: 2};
+}
+
+// Process p goes back to working (starts next phase)
+action Reset(p: 0..N) {
+    require pc[p] == 2;
+    pc = pc | {p: 0};
+    local_sense = local_sense | {p: not local_sense[p]};
+}
+
+// No process passes barrier before all have arrived:
+// if any process is still working (pc=0), no process has passed (pc=2)
+// in the current phase (same local_sense value)
+invariant NoEarlyPass {
+    not (any p in 0..N: pc[p] == 0
+         and any q in 0..N: pc[q] == 2 and local_sense[p] == local_sense[q])
+}

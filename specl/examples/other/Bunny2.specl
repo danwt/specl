@@ -1,0 +1,56 @@
+// Use: No constants needed
+// Puzzle: invariant violation is intentional (counterexample IS the solution)
+module Bunny2Compact
+
+// Bunny puzzle - hard version (compact encoding)
+// Nodes: A=0, B=1, C=2, D=3, E=4, F=5, G=6
+// Animals: dog=0, r1=1, r2=2, r3=3, r4=4
+// Goal: dog at G (bone), all rabbits at F (carrot)
+
+var pos: Dict[0..4, 0..6]
+
+init {
+    pos = {a: a for a in 0..4};  // dog at A=0, r1 at B=1, r2 at C=2, r3 at D=3, r4 at E=4
+}
+
+invariant NotSolved {
+    not (pos[0] == 6 and pos[1] == 5 and pos[2] == 5 and pos[3] == 5 and pos[4] == 5)
+}
+
+action Move(animal: 0..4, from: 0..6, to: 0..6) {
+    require pos[animal] == from;
+    require from != to
+
+    // Edge check and guard satisfied
+    require
+        // Basic edges (line graph A-B-C-D-E-F-G, all unguarded)
+        // A-B
+        ((from == 0 and to == 1) or (from == 1 and to == 0))
+        // B-C
+        or ((from == 1 and to == 2) or (from == 2 and to == 1))
+        // C-D
+        or ((from == 2 and to == 3) or (from == 3 and to == 2))
+        // D-E
+        or ((from == 3 and to == 4) or (from == 4 and to == 3))
+        // E-F
+        or ((from == 4 and to == 5) or (from == 5 and to == 4))
+        // F-G
+        or ((from == 5 and to == 6) or (from == 6 and to == 5))
+
+        // Shortcut edges (with guards)
+        // A-D (guard: someone at F=5)
+        or (((from == 0 and to == 3) or (from == 3 and to == 0))
+            and (any a in 0..4: pos[a] == 5))
+        // B-E (guard: someone at G=6)
+        or (((from == 1 and to == 4) or (from == 4 and to == 1))
+            and (any a in 0..4: pos[a] == 6))
+        // C-F (guard: someone at A=0 AND someone at E=4)
+        or (((from == 2 and to == 5) or (from == 5 and to == 2))
+            and (any a in 0..4: pos[a] == 0)
+            and (any a in 0..4: pos[a] == 4))
+        // D-G (guard: someone at B=1)
+        or (((from == 3 and to == 6) or (from == 6 and to == 3))
+            and (any a in 0..4: pos[a] == 1))
+
+    pos = pos | { animal: to };
+}

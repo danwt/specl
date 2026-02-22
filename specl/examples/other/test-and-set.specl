@@ -1,0 +1,53 @@
+module TestAndSet
+
+// Test-and-Set Lock (Anderson, 1990; widely used primitive).
+// The simplest atomic mutual exclusion lock. A shared boolean is
+// atomically read and set to true. If the old value was false,
+// the caller acquires the lock.
+//
+// N+1 processes compete for a single lock.
+// No fairness guarantee (starvation possible).
+//
+// Use: specl check test-and-set.specl -c N=3 --no-deadlock --no-auto --bfs
+// Verified: N=3 -> OK (48 states)
+
+const N: 0..4
+
+var lock: Bool
+// 0=idle, 1=trying, 2=in_cs
+var pc: Dict[0..N, 0..2]
+
+init {
+    lock = false;
+    pc = {p: 0 for p in 0..N};
+}
+
+// Process starts trying
+action Try(p: 0..N) {
+    require pc[p] == 0;
+    pc = pc | {p: 1};
+}
+
+// Test-and-set succeeds: lock was false, now true
+action Acquire(p: 0..N) {
+    require pc[p] == 1;
+    require lock == false;
+    lock = true;
+    pc = pc | {p: 2};
+}
+
+// Release
+action Release(p: 0..N) {
+    require pc[p] == 2;
+    lock = false;
+    pc = pc | {p: 0};
+}
+
+invariant MutualExclusion {
+    all i in 0..N: all j in 0..N:
+        (i != j) implies not (pc[i] == 2 and pc[j] == 2)
+}
+
+invariant LockConsistency {
+    (any p in 0..N: pc[p] == 2) implies lock == true
+}

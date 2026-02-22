@@ -1,0 +1,75 @@
+module ResourceAllocator
+
+// Banker's Algorithm for deadlock avoidance (Dijkstra, 1965).
+// N+1 processes request resources from a pool of R units.
+// The allocator grants a request only if the resulting state is safe
+// (i.e., all processes can eventually finish).
+//
+// Simplified: single resource type with R units.
+// Each process declares a maximum need. The allocator tracks
+// allocations and ensures safety.
+//
+// Use: specl check resource-allocator.specl -c N=2 -c R=4 --no-deadlock --no-auto --bfs
+// Verified: N=2 R=4 -> OK (5.1K states)
+
+const N: 0..3
+const R: 2..6
+
+// Available resources
+var avail: 0..R
+
+// Per-process: allocated units and maximum need
+var alloc: Dict[0..N, 0..R]
+var max_need: Dict[0..N, 0..R]
+
+// 0=idle, 1=running, 2=done
+var pc: Dict[0..N, 0..2]
+
+init {
+    avail = R;
+    alloc = {p: 0 for p in 0..N};
+    max_need = {p: 1 for p in 0..N};
+    pc = {p: 0 for p in 0..N};
+}
+
+// Process declares its max need and starts running
+action Start(p: 0..N, need: 1..R) {
+    require pc[p] == 0;
+    require need <= R;
+    max_need = max_need | {p: need};
+    pc = pc | {p: 1};
+}
+
+// Process requests one more unit
+action Request(p: 0..N) {
+    require pc[p] == 1;
+    require alloc[p] < max_need[p];
+    require avail > 0;
+    alloc = alloc | {p: alloc[p] + 1};
+    avail = avail - 1;
+}
+
+// Process finishes and releases all resources
+action Finish(p: 0..N) {
+    require pc[p] == 1;
+    require alloc[p] == max_need[p];
+    avail = avail + alloc[p];
+    alloc = alloc | {p: 0};
+    pc = pc | {p: 2};
+}
+
+// Total resources are conserved
+invariant ResourceConservation {
+    avail + alloc[0] + alloc[1] + alloc[2] <= R
+    or N < 2
+}
+
+// No over-allocation
+invariant NoOverAllocation {
+    all p in 0..N: alloc[p] <= max_need[p]
+}
+
+// Available is non-negative
+invariant AvailNonNeg {
+    avail >= 0
+}

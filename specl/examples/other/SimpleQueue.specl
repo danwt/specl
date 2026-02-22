@@ -1,0 +1,57 @@
+// Simple Bounded Queue
+// Producer-consumer with a bounded buffer.
+// Use: -c BUFFER_SIZE=2 -c MAX_PRODUCER=0 -c MAX_CONSUMER=0
+
+module SimpleQueue
+
+// BUFFER_SIZE is literal size; MAX_PRODUCER/MAX_CONSUMER are upper bounds on IDs
+const BUFFER_SIZE: 0..4
+const MAX_PRODUCER: 0..2
+const MAX_CONSUMER: 0..2
+
+var buffer: Seq[0..1]
+var produced: 0..5
+var consumed: 0..5
+
+init {
+    buffer = [];
+    produced = 0;
+    consumed = 0;
+}
+
+// Producer adds item to buffer
+action Produce(p: 0..MAX_PRODUCER, item: 0..1) {
+    require len(buffer) < BUFFER_SIZE;
+    require produced < 5;  // prevent overflow
+    buffer = buffer ++ [item];
+    produced = produced + 1;
+}
+
+// Consumer removes item from buffer
+action Consume(c: 0..MAX_CONSUMER) {
+    require len(buffer) > 0;
+    require consumed < 5;
+    buffer = tail(buffer);
+    consumed = consumed + 1;
+}
+
+// Stutter step (system complete - all items produced and consumed)
+action Done() {
+    require produced == 5 and consumed == 5 and buffer == [];
+    // No state changes - this allows termination without deadlock
+}
+
+// Safety: Buffer never exceeds capacity
+invariant BufferBounded {
+    len(buffer) <= BUFFER_SIZE
+}
+
+// Safety: Items consumed <= items produced
+invariant ConsumedLeqProduced {
+    consumed <= produced
+}
+
+// Safety: Buffer length = produced - consumed
+invariant BufferLengthCorrect {
+    len(buffer) == produced - consumed
+}

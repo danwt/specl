@@ -1,0 +1,54 @@
+// Token Ring Mutual Exclusion
+// Processes pass a token around a ring; only the token holder can enter critical section.
+// Use: -c MAX_PROC=2 (gives processes 0, 1, 2)
+
+module TokenRing
+
+// Upper bound on process ID (0..MAX_PROC gives MAX_PROC+1 processes)
+const MAX_PROC: 0..4
+
+// Process states: 0=idle, 1=waiting, 2=critical
+var state: Dict[0..MAX_PROC, 0..2]
+var tokenHolder: 0..MAX_PROC
+
+init {
+    state = {p: 0 for p in 0..MAX_PROC};
+    tokenHolder = 0;
+}
+
+// Process wants to enter critical section
+action Request(p: 0..MAX_PROC) {
+    require state[p] == 0;
+    state = state | { p: 1 };
+}
+
+// Process with token enters critical section
+action EnterCS(p: 0..MAX_PROC) {
+    require state[p] == 1;
+    require tokenHolder == p;
+    state = state | { p: 2 };
+}
+
+// Process exits critical section
+action ExitCS(p: 0..MAX_PROC) {
+    require state[p] == 2;
+    state = state | { p: 0 };
+}
+
+// Process passes token to successor in ring
+action PassToken(p: 0..MAX_PROC) {
+    require tokenHolder == p;
+    require state[p] != 2;
+    tokenHolder = (p + 1) % (MAX_PROC + 1);
+}
+
+// Safety: Mutual exclusion
+invariant MutualExclusion {
+    all p1 in 0..MAX_PROC: all p2 in 0..MAX_PROC:
+        (state[p1] == 2 and state[p2] == 2) implies p1 == p2
+}
+
+// Safety: Only token holder can be in CS
+invariant OnlyTokenHolderInCS {
+    all p in 0..MAX_PROC: state[p] == 2 implies tokenHolder == p
+}

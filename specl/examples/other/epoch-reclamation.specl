@@ -1,0 +1,100 @@
+module EpochReclamation
+
+// Epoch-Based Reclamation (EBR) for lock-free memory management.
+// Simpler than hazard pointers. Global epoch advances when all
+// threads have observed the current epoch. Objects retired in
+// epoch E can be reclaimed once the global epoch reaches E+2.
+//
+// N+1 threads, each with a local epoch. Threads enter/exit
+// critical sections, updating their local epoch on entry.
+// A thread may obtain a reference to an object only while in
+// its critical section and before the object is retired.
+//
+// Use: specl check epoch-reclamation.specl -c N=1 -c MaxEpoch=3 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxEpoch=3 -> OK (620 states, 0.0s)
+
+const N: 0..2
+const MaxEpoch: 2..4
+
+// Global epoch
+var global_epoch: 0..MaxEpoch
+
+// Per-thread: in critical section?
+var active: Dict[0..N, Bool]
+
+// Per-thread: local epoch (updated on CS entry)
+var local_epoch: Dict[0..N, 0..MaxEpoch]
+
+// Object lifecycle: false=alive, true=retired
+var retired: Bool
+var retired_epoch: 0..MaxEpoch
+var reclaimed: Bool
+
+// Per-thread: holds a reference to the object?
+var holds_ref: Dict[0..N, Bool]
+
+init {
+    global_epoch = 0;
+    active = {t: false for t in 0..N};
+    local_epoch = {t: 0 for t in 0..N};
+    retired = false;
+    retired_epoch = 0;
+    reclaimed = false;
+    holds_ref = {t: false for t in 0..N};
+}
+
+// Thread enters critical section
+action Enter(t: 0..N) {
+    require active[t] == false;
+    active = active | {t: true};
+    local_epoch = local_epoch | {t: global_epoch};
+}
+
+// Thread acquires a reference (only while in CS, before retirement)
+action AcquireRef(t: 0..N) {
+    require active[t] == true;
+    require holds_ref[t] == false;
+    require retired == false;
+    holds_ref = holds_ref | {t: true};
+}
+
+// Thread releases reference
+action ReleaseRef(t: 0..N) {
+    require holds_ref[t] == true;
+    holds_ref = holds_ref | {t: false};
+}
+
+// Thread exits critical section (must release ref first)
+action Exit(t: 0..N) {
+    require active[t] == true;
+    require holds_ref[t] == false;
+    active = active | {t: false};
+}
+
+// Retire the object (remove from data structure)
+action Retire() {
+    require retired == false;
+    retired = true;
+    retired_epoch = global_epoch;
+}
+
+// Advance global epoch (all active threads must be current)
+action AdvanceEpoch() {
+    require global_epoch < MaxEpoch;
+    require all t in 0..N:
+        active[t] == false or local_epoch[t] == global_epoch
+    global_epoch = global_epoch + 1;
+}
+
+// Reclaim: safe after two full epoch advances since retirement
+action Reclaim() {
+    require retired == true;
+    require reclaimed == false;
+    require global_epoch >= retired_epoch + 2;
+    reclaimed = true;
+}
+
+// Safety: no thread holds a reference to a reclaimed object
+invariant NoUseAfterFree {
+    reclaimed implies (all t in 0..N: holds_ref[t] == false)
+}

@@ -1,0 +1,57 @@
+module Outbox
+
+// Transactional Outbox Pattern (Microservices patterns).
+// Ensures exactly-once message publishing by writing messages
+// to an outbox table in the same database transaction as the
+// business operation. A separate relay reads the outbox and
+// publishes to the message broker.
+//
+// N+1 services, 1 outbox, 1 relay. The relay processes outbox
+// entries in order and marks them as published.
+//
+// Use: specl check outbox.specl -c N=2 -c MaxMsg=3 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxMsg=3 -> OK (65 states)
+
+const N: 0..3
+const MaxMsg: 1..4
+
+// Outbox: number of unpublished entries
+var outbox_pending: 0..MaxMsg
+// Published message count
+var published: 0..MaxMsg
+// Per-service: number of operations done
+var ops: Dict[0..N, 0..MaxMsg]
+// Total operations (should equal outbox_pending + published)
+var total_ops: 0..MaxMsg
+
+init {
+    outbox_pending = 0;
+    published = 0;
+    ops = {s: 0 for s in 0..N};
+    total_ops = 0;
+}
+
+// Service performs operation and writes to outbox atomically
+action Operate(s: 0..N) {
+    require total_ops < MaxMsg;
+    ops = ops | {s: ops[s] + 1};
+    outbox_pending = outbox_pending + 1;
+    total_ops = total_ops + 1;
+}
+
+// Relay publishes one outbox entry
+action Relay() {
+    require outbox_pending > 0;
+    outbox_pending = outbox_pending - 1;
+    published = published + 1;
+}
+
+// Consistency: outbox_pending + published == total_ops
+invariant OutboxConsistency {
+    outbox_pending + published == total_ops
+}
+
+// No message loss: every operation eventually has a corresponding publish
+invariant NoMessageLoss {
+    published <= total_ops
+}

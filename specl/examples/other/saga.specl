@@ -1,0 +1,97 @@
+module Saga
+
+// Saga Pattern for distributed transactions (Garcia-Molina & Salem, 1987).
+// A saga is a sequence of local transactions T1, T2, ..., Tn.
+// Each Ti has a compensating transaction Ci that undoes its effects.
+// If Ti fails, the saga executes C(i-1), C(i-2), ..., C1 to roll back.
+//
+// This models a 3-step saga (e.g., reserve flight, book hotel, charge card).
+// Steps can succeed or fail. On failure, compensations run in reverse.
+//
+// Use: specl check saga.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (5832 states, 0.0s)
+
+const N: 0..3  // number of sagas
+
+// Per-step state: 0=pending, 1=done, 2=compensated
+var step: Dict[0..N, Dict[0..2, 0..2]]
+
+// Saga state: 0=idle, 1=forward, 2=compensating, 3=committed, 4=aborted
+var saga_pc: Dict[0..N, 0..4]
+
+// How far the saga got before failure (0..2)
+var saga_progress: Dict[0..N, 0..2]
+
+init {
+    step = {s: {i: 0 for i in 0..2} for s in 0..N};
+    saga_pc = {s: 0 for s in 0..N};
+    saga_progress = {s: 0 for s in 0..N};
+}
+
+// Saga s starts
+action Start(s: 0..N) {
+    require saga_pc[s] == 0;
+    saga_pc = saga_pc | {s: 1};
+}
+
+// Saga s executes next forward step
+action ForwardStep(s: 0..N) {
+    require saga_pc[s] == 1;
+    require step[s][saga_progress[s]] == 0;
+    step = step | {s: step[s] | {saga_progress[s]: 1}};
+    saga_progress = saga_progress | {s:
+        if saga_progress[s] < 2 then saga_progress[s] + 1
+        else saga_progress[s]
+    }
+}
+
+// Saga s commits (all 3 steps done)
+action Commit(s: 0..N) {
+    require saga_pc[s] == 1;
+    require step[s][0] == 1 and step[s][1] == 1 and step[s][2] == 1;
+    saga_pc = saga_pc | {s: 3};
+}
+
+// Current step fails, saga enters compensating mode
+action Fail(s: 0..N) {
+    require saga_pc[s] == 1;
+    require saga_progress[s] > 0;
+    saga_pc = saga_pc | {s: 2};
+}
+
+// Compensate: undo steps in reverse order
+action Compensate(s: 0..N, i: 0..2) {
+    require saga_pc[s] == 2;
+    require step[s][i] == 1;
+    // Only compensate the highest done step that hasn't been compensated yet
+    require all j in 0..2: j > i implies (step[s][j] != 1);
+    step = step | {s: step[s] | {i: 2}};
+}
+
+// All compensations done, saga aborted
+action Abort(s: 0..N) {
+    require saga_pc[s] == 2;
+    require all i in 0..2: step[s][i] != 1;
+    saga_pc = saga_pc | {s: 4};
+}
+
+// Committed saga has all steps done
+invariant CommittedComplete {
+    all s in 0..N:
+        saga_pc[s] == 3 implies (
+            step[s][0] == 1 and step[s][1] == 1 and step[s][2] == 1
+        )
+}
+
+// Aborted saga has no uncompensated steps
+invariant AbortedClean {
+    all s in 0..N:
+        saga_pc[s] == 4 implies (
+            all i in 0..2: step[s][i] != 1
+        )
+}
+
+// No saga is both committed and aborted (trivially true from pc encoding)
+invariant NoConflict {
+    all s in 0..N: not (saga_pc[s] == 3 and saga_pc[s] == 4)
+}

@@ -1,0 +1,153 @@
+module EPaxos
+
+// Faithful model of one EPaxos consensus instance with 3 replicas.
+//
+// Command leader: replica 0. Fast quorum: {0, 1}. Classic quorum: any 2 of 3.
+//
+// Models the full instance lifecycle: pre-accept, fast commit, accept
+// propagation, recovery (with fast-path detection), and slow commit.
+// The value being agreed on represents the dependency set for a command:
+// 0 = no dependencies, 1 = has dependencies.
+//
+// UseFix toggles the Sutra 2019 correction:
+//   UseFix=0: Recovery compares bal (inflated by prepares) — BUG, finds violation.
+//   UseFix=1: Recovery compares vbal (actual acceptance ballot) — FIX, passes.
+//
+// Use: specl check epaxos.specl -c MaxBal=5 -c NB=6 -c UseFix=0 --no-deadlock --no-auto --max-states 50000000
+// Use: specl check epaxos.specl -c MaxBal=5 -c NB=6 -c UseFix=1 --no-deadlock --no-auto --max-states 50000000
+
+const MaxBal: Int
+const NB: Int // must equal MaxBal + 1
+const UseFix: 0..1
+
+// 3 replicas: 0, 1, 2
+// Status: 0=none, 1=preaccepted, 2=accepted, 3=committed
+
+var status: Dict[0..2, 0..3]
+var bal: Dict[0..2, 0..MaxBal]   // highest ballot seen (inflated by prepares)
+var vbal: Dict[0..2, 0..MaxBal]  // ballot of last acceptance (only set by accept/recovery)
+var val: Dict[0..2, 0..1]
+var next_bal: 1..NB
+var initial_val: 0..1 // command leader's original proposal
+
+init {
+    status = {r: 0 for r in 0..2};
+    bal = {r: 0 for r in 0..2};
+    vbal = {r: 0 for r in 0..2};
+    val = {r: 0 for r in 0..2};
+    next_bal = 1;
+    initial_val = 0;
+}
+
+// Command leader (r0) initiates pre-accept with value v.
+action LeaderPreAccept(v: 0..1) {
+    require status[0] == 0;
+    require bal[0] == 0;
+    status = status | {0: 1};
+    val = val | {0: v};
+    initial_val = v;
+}
+
+// Fast quorum member (r1) responds to pre-accept.
+// May reply with different deps due to local conflicts.
+action FastQuorumPreAccept(v: 0..1) {
+    require status[0] >= 1;
+    require status[1] == 0;
+    require bal[1] == 0;
+    status = status | {1: 1};
+    val = val | {1: v};
+}
+
+// Fast-path commit: fast quorum {0, 1} agrees at ballot 0.
+action FastCommit(r: 0..2) {
+    require r <= 1;
+    require status[r] >= 1;
+    require status[r] != 3;
+    require bal[r] == 0;
+    require status[0] >= 1 and status[1] >= 1;
+    require val[0] == val[1];
+    require bal[0] == 0 and bal[1] == 0;
+    status = status | {r: 3};
+}
+
+// Process a Prepare from some recovery attempt.
+// Inflates bal without changing vbal, status, or value.
+action ReceivePrepare(r: 0..2) {
+    require next_bal <= MaxBal;
+    require next_bal > bal[r];
+    require status[r] != 3;
+    bal = bal | {r: next_bal};
+    next_bal = next_bal + 1;
+}
+
+// Recovery: leader collects state from quorum {leader, other} and decides.
+// Includes fast-path detection for the pre-accept case.
+// BUG/FIX: "both accepted" comparison uses bal (UseFix=0) or vbal (UseFix=1).
+action Recovery(leader: 0..2, other: 0..2, pick: 0..1) {
+    require leader != other;
+    require next_bal <= MaxBal;
+    require next_bal > bal[leader];
+    require next_bal > bal[other];
+    require status[leader] != 3;
+    require status[leader] >= 1 or status[other] >= 1;
+
+    val = val | {leader:
+        // Committed: adopt
+        if status[other] == 3 then val[other]
+        // Both accepted: highest ballot wins
+        else if status[leader] == 2 and status[other] == 2 then
+            if UseFix == 1 then
+                if vbal[leader] > vbal[other] then val[leader]
+                else if vbal[other] > vbal[leader] then val[other]
+                else val[leader]
+            else
+                if bal[leader] > bal[other] then val[leader]
+                else if bal[other] > bal[leader] then val[other]
+                else val[leader]
+        // One accepted: adopt
+        else if status[other] == 2 then val[other]
+        else if status[leader] == 2 then val[leader]
+        // Fast-path detection: if any pre-accept matches initial_val,
+        // the fast path might have committed — adopt conservatively.
+        else if (status[leader] == 1 and val[leader] == initial_val)
+                or (status[other] == 1 and val[other] == initial_val)
+            then initial_val
+        // No fast-path evidence: pre-accept tie-breaking
+        else if status[leader] == 1 and status[other] == 1 then
+            if val[leader] == val[other] then val[leader] else pick
+        else if status[leader] == 1 then val[leader]
+        else if status[other] == 1 then val[other]
+        else pick
+    };
+    status = status | {leader: 2};
+    bal = bal | {leader: next_bal, other: next_bal};
+    vbal = vbal | {leader: next_bal};
+    next_bal = next_bal + 1;
+}
+
+// Phase 2: propagate accepted value to another replica.
+action Accept(src: 0..2, dst: 0..2) {
+    require src != dst;
+    require status[src] == 2;
+    require status[dst] != 3;
+    require vbal[src] == bal[src] // source hasn't joined a higher ballot since accepting;
+    require bal[src] >= bal[dst];
+    status = status | {dst: 2};
+    bal = bal | {dst: bal[src]};
+    vbal = vbal | {dst: vbal[src]};
+    val = val | {dst: val[src]};
+}
+
+// Slow-path commit: quorum of 2 accepted replicas agree.
+action SlowCommit(r: 0..2) {
+    require status[r] == 2;
+    require vbal[r] == bal[r];
+    require any r2 in 0..2:
+        r2 != r and status[r2] >= 2 and vbal[r2] == vbal[r] and val[r2] == val[r]
+    status = status | {r: 3};
+}
+
+invariant Agreement {
+    all r1 in 0..2: all r2 in 0..2:
+        (status[r1] == 3 and status[r2] == 3) implies val[r1] == val[r2]
+}

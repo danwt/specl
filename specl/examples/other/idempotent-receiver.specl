@@ -1,0 +1,58 @@
+module IdempotentReceiver
+
+// Idempotent Receiver Pattern (Hohpe & Woolf, 2003).
+// A receiver that can safely process duplicate messages by tracking
+// message IDs. Each message is processed exactly once even if
+// delivered multiple times.
+//
+// N+1 senders, 1 receiver. Each sender sends a message (possibly
+// multiple times due to retries). The receiver deduplicates.
+//
+// Use: specl check idempotent-receiver.specl -c N=2 -c MaxRetries=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxRetries=2 -> OK (125 states)
+
+const N: 0..3
+const MaxRetries: 1..3
+
+// Per-sender: how many times message has been sent
+var send_count: Dict[0..N, 0..MaxRetries]
+// Receiver: which message IDs have been seen
+var seen: Dict[0..N, Bool]
+// Receiver: processing count per sender (should be at most 1)
+var processed: Dict[0..N, 0..1]
+
+init {
+    send_count = {s: 0 for s in 0..N};
+    seen = {s: false for s in 0..N};
+    processed = {s: 0 for s in 0..N};
+}
+
+// Sender sends (or retries) a message
+action Send(s: 0..N) {
+    require send_count[s] < MaxRetries;
+    send_count = send_count | {s: send_count[s] + 1};
+}
+
+// Receiver processes a message (first time — not yet seen)
+action Process(s: 0..N) {
+    require send_count[s] > 0;
+    require seen[s] == false;
+    seen = seen | {s: true};
+    processed = processed | {s: 1};
+}
+
+// Receiver receives duplicate (already seen — ignores)
+action IgnoreDuplicate(s: 0..N) {
+    require send_count[s] > 0;
+    require seen[s] == true;
+}
+
+// Each message processed at most once
+invariant ExactlyOnce {
+    all s in 0..N: processed[s] <= 1
+}
+
+// If processed, must have been sent
+invariant CausalOrder {
+    all s in 0..N: processed[s] > 0 implies send_count[s] > 0
+}

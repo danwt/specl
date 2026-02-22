@@ -1,0 +1,64 @@
+module Features
+
+// Demonstrates less common specl features:
+//   - Set[T] with union, diff, in, intersect, len
+//   - if-then-else expressions in actions
+//   - Nondeterministic init (omit constraint to explore all valid initial states)
+//
+// 2 workers compete for 3 resources.
+//
+// Quick: specl check features.specl --no-deadlock --bfs
+
+// Which worker holds each resource (0 = free, 1..2 = worker id)
+var owner: Dict[0..2, 0..2]
+
+// Resources held by worker 1 and worker 2
+var held_1: Set[0..2]
+var held_2: Set[0..2]
+
+// Nondeterministic: mode unconstrained, checker explores all 3 initial values.
+// 0 = idle, 1 = acquiring, 2 = releasing
+var mode: 0..2
+
+init {
+    owner = {r: 0 for r in 0..2};
+    held_1 = {};
+    held_2 = {};
+    // mode intentionally unconstrained: nondeterministic initial state
+}
+
+action Acquire1(r: 0..2) {
+    require owner[r] == 0;
+    owner = owner | {r: 1};
+    held_1 = held_1 union {r};
+    mode = if len(held_1) == 0 then 1 else mode;
+}
+
+action Release1(r: 0..2) {
+    require r in held_1;
+    owner = owner | {r: 0};
+    held_1 = held_1 diff {r};
+    mode = 2;
+}
+
+action Acquire2(r: 0..2) {
+    require owner[r] == 0;
+    owner = owner | {r: 2};
+    held_2 = held_2 union {r};
+    mode = if len(held_2) == 0 then 1 else mode;
+}
+
+action Release2(r: 0..2) {
+    require r in held_2;
+    owner = owner | {r: 0};
+    held_2 = held_2 diff {r};
+    mode = 2;
+}
+
+invariant NoConflict {
+    len(held_1 intersect held_2) == 0
+}
+
+invariant OwnerConsistency {
+    all r in held_1: owner[r] == 1
+}

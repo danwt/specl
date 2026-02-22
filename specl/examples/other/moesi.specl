@@ -1,0 +1,136 @@
+module MOESI
+
+// MOESI cache coherence protocol.
+// Extension of MESI with an Owned state. In MOESI, a cache line
+// can be Modified, Owned, Exclusive, Shared, or Invalid.
+// The Owned state means this cache has a dirty copy and is responsible
+// for supplying data to other caches, while other caches may have
+// Shared copies. This avoids writing back to memory on every share.
+//
+// N+1 caches, one memory line. States encoded as:
+//   0=Invalid, 1=Shared, 2=Exclusive, 3=Modified, 4=Owned
+//
+// Use: specl check moesi.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (23 states, 0.0s)
+
+const N: 0..3
+
+var cache: Dict[0..N, 0..4]
+
+init {
+    cache = {c: 0 for c in 0..N};
+}
+
+// Read hit: cache already has valid data (S, E, M, O)
+// No state change needed — implicit frame handles it.
+// We model bus transactions that cause state changes.
+
+// BusRd: cache i reads, was Invalid. If someone has M or O, they supply.
+action BusRdFromInvalid(i: 0..N) {
+    require cache[i] == 0;
+    // If any cache has M, it transitions to O and shares
+    require any j in 0..N: j != i and cache[j] == 3;
+    cache = {c:
+        if c == i then 1
+        else if cache[c] == 3 then 4
+        else cache[c]
+    for c in 0..N}
+}
+
+// BusRd: cache i reads from Invalid. Owner supplies data.
+action BusRdFromInvalidOwned(i: 0..N) {
+    require cache[i] == 0;
+    // Owner supplies, stays Owned
+    require any j in 0..N: j != i and cache[j] == 4;
+    require all j in 0..N: j != i implies cache[j] != 3;
+    cache = cache | {i: 1};
+}
+
+// BusRd: cache i reads from Invalid. Exclusive supplies, becomes Shared.
+action BusRdFromInvalidExclusive(i: 0..N) {
+    require cache[i] == 0;
+    require any j in 0..N: j != i and cache[j] == 2;
+    require all j in 0..N: j != i implies (cache[j] != 3 and cache[j] != 4);
+    cache = {c:
+        if c == i then 1
+        else if cache[c] == 2 then 1
+        else cache[c]
+    for c in 0..N}
+}
+
+// BusRd: cache i reads from Invalid. No one has it (or all Invalid).
+action BusRdFromMemory(i: 0..N) {
+    require cache[i] == 0;
+    require all j in 0..N: j != i implies cache[j] == 0 or cache[j] == 1;
+    // If any Shared exists, get Shared; otherwise Exclusive
+    cache = cache | {i:
+        if any j in 0..N: j != i and cache[j] == 1 then 1
+        else 2
+    }
+}
+
+// BusRdX: cache i writes, was Invalid. Invalidate everyone else.
+action BusRdXFromInvalid(i: 0..N) {
+    require cache[i] == 0;
+    cache = {c: if c == i then 3 else 0 for c in 0..N};
+}
+
+// Write hit: Shared -> Modified (upgrade, invalidate others)
+action WriteHitShared(i: 0..N) {
+    require cache[i] == 1;
+    cache = {c:
+        if c == i then 3
+        else if cache[c] == 1 or cache[c] == 4 then 0
+        else cache[c]
+    for c in 0..N}
+}
+
+// Write hit: Owned -> Modified (invalidate sharers)
+action WriteHitOwned(i: 0..N) {
+    require cache[i] == 4;
+    cache = {c:
+        if c == i then 3
+        else if cache[c] == 1 then 0
+        else cache[c]
+    for c in 0..N}
+}
+
+// Write hit: Exclusive -> Modified (silent, no bus transaction)
+action WriteHitExclusive(i: 0..N) {
+    require cache[i] == 2;
+    cache = cache | {i: 3};
+}
+
+// Evict: writeback and invalidate
+action Evict(i: 0..N) {
+    require cache[i] == 3 or cache[i] == 4 or cache[i] == 2;
+    cache = cache | {i: 0};
+}
+
+// At most one Modified
+invariant AtMostOneModified {
+    all i in 0..N: all j in 0..N:
+        (i != j) implies not (cache[i] == 3 and cache[j] == 3)
+}
+
+// Modified excludes any other valid copy
+invariant ModifiedExclusive {
+    all i in 0..N:
+        cache[i] == 3 implies (
+            all j in 0..N: j != i implies cache[j] == 0
+        )
+}
+
+// Exclusive means no other valid copy
+invariant ExclusiveAlone {
+    all i in 0..N:
+        cache[i] == 2 implies (
+            all j in 0..N: j != i implies cache[j] == 0
+        )
+}
+
+// At most one Owner
+invariant AtMostOneOwner {
+    all i in 0..N: all j in 0..N:
+        (i != j) implies not (cache[i] == 4 and cache[j] == 4)
+}

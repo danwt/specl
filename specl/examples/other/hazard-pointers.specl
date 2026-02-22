@@ -1,0 +1,78 @@
+module HazardPointers
+
+// Hazard Pointers for safe memory reclamation in lock-free data structures.
+// N+1 threads access shared nodes. Each thread protects at most one node
+// via a hazard pointer. A reclaimer thread retires nodes and reclaims
+// only those not protected by any hazard pointer.
+//
+// Key invariant: no thread accesses a reclaimed node (no use-after-free).
+//
+// Use: specl check hazard-pointers.specl -c N=1 -c MaxNode=2 --no-deadlock --no-auto --bfs
+// Verified: N=1 MaxNode=2 -> OK (30 states, 0.0s)
+
+const N: 0..2
+const MaxNode: 1..3
+
+// Node states: 0=free, 1=active, 2=retired, 3=reclaimed
+var node_state: Dict[0..MaxNode, 0..3]
+
+// Per-thread hazard pointer: which node is protected (0 = none)
+var hp: Dict[0..N, 0..MaxNode]
+
+// Per-thread: which node thread is currently accessing (0 = none)
+var accessing: Dict[0..N, 0..MaxNode]
+
+// Allocation counter
+var alloc_next: 0..MaxNode
+
+init {
+    node_state = {n: 0 for n in 0..MaxNode};
+    hp = {t: 0 for t in 0..N};
+    accessing = {t: 0 for t in 0..N};
+    alloc_next = 0;
+}
+
+// Allocate a new node (make it active)
+action Allocate() {
+    require alloc_next < MaxNode;
+    // alloc_next is 0-indexed but nodes are 0..MaxNode; skip node 0 as "null"
+    node_state = node_state | {alloc_next: 1};
+    alloc_next = alloc_next + 1;
+}
+
+// Thread t sets hazard pointer and starts accessing a node
+action Protect(t: 0..N, n: 0..MaxNode) {
+    require accessing[t] == 0;
+    require node_state[n] == 1;
+    hp = hp | {t: n};
+    accessing = accessing | {t: n};
+}
+
+// Thread t finishes accessing and clears hazard pointer
+action Release(t: 0..N) {
+    require accessing[t] != 0;
+    hp = hp | {t: 0};
+    accessing = accessing | {t: 0};
+}
+
+// Retire a node (mark for future reclamation)
+action Retire(n: 0..MaxNode) {
+    require node_state[n] == 1;
+    // Only retire if no thread is currently protecting it via HP
+    // (In reality, retirement can happen anytime; protection prevents reclamation)
+    node_state = node_state | {n: 2};
+}
+
+// Reclaim a retired node if no hazard pointer protects it
+action Reclaim(n: 0..MaxNode) {
+    require node_state[n] == 2;
+    // Safe to reclaim only if no thread has a hazard pointer to this node
+    require all t in 0..N: hp[t] != n;
+    node_state = node_state | {n: 3};
+}
+
+// Safety: no thread accesses a reclaimed node
+invariant NoUseAfterFree {
+    all t in 0..N:
+        accessing[t] != 0 implies node_state[accessing[t]] != 3
+}

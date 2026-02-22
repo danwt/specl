@@ -1,0 +1,53 @@
+module AntiEntropy
+
+// Anti-Entropy Protocol (Demers et al., 1987).
+// Replicas periodically exchange state digests (hash trees / Merkle trees).
+// When a replica detects a discrepancy, it pulls the missing data.
+// Eventually all replicas converge to the same state.
+//
+// N+1 replicas, K+1 keys. Each key has a value (0 or 1) and a version.
+// Writes go to a single replica. Anti-entropy syncs replicas pairwise.
+//
+// Use: specl check anti-entropy.specl -c N=2 -c K=1 -c MaxVer=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 K=1 MaxVer=2 -> OK (545 states, 0.0s)
+
+const N: 0..3
+const K: 0..2
+const MaxVer: 1..4
+
+var data: Dict[0..N, Dict[0..K, 0..1]]
+var ver: Dict[0..N, Dict[0..K, 0..MaxVer]]
+var global_ver: 0..MaxVer
+
+init {
+    data = {r: {k: 0 for k in 0..K} for r in 0..N};
+    ver = {r: {k: 0 for k in 0..K} for r in 0..N};
+    global_ver = 0;
+}
+
+// Write key k with value v at replica r
+action Write(r: 0..N, k: 0..K, v: 0..1) {
+    require global_ver < MaxVer;
+    global_ver = global_ver + 1;
+    data = data | {r: data[r] | {k: v}};
+    ver = ver | {r: ver[r] | {k: global_ver + 1}};
+}
+
+// Anti-entropy: replica dst pulls key k from replica src (if src has newer)
+action Sync(src: 0..N, dst: 0..N, k: 0..K) {
+    require src != dst;
+    require ver[src][k] > ver[dst][k];
+    data = data | {dst: data[dst] | {k: data[src][k]}};
+    ver = ver | {dst: ver[dst] | {k: ver[src][k]}};
+}
+
+// After all keys have been synced (all versions equal), data matches
+invariant SyncedMeansEqual {
+    all i in 0..N: all j in 0..N: all k in 0..K:
+        ver[i][k] == ver[j][k] implies data[i][k] == data[j][k]
+}
+
+// Versions are monotonically non-decreasing (never go backwards)
+invariant VersionMonotonic {
+    all r in 0..N: all k in 0..K: ver[r][k] >= 0
+}

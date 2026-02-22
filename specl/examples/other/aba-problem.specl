@@ -1,0 +1,89 @@
+module ABAProblem
+
+// ABA Problem in lock-free algorithms.
+// Demonstrates how a naive CAS can succeed incorrectly when
+// the target location changes from A to B and back to A.
+//
+// Thread 0 reads ptr, gets preempted. Thread 1 changes ptr
+// A->B->A. Thread 0's CAS succeeds despite intervening changes.
+//
+// With UseFix=0: ABA bug manifests (expected violation)
+// With UseFix=1: Version counter prevents ABA
+//
+// Use: specl check aba-problem.specl -c UseFix=0 --no-deadlock --no-auto --bfs
+// Verified: UseFix=0 -> VIOLATION (NoStaleRead), UseFix=1 -> OK (12 states)
+
+const UseFix: 0..1
+
+// Shared pointer with version counter
+var ptr: 0..2           // 0=A, 1=B, 2=C
+var ver: 0..4           // version (incremented on each write)
+
+// Thread 0: reader that does CAS
+// 0=idle, 1=read_ptr, 2=cas_done
+var t0_pc: 0..2
+var t0_snap_ptr: 0..2
+var t0_snap_ver: 0..4
+
+// Thread 1: writer that causes ABA
+// 0=idle, 1=changed_to_B, 2=changed_back_to_A
+var t1_pc: 0..2
+
+// Ghost variable: number of writes since T0's snapshot
+var writes_since_snap: 0..4
+
+init {
+    ptr = 0;
+    ver = 0;
+    t0_pc = 0;
+    t0_snap_ptr = 0;
+    t0_snap_ver = 0;
+    t1_pc = 0;
+    writes_since_snap = 0;
+}
+
+// Thread 0 reads the shared pointer
+action T0Read() {
+    require t0_pc == 0;
+    t0_pc = 1;
+    t0_snap_ptr = ptr;
+    t0_snap_ver = ver;
+    writes_since_snap = 0;
+}
+
+// Thread 0 performs CAS
+action T0CAS() {
+    require t0_pc == 1;
+    // Naive CAS: only compares ptr
+    // Fixed CAS: also compares version
+    require ptr == t0_snap_ptr;
+    require UseFix == 0 or ver == t0_snap_ver;
+    t0_pc = 2;
+    ptr = 2;
+    ver = ver + 1;
+}
+
+// Thread 1 changes ptr: A -> B
+action T1ChangeToB() {
+    require t1_pc == 0;
+    require ptr == 0;
+    t1_pc = 1;
+    ptr = 1;
+    ver = ver + 1;
+    writes_since_snap = writes_since_snap + 1;
+}
+
+// Thread 1 changes ptr: B -> A (completing ABA)
+action T1ChangeBackToA() {
+    require t1_pc == 1;
+    require ptr == 1;
+    t1_pc = 2;
+    ptr = 0;
+    ver = ver + 1;
+    writes_since_snap = writes_since_snap + 1;
+}
+
+// If T0's CAS succeeded, no writes should have happened since its snapshot
+invariant NoStaleRead {
+    t0_pc == 2 implies writes_since_snap == 0
+}

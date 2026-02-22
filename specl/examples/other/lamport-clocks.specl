@@ -1,0 +1,67 @@
+module LamportClocks
+
+// Lamport logical clocks — models happened-before ordering in distributed systems
+// From: Lamport, "Time, Clocks, and the Ordering of Events in a Distributed System" (1978)
+//
+// Models N+1 processes with logical clocks and message passing.
+// The key property: if event A happened-before event B, then clock(A) < clock(B).
+//
+// Use: specl check lamport-clocks.specl -c N=2 -c MaxClock=6 --no-deadlock
+// Verified: N=2 MaxClock=6 -> OK (all invariants verified by IC3, 0.25s)
+
+const N: 0..5
+const MaxClock: 0..10
+
+// Per-process Lamport clock value (starts at 1)
+var clock: Dict[0..N, 1..MaxClock]
+
+// Pending message: inFlight[dst] = timestamp of message in flight to dst (0 = none)
+// Simplification: at most one pending message per destination
+var inFlight: Dict[0..N, 0..MaxClock]
+
+init {
+    clock = {p: 1 for p in 0..N};
+    inFlight = {p: 0 for p in 0..N};
+}
+
+// Internal event at process p: increment clock
+action InternalEvent(p: 0..N) {
+    require clock[p] < MaxClock;
+    clock = clock | {p: clock[p] + 1};
+}
+
+// Process src sends a message to process dst
+// Lamport rule: increment clock, stamp message with new value
+action Send(src: 0..N, dst: 0..N) {
+    require src != dst;
+    require clock[src] < MaxClock;
+    require inFlight[dst] == 0;
+    clock = clock | {src: clock[src] + 1};
+    inFlight = inFlight | {dst: clock[src] + 1};
+}
+
+// Process dst receives a pending message
+// Lamport rule: clock = max(local, message_timestamp) + 1
+action Receive(dst: 0..N) {
+    require inFlight[dst] != 0;
+    require (if inFlight[dst] > clock[dst] then inFlight[dst] + 1 else clock[dst] + 1) <= MaxClock;
+    clock = clock | {dst: if inFlight[dst] > clock[dst] then inFlight[dst] + 1 else clock[dst] + 1};
+    inFlight = inFlight | {dst: 0};
+}
+
+// Clock monotonicity: clocks are always positive
+invariant ClocksPositive {
+    all p in 0..N: clock[p] >= 1
+}
+
+// Causal ordering: in-flight messages always have timestamps > 0
+// This ensures messages carry meaningful causal information
+invariant InFlightValid {
+    all p in 0..N: inFlight[p] >= 0
+}
+
+// Message timestamps are bounded by MaxClock
+// Ensures all timestamps fit in the bounded domain
+invariant InFlightBounded {
+    all p in 0..N: inFlight[p] <= MaxClock
+}

@@ -1,0 +1,76 @@
+module CLHLock
+
+// CLH Lock (Craig-Landin-Hagersten, 1993).
+// Queue-based FIFO mutual exclusion lock. Each thread spins
+// on its predecessor's node until the predecessor releases.
+// FIFO ordering guaranteed by queue structure.
+//
+// Modeled abstractly: the queue is represented by position
+// in a logical queue, and each thread spins until the thread
+// ahead of it releases.
+//
+// Use: specl check clh-lock.specl -c N=3 --no-deadlock --no-auto --bfs
+// Verified: N=3 -> OK (33.5K states, 0.0s)
+
+const N: 0..4
+
+// Per-thread state: 0=idle, 1=enqueued, 2=in_cs
+var pc: Dict[0..N, 0..2]
+
+// Queue position assigned to each thread (-1 encoded as N+1 for idle)
+var queue_pos: Dict[0..N, 0..10]
+
+// Next queue position to assign
+var next_pos: 0..10
+
+// Which queue position is currently released (threads at pos <= released can enter)
+var released: 0..10
+
+init {
+    pc = {t: 0 for t in 0..N};
+    queue_pos = {t: 0 for t in 0..N};
+    next_pos = 0;
+    released = 0;
+}
+
+// Thread t enqueues (takes a queue position)
+action Enqueue(t: 0..N) {
+    require pc[t] == 0;
+    require next_pos < 10;
+    queue_pos = queue_pos | {t: next_pos + 1};
+    next_pos = next_pos + 1;
+    pc = pc | {t: 1};
+}
+
+// Thread t enters CS (predecessor released or first in queue)
+action Enter(t: 0..N) {
+    require pc[t] == 1;
+    require queue_pos[t] == released + 1;
+    pc = pc | {t: 2};
+}
+
+// Thread t exits CS and releases (successor can now enter)
+action Exit(t: 0..N) {
+    require pc[t] == 2;
+    released = released + 1;
+    pc = pc | {t: 0};
+}
+
+// Mutual exclusion
+invariant MutualExclusion {
+    all i in 0..N: all j in 0..N:
+        (i != j) implies not (pc[i] == 2 and pc[j] == 2)
+}
+
+// Queue consistency: released <= next_pos
+invariant QueueConsistency {
+    released <= next_pos
+}
+
+// FIFO: if thread i enqueued before thread j, i enters CS first
+// (no thread in CS while a lower-position thread is still waiting)
+invariant FIFOOrder {
+    all i in 0..N: all j in 0..N:
+        (pc[i] == 1 and pc[j] == 2 and queue_pos[i] < queue_pos[j])
+        implies false
+}

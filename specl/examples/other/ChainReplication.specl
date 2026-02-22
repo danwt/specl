@@ -1,0 +1,72 @@
+// ChainReplication - simplified chain replication protocol
+// Use: No constants needed
+// Based on demo-chain-replication TLA+ spec
+//
+// A simple 2-node chain where:
+// - Client sends to HEAD
+// - HEAD forwards to TAIL
+// - TAIL responds with value
+//
+// Shows: sequences, head(), tail(), len() operations
+
+module ChainReplication
+
+// Channel is a sequence of messages (values 0-1)
+var headToTail: Seq[0..1]
+var tailToClient: Seq[0..1]
+
+// Values stored at each node: 0=empty, 1=target
+var headValue: 0..1
+var tailValue: 0..1
+var clientValue: 0..1
+
+init {
+    headToTail = [] and
+    tailToClient = [] and
+    headValue = 0 and
+    tailValue = 0 and
+    clientValue = 0;
+}
+
+// Client sends write request to HEAD (sets value to 1)
+action ClientWrite() {
+    require clientValue == 0;
+    require headValue == 0;
+    headValue = 1;
+}
+
+// HEAD forwards value to TAIL
+action HeadForward() {
+    require headValue == 1;
+    require len(headToTail) < 2;
+    headToTail = headToTail ++ [headValue];
+}
+
+// TAIL receives from HEAD
+action TailReceive() {
+    require len(headToTail) > 0;
+    tailValue = head(headToTail) and headToTail = tail(headToTail);
+}
+
+// TAIL sends response to client
+action TailRespond() {
+    require tailValue == 1;
+    require len(tailToClient) < 2;
+    tailToClient = tailToClient ++ [tailValue];
+}
+
+// Client receives response
+action ClientReceive() {
+    require len(tailToClient) > 0;
+    clientValue = head(tailToClient) and tailToClient = tail(tailToClient);
+}
+
+// Safety: if client received a value, it must be 1 (the replicated value)
+invariant ClientCorrect {
+    clientValue != 0 implies clientValue == 1
+}
+
+// Safety: tail value is either 0 or 1
+invariant TailCorrect {
+    tailValue == 0 or tailValue == 1
+}

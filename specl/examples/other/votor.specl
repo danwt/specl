@@ -1,0 +1,152 @@
+module Votor
+
+// ============================================================================
+// Votor: Solana Alpenglow Dual-Path Consensus Protocol
+// ============================================================================
+// Models the core safety property of Votor, the voting protocol replacing
+// TowerBFT in Solana's Alpenglow upgrade (SIMD-0326).
+//
+// Reference: Kniep, Sliwinski, Wattenhofer. "Alpenglow" (ETH Zurich, 2025)
+// Whitepaper: github.com/rogerANZA/Alpenglow-White-Paper/blob/main/Alpenglow-v1.1.pdf
+// Formal basis: Martin & Alvisi, "Fast Byzantine Consensus" (5f+1 bound)
+//
+// Votor uses two concurrent finalization paths:
+//   Fast path: >= 80% stake NotarVotes in round 1 → single-round finality (~100ms)
+//   Slow path: >= 60% stake FinalizeVotes in round 2 → two-round finality (~150ms)
+//
+// The "20+20" resilience model:
+//   - 20% Byzantine fault tolerance (formally proven)
+//   - 20% additional crash fault tolerance (40% total)
+//   - Tradeoff: lower BFT than the classical 33%, but faster finality
+//
+// The 60% threshold is below the 2/3 BFT boundary. Without equivocation
+// (crash-fault model), since 60% > 50%, at most one value reaches the
+// threshold — Agreement holds. With equivocation (Byzantine model), a
+// validator can vote for A then switch to B, letting both reach 60%.
+//
+// Demonstrate the tradeoff:
+//   Safe:    specl check votor.specl -c N=2 -c F=0 -c V=1 -c FastThresh=3 -c SlowThresh=2 --no-deadlock
+//   Broken:  specl check votor.specl -c N=2 -c F=1 -c V=1 -c FastThresh=3 -c SlowThresh=2 --no-deadlock
+//
+// Larger (5 validators):
+//   Safe:    specl check votor.specl -c N=4 -c F=0 -c V=1 -c FastThresh=4 -c SlowThresh=3 --no-deadlock
+//   Broken:  specl check votor.specl -c N=4 -c F=1 -c V=1 -c FastThresh=4 -c SlowThresh=3 --no-deadlock
+// ============================================================================
+
+const N: Int           // 0..N gives N+1 validators
+const F: Int           // max Byzantine (equivocating) validators
+const V: Int           // 0..V gives V+1 possible block values
+const FastThresh: Int  // fast path threshold (~80% of N+1)
+const SlowThresh: Int  // slow path threshold (~60% of N+1)
+
+// Round 1 "NotarVote": -1=not yet voted, 0..V=notarized block value
+var r1vote: Dict[Int, Int]
+// Round 2 "FinalizeVote": -1=not yet voted, 0..V=finalize-confirmed value
+var r2vote: Dict[Int, Int]
+// Finalized value: -1=undecided, 0..V=finalized block
+var decision: Dict[Int, Int]
+// Byzantine status (can equivocate — cast conflicting NotarVotes)
+var faulty: Dict[Int, Bool]
+
+func NotarCount(v) { len({i in 0..N if r1vote[i] == v}) }
+func FinalizeCount(v) { len({i in 0..N if r2vote[i] == v}) }
+
+init {
+    r1vote = {i: -1 for i in 0..N};
+    r2vote = {i: -1 for i in 0..N};
+    decision = {i: -1 for i in 0..N};
+    faulty = {i: false for i in 0..N};
+}
+
+// ============================================================================
+// Fault injection
+// ============================================================================
+
+// Mark a validator as Byzantine (at most F)
+action GoFaulty(i: 0..N) {
+    require not faulty[i];
+    require len({j in 0..N if faulty[j]}) < F;
+    faulty = faulty | {i: true};
+}
+
+// ============================================================================
+// Honest validator actions (vote once, no equivocation)
+// ============================================================================
+
+// Honest NotarVote: validator receives leader's block and notarizes it.
+// Voting for any value models a Byzantine leader sending different blocks
+// to different validators (equivocating leader).
+action HonestNotarVote(i: 0..N, v: 0..V) {
+    require not faulty[i];
+    require r1vote[i] == -1;
+    r1vote = r1vote | {i: v};
+}
+
+// Honest FinalizeVote: confirms their round-1 notarization
+action HonestFinalizeVote(i: 0..N) {
+    require not faulty[i];
+    require r1vote[i] != -1;
+    require r2vote[i] == -1;
+    r2vote = r2vote | {i: r1vote[i]};
+}
+
+// ============================================================================
+// Byzantine validator actions (equivocation — can change votes)
+// ============================================================================
+
+// Byzantine NotarVote (can overwrite — equivocation is slashable in practice)
+action ByzantineNotarVote(i: 0..N, v: 0..V) {
+    require faulty[i];
+    require r1vote[i] != v;
+    r1vote = r1vote | {i: v};
+}
+
+// Byzantine FinalizeVote (can overwrite — equivocation)
+action ByzantineFinalizeVote(i: 0..N, v: 0..V) {
+    require faulty[i];
+    require r2vote[i] != v;
+    r2vote = r2vote | {i: v};
+}
+
+// ============================================================================
+// Finalization (honest validators only)
+// ============================================================================
+
+// Fast-Finalization Certificate: >= 80% NotarVotes → single-round finality
+action FastFinalize(i: 0..N, v: 0..V) {
+    require not faulty[i];
+    require decision[i] == -1;
+    require NotarCount(v) >= FastThresh;
+    decision = decision | {i: v};
+}
+
+// Finalization Certificate: >= 60% FinalizeVotes → two-round finality
+action SlowFinalize(i: 0..N, v: 0..V) {
+    require not faulty[i];
+    require decision[i] == -1;
+    require FinalizeCount(v) >= SlowThresh;
+    decision = decision | {i: v};
+}
+
+// ============================================================================
+// Safety invariants
+// ============================================================================
+
+// Agreement: no two honest validators finalize different values
+invariant Agreement {
+    all i in 0..N: all j in 0..N:
+        (not faulty[i] and not faulty[j]
+         and decision[i] != -1 and decision[j] != -1)
+        implies decision[i] == decision[j]
+}
+
+// Validity: finalized values are in valid range
+invariant Validity {
+    all i in 0..N:
+        decision[i] == -1 or (decision[i] >= 0 and decision[i] <= V)
+}
+
+// Byzantine bound respected
+invariant FaultyBound {
+    len({i in 0..N if faulty[i]}) <= F
+}

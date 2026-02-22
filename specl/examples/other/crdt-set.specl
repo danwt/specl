@@ -1,0 +1,59 @@
+module CRDTSet
+
+// Two-Phase Set CRDT (Shapiro et al., 2011).
+// Elements can be added and removed. Once removed, an element
+// cannot be re-added (tombstone set). Simpler than OR-Set but
+// more restrictive.
+//
+// N+1 replicas. Each tracks an add-set and remove-set.
+// An element is in the set iff it's in add-set but not remove-set.
+// Merge: union of add-sets, union of remove-sets.
+//
+// Use: specl check crdt-set.specl -c N=2 -c K=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 K=2 -> OK (19.7K states)
+
+const N: 0..3
+const K: 1..3
+
+// Per-replica: add and remove flags per element
+var add_set: Dict[0..N, Dict[0..K, Bool]]
+var rem_set: Dict[0..N, Dict[0..K, Bool]]
+
+init {
+    add_set = {r: {e: false for e in 0..K} for r in 0..N};
+    rem_set = {r: {e: false for e in 0..K} for r in 0..N};
+}
+
+// Add element e at replica r
+action Add(r: 0..N, e: 0..K) {
+    require add_set[r][e] == false;
+    require rem_set[r][e] == false;
+    add_set = add_set | {r: add_set[r] | {e: true}};
+}
+
+// Remove element e at replica r (must have been added)
+action Remove(r: 0..N, e: 0..K) {
+    require add_set[r][e] == true;
+    require rem_set[r][e] == false;
+    rem_set = rem_set | {r: rem_set[r] | {e: true}};
+}
+
+// Merge: replica dst merges from replica src
+action Merge(src: 0..N, dst: 0..N) {
+    require src != dst;
+    add_set = add_set | {dst: {e:
+        add_set[src][e] or add_set[dst][e]
+    for e in 0..K}};
+    rem_set = rem_set | {dst: {e:
+        rem_set[src][e] or rem_set[dst][e]
+    for e in 0..K}}
+}
+
+// After full merge, all replicas agree on set membership
+invariant ConvergenceAfterSync {
+    (all i in 0..N: all j in 0..N: all e in 0..K:
+        add_set[i][e] == add_set[j][e] and rem_set[i][e] == rem_set[j][e])
+    implies
+    (all i in 0..N: all j in 0..N: all e in 0..K:
+        (add_set[i][e] and not rem_set[i][e]) == (add_set[j][e] and not rem_set[j][e]))
+}

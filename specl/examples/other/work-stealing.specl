@@ -1,0 +1,121 @@
+module WorkStealing
+
+// Work-Stealing Deque (Chase-Lev, 2005).
+// One owner thread pushes and pops from the bottom.
+// One thief steals from the top using CAS.
+// Concurrent access: owner push/pop from bottom, thief steals from top.
+//
+// Modeled as a counter-based deque (top and bottom indices).
+// The owner's pop and the thief's steal can race when deque has one item.
+//
+// Use: specl check work-stealing.specl -c MaxSize=2 --no-deadlock --no-auto --bfs
+// Verified: MaxSize=2 -> OK (595K states, 4.4s)
+
+const MaxSize: 2..4
+
+// Deque bounds: top (steal end) and bottom (push/pop end)
+var top: 0..MaxSize
+var bot: 0..MaxSize
+
+// Owner state: 0=idle, 1=popping(read top)
+var owner_pc: 0..1
+var owner_snap: 0..MaxSize  // snapshot of top for pop
+
+// Thief state: 0=idle, 1=stealing(read bottom)
+var thief_pc: 0..1
+var thief_snap: 0..MaxSize  // snapshot of top for steal
+
+// Counts for verification
+var total_pushed: 0..MaxSize
+var total_taken: 0..MaxSize
+
+init {
+    top = 0;
+    bot = 0;
+    owner_pc = 0;
+    owner_snap = 0;
+    thief_pc = 0;
+    thief_snap = 0;
+    total_pushed = 0;
+    total_taken = 0;
+}
+
+// Owner pushes an item (always succeeds, increments bottom)
+action Push() {
+    require owner_pc == 0;
+    require bot < MaxSize;
+    bot = bot + 1;
+    total_pushed = total_pushed + 1;
+}
+
+// Owner begins pop: decrement bottom, read top
+action BeginPop() {
+    require owner_pc == 0;
+    require bot > top;
+    owner_pc = 1;
+    bot = bot - 1;
+    owner_snap = top;
+}
+
+// Owner completes pop: bottom > top, no race
+action CompletePop() {
+    require owner_pc == 1;
+    require bot > owner_snap;
+    owner_pc = 0;
+    total_taken = total_taken + 1;
+}
+
+// Owner pop with race: bot == top (one item case), CAS on top
+action PopCAS() {
+    require owner_pc == 1;
+    require bot == owner_snap;
+    require top == owner_snap;
+    top = top + 1;
+    bot = top + 1;
+    owner_pc = 0;
+    total_taken = total_taken + 1;
+}
+
+// Owner pop fails: thief already took the last item
+action PopFail() {
+    require owner_pc == 1;
+    require bot == owner_snap;
+    require top != owner_snap;
+    bot = top;
+    owner_pc = 0;
+}
+
+// Thief begins steal: read top
+action BeginSteal() {
+    require thief_pc == 0;
+    require bot > top;
+    thief_pc = 1;
+    thief_snap = top;
+}
+
+// Thief completes steal: CAS top succeeds
+action CompleteSteal() {
+    require thief_pc == 1;
+    require top == thief_snap;
+    require bot > thief_snap;
+    top = top + 1;
+    thief_pc = 0;
+    total_taken = total_taken + 1;
+}
+
+// Thief steal fails: someone else moved top
+action StealFail() {
+    require thief_pc == 1;
+    require top != thief_snap;
+    thief_pc = 0;
+}
+
+// Deque bounds are consistent
+invariant BoundsValid {
+    top <= bot
+}
+
+// No more items taken than pushed
+invariant ConservationCheck {
+    total_taken <= total_pushed
+}

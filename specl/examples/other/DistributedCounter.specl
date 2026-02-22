@@ -1,0 +1,24 @@
+// Distributed Counter with Replication
+// Multiple replicas that sync incrementally
+// No constants needed
+
+module DistributedCounter
+// Use: No constants needed
+
+// Counter value at each replica (2 replicas: 0 and 1)
+var counter: Dict[0..1, 0..5]
+
+init {
+    counter = {r: 0 for r in 0..1};
+}
+
+// Local increment at a replica
+action Increment(r: 0..1) {
+    require counter[r] < 5;
+    counter = counter | { r: counter[r] + 1 };
+}
+
+// Safety: all counters are within bounds
+invariant CountersBounded {
+    all r in 0..1: counter[r] >= 0 and counter[r] <= 5
+}

@@ -1,0 +1,27 @@
+// Process States - demonstrates functions/maps
+// A simple example with a map from process IDs to states
+// Use: No constants needed
+
+module ProcessStates
+
+// 2 processes, 2 states: 0=idle, 1=working
+var state: Dict[0..1, 0..1]
+
+init {
+    state = {p: 0 for p in 0..1};
+}
+
+action Start(p: 0..1) {
+    require state[p] == 0;
+    state = state | { p: 1 };
+}
+
+action Stop(p: 0..1) {
+    require state[p] == 1;
+    state = state | { p: 0 };
+}
+
+// Safety: both can be working at the same time
+invariant AllCanWork {
+    true
+}

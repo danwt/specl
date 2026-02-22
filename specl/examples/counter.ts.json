@@ -1,0 +1,46 @@
+{
+  "name": "Counter",
+  "variables": [
+    { "name": "count", "ty": { "kind": "Nat" } }
+  ],
+  "constants": [
+    { "name": "MAX", "ty": { "kind": "Nat" }, "default_value": 5 }
+  ],
+  "init": [
+    { "var_idx": 0, "value": { "kind": "Int", "value": 0 } }
+  ],
+  "actions": [
+    {
+      "name": "Inc",
+      "params": [],
+      "guard": {
+        "kind": "Binary",
+        "op": "Lt",
+        "left": { "kind": "Var", "index": 0 },
+        "right": { "kind": "Const", "index": 0 }
+      },
+      "assignments": [
+        {
+          "var_idx": 0,
+          "value": {
+            "kind": "Binary",
+            "op": "Add",
+            "left": { "kind": "Var", "index": 0 },
+            "right": { "kind": "Int", "value": 1 }
+          }
+        }
+      ]
+    }
+  ],
+  "invariants": [
+    {
+      "name": "Bounded",
+      "body": {
+        "kind": "Binary",
+        "op": "Le",
+        "left": { "kind": "Var", "index": 0 },
+        "right": { "kind": "Const", "index": 0 }
+      }
+    }
+  ]
+}

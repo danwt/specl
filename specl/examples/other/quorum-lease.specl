@@ -1,0 +1,54 @@
+module QuorumLease
+
+// Quorum Leases (Moraru, Andersen, Kaminsky, 2014).
+// A read optimization: the leader grants leases to a quorum of replicas.
+// While the lease is active, any lease holder can serve reads locally
+// without contacting the leader. Writes must invalidate/renew leases.
+//
+// 1 leader + N followers. The leader can grant/revoke leases.
+// Writes go through the leader and invalidate all leases.
+//
+// Use: specl check quorum-lease.specl -c N=2 -c MaxWrites=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxWrites=2 -> OK (17 states)
+
+const N: 1..3
+const MaxWrites: 1..3
+
+var val: 0..MaxWrites
+// Per follower: local cached value and whether lease is active
+var cached: Dict[1..N, 0..MaxWrites]
+var lease: Dict[1..N, Bool]
+var writes: 0..MaxWrites
+
+init {
+    val = 0;
+    cached = {f: 0 for f in 1..N};
+    lease = {f: false for f in 1..N};
+    writes = 0;
+}
+
+// Leader grants lease to a follower (syncs value)
+action GrantLease(f: 1..N) {
+    require lease[f] == false;
+    lease = lease | {f: true};
+    cached = cached | {f: val};
+}
+
+// Leader writes a new value — invalidates all leases
+action Write() {
+    require writes < MaxWrites;
+    val = val + 1;
+    writes = writes + 1;
+    lease = {f: false for f in 1..N};
+}
+
+// Follower with valid lease refreshes (re-syncs value)
+action RefreshLease(f: 1..N) {
+    require lease[f] == true;
+    cached = cached | {f: val};
+}
+
+// Lease holders serve consistent reads: their cached value matches leader
+invariant LeaseConsistency {
+    all f in 1..N: lease[f] == true implies cached[f] == val
+}

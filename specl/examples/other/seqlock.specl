@@ -1,0 +1,124 @@
+module Seqlock
+
+// Sequence lock (seqlock) as used in Linux kernel.
+// One writer, N+1 readers. The writer increments a sequence counter
+// before and after modifying shared data (odd = write in progress).
+// Readers check the counter before and after reading: if it changed
+// or is odd, retry. This guarantees readers never observe a torn write.
+//
+// The writer updates two fields (data_a, data_b) to the same value.
+// A torn read would see different values for the two fields.
+//
+// Use: specl check seqlock.specl -c N=0 --no-deadlock --no-auto --bfs
+// Verified: N=0 -> OK (3.0K states, 0.0s)
+// Verified: N=1 -> OK (482.3K states, 0.5s)
+
+const N: 0..3
+
+// Sequence counter (even = stable, odd = write in progress)
+var seq: 0..4
+
+// Shared data: two fields written atomically (always set to same value)
+var data_a: 0..2
+var data_b: 0..2
+
+// Writer state: 0=idle, 1=wrote_a (seq odd, data_b stale), 2=wrote_b (seq still odd)
+var writer_pc: 0..2
+
+// Reader state: 0=idle, 1=sampled_seq, 2=read_a, 3=read_b, 4=sampled_seq_after
+var reader_pc: Dict[0..N, 0..4]
+
+// Reader's snapshot
+var reader_seq_before: Dict[0..N, 0..4]
+var reader_seq_after: Dict[0..N, 0..4]
+var reader_a: Dict[0..N, 0..2]
+var reader_b: Dict[0..N, 0..2]
+
+init {
+    seq = 0;
+    data_a = 0;
+    data_b = 0;
+    writer_pc = 0;
+    reader_pc = {r: 0 for r in 0..N};
+    reader_seq_before = {r: 0 for r in 0..N};
+    reader_seq_after = {r: 0 for r in 0..N};
+    reader_a = {r: 0 for r in 0..N};
+    reader_b = {r: 0 for r in 0..N};
+}
+
+// Writer begins: increment seq (odd), write first field
+action WriterBegin(v: 0..2) {
+    require writer_pc == 0;
+    require seq < 3;
+    seq = seq + 1;
+    data_a = v;
+    writer_pc = 1;
+}
+
+// Writer writes second field (data now consistent but seq still odd)
+action WriterWriteB() {
+    require writer_pc == 1;
+    data_b = data_a;
+    writer_pc = 2;
+}
+
+// Writer ends: increment seq (even again)
+action WriterEnd() {
+    require writer_pc == 2;
+    seq = seq + 1;
+    writer_pc = 0;
+}
+
+// Reader samples seq
+action ReaderSampleSeq(r: 0..N) {
+    require reader_pc[r] == 0;
+    reader_seq_before = reader_seq_before | {r: seq};
+    reader_pc = reader_pc | {r: 1};
+}
+
+// Reader reads field a
+action ReaderReadA(r: 0..N) {
+    require reader_pc[r] == 1;
+    reader_a = reader_a | {r: data_a};
+    reader_pc = reader_pc | {r: 2};
+}
+
+// Reader reads field b
+action ReaderReadB(r: 0..N) {
+    require reader_pc[r] == 2;
+    reader_b = reader_b | {r: data_b};
+    reader_pc = reader_pc | {r: 3};
+}
+
+// Reader samples seq again
+action ReaderSampleSeqAfter(r: 0..N) {
+    require reader_pc[r] == 3;
+    reader_seq_after = reader_seq_after | {r: seq};
+    reader_pc = reader_pc | {r: 4};
+}
+
+// Reader validates: seq unchanged and even -> success, go idle
+action ReaderValidate(r: 0..N) {
+    require reader_pc[r] == 4;
+    require reader_seq_before[r] == reader_seq_after[r];
+    require reader_seq_before[r] % 2 == 0;
+    reader_pc = reader_pc | {r: 0};
+}
+
+// Reader retries: seq changed or was odd
+action ReaderRetry(r: 0..N) {
+    require reader_pc[r] == 4;
+    require reader_seq_before[r] != reader_seq_after[r]
+        or reader_seq_before[r] % 2 == 1
+    reader_pc = reader_pc | {r: 0};
+}
+
+// No torn reads: if validation succeeds, both fields must match
+// (writer always sets both to the same value)
+invariant NoTornRead {
+    all r in 0..N:
+        (reader_pc[r] == 4
+         and reader_seq_before[r] == reader_seq_after[r]
+         and reader_seq_before[r] % 2 == 0)
+        implies reader_a[r] == reader_b[r]
+}

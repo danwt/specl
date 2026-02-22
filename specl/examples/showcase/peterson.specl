@@ -1,0 +1,69 @@
+module Peterson
+
+// Peterson's mutual exclusion algorithm for 2 processes.
+// Each process signals intent via flag[i]=true, then yields via turn=other.
+// A process enters the critical section only if the other's flag is false
+// or it's this process's turn.
+//
+// The key insight: setting turn=other AFTER flag=true ensures that
+// if both processes are interested, one will see turn pointing to itself.
+//
+// Use: specl check peterson.specl --no-deadlock
+// Verified: 17 states, 0.0s
+
+// Process locations: 0=idle, 1=set_flag, 2=set_turn, 3=wait, 4=critical, 5=exit
+var pc: Dict[0..1, 0..5]
+var flag: Dict[0..1, Bool]
+var turn: 0..1
+
+init {
+    pc = {p: 0 for p in 0..1};
+    flag = {p: false for p in 0..1};
+    turn = 0;
+}
+
+// Process wants to enter critical section: set flag
+action SetFlag(p: 0..1) {
+    require pc[p] == 0;
+    flag = flag | {p: true};
+    pc = pc | {p: 1};
+}
+
+// Yield priority to other process: set turn = 1-p
+action SetTurn(p: 0..1) {
+    require pc[p] == 1;
+    turn = 1 - p;
+    pc = pc | {p: 2};
+}
+
+// Wait until other process is not interested or it's our turn
+action EnterWait(p: 0..1) {
+    require pc[p] == 2;
+    pc = pc | {p: 3};
+}
+
+// Check if we can enter critical section
+action EnterCritical(p: 0..1) {
+    require pc[p] == 3;
+    require flag[1 - p] == false or turn == p;
+    pc = pc | {p: 4};
+}
+
+// Stay waiting (other process has priority)
+action StayWaiting(p: 0..1) {
+    require pc[p] == 3;
+    require flag[1 - p] == true and turn != p;
+    pc = pc | {p: 3};
+}
+
+// Exit critical section: clear flag
+action ExitCritical(p: 0..1) {
+    require pc[p] == 4;
+    flag = flag | {p: false};
+    pc = pc | {p: 0};
+}
+
+// Mutual exclusion: both processes never in critical section
+invariant MutualExclusion {
+    not (pc[0] == 4 and pc[1] == 4)
+}

@@ -1,0 +1,213 @@
+// =============================================================================
+// Barbershop Problem (Sleeping Barber)
+// =============================================================================
+//
+// Source: "The Little Book of Semaphores" (2nd Edition, v2.2.1)
+//         by Allen B. Downey
+//         Section 5.2: The Barbershop Problem (pages 121-130)
+//         https://greenteapress.com/semaphores/LittleBookOfSemaphores.pdf
+//
+// =============================================================================
+// PUZZLE DESCRIPTION
+// =============================================================================
+//
+// A barbershop consists of a waiting room with n chairs, and the barber room
+// containing the barber chair. If there are no customers to be served, the
+// barber goes to sleep. If a customer enters the barbershop and all chairs are
+// occupied, then the customer leaves the shop. If the barber is busy, but
+// chairs are available, then the customer sits in one of the free chairs. If
+// the barber is asleep, the customer wakes up the barber.
+//
+// Write a program to coordinate the barber and the customers.
+//
+// Constraints:
+// • Customers invoke getHairCut()
+// • The barber invokes cutHair()
+// • Customers cannot invoke getHairCut() until the barber invokes cutHair()
+// • The barber cannot invoke cutHair() until a customer invokes getHairCut()
+// • Multiple customers can be waiting (up to n chairs)
+// • If all chairs are full, new customers leave immediately
+//
+// =============================================================================
+// SOLUTION
+// =============================================================================
+//
+// Variables:
+//   customers = 0                # Number of waiting customers
+//   mutex = Semaphore(1)         # Protects 'customers' counter
+//   customer = Semaphore(0)      # Signals customer arrival to barber
+//   barber = Semaphore(0)        # Signals barber ready to customer
+//   n = 4                        # Number of waiting chairs
+//
+// Barber:
+//   while True:
+//       customer.wait()          # Wait for customer
+//       mutex.wait()
+//       customers -= 1
+//       barber.signal()          # Signal ready for customer
+//       mutex.signal()
+//       cutHair()
+//
+// Customer:
+//   mutex.wait()
+//   if customers < n:
+//       customers += 1
+//       customer.signal()        # Wake barber
+//       mutex.signal()
+//       barber.wait()            # Wait for barber
+//       getHairCut()
+//   else:
+//       mutex.signal()
+//       balk()                   # Leave (shop is full)
+//
+// Key insight: The 'customers' counter tracks waiting customers (not including
+// the one currently getting a haircut). If customers >= n (all chairs full),
+// new customers leave. The barber sleeps on the 'customer' semaphore until a
+// customer arrives.
+//
+// =============================================================================
+// SPECL MODEL
+// =============================================================================
+
+module Barbershop
+// Use: -c NUM_CUSTOMERS=2 -c NUM_CHAIRS=2
+
+const NUM_CUSTOMERS: 0..10
+const NUM_CHAIRS: 0..5
+
+// Barber states: 0=sleeping, 1=woken, 2=acquiring_mutex, 3=signaling, 4=cutting
+var barber: 0..4
+
+// Customer states: 0=outside, 1=checking, 2=sitting, 3=waiting_barber, 4=getting_cut, 5=balked
+var customers_state: Dict[Int, 0..5]
+
+// Counters
+var customers_waiting: 0..10
+
+// Semaphores
+var customer_sem: 0..10
+var barber_sem: 0..10
+var mutex: 0..1
+
+init {
+    barber = 0 and
+    customers_state = {i: 0 for i in 0..NUM_CUSTOMERS} and
+    customers_waiting = 0 and
+    customer_sem = 0 and
+    barber_sem = 0 and
+    mutex = 1;
+}
+
+// === Barber actions ===
+
+action Barber_WaitCustomer() {
+    require barber == 0;
+    require customer_sem > 0;
+    customer_sem = customer_sem - 1 and
+    barber = 1;
+}
+
+action Barber_AcquireMutex() {
+    require barber == 1;
+    require mutex > 0;
+    mutex = mutex - 1 and
+    barber = 2;
+}
+
+action Barber_DecrementCounter() {
+    require barber == 2;
+    require customers_waiting > 0;
+    customers_waiting = customers_waiting - 1 and
+    barber = 3;
+}
+
+action Barber_SignalReady() {
+    require barber == 3;
+    barber_sem = barber_sem + 1 and
+    mutex = mutex + 1 and
+    barber = 4;
+}
+
+action Barber_CutHair() {
+    require barber == 4;
+    barber = 0;
+}
+
+// === Customer actions ===
+
+action Customer_Enter(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 0;
+    require mutex > 0;
+    mutex = mutex - 1 and
+    customers_state = customers_state | {i: 1};
+}
+
+action Customer_Sit(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 1;
+    require customers_waiting < NUM_CHAIRS;
+    customers_waiting = customers_waiting + 1 and
+    customer_sem = customer_sem + 1 and
+    mutex = mutex + 1 and
+    customers_state = customers_state | {i: 2};
+}
+
+action Customer_WaitBarber(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 2;
+    require barber_sem > 0;
+    barber_sem = barber_sem - 1 and
+    customers_state = customers_state | {i: 3};
+}
+
+action Customer_GetHaircut(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 3;
+    customers_state = customers_state | {i: 4};
+}
+
+action Customer_Leave(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 4;
+    customers_state = customers_state | {i: 0};
+}
+
+action Customer_Balk(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 1;
+    require customers_waiting >= NUM_CHAIRS;
+    mutex = mutex + 1 and
+    customers_state = customers_state | {i: 5};
+}
+
+action Customer_LeaveBalk(i: 0..NUM_CUSTOMERS) {
+    require customers_state[i] == 5;
+    customers_state = customers_state | {i: 0};
+}
+
+// === Safety invariants ===
+
+invariant WaitingBound {
+    // Waiting customers never exceed chairs
+    customers_waiting <= NUM_CHAIRS
+}
+
+// =============================================================================
+// VERIFICATION
+// =============================================================================
+//
+// Run: specl check barbershop.specl -c NUM_CUSTOMERS=3 -c NUM_CHAIRS=2 --no-deadlock
+//      (3 customers, 2 waiting chairs)
+//
+// Run: specl check barbershop.specl -c NUM_CUSTOMERS=5 -c NUM_CHAIRS=3 --no-deadlock
+//      (5 customers, 3 waiting chairs - larger state space)
+//
+// Expected: OK with no violations
+//
+// The model verifies that:
+// 1. At most one customer gets a haircut at a time (OneCutAtATime)
+// 2. Waiting customers never exceed the number of chairs (WaitingBound)
+// 3. The barber sleeps when no customers are present
+// 4. Customers balk (leave) when all chairs are occupied
+// 5. Proper coordination between barber and customer via semaphores
+//
+// Key insight: This is a bounded buffer problem with a twist - the "buffer"
+// (waiting chairs) has limited capacity, and producers (customers) can choose
+// to leave instead of blocking when full. The barber represents a single
+// consumer that processes one customer at a time.
+// =============================================================================

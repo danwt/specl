@@ -1,0 +1,92 @@
+module PrimaryBackup
+
+// Primary-Backup Replication (Budhiraja et al., 1993).
+// A primary processes all writes and forwards to backup(s).
+// On primary failure, a backup is promoted. The new primary
+// syncs its state to remaining backups before accepting writes.
+//
+// N+1 nodes. Node 0 starts as primary.
+//
+// Use: specl check primary-backup.specl -c N=2 -c MaxVal=3 --no-deadlock --no-auto --bfs
+// Verified: N=2 MaxVal=3 -> OK (50 states)
+
+const N: 1..3
+const MaxVal: 1..4
+
+var val: Dict[0..N, 0..MaxVal]
+// 0=primary, 1=backup, 2=dead
+var role: Dict[0..N, 0..2]
+var pending: 0..N
+var primary_val: 0..MaxVal
+// After failover, new primary must sync before writes
+var synced: Bool
+
+init {
+    val = {n: 0 for n in 0..N};
+    role = {n: if n == 0 then 0 else 1 for n in 0..N};
+    pending = 0;
+    primary_val = 0;
+    synced = true;
+}
+
+// Primary p writes a value (only when synced)
+action Write(p: 0..N, v: 1..MaxVal) {
+    require role[p] == 0;
+    require synced == true;
+    require pending == 0;
+    val = val | {p: v};
+    primary_val = v;
+    pending = len({b in 0..N if role[b] == 1});
+}
+
+// Backup receives the write
+action BackupAck(b: 0..N) {
+    require role[b] == 1;
+    require pending > 0;
+    require val[b] != primary_val;
+    val = val | {b: primary_val};
+    pending = pending - 1;
+}
+
+// Primary p fails
+action PrimaryFail(p: 0..N) {
+    require role[p] == 0;
+    require pending == 0;
+    role = role | {p: 2};
+    synced = false;
+}
+
+// Promote lowest-id live backup to primary
+action Promote(b: 0..N) {
+    require not (any p in 0..N: role[p] == 0);
+    require role[b] == 1;
+    require all j in 0..N: (j < b) implies role[j] != 1;
+    role = role | {b: 0};
+    primary_val = val[b];
+    pending = len({x in 0..N if role[x] == 1 and x != b});
+}
+
+// After promotion, sync backups to new primary's value
+action PostFailoverSync(b: 0..N) {
+    require synced == false;
+    require role[b] == 1;
+    require pending > 0;
+    require val[b] != primary_val;
+    val = val | {b: primary_val};
+    pending = pending - 1;
+}
+
+// Sync complete
+action SyncComplete() {
+    require synced == false;
+    require pending == 0;
+    synced = true;
+}
+
+// When synced and no pending, all live nodes agree
+invariant SyncAgreement {
+    (synced == true and pending == 0)
+    implies
+    (all i in 0..N: all j in 0..N:
+        (role[i] != 2 and role[j] != 2) implies val[i] == val[j])
+}

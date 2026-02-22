@@ -1,0 +1,301 @@
+// =============================================================================
+// Narwhal/Tusk — DAG-Based Mempool and Consensus (with Byzantine Faults)
+// =============================================================================
+//
+// Source: "Narwhal and Tusk: A DAG-based Mempool and Efficient BFT Consensus"
+//         by Danezis et al. (2022)
+//         https://arxiv.org/abs/2105.11827
+//
+//         Based on writeup at:
+//         /Users/danwt/Documents/repos/todo/writeups/01-blockchain-fundamentals/1-narwhal-tusk.md
+//
+// =============================================================================
+// PROTOCOL DESCRIPTION
+// =============================================================================
+//
+// Narwhal-Tusk is a DAG-based consensus protocol that separates data availability
+// from consensus ordering, achieving high throughput (130k+ TPS in benchmarks).
+//
+// ## Narwhal (Mempool/DAG Layer)
+//
+// Narwhal structures transactions into a directed acyclic graph (DAG):
+//
+// 1. **Workers** — Batch transactions into blocks (abstracted away in this model)
+// 2. **Certificates** — Each validator creates certificates that reference:
+//    - Its own worker blocks (abstracted away)
+//    - >=2f+1 certificates from other validators in the previous round
+// 3. **Quorum** — A certificate requires 2f+1 signatures to be valid
+// 4. **Rounds** — The DAG grows in rounds; round 0 has no references
+//
+// This guarantees **data availability** — if a certificate exists in the DAG,
+// its data is retrievable from honest nodes (2f+1 validators hold it).
+//
+// ## Tusk (Consensus Layer)
+//
+// Tusk is a **zero-message-overhead** consensus protocol that orders the DAG:
+//
+// 1. **Leader election** — Round r leader is deterministic: validator (r mod N)
+// 2. **Commit rule** — A leader cert at round r commits if it has a "strong path":
+//    >=2f+1 certificates at round r+1 reference it
+// 3. **Causal ordering** — Committing a leader commits all certs in its causal
+//    history (transitive closure of references)
+//
+// ## Key Properties
+//
+// - **Separation of concerns** — Mempool runs at network speed, consensus just orders
+// - **High throughput** — No dedicated consensus messages, reuses DAG structure
+// - **Asynchronous safety** — Tusk is safe under asynchrony (liveness requires synchrony)
+// - **Byzantine fault tolerance** — Tolerates up to f Byzantine validators (N = 3f+1)
+//
+// ## Byzantine Model
+//
+// Up to F validators may become faulty via the GoFaulty action. Faulty validators:
+// - Can create certificates without referencing a quorum from the previous round
+// - Can sign any certificate without the normal quorum-cap restriction
+// - Cannot force honest validators to misbehave (honest actions still enforce rules)
+//
+// The BFT safety invariants hold despite this: committed certs always have honest
+// quorum backing, and only the deterministic leader can commit at each round.
+//
+// =============================================================================
+// MODELLING APPROACH
+// =============================================================================
+//
+// State:
+// - `certs`: Set of [validator, round] pairs representing created certificates
+// - `signatures`: Dict mapping [validator, round] -> Set of signer IDs
+// - `committed`: Set of [validator, round] pairs that have been committed
+// - `faulty`: Set of validator IDs that have gone Byzantine
+//
+// Actions (honest):
+// - CreateCert(v, r): Honest validator v creates certificate at round r
+//   - Round 0: no references required
+//   - Round r>0: must reference >=2f+1 certs from round r-1
+// - Sign(signer, v, r): Honest validator signs cert [v, r]
+// - TryCommit(v, r): Apply Tusk commit rule to leader cert [v, r]
+//
+// Actions (Byzantine):
+// - GoFaulty(v): Mark validator v as Byzantine (at most F validators)
+// - ByzantineCreateCert(v, r): Faulty validator creates cert without DAG checks
+// - ByzantineSign(signer, v, r): Faulty validator signs without restrictions
+//
+// Abstractions:
+// - Worker blocks are abstracted away (we only model certificates)
+// - Transaction data is abstracted away (only structure matters)
+// - Asynchrony is implicit (nondeterministic action ordering)
+//
+// =============================================================================
+// SPECL MODEL
+// =============================================================================
+
+module NarwhalTusk
+// Use: specl check narwhal_tusk.specl -c N=2 -c F=0 -c MAX_ROUND=2 --no-deadlock --no-auto --bfs
+// N=2 F=0 (3 validators, quorum=1): 932 states, ~0.1s. For Byzantine faults:
+// Use: specl check narwhal_tusk.specl -c N=3 -c F=1 -c MAX_ROUND=1 --no-deadlock --no-auto --bfs --fast --max-states 100000
+
+// === Constants ===
+
+const N: Int        // Number of validators (must be 3f+1, e.g., 4 or 7)
+const F: Int        // Max Byzantine validators (e.g., 1 for N=4, 2 for N=7)
+const MAX_ROUND: Int // Bound exploration (2-3 rounds sufficient for safety properties)
+
+// === State Variables ===
+
+// Certificates that have been created (set of [validator, round] pairs)
+var certs: Set[Seq[Int]]
+
+// Signatures collected for each certificate (maps [validator, round] to set of signer IDs)
+var signatures: Dict[Seq[Int], Set[Int]]
+
+// Committed certificates (set of [validator, round] pairs)
+var committed: Set[Seq[Int]]
+
+// Validators that have gone Byzantine
+var faulty: Set[Int]
+
+// NOTE: cert_refs removed to avoid Dict[Seq, Set[Seq]] complexity
+// References are implicit: round r certs reference ALL certs from round r-1
+
+// === Initialization ===
+
+init {
+    certs = {};
+    signatures = {k: {} for k in certs};
+    committed = {};
+    faulty = {};
+}
+
+// === Helper Functions ===
+
+// Check if count reaches a BFT quorum (2f+1)
+func IsQuorum(count) {
+    count >= 2 * F + 1
+}
+
+// Get the deterministic leader for a given round
+func Leader(r) {
+    r % N
+}
+
+// === Honest Actions ===
+
+// --- Narwhal Actions (DAG Construction) ---
+
+// Honest validator creates a certificate at round r
+// Round 0: no references required (genesis)
+// Round r>0: must reference >=2f+1 certificates from round r-1
+action CreateCert(v: 0..N, r: 0..MAX_ROUND) {
+    require not (v in faulty);
+    require not ([v, r] in certs);
+
+    // Round 0 has no references (genesis)
+    // Round r>0 must reference a quorum from round r-1
+    require r == 0 or IsQuorum(len({k in certs if k[1] == r - 1}));
+
+    certs = certs union {[v, r]};
+    signatures = signatures | {[v, r]: {v}};
+}
+
+// Honest validator signs a certificate
+// Honest signers verify DAG structure before signing (round r>0 needs quorum at r-1)
+action Sign(signer: 0..N, v: 0..N, r: 0..MAX_ROUND) {
+    require not (signer in faulty);
+    require [v, r] in certs;
+    require not (signer in signatures[[v, r]]);
+    require not IsQuorum(len(signatures[[v, r]]));
+    require r == 0 or IsQuorum(len({k in certs if k[1] == r - 1}));
+
+    signatures = signatures | {[v, r]: signatures[[v, r]] union {signer}};
+}
+
+// --- Tusk Actions (Consensus Ordering) ---
+
+// Try to commit a leader certificate using Tusk commit rule
+// Leader at round r commits if >=2f+1 certs at round r+1 reference it
+action TryCommit(v: 0..N, r: 0..MAX_ROUND) {
+    require [v, r] in certs;
+    require not ([v, r] in committed);
+    require v == Leader(r);
+    require r < MAX_ROUND;
+
+    // Certificate must have a quorum of signatures
+    require IsQuorum(len(signatures[[v, r]]));
+
+    // Tusk commit rule: >=2f+1 certs exist at round r+1
+    // (implicit: they all reference [v, r] since r+1 refs all of round r)
+    require IsQuorum(len({k in certs if k[1] == r + 1}));
+
+    committed = committed union {[v, r]};
+}
+
+// === Byzantine Actions ===
+
+// Mark a validator as faulty (at most F validators can go Byzantine)
+action GoFaulty(v: 0..N) {
+    require not (v in faulty);
+    require len(faulty) < F;
+
+    faulty = faulty union {v};
+}
+
+// Faulty validator creates a certificate without proper DAG references
+// (skips the quorum-from-previous-round check)
+action ByzantineCreateCert(v: 0..N, r: 0..MAX_ROUND) {
+    require v in faulty;
+    require not ([v, r] in certs);
+
+    certs = certs union {[v, r]};
+    signatures = signatures | {[v, r]: {v}};
+}
+
+// Faulty validator signs any certificate without the quorum-cap restriction
+action ByzantineSign(signer: 0..N, v: 0..N, r: 0..MAX_ROUND) {
+    require signer in faulty;
+    require [v, r] in certs;
+    require not (signer in signatures[[v, r]]);
+
+    signatures = signatures | {[v, r]: signatures[[v, r]] union {signer}};
+}
+
+// === Safety Invariants ===
+
+// Signature counts never exceed the total number of validators
+invariant SignaturesValid {
+    all k in signatures: len(signatures[k]) <= N + 1
+}
+
+// Honest certificates at round r>0 obey DAG structure:
+// >=2f+1 certs exist at round r-1
+// (Byzantine certs may violate this, which is expected)
+invariant HonestDAGValidity {
+    all k in certs: (
+        (k[0] in faulty) or k[1] == 0 or IsQuorum(len({p in certs if p[1] == k[1] - 1}))
+    )
+}
+
+// At most one certificate per validator per round (structural: sets have no duplicates)
+invariant NoEquivocation {
+    all k1 in certs, k2 in certs: (
+        k1[0] == k2[0] and k1[1] == k2[1]
+    ) implies k1 == k2
+}
+
+// Only the deterministic leader can be committed at each round
+invariant CommitAgreement {
+    all c in committed: c[0] == Leader(c[1])
+}
+
+// Every committed certificate has a quorum of signatures
+invariant CommittedHaveQuorum {
+    all c in committed: IsQuorum(len(signatures[c]))
+}
+
+// Causal consistency: committed certs at round r>0 have a quorum of certs at round r-1
+invariant CausalConsistency {
+    all c in committed: (
+        c[1] == 0 or IsQuorum(len({p in certs if p[1] == c[1] - 1}))
+    )
+}
+
+// At most F validators are faulty
+invariant FaultyBounded {
+    len(faulty) <= F
+}
+
+// =============================================================================
+// VERIFICATION
+// =============================================================================
+//
+// Note: 0..N gives N+1 validators. N=3 -> validators {0,1,2,3} = 4 validators = 3f+1 for f=1.
+//
+// Run with 3 validators (f=0), 2 rounds:
+//   specl check narwhal_tusk.specl -c N=2 -c F=0 -c MAX_ROUND=1 --no-deadlock
+//
+// Run with 4 validators (f=1), 2 rounds (large state space, use --fast):
+//   specl check narwhal_tusk.specl -c N=3 -c F=1 -c MAX_ROUND=2 --no-deadlock --fast
+//
+// Use --no-deadlock because many quiescent states are valid (protocols naturally
+// reach states where all validators are waiting).
+//
+// Use --fast for larger configurations (fingerprint-only, no traces, less memory).
+//
+// Expected: OK with all invariants holding
+//
+// The model verifies BFT safety under Byzantine faults:
+// 1. Honest DAG validity: honest certs at round r reference >=2f+1 from round r-1
+// 2. No equivocation: each validator creates at most one cert per round (structural)
+// 3. Commit agreement: only the deterministic leader commits at each round
+// 4. Committed certs have quorums: every committed cert has >=2f+1 signatures
+// 5. Causal structure: committed certs reference existing certs
+// 6. Fault bound: at most F validators go Byzantine
+//
+// The Byzantine actions (ByzantineCreateCert, ByzantineSign) explore adversarial
+// behavior: creating certs without proper references and signing without restriction.
+// The protocol's safety properties hold because commit requires 2f+1 signatures,
+// and at most f of those can be from Byzantine validators.
+//
+// Future extensions:
+// - Add liveness properties (requires fairness assumptions)
+// - Model worker blocks and transaction batching
+// - Add causal commitment (MarkAncestorsCommitted)
+// =============================================================================

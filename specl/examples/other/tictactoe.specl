@@ -1,0 +1,195 @@
+module TicTacToe
+
+// Tic-Tac-Toe: X plays optimally (priority strategy), O plays randomly.
+// Board is flat: positions 0-8 (row-major: 0|1|2 / 3|4|5 / 6|7|8).
+// Cell values: 0=empty, 1=X, 2=O.
+// X's strategy (highest priority first): win > block > center > setup > any.
+// Invariant: O never wins (holds because X plays optimally).
+//
+// Translated from Quint tictactoe.qnt (Gabriela Moreira, Informal Systems).
+//
+// Use: specl check tictactoe.specl --no-deadlock --bfs
+// Verified: OK
+
+// 0=empty, 1=X, 2=O
+var board: Dict[0..8, 0..2]
+// 0=X's turn, 1=O's turn
+var nextTurn: 0..1
+
+init {
+    board = {i: 0 for i in 0..8};
+    nextTurn = 0;
+}
+
+// --- Winning line helpers ---
+// A line is won by player p if all 3 cells == p
+func LineWon(a, b, c, p) { board[a] == p and board[b] == p and board[c] == p }
+
+func Won(p) {
+    LineWon(0, 1, 2, p) or LineWon(3, 4, 5, p) or LineWon(6, 7, 8, p)
+    or LineWon(0, 3, 6, p) or LineWon(1, 4, 7, p) or LineWon(2, 5, 8, p)
+    or LineWon(0, 4, 8, p) or LineWon(2, 4, 6, p)
+}
+
+func BoardFull() { all i in 0..8: board[i] != 0 }
+func GameOver() { Won(1) or Won(2) or BoardFull() }
+func BoardEmpty() { all i in 0..8: board[i] == 0 }
+
+// --- Can-win / can-block helpers ---
+// A line can be won by player p if p has 2 cells and 1 is empty
+func LineCanComplete(a, b, c, p) {
+    (board[a] == p and board[b] == p and board[c] == 0)
+    or (board[a] == p and board[c] == p and board[b] == 0)
+    or (board[b] == p and board[c] == p and board[a] == 0)
+}
+
+// Position pos is the completing move on line (a,b,c) for player p
+func IsCompletingMove(a, b, c, p, pos) {
+    (pos == a and board[a] == 0 and board[b] == p and board[c] == p)
+    or (pos == b and board[b] == 0 and board[a] == p and board[c] == p)
+    or (pos == c and board[c] == 0 and board[a] == p and board[b] == p)
+}
+
+func CanWin() {
+    LineCanComplete(0, 1, 2, 1) or LineCanComplete(3, 4, 5, 1) or LineCanComplete(6, 7, 8, 1)
+    or LineCanComplete(0, 3, 6, 1) or LineCanComplete(1, 4, 7, 1) or LineCanComplete(2, 5, 8, 1)
+    or LineCanComplete(0, 4, 8, 1) or LineCanComplete(2, 4, 6, 1)
+}
+
+func CanBlock() {
+    LineCanComplete(0, 1, 2, 2) or LineCanComplete(3, 4, 5, 2) or LineCanComplete(6, 7, 8, 2)
+    or LineCanComplete(0, 3, 6, 2) or LineCanComplete(1, 4, 7, 2) or LineCanComplete(2, 5, 8, 2)
+    or LineCanComplete(0, 4, 8, 2) or LineCanComplete(2, 4, 6, 2)
+}
+
+// A line can set up a win: X has 1 cell, 2 are empty
+func LineCanSetup(a, b, c) {
+    (board[a] == 1 and board[b] == 0 and board[c] == 0)
+    or (board[b] == 1 and board[a] == 0 and board[c] == 0)
+    or (board[c] == 1 and board[a] == 0 and board[b] == 0)
+}
+
+func CanSetupWin() {
+    LineCanSetup(0, 1, 2) or LineCanSetup(3, 4, 5) or LineCanSetup(6, 7, 8)
+    or LineCanSetup(0, 3, 6) or LineCanSetup(1, 4, 7) or LineCanSetup(2, 5, 8)
+    or LineCanSetup(0, 4, 8) or LineCanSetup(2, 4, 6)
+}
+
+// pos is a setup move: on a line where X has 1 and 2 are empty
+func IsSetupMove(a, b, c, pos) {
+    (board[a] == 1 and board[b] == 0 and board[c] == 0 and (pos == b or pos == c))
+    or (board[b] == 1 and board[a] == 0 and board[c] == 0 and (pos == a or pos == c))
+    or (board[c] == 1 and board[a] == 0 and board[b] == 0 and (pos == a or pos == b))
+}
+
+func IsWinningMove(pos) {
+    IsCompletingMove(0, 1, 2, 1, pos) or IsCompletingMove(3, 4, 5, 1, pos) or IsCompletingMove(6, 7, 8, 1, pos)
+    or IsCompletingMove(0, 3, 6, 1, pos) or IsCompletingMove(1, 4, 7, 1, pos) or IsCompletingMove(2, 5, 8, 1, pos)
+    or IsCompletingMove(0, 4, 8, 1, pos) or IsCompletingMove(2, 4, 6, 1, pos)
+}
+
+func IsBlockingMove(pos) {
+    IsCompletingMove(0, 1, 2, 2, pos) or IsCompletingMove(3, 4, 5, 2, pos) or IsCompletingMove(6, 7, 8, 2, pos)
+    or IsCompletingMove(0, 3, 6, 2, pos) or IsCompletingMove(1, 4, 7, 2, pos) or IsCompletingMove(2, 5, 8, 2, pos)
+    or IsCompletingMove(0, 4, 8, 2, pos) or IsCompletingMove(2, 4, 6, 2, pos)
+}
+
+func IsAnySetupMove(pos) {
+    IsSetupMove(0, 1, 2, pos) or IsSetupMove(3, 4, 5, pos) or IsSetupMove(6, 7, 8, pos)
+    or IsSetupMove(0, 3, 6, pos) or IsSetupMove(1, 4, 7, pos) or IsSetupMove(2, 5, 8, pos)
+    or IsSetupMove(0, 4, 8, pos) or IsSetupMove(2, 4, 6, pos)
+}
+
+func IsCorner(pos) { pos == 0 or pos == 2 or pos == 6 or pos == 8 }
+
+// --- X's prioritized strategy (separate actions with exclusion guards) ---
+
+// Priority 1: Board empty -> start in a corner
+action XStartCorner(pos: 0..8) {
+    require nextTurn == 0;
+    require not GameOver();
+    require BoardEmpty();
+    require IsCorner(pos);
+    board = board | {pos: 1};
+    nextTurn = 1;
+}
+
+// Priority 2: Win if possible
+action XWin(pos: 0..8) {
+    require nextTurn == 0;
+    require not GameOver();
+    require not BoardEmpty();
+    require CanWin();
+    require board[pos] == 0;
+    require IsWinningMove(pos);
+    board = board | {pos: 1};
+    nextTurn = 1;
+}
+
+// Priority 3: Block O from winning
+action XBlock(pos: 0..8) {
+    require nextTurn == 0;
+    require not GameOver();
+    require not CanWin();
+    require CanBlock();
+    require board[pos] == 0;
+    require IsBlockingMove(pos);
+    board = board | {pos: 1};
+    nextTurn = 1;
+}
+
+// Priority 4: Take center
+action XCenter() {
+    require nextTurn == 0;
+    require not GameOver();
+    require not BoardEmpty();
+    require not CanWin();
+    require not CanBlock();
+    require board[4] == 0;
+    board = board | {4: 1};
+    nextTurn = 1;
+}
+
+// Priority 5: Setup a win (X has 1 on a line, 2 empty)
+action XSetup(pos: 0..8) {
+    require nextTurn == 0;
+    require not GameOver();
+    require not CanWin();
+    require not CanBlock();
+    require board[4] != 0;
+    require CanSetupWin();
+    require board[pos] == 0;
+    require IsAnySetupMove(pos);
+    board = board | {pos: 1};
+    nextTurn = 1;
+}
+
+// Priority 6: Move to any empty square
+action XAny(pos: 0..8) {
+    require nextTurn == 0;
+    require not GameOver();
+    require not CanWin();
+    require not CanBlock();
+    require board[4] != 0;
+    require not CanSetupWin();
+    require board[pos] == 0;
+    board = board | {pos: 1};
+    nextTurn = 1;
+}
+
+// --- O plays randomly ---
+action OMove(pos: 0..8) {
+    require nextTurn == 1;
+    require not GameOver();
+    require board[pos] == 0;
+    board = board | {pos: 2};
+    nextTurn = 0;
+}
+
+// --- Game over stutter ---
+action Stutter() {
+    require GameOver();
+}
+
+// --- Invariant ---
+invariant OHasNotWon { not Won(2) }

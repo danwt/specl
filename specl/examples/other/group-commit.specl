@@ -1,0 +1,78 @@
+module GroupCommit
+
+// Database group commit optimization.
+// N+1 transactions write to a shared WAL. Instead of each
+// transaction syncing independently, they batch writes together.
+// A leader transaction performs the sync for the entire group.
+//
+// Safety: no transaction reports committed before the WAL sync.
+//
+// Use: specl check group-commit.specl -c N=2 --no-deadlock --no-auto --bfs
+// Verified: N=2 -> OK (116 states, 0.0s)
+
+const N: 0..3
+
+// Per-transaction: 0=active, 1=written, 2=waiting_sync, 3=committed
+var tx: Dict[0..N, 0..3]
+
+// WAL state: number of entries written but not yet synced
+var pending_writes: 0..N
+
+// Is a sync in progress?
+var syncing: Bool
+
+// Has sync completed? (batch is durable)
+var synced: Bool
+
+init {
+    tx = {t: 0 for t in 0..N};
+    pending_writes = 0;
+    syncing = false;
+    synced = false;
+}
+
+// Transaction writes to WAL buffer
+action Write(t: 0..N) {
+    require tx[t] == 0;
+    require synced == false;
+    tx = tx | {t: 1};
+    pending_writes = pending_writes + 1;
+}
+
+// Transaction enters wait-for-sync
+action WaitSync(t: 0..N) {
+    require tx[t] == 1;
+    tx = tx | {t: 2};
+}
+
+// Leader initiates group sync (at least one write pending)
+action BeginSync() {
+    require syncing == false;
+    require synced == false;
+    require pending_writes > 0;
+    syncing = true;
+}
+
+// Sync completes (all buffered writes are durable)
+action CompleteSync() {
+    require syncing == true;
+    syncing = false;
+    synced = true;
+}
+
+// Transaction commits (sync must be done)
+action Commit(t: 0..N) {
+    require tx[t] == 2;
+    require synced == true;
+    tx = tx | {t: 3};
+}
+
+// No transaction commits before sync
+invariant NoCommitBeforeSync {
+    all t in 0..N: tx[t] == 3 implies synced == true
+}
+
+// Committed transactions must have written
+invariant CommitImpliesWrite {
+    all t in 0..N: tx[t] == 3 implies pending_writes > 0
+}

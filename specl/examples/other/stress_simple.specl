@@ -1,0 +1,15 @@
+// Stress test: Minimal overhead benchmark
+// Single counter with 100K states - minimal expressions
+// Use: No constants needed
+module StressSimple
+
+var x: 0..99999
+
+init { x == 0 }
+
+action Inc() {
+    require x < 99999;
+    x = x + 1;
+}
+
+invariant Bound { x <= 99999 }

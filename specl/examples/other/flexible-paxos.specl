@@ -1,0 +1,97 @@
+module FlexiblePaxos
+
+// Flexible Paxos (Howard, Malkhi, Spiegelman, 2016).
+// Generalizes Paxos: Phase 1 (Prepare) quorum Q1 and Phase 2 (Accept)
+// quorum Q2 need not both be majorities. The only requirement is that
+// Q1 + Q2 > N (any Phase 1 quorum intersects any Phase 2 quorum).
+//
+// With N=3 acceptors, classic Paxos uses Q1=Q2=2.
+// Flexible Paxos allows Q1=1, Q2=3 (or Q1=3, Q2=1).
+//
+// This model uses 3 acceptors with Q1=1, Q2=3.
+// Proposer 0 uses odd ballots, proposer 1 uses even ballots.
+//
+// Use: specl check flexible-paxos.specl -c MaxBal=4 --no-deadlock --no-auto --bfs
+// Verified: MaxBal=4 -> OK (2337 states, 0.0s)
+
+const MaxBal: 2..6
+
+// 3 acceptors: 0, 1, 2
+var promised: Dict[0..2, 0..MaxBal]
+var accepted_bal: Dict[0..2, 0..MaxBal]
+var accepted_val: Dict[0..2, 0..1]
+var has_accepted: Dict[0..2, Bool]
+
+// 2 proposers: 0 and 1
+// Phase: 0=idle, 1=preparing, 2=accepting, 3=decided
+var prop_phase: Dict[0..1, 0..3]
+var prop_val: Dict[0..1, 0..1]
+var prop_bal: Dict[0..1, 0..MaxBal]
+
+var decided: Dict[0..1, 0..1]
+var has_decided: Dict[0..1, Bool]
+
+init {
+    promised = {a: 0 for a in 0..2};
+    accepted_bal = {a: 0 for a in 0..2};
+    accepted_val = {a: 0 for a in 0..2};
+    has_accepted = {a: false for a in 0..2};
+    prop_phase = {p: 0 for p in 0..1};
+    prop_val = {p: 0 for p in 0..1};
+    prop_bal = {p: 0 for p in 0..1};
+    decided = {p: 0 for p in 0..1};
+    has_decided = {p: false for p in 0..1};
+}
+
+// Proposer 0 picks odd ballot, proposer 1 picks even
+action Prepare(p: 0..1, b: 1..MaxBal) {
+    require prop_phase[p] == 0;
+    require b > prop_bal[p];
+    // Proposer 0: odd ballots. Proposer 1: even ballots.
+    require (p == 0 and b % 2 == 1) or (p == 1 and b % 2 == 0);
+    prop_phase = prop_phase | {p: 1};
+    prop_bal = prop_bal | {p: b};
+}
+
+// Acceptor a responds to prepare (promises not to accept lower ballots)
+action Promise(a: 0..2, p: 0..1) {
+    require prop_phase[p] == 1;
+    require prop_bal[p] > promised[a];
+    promised = promised | {a: prop_bal[p]};
+}
+
+// Phase 1 done: Q1=1, only need one acceptor to respond.
+// Adopt highest accepted value from responder if any.
+action Phase1Done(p: 0..1, a: 0..2) {
+    require prop_phase[p] == 1;
+    require promised[a] == prop_bal[p];
+    prop_val = prop_val | {p:
+        if has_accepted[a] then accepted_val[a] else p
+    };
+    prop_phase = prop_phase | {p: 2};
+}
+
+// Acceptor a accepts proposer p's value (Phase 2)
+action Accept(a: 0..2, p: 0..1) {
+    require prop_phase[p] == 2;
+    require promised[a] <= prop_bal[p];
+    accepted_bal = accepted_bal | {a: prop_bal[p]};
+    accepted_val = accepted_val | {a: prop_val[p]};
+    has_accepted = has_accepted | {a: true};
+    promised = promised | {a: prop_bal[p]};
+}
+
+// Phase 2 done: Q2=3, need ALL 3 acceptors to accept at this ballot.
+action Decide(p: 0..1) {
+    require prop_phase[p] == 2;
+    require all a in 0..2: accepted_bal[a] == prop_bal[p];
+    decided = decided | {p: prop_val[p]};
+    has_decided = has_decided | {p: true};
+    prop_phase = prop_phase | {p: 3};
+}
+
+// Agreement: all decided values are the same
+invariant Agreement {
+    all i in 0..1: all j in 0..1:
+        (has_decided[i] and has_decided[j]) implies decided[i] == decided[j]
+}

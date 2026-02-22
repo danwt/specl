@@ -1,0 +1,114 @@
+module MultiPaxosReconfig
+
+// Multi-Paxos with reconfiguration
+// From: Lamport "Paxos Made Simple" + Van Renesse & Altinbuken
+//       "Paxos Made Moderately Complex" (reconfiguration via WINDOW)
+// N+1 acceptors (0..N), MaxBallot+1 ballots, MaxSlot+1 slots
+// Values 0..V are regular commands, V+1 is the reconfiguration command
+// Config 0: members = {0..N}, Config 1: members = {1..N}
+// WINDOW = 1: reconfig decided in slot s takes effect at slot s+1
+// Use: specl check multipaxos-reconfig.specl -c N=2 -c MaxBallot=2 -c MaxSlot=2 -c V=1 --no-deadlock
+// Verified: N=2 MaxBallot=1 MaxSlot=1 V=1 MaxVal=2 -> 607,313 states, Agreement + Validity + DecidedConsistency OK
+
+const N: Int
+const MaxBallot: Int
+const MaxSlot: Int
+const V: Int
+const MaxVal: Int
+
+var maxBal: Dict[Int, Int]
+var maxVBal: Dict[Int, Dict[Int, Int]]
+var maxVal: Dict[Int, Dict[Int, Int]]
+var proposed: Dict[Int, Dict[Int, Int]]
+var accepted: Dict[Int, Dict[Int, Dict[Int, Bool]]]
+var decided: Dict[Int, Int]
+
+func InConfig(a, cfg) {
+    if cfg == 0 then true else a >= 1
+}
+
+func MemberCount(cfg) {
+    if cfg == 0 then N + 1 else N
+}
+
+func ConfigForSlot(s) {
+    if any s2 in 0..MaxSlot: s2 + 1 <= s and decided[s2] == MaxVal
+    then 1
+    else 0
+}
+
+func SafeAt(b, s, v) {
+    any Q in powerset(0..N):
+        len({a in Q if InConfig(a, ConfigForSlot(s))}) == len(Q)
+        and len(Q) * 2 > MemberCount(ConfigForSlot(s))
+        and (all a in Q: maxBal[a] >= b)
+        and (
+            (all a in Q: maxVBal[a][s] == -1)
+            or (any c in 0..MaxBallot:
+                c < b
+                and (all a in Q: maxVBal[a][s] <= c)
+                and (any a in Q: maxVBal[a][s] == c and maxVal[a][s] == v)))
+}
+
+init {
+    maxBal = {a: -1 for a in 0..N};
+    maxVBal = {a: {s: -1 for s in 0..MaxSlot} for a in 0..N};
+    maxVal = {a: {s: -1 for s in 0..MaxSlot} for a in 0..N};
+    proposed = {b: {s: -1 for s in 0..MaxSlot} for b in 0..MaxBallot};
+    accepted = {b: {s: {a: false for a in 0..N} for s in 0..MaxSlot} for b in 0..MaxBallot};
+    decided = {s: -1 for s in 0..MaxSlot};
+}
+
+action Promise(b: 0..MaxBallot, a: 0..N) {
+    require b > maxBal[a];
+    maxBal = maxBal | {a: b};
+}
+
+// MaxVal = MaxVal, where V+1 is the reconfig command
+action Propose(b: 0..MaxBallot, s: 0..MaxSlot, v: 0..MaxVal) {
+    require proposed[b][s] == -1;
+    require v >= 0;
+    require SafeAt(b, s, v);
+    // At most one reconfig command across the entire system
+    require v != MaxVal or not (any s2 in 0..MaxSlot:
+        decided[s2] == MaxVal
+        or (s2 != s and any b2 in 0..MaxBallot: proposed[b2][s2] == MaxVal))
+    proposed = proposed | {b: (proposed[b] | {s: v})};
+}
+
+action Accept(b: 0..MaxBallot, s: 0..MaxSlot, a: 0..N) {
+    require proposed[b][s] != -1;
+    require maxBal[a] <= b;
+    require InConfig(a, ConfigForSlot(s));
+    maxBal = maxBal | {a: b};
+    maxVBal = maxVBal | {a: (maxVBal[a] | {s: b})};
+    maxVal = maxVal | {a: (maxVal[a] | {s: proposed[b][s]})};
+    accepted = accepted | {b: (accepted[b] | {s: (accepted[b][s] | {a: true})})};
+}
+
+action Decide(s: 0..MaxSlot, b: 0..MaxBallot) {
+    require decided[s] == -1;
+    require proposed[b][s] != -1;
+    require len({a in 0..N if accepted[b][s][a] and InConfig(a, ConfigForSlot(s))}) * 2 > MemberCount(ConfigForSlot(s));
+    decided = decided | {s: proposed[b][s]};
+}
+
+invariant Agreement {
+    all s in 0..MaxSlot: all b1 in 0..MaxBallot: all b2 in 0..MaxBallot:
+        (len({a in 0..N if accepted[b1][s][a] and InConfig(a, ConfigForSlot(s))}) * 2 > MemberCount(ConfigForSlot(s))
+         and len({a in 0..N if accepted[b2][s][a] and InConfig(a, ConfigForSlot(s))}) * 2 > MemberCount(ConfigForSlot(s)))
+        implies proposed[b1][s] == proposed[b2][s]
+}
+
+invariant Validity {
+    all s in 0..MaxSlot: decided[s] != -1 implies (decided[s] >= 0 and decided[s] <= MaxVal)
+}
+
+// Decided consistency: if two slots are both decided, their values are stable
+invariant DecidedConsistency {
+    all s in 0..MaxSlot: all b1 in 0..MaxBallot: all b2 in 0..MaxBallot:
+        (decided[s] != -1 and proposed[b1][s] != -1 and proposed[b2][s] != -1
+         and len({a in 0..N if accepted[b1][s][a]}) * 2 > N + 1
+         and len({a in 0..N if accepted[b2][s][a]}) * 2 > N + 1)
+        implies proposed[b1][s] == proposed[b2][s]
+}

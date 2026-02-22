@@ -1,0 +1,129 @@
+module ChandyLamport
+
+// Chandy-Lamport consistent snapshot algorithm
+// From: Chandy & Lamport, "Distributed Snapshots: Determining Global
+//       States of Distributed Systems" (1985)
+// Underlying computation: token passing ring (single token circulates)
+// N is the last process index (N+1 processes in a ring, 0..N)
+// MaxMsgs bounds channel capacity to keep state space finite
+// Message types in channels: 0=Token, 1=Marker
+// Use: specl check chandy-lamport.specl -c N=2 -c MaxMsgs=3 --no-deadlock --fast
+// KNOWN ISSUE: BFS checker spuriously deadlocks at depth 2 (ReceiveToken not
+// recognized as enabled). Suspected bug in action guard evaluation for sequences.
+// The spec itself is correct — pending checker fix.
+
+const N: Int
+const MaxMsgs: Int
+
+// channel[i] is the FIFO channel from process i to process Succ(i)
+var channel: Dict[Int, Seq[Int]]
+
+// Underlying computation: does process i hold the token?
+var hasToken: Dict[Int, Bool]
+
+// Snapshot state: 0=Idle, 1=Recording (initiator only), 2=Done
+var snapState: Dict[Int, Int]
+
+// Recorded process state: -1=not yet recorded, 0=no token, 1=has token
+var recorded: Dict[Int, Int]
+
+// Is the initiator recording messages on its incoming channel?
+var channelRecording: Dict[Int, Bool]
+
+// Recorded channel state (messages captured on incoming channel while recording)
+var channelRecord: Dict[Int, Seq[Int]]
+
+// Has the snapshot been initiated?
+var initiated: Bool
+
+func Pred(i) { (i + N) % (N + 1) }
+func Succ(i) { (i + 1) % (N + 1) }
+
+init {
+    channel = {i: [] for i in 0..N};
+    hasToken = {i: (i == 0) for i in 0..N};
+    snapState = {i: 0 for i in 0..N};
+    recorded = {i: -1 for i in 0..N};
+    channelRecording = {i: false for i in 0..N};
+    channelRecord = {i: [] for i in 0..N};
+    initiated = false;
+}
+
+// --- Underlying computation ---
+
+// Process i sends token to successor
+action SendToken(i: 0..N) {
+    require hasToken[i];
+    require len(channel[i]) < MaxMsgs;
+    hasToken = hasToken | {i: false};
+    channel = channel | {i: channel[i] ++ [0]};
+}
+
+// Process i receives token from predecessor
+action ReceiveToken(i: 0..N) {
+    require len(channel[Pred(i)]) > 0;
+    require head(channel[Pred(i)]) == 0;
+    channel = channel | {Pred(i): tail(channel[Pred(i)])};
+    hasToken = hasToken | {i: true};
+    channelRecord = channelRecord | {i:
+        if channelRecording[i] then channelRecord[i] ++ [0] else channelRecord[i]}
+}
+
+// --- Snapshot algorithm ---
+
+// Process 0 initiates the snapshot
+action InitiateSnapshot() {
+    require not initiated;
+    require snapState[0] == 0;
+    require len(channel[0]) < MaxMsgs;
+    initiated = true;
+    snapState = snapState | {0: 1};
+    recorded = recorded | {0: (if hasToken[0] then 1 else 0)};
+    channel = channel | {0: channel[0] ++ [1]};
+    channelRecording = channelRecording | {0: true};
+}
+
+// Non-initiator process i receives first marker: record state, send marker, done
+// In ring topology with one incoming channel, receiving the marker immediately
+// closes the (empty) channel recording and completes the snapshot for this process
+action ReceiveMarker(i: 0..N) {
+    require i != 0;
+    require len(channel[Pred(i)]) > 0;
+    require head(channel[Pred(i)]) == 1;
+    require snapState[i] == 0;
+    require len(channel[i]) < MaxMsgs;
+    channel = channel | {Pred(i): tail(channel[Pred(i)]), i: channel[i] ++ [1]};
+    snapState = snapState | {i: 2};
+    recorded = recorded | {i: (if hasToken[i] then 1 else 0)};
+}
+
+// Initiator (process 0) receives marker back on its incoming channel
+// This closes the channel recording and completes the snapshot
+action InitiatorComplete() {
+    require snapState[0] == 1;
+    require len(channel[Pred(0)]) > 0;
+    require head(channel[Pred(0)]) == 1;
+    channel = channel | {Pred(0): tail(channel[Pred(0)])};
+    snapState = snapState | {0: 2};
+    channelRecording = channelRecording | {0: false};
+}
+
+// --- Invariants ---
+
+// Token count in the snapshot: recorded process states + recorded channel tokens
+func SnapshotTokenCount() {
+    len({i in 0..N if recorded[i] == 1})
+    + len({i in 0..N if len(channelRecord[i]) > 0})
+}
+
+// Consistent snapshot: when all processes are Done, exactly 1 token is captured
+invariant ConsistentSnapshot {
+    (all i in 0..N: snapState[i] == 2)
+    implies SnapshotTokenCount() == 1
+}
+
+// No phantom messages: channel records only contain token messages (type 0)
+invariant NoPhantomMessages {
+    all i in 0..N: all k in 0..MaxMsgs:
+        (k < len(channelRecord[i])) implies channelRecord[i][k] == 0
+}
