@@ -1,0 +1,27 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: specl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: specl
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace -- -D warnings -A clippy::too_many_arguments
+      - run: cargo test --workspace --exclude specl-tla
+      - run: cargo test -p specl-tla --test translate_corpus -- --skip benchmark_tla_files_translate
+      - name: Lint showcase examples
+        run: |
+          for f in examples/showcase/*.specl; do
+            cargo run -q --bin specl -- fmt "$f" --lint || exit 1
+          done
