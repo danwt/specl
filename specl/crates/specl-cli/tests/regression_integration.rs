@@ -125,7 +125,10 @@ invariant Subset {
 "#;
     let outcome = check_spec(source, &[("MaxKey", 2)]).expect("should check");
     assert!(
-        matches!(outcome, CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }),
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
         "expected OK, got: {outcome:?}"
     );
 }
@@ -231,7 +234,10 @@ invariant NotInConsistent {
 "#;
     let outcome = check_spec(source, &[("N", 2)]).expect("should check");
     assert!(
-        matches!(outcome, CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }),
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
         "expected OK, got: {outcome:?}"
     );
 }
@@ -290,7 +296,10 @@ invariant KeysDomain { getKeys(d) == 0..N }
 "#;
     let outcome = check_spec(source, &[("N", 2)]).expect("should check");
     assert!(
-        matches!(outcome, CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }),
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
         "expected OK, got: {outcome:?}"
     );
 }

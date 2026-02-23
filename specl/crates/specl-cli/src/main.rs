@@ -2581,6 +2581,10 @@ fn cmd_check(
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
 
+    if !quiet {
+        warn_unsupported_features(&module);
+    }
+
     info!("type checking...");
     specl_types::check_module(&module)
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
@@ -3388,6 +3392,10 @@ fn cmd_check_symbolic(
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
 
+    if !json {
+        warn_unsupported_features(&module);
+    }
+
     info!("type checking...");
     specl_types::check_module(&module)
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
@@ -3751,6 +3759,42 @@ fn filter_invariants(spec: &mut specl_ir::CompiledSpec, check_only: &[String]) -
         spec.invariants.retain(|inv| check_only.contains(&inv.name));
     }
     Ok(())
+}
+
+/// Warn about unsupported liveness features (property, fairness, temporal operators).
+/// These are parsed but silently ignored by the compiler/checker.
+fn warn_unsupported_features(module: &specl_syntax::Module) {
+    let mut has_properties = false;
+    let mut has_fairness = false;
+    let mut property_names = Vec::new();
+
+    for decl in &module.decls {
+        match decl {
+            specl_syntax::Decl::Property(d) => {
+                has_properties = true;
+                property_names.push(d.name.name.clone());
+            }
+            specl_syntax::Decl::Fairness(_) => {
+                has_fairness = true;
+            }
+            _ => {}
+        }
+    }
+
+    if has_properties {
+        eprintln!(
+            "Warning: specl does not yet support liveness properties. \
+             Only safety invariants are checked. The following property declarations \
+             will be ignored: {}",
+            property_names.join(", ")
+        );
+    }
+    if has_fairness {
+        eprintln!(
+            "Warning: specl does not yet support fairness constraints. \
+             Fairness declarations will be ignored."
+        );
+    }
 }
 
 fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliResult<Vec<Value>> {
