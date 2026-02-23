@@ -962,6 +962,15 @@ impl TypeChecker {
                         self.unify(left_ty, &key_ty, left_span)?;
                         Ok(Type::Bool)
                     }
+                    Type::Var(_) => {
+                        // Unresolved type variable: infer it as Set[elem]
+                        // where elem is a fresh variable unified with the LHS.
+                        let elem = self.var_gen.fresh_type();
+                        self.unify(left_ty, &elem, left_span)?;
+                        let set_ty = Type::Set(Box::new(elem));
+                        self.unify(right_ty, &set_ty, right_span)?;
+                        Ok(Type::Bool)
+                    }
                     _ => Err(TypeError::NotIterable {
                         ty: right_ty.clone(),
                         span: right_span,

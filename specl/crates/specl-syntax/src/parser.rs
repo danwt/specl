@@ -1228,9 +1228,9 @@ impl Parser {
         }
 
         self.expect(TokenKind::Colon)?;
-        // Don't allow `in` as binary op to avoid ambiguity with outer `let...in`
-        // Use parentheses for membership tests: `all x in S: (y in T)`
-        let body = self.parse_expr_no_in()?;
+        // After the colon, `in` is unambiguously a binary membership operator
+        // (the colon already delimits the binding from the body).
+        let body = self.parse_expr()?;
         let span = start.merge(body.span);
         Ok(Expr::new(
             ExprKind::Quantifier {
@@ -1250,8 +1250,8 @@ impl Parser {
         // Don't allow `in` as binary op in domain to avoid ambiguity with outer `let...in`
         let domain = self.parse_expr_no_in()?;
         self.expect(TokenKind::Colon)?;
-        // Don't allow `in` as binary op to avoid ambiguity with outer `let...in`
-        let predicate = self.parse_expr_no_in()?;
+        // After the colon, `in` is unambiguously a binary membership operator.
+        let predicate = self.parse_expr()?;
         let span = start.merge(predicate.span);
         Ok(Expr::new(
             ExprKind::Fix {

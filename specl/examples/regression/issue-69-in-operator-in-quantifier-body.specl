@@ -1,0 +1,51 @@
+module Issue69InOperatorInQuantifierBody
+
+// Regression: membership `in` must work inside quantifier and fix bodies
+// without requiring parentheses. See https://github.com/danwt/specl/issues/69
+//
+// Use: -c MaxKey=3
+
+const MaxKey: 0..5
+
+var written: Set[0..MaxKey]
+
+// `in` inside `any` body
+invariant AnyWrittenImpliesNonempty {
+    (any key in 0..MaxKey : key in written)
+        implies len(written) > 0
+}
+
+// `in` inside nested quantifier bodies
+invariant SubsetProperty {
+    all k1 in 0..MaxKey : all k2 in 0..MaxKey :
+        k1 in written and k2 in written
+        implies k1 in written
+}
+
+// func using `all` with `in` in body
+func AllWritten(ws) {
+    all key in 0..MaxKey : key in ws
+}
+
+// `in` inside `fix` predicate body (only evaluated when set is nonempty)
+func SmallestMember(ws) {
+    fix key in 0..MaxKey : key in ws
+}
+
+init {
+    written = {};
+}
+
+action Write(k: 0..MaxKey) {
+    require not(k in written);
+    written = written union {k};
+}
+
+invariant AllWrittenConsistent {
+    AllWritten(written) implies len(written) == MaxKey + 1
+}
+
+// Only evaluate fix when the set is nonempty
+invariant SmallestIsInSet {
+    len(written) > 0 implies SmallestMember(written) in written
+}

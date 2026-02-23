@@ -1,0 +1,35 @@
+module Issue70InOperatorUntypedFuncParam
+
+// Regression: `x in S` should infer that S is a Set when S is an untyped
+// function parameter. See https://github.com/danwt/specl/issues/70
+//
+// Use: -c Max=3
+
+const Max: 0..5
+
+var s: Set[0..Max]
+
+func contains(S, x) { x in S }
+
+func addIfMissing(S, x) {
+    if x in S then S
+    else S union {x}
+}
+
+init {
+    s = {};
+}
+
+action Add(k: 0..Max) {
+    s = addIfMissing(s, k);
+}
+
+invariant ContainsAfterAdd {
+    all k in 0..Max :
+        (k in s) implies contains(s, k)
+}
+
+invariant AddIfMissingWorks {
+    all k in 0..Max :
+        k in addIfMissing(s, k)
+}
