@@ -809,7 +809,11 @@ impl TypeChecker {
                     Type::Var(_) => {
                         let key = self.var_gen.fresh_type();
                         let val = self.var_gen.fresh_type();
-                        self.unify(&ty, &Type::Fn(Box::new(key.clone()), Box::new(val)), expr.span)?;
+                        self.unify(
+                            &ty,
+                            &Type::Fn(Box::new(key.clone()), Box::new(val)),
+                            expr.span,
+                        )?;
                         Type::Set(Box::new(key))
                     }
                     _ => {
@@ -833,7 +837,11 @@ impl TypeChecker {
                     Type::Var(_) => {
                         let key = self.var_gen.fresh_type();
                         let val = self.var_gen.fresh_type();
-                        self.unify(&ty, &Type::Fn(Box::new(key), Box::new(val.clone())), expr.span)?;
+                        self.unify(
+                            &ty,
+                            &Type::Fn(Box::new(key), Box::new(val.clone())),
+                            expr.span,
+                        )?;
                         Type::Set(Box::new(val))
                     }
                     _ => {

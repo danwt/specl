@@ -2752,17 +2752,12 @@ impl Translator {
         let mut current: &TlaExpr = expr;
         let mut wrap_paren = false;
 
-        loop {
-            match self.try_inline(current)? {
-                Some((body, needs_paren)) => {
-                    if needs_paren {
-                        wrap_paren = true;
-                    }
-                    owned = Some(body);
-                    current = owned.as_ref().unwrap();
-                }
-                None => break,
+        while let Some((body, needs_paren)) = self.try_inline(current)? {
+            if needs_paren {
+                wrap_paren = true;
             }
+            owned = Some(body);
+            current = owned.as_ref().unwrap();
         }
 
         let result = self.translate_expr_impl(current, in_action)?;

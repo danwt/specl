@@ -15,6 +15,7 @@ members = [
 ]
 exclude = [
     "tree-sitter-specl",
+    "fuzz",
 ]
 
 [workspace.package]

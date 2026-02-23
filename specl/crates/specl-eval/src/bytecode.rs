@@ -1654,13 +1654,13 @@ fn vm_eval_inner(
 
             // General comparison
             Op::Eq => {
-                let b = stack.pop().unwrap();
-                let a = stack.pop().unwrap();
+                let b = pop_value(stack)?;
+                let a = pop_value(stack)?;
                 stack.push(Value::bool(a == b));
             }
             Op::Ne => {
-                let b = stack.pop().unwrap();
-                let a = stack.pop().unwrap();
+                let b = pop_value(stack)?;
+                let a = pop_value(stack)?;
                 stack.push(Value::bool(a != b));
             }
 
@@ -1722,7 +1722,7 @@ fn vm_eval_inner(
                 // Fused: Var(i) + DictGet — Var(i) is the KEY (last pushed),
                 // base dict is already on stack below.
                 let key = &vars[*var_idx as usize];
-                let base = stack.pop().unwrap();
+                let base = pop_value(stack)?;
                 match base.kind() {
                     VK::IntMap2(inner_size, data) => {
                         let k = expect_int(key)? as usize;
@@ -2209,8 +2209,8 @@ fn vm_eval_inner(
 
             // Dict/collection ops
             Op::DictGet => {
-                let key = stack.pop().unwrap();
-                let base = stack.pop().unwrap();
+                let key = pop_value(stack)?;
+                let base = pop_value(stack)?;
                 match base.kind() {
                     VK::IntMap2(inner_size, data) => {
                         let k = expect_int(&key)? as usize;
@@ -2247,9 +2247,9 @@ fn vm_eval_inner(
                 }
             }
             Op::DictUpdate => {
-                let value = stack.pop().unwrap();
-                let key = stack.pop().unwrap();
-                let base = stack.pop().unwrap();
+                let value = pop_value(stack)?;
+                let key = pop_value(stack)?;
+                let base = pop_value(stack)?;
                 if base.is_intmap2() {
                     let k = expect_int(&key)? as usize;
                     let mut arc = base.into_intmap2_arc();
@@ -2289,12 +2289,12 @@ fn vm_eval_inner(
                 let n = *n as usize;
                 let mut pairs = Vec::with_capacity(n);
                 for _ in 0..n {
-                    let value = stack.pop().unwrap();
-                    let key = stack.pop().unwrap();
+                    let value = pop_value(stack)?;
+                    let key = pop_value(stack)?;
                     pairs.push((key, value));
                 }
                 pairs.reverse();
-                let base = stack.pop().unwrap();
+                let base = pop_value(stack)?;
                 if base.is_intmap2() {
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
@@ -2337,10 +2337,10 @@ fn vm_eval_inner(
                 }
             }
             Op::NestedDictUpdate2 => {
-                let dict = stack.pop().unwrap();
-                let k1 = stack.pop().unwrap();
-                let k2 = stack.pop().unwrap();
-                let value = stack.pop().unwrap();
+                let dict = pop_value(stack)?;
+                let k1 = pop_value(stack)?;
+                let k2 = pop_value(stack)?;
+                let value = pop_value(stack)?;
                 if dict.is_intmap2() {
                     let k1_int = expect_int(&k1)? as usize;
                     let k2_int = expect_int(&k2)? as usize;
@@ -2401,11 +2401,11 @@ fn vm_eval_inner(
                 }
             }
             Op::NestedDictUpdate3 => {
-                let dict = stack.pop().unwrap();
-                let k1 = stack.pop().unwrap();
-                let k2 = stack.pop().unwrap();
-                let k3 = stack.pop().unwrap();
-                let value = stack.pop().unwrap();
+                let dict = pop_value(stack)?;
+                let k1 = pop_value(stack)?;
+                let k2 = pop_value(stack)?;
+                let k3 = pop_value(stack)?;
+                let value = pop_value(stack)?;
 
                 // Helper: update the innermost (3rd level) dict
                 let update_inner =
@@ -2481,7 +2481,7 @@ fn vm_eval_inner(
                 }
             }
             Op::Len => {
-                let val = stack.pop().unwrap();
+                let val = pop_value(stack)?;
                 let len = match val.kind() {
                     VK::Set(s) => s.len() as i64,
                     VK::Seq(s) => s.len() as i64,
@@ -2504,8 +2504,8 @@ fn vm_eval_inner(
                 stack.push(Value::int(len));
             }
             Op::Contains => {
-                let right_val = stack.pop().unwrap();
-                let elem = stack.pop().unwrap();
+                let right_val = pop_value(stack)?;
+                let elem = pop_value(stack)?;
                 let result = match right_val.kind() {
                     VK::Set(s) => Value::set_contains(s, &elem),
                     VK::Fn(f) => Value::fn_get(f, &elem).is_some(),
@@ -2527,8 +2527,8 @@ fn vm_eval_inner(
                 stack.push(Value::bool(result));
             }
             Op::NotContains => {
-                let right_val = stack.pop().unwrap();
-                let elem = stack.pop().unwrap();
+                let right_val = pop_value(stack)?;
+                let elem = pop_value(stack)?;
                 let result = match right_val.kind() {
                     VK::Set(s) => !Value::set_contains(s, &elem),
                     VK::Fn(f) => Value::fn_get(f, &elem).is_none(),
@@ -2552,7 +2552,7 @@ fn vm_eval_inner(
 
             // Local variable management
             Op::PushLocal => {
-                let val = stack.pop().unwrap();
+                let val = pop_value(stack)?;
                 locals.push(val);
             }
             Op::PopLocal => {
@@ -2587,7 +2587,12 @@ fn vm_eval_inner(
                     continue;
                 }
                 let current = get_local_int(locals)?;
-                let hi = loops.last().unwrap().hi;
+                let hi = loops
+                    .last()
+                    .ok_or_else(|| {
+                        EvalError::Internal("bytecode loop stack underflow".to_string())
+                    })?
+                    .hi;
                 if current >= hi {
                     locals.pop();
                     loops.pop();
@@ -2595,7 +2600,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2627,7 +2634,12 @@ fn vm_eval_inner(
                     continue;
                 }
                 let current = get_local_int(locals)?;
-                let hi = loops.last().unwrap().hi;
+                let hi = loops
+                    .last()
+                    .ok_or_else(|| {
+                        EvalError::Internal("bytecode loop stack underflow".to_string())
+                    })?
+                    .hi;
                 if current >= hi {
                     locals.pop();
                     loops.pop();
@@ -2635,7 +2647,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2660,7 +2674,9 @@ fn vm_eval_inner(
             }
             Op::CountRangeStep { body_pc, end_pc } => {
                 let pred = pop_bool(stack)?;
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 if pred {
                     loop_state.counter += 1;
                 }
@@ -2673,7 +2689,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2698,8 +2716,10 @@ fn vm_eval_inner(
                 locals.push(Value::int(lo));
             }
             Op::SetCompRangeStep { body_pc, end_pc } => {
-                let element = stack.pop().unwrap();
-                let loop_state = loops.last_mut().unwrap();
+                let element = pop_value(stack)?;
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 loop_state.set_buf.push(element);
                 let current = get_local_int(locals)?;
                 if current >= loop_state.hi {
@@ -2712,15 +2732,26 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
             Op::SetCompRangeAdvance { body_pc, end_pc } => {
                 let current = get_local_int(locals)?;
-                let loop_state = loops.last().unwrap();
+                let loop_state = loops.last().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 if current >= loop_state.hi {
-                    let mut set_buf = std::mem::take(&mut loops.last_mut().unwrap().set_buf);
+                    let mut set_buf = std::mem::take(
+                        &mut loops
+                            .last_mut()
+                            .ok_or_else(|| {
+                                EvalError::Internal("bytecode loop stack underflow".to_string())
+                            })?
+                            .set_buf,
+                    );
                     locals.pop();
                     loops.pop();
                     set_buf.sort();
@@ -2729,14 +2760,16 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
 
             // === Forall over set ===
             Op::ForallSetInit(end_pc) => {
-                let domain = stack.pop().unwrap();
+                let domain = pop_value(stack)?;
                 let domain = normalize_domain(domain)?;
                 let set = domain.as_set().unwrap();
                 if set.is_empty() {
@@ -2762,7 +2795,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
@@ -2772,14 +2807,16 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
 
             // === Exists over set ===
             Op::ExistsSetInit(end_pc) => {
-                let domain = stack.pop().unwrap();
+                let domain = pop_value(stack)?;
                 let domain = normalize_domain(domain)?;
                 let set = domain.as_set().unwrap();
                 if set.is_empty() {
@@ -2805,7 +2842,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
@@ -2815,14 +2854,16 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
 
             // === SetComprehension over set ===
             Op::SetCompSetInit(end_pc) => {
-                let domain = stack.pop().unwrap();
+                let domain = pop_value(stack)?;
                 let domain = normalize_domain(domain)?;
                 let set = domain.as_set().unwrap();
                 if set.is_empty() {
@@ -2841,8 +2882,10 @@ fn vm_eval_inner(
                 });
             }
             Op::SetCompSetStep { body_pc, end_pc } => {
-                let element = stack.pop().unwrap();
-                let loop_state = loops.last_mut().unwrap();
+                let element = pop_value(stack)?;
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 loop_state.set_buf.push(element);
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
@@ -2856,12 +2899,16 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
             Op::SetCompSetAdvance { body_pc, end_pc } => {
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
@@ -2874,14 +2921,16 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
 
             // === Forall over powerset (bitmask iteration) ===
             Op::ForallPowersetInit(end_pc) => {
-                let base = stack.pop().unwrap();
+                let base = pop_value(stack)?;
                 let base = normalize_domain(base)?;
                 let set = base.as_set().unwrap();
                 let n = set.len();
@@ -2906,7 +2955,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 if loop_state.counter >= loop_state.hi {
                     locals.pop();
                     loops.pop();
@@ -2923,14 +2974,16 @@ fn vm_eval_inner(
                         loop_state.set_buf.push(elem.clone());
                     }
                 }
-                *locals.last_mut().unwrap() = Value::set(Arc::new(loop_state.set_buf.clone()));
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::set(Arc::new(loop_state.set_buf.clone()));
                 pc = *body_pc as usize;
                 continue;
             }
 
             // === Exists over powerset (bitmask iteration) ===
             Op::ExistsPowersetInit(end_pc) => {
-                let base = stack.pop().unwrap();
+                let base = pop_value(stack)?;
                 let base = normalize_domain(base)?;
                 let set = base.as_set().unwrap();
                 let n = set.len();
@@ -2954,7 +3007,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 if loop_state.counter >= loop_state.hi {
                     locals.pop();
                     loops.pop();
@@ -2971,7 +3026,9 @@ fn vm_eval_inner(
                         loop_state.set_buf.push(elem.clone());
                     }
                 }
-                *locals.last_mut().unwrap() = Value::set(Arc::new(loop_state.set_buf.clone()));
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::set(Arc::new(loop_state.set_buf.clone()));
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2996,9 +3053,11 @@ fn vm_eval_inner(
                 locals.push(Value::int(lo));
             }
             Op::FnLitRangeStep { body_pc, end_pc } => {
-                let body_val = stack.pop().unwrap();
+                let body_val = pop_value(stack)?;
                 let current = get_local_int(locals)?;
-                let loop_state = loops.last_mut().unwrap();
+                let loop_state = loops.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode loop stack underflow".to_string())
+                })?;
                 loop_state.fn_buf.push((Value::int(current), body_val));
                 if current >= loop_state.hi {
                     let fn_buf = std::mem::take(&mut loop_state.fn_buf);
@@ -3042,7 +3101,9 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().unwrap() = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(|| {
+                    EvalError::Internal("bytecode locals underflow".to_string())
+                })? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -3063,8 +3124,8 @@ fn vm_eval_inner(
                 stack.push(Value::seq(elems));
             }
             Op::SetUnion => {
-                let right_val = stack.pop().unwrap();
-                let left_val = stack.pop().unwrap();
+                let right_val = pop_value(stack)?;
+                let left_val = pop_value(stack)?;
                 if left_val.is_set_v() && right_val.is_set_v() {
                     let a = left_val.into_set_arc();
                     let b = right_val.into_set_arc();
@@ -3090,8 +3151,8 @@ fn vm_eval_inner(
                 }
             }
             Op::SetDiff => {
-                let right_val = stack.pop().unwrap();
-                let left_val = stack.pop().unwrap();
+                let right_val = pop_value(stack)?;
+                let left_val = pop_value(stack)?;
                 match (left_val.kind(), right_val.kind()) {
                     (VK::Set(a), VK::Set(b)) => {
                         stack.push(Value::set(Arc::new(sorted_vec_diff(a, b))));
@@ -3100,8 +3161,8 @@ fn vm_eval_inner(
                 }
             }
             Op::SeqConcat => {
-                let right_val = stack.pop().unwrap();
-                let left_val = stack.pop().unwrap();
+                let right_val = pop_value(stack)?;
+                let left_val = pop_value(stack)?;
                 let mut a = left_val.into_seq_arc();
                 let b = right_val.into_seq_arc();
                 Arc::make_mut(&mut a).extend(b.iter().cloned());
@@ -3110,7 +3171,7 @@ fn vm_eval_inner(
             Op::SeqSlice => {
                 let hi = pop_int(stack)?;
                 let lo = pop_int(stack)?;
-                let base_val = stack.pop().unwrap();
+                let base_val = pop_value(stack)?;
                 match base_val.kind() {
                     VK::Seq(seq) => {
                         let len = seq.len();
@@ -3127,7 +3188,7 @@ fn vm_eval_inner(
             }
 
             Op::SeqHead => {
-                let seq_val = stack.pop().unwrap();
+                let seq_val = pop_value(stack)?;
                 match seq_val.kind() {
                     VK::Seq(s) if !s.is_empty() => stack.push(s[0].clone()),
                     VK::Seq(_) => {
@@ -3154,7 +3215,7 @@ fn vm_eval_inner(
                 }
             }
             Op::SeqTail => {
-                let seq_val = stack.pop().unwrap();
+                let seq_val = pop_value(stack)?;
                 match seq_val.kind() {
                     VK::Seq(s) => {
                         if s.is_empty() {
@@ -3254,8 +3315,14 @@ fn vm_eval_inner(
 // ============================================================================
 
 #[inline(always)]
+fn pop_value(stack: &mut Vec<Value>) -> EvalResult<Value> {
+    stack
+        .pop()
+        .ok_or_else(|| EvalError::Internal("bytecode stack underflow".to_string()))
+}
+
 fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
-    let v = stack.pop().unwrap();
+    let v = pop_value(stack)?;
     v.as_int().ok_or_else(|| EvalError::TypeMismatch {
         expected: "Int".to_string(),
         actual: v.type_name().to_string(),
@@ -3264,7 +3331,7 @@ fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
 
 #[inline(always)]
 fn pop_bool(stack: &mut Vec<Value>) -> EvalResult<bool> {
-    let v = stack.pop().unwrap();
+    let v = pop_value(stack)?;
     v.as_bool().ok_or_else(|| EvalError::TypeMismatch {
         expected: "Bool".to_string(),
         actual: v.type_name().to_string(),
@@ -3273,7 +3340,9 @@ fn pop_bool(stack: &mut Vec<Value>) -> EvalResult<bool> {
 
 #[inline(always)]
 fn peek_bool(stack: &[Value]) -> EvalResult<bool> {
-    let v = stack.last().unwrap();
+    let v = stack
+        .last()
+        .ok_or_else(|| EvalError::Internal("bytecode stack underflow".to_string()))?;
     v.as_bool().ok_or_else(|| EvalError::TypeMismatch {
         expected: "Bool".to_string(),
         actual: v.type_name().to_string(),

@@ -619,7 +619,7 @@ impl Parser {
             }
 
             self.advance(); // consume operator
-            // `not in` is two tokens — consume the second one
+                            // `not in` is two tokens — consume the second one
             if op == BinOp::NotIn {
                 self.advance();
             }
