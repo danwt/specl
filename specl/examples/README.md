@@ -30,7 +30,6 @@ The showcase is a small, carefully chosen set of examples that together:
 | [Paxos](showcase/paxos.specl) | Consensus | 95 | `powerset`, set comprehensions, complex nested quantifiers |
 | [Redlock](showcase/redlock.specl) | Distributed locking | 153 | `Set`, `union`, intentional invariant violation (Kleppmann attack) |
 | [Raft](showcase/raft.specl) | Consensus (complex) | 386 | `Seq`, `Set[Seq[Int]]`, `++`, slicing, `head`/`tail`/`len`, `union`/`diff`, message passing |
-| [Token Ring + View](showcase/token-ring-view.specl) | State abstraction | 40 | `view` declaration for state projection, auxiliary variable elimination |
 | **[Features](showcase/features.specl)** | **Language reference** | **185** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, `view`, `auxiliary invariant`, nondeterministic init** |
 
 ### Verification Results
@@ -47,7 +46,6 @@ Quick checks (all pass in under 1 second):
 | Paxos | `specl check paxos.specl -c N=2 -c MaxBallot=3 -c V=2 --no-deadlock` | 316K |
 | Redlock | `specl check redlock.specl -c N=2 -c M=1 -c TTL=3 -c MaxTime=8` | violation in 15 steps |
 | Raft | `specl check raft.specl -c N=1 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=2 --no-deadlock` | 956 |
-| Token Ring + View | `specl check token-ring-view.specl -c N=4 -c MaxSteps=20 --no-deadlock --bfs` | 4 (view projects away `steps`) |
 | Features | `specl check features.specl --no-deadlock --bfs --no-auto` | 88 |
 
 Strenuous checks (minutes at larger parameters):
@@ -142,8 +140,6 @@ var has_token: Dict[0..N, Bool]
 var steps: 0..MaxSteps          // auxiliary counter
 view { has_token }              // only has_token matters for state deduplication
 ```
-
-See [Token Ring + View](showcase/token-ring-view.specl).
 
 ## Regression Tests
 
