@@ -25,3 +25,19 @@ jobs:
           for f in examples/showcase/*.specl; do
             cargo run -q --bin specl -- fmt "$f" --lint || exit 1
           done
+
+  soundness:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    defaults:
+      run:
+        working-directory: specl
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: specl
+      - name: Proptest soundness (2048 cases)
+        run: PROPTEST_CASES=2048 cargo test -p specl-soundness -- --test-threads=1
+        timeout-minutes: 30

@@ -1,0 +1,29 @@
+[package]
+name = "specl-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+specl-syntax = { path = "../crates/specl-syntax" }
+specl-types = { path = "../crates/specl-types" }
+specl-ir = { path = "../crates/specl-ir" }
+
+[[bin]]
+name = "parse"
+path = "fuzz_targets/parse.rs"
+doc = false
+
+[[bin]]
+name = "parse_typecheck"
+path = "fuzz_targets/parse_typecheck.rs"
+doc = false
+
+[[bin]]
+name = "full_pipeline"
+path = "fuzz_targets/full_pipeline.rs"
+doc = false
