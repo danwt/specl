@@ -283,6 +283,7 @@ fn extract_effect_from_expr(
 /// Apply effects using bytecode-compiled assignments (guard already checked).
 /// Uses cached var_hashes from the parent state to avoid rehashing old values.
 /// Uses var_hashes_buf as a reusable buffer to avoid per-firing allocation.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_effects_bytecode(
     state: &State,
     params: &[Value],
@@ -333,6 +334,7 @@ pub fn apply_effects_bytecode(
 /// Apply effects using bytecode-compiled assignments with reusable VM buffers.
 /// Uses cached var_hashes from the parent state to avoid rehashing old values.
 /// Uses var_hashes_buf as a reusable buffer to avoid per-firing allocation.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_effects_bytecode_reuse(
     state: &State,
     params: &[Value],
@@ -385,6 +387,7 @@ pub fn apply_effects_bytecode_reuse(
 /// Returns Ok(Some(fp)) if the effect succeeded, Ok(None) if guard reverification failed.
 /// The computed vars remain in next_vars_buf and hashes in var_hashes_buf.
 /// Call `take_computed_state` to construct the State from the buffers.
+#[allow(clippy::too_many_arguments)]
 pub fn compute_effects_bytecode_reuse(
     state: &State,
     params: &[Value],
@@ -442,6 +445,7 @@ pub fn take_computed_state(
 /// Apply an action to a state using precomputed effect assignments.
 /// Uses `next_vars_buf` as a reusable buffer to avoid repeated allocation.
 /// Uses cached var_hashes from the parent state to avoid rehashing old values.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_action_direct_cached(
     state: &State,
     action: &CompiledAction,

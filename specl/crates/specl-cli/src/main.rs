@@ -2543,6 +2543,7 @@ fn cmd_check_ts_bfs(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_check(
     file: &PathBuf,
     constants: &[String],
@@ -3162,6 +3163,7 @@ fn cmd_check(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_check_swarm(
     spec: specl_ir::CompiledSpec,
     consts: Vec<Value>,
@@ -3367,6 +3369,7 @@ fn cmd_check_swarm(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn cmd_check_symbolic(
     file: &PathBuf,
     constants: &[String],
