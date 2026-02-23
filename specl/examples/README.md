@@ -31,7 +31,7 @@ The showcase is a small, carefully chosen set of examples that together:
 | [Redlock](showcase/redlock.specl) | Distributed locking | 153 | `Set`, `union`, intentional invariant violation (Kleppmann attack) |
 | [Raft](showcase/raft.specl) | Consensus (complex) | 386 | `Seq`, `Set[Seq[Int]]`, `++`, slicing, `head`/`tail`/`len`, `union`/`diff`, message passing |
 | [Token Ring + View](showcase/token-ring-view.specl) | State abstraction | 40 | `view` declaration for state projection, auxiliary variable elimination |
-| **[Features](showcase/features.specl)** | **Language reference** | **199** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, tuples, `view`, `auxiliary invariant`, nondeterministic init** |
+| **[Features](showcase/features.specl)** | **Language reference** | **185** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, `view`, `auxiliary invariant`, nondeterministic init** |
 
 ### Verification Results
 
@@ -108,16 +108,6 @@ len(held intersect other) == 0   // disjointness check
 ```
 
 See [Redlock](showcase/redlock.specl), [Kaspa](showcase/kaspa.specl), [Features](showcase/features.specl).
-
-### Tuple types
-
-`(T1, T2)` tuple type with positional field access `.0`, `.1`, etc.
-
-```specl
-var pair: (Bool, 0..3)
-init { pair = (false, 0); }
-action Step() { pair = (true, pair.1 + 1); }
-```
 
 ### if-then-else expressions
 
