@@ -1010,6 +1010,23 @@ at each action step. Unchanged variables are omitted."
     },
 }
 
+fn version_string() -> String {
+    format!(
+        "specl {} ({}  {}  {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("SPECL_GIT_HASH"),
+        env!("SPECL_GIT_DATE"),
+        env!("SPECL_BUILD_TARGET"),
+    )
+}
+
+fn exit_with_code(code: i32) -> ! {
+    if code != 0 {
+        eprintln!("{}", version_string());
+    }
+    std::process::exit(code);
+}
+
 fn main() {
     // Install miette's fancy error handler
     miette::set_hook(Box::new(|_| {
@@ -1024,6 +1041,8 @@ fn main() {
     .ok();
 
     let cli = Cli::parse();
+
+    eprintln!("{}", version_string());
 
     // Initialize logging
     let filter = if matches!(&cli.command, Commands::Check { verbose: true, .. }) {
@@ -1181,7 +1200,7 @@ fn main() {
                 );
                 if let Err(e) = inner {
                     eprintln!("{:?}", miette::Report::new(e));
-                    std::process::exit(1);
+                    exit_with_code(1);
                 }
                 return;
             }
@@ -1192,7 +1211,7 @@ fn main() {
                     Ok((path, guard)) => (path, Some(guard)),
                     Err(e) => {
                         eprintln!("{:?}", miette::Report::new(e));
-                        std::process::exit(1);
+                        exit_with_code(1);
                     }
                 }
             } else {
@@ -1229,7 +1248,7 @@ fn main() {
                 } else {
                     eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
 
             let sp = parse_spacer_profile(&spacer_profile);
@@ -1378,7 +1397,7 @@ fn main() {
                 if let Err(e) = inner {
                     let out = JsonOutput::new("error", 0.0).with_error(e.to_string());
                     println!("{}", serde_json::to_string(&out).unwrap());
-                    std::process::exit(1);
+                    exit_with_code(1);
                 }
                 Ok(())
             } else {
@@ -1412,7 +1431,7 @@ fn main() {
 
     if let Err(e) = result {
         eprintln!("{:?}", miette::Report::new(e));
-        std::process::exit(1);
+        exit_with_code(1);
     }
 }
 
@@ -1829,7 +1848,7 @@ fn cmd_check_ts(
         } else {
             eprintln!("Error: {msg}");
         }
-        std::process::exit(1);
+        exit_with_code(1);
     }
 
     if want_symbolic {
@@ -2163,7 +2182,7 @@ fn cmd_check_ts_bfs(
         } else {
             eprintln!("{msg}");
         }
-        std::process::exit(1);
+        exit_with_code(1);
     }
 
     if directed && (actual_fast || bloom || actual_collapse || tree) {
@@ -2185,7 +2204,7 @@ fn cmd_check_ts_bfs(
         } else {
             eprintln!("{msg}");
         }
-        std::process::exit(1);
+        exit_with_code(1);
     }
 
     // Swarm verification
@@ -2306,7 +2325,7 @@ fn cmd_check_ts_bfs(
             eprintln!(
                 "Error: --output dot requires full tracking (incompatible with --fast and --bloom)"
             );
-            std::process::exit(1);
+            exit_with_code(1);
         }
         let max_dot_states = 10_000;
         if store.len() > max_dot_states {
@@ -2315,7 +2334,7 @@ fn cmd_check_ts_bfs(
                 store.len(),
                 max_dot_states
             );
-            std::process::exit(1);
+            exit_with_code(1);
         }
         let violation_fp = match &result {
             CheckOutcome::InvariantViolation { trace, .. } | CheckOutcome::Deadlock { trace } => {
@@ -2329,11 +2348,11 @@ fn cmd_check_ts_bfs(
         );
         match result {
             CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
-                std::process::exit(1)
+                exit_with_code(1)
             }
             CheckOutcome::StateLimitReached { .. }
             | CheckOutcome::MemoryLimitReached { .. }
-            | CheckOutcome::TimeLimitReached { .. } => std::process::exit(2),
+            | CheckOutcome::TimeLimitReached { .. } => exit_with_code(2),
             _ => {}
         }
     } else if output_format == OutputFormat::Itf || output_format == OutputFormat::Mermaid {
@@ -2354,7 +2373,7 @@ fn cmd_check_ts_bfs(
                         trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
                     println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             CheckOutcome::Deadlock { trace } => {
                 if output_format == OutputFormat::Mermaid {
@@ -2363,7 +2382,7 @@ fn cmd_check_ts_bfs(
                     let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
                     println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             CheckOutcome::Ok {
                 states_explored, ..
@@ -2375,7 +2394,7 @@ fn cmd_check_ts_bfs(
             }
             _ => {
                 eprintln!("Result: limit reached, no trace to export");
-                std::process::exit(2);
+                exit_with_code(2);
             }
         }
     } else if json {
@@ -2419,7 +2438,7 @@ fn cmd_check_ts_bfs(
             _ => 2,
         };
         if exit_code != 0 {
-            std::process::exit(exit_code);
+            exit_with_code(exit_code);
         }
     } else {
         let exit_code = match result {
@@ -2515,7 +2534,7 @@ fn cmd_check_ts_bfs(
         };
         if exit_code != 0 {
             print_check_profile(&explorer);
-            std::process::exit(exit_code);
+            exit_with_code(exit_code);
         }
     }
 
@@ -2697,7 +2716,7 @@ fn cmd_check(
         } else {
             eprintln!("{msg}");
         }
-        std::process::exit(1);
+        exit_with_code(1);
     }
 
     if directed && (actual_fast || bloom || actual_collapse || tree) {
@@ -2719,7 +2738,7 @@ fn cmd_check(
         } else {
             eprintln!("{msg}");
         }
-        std::process::exit(1);
+        exit_with_code(1);
     }
 
     // --- Auto-correct flags that only work in sequential mode (#22, #23) ---
@@ -2888,7 +2907,7 @@ fn cmd_check(
             eprintln!(
                 "Error: --output dot requires full tracking (incompatible with --fast and --bloom)"
             );
-            std::process::exit(1);
+            exit_with_code(1);
         }
         let max_dot_states = 10_000;
         let n_states = store.len();
@@ -2897,7 +2916,7 @@ fn cmd_check(
                 "Error: state graph has {} states (max {} for DOT output). Use smaller constants.",
                 n_states, max_dot_states
             );
-            std::process::exit(1);
+            exit_with_code(1);
         }
 
         // Determine violation fingerprint (if any) for highlighting
@@ -2915,12 +2934,12 @@ fn cmd_check(
 
         match result {
             CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
-                std::process::exit(1);
+                exit_with_code(1);
             }
             CheckOutcome::StateLimitReached { .. }
             | CheckOutcome::MemoryLimitReached { .. }
             | CheckOutcome::TimeLimitReached { .. } => {
-                std::process::exit(2);
+                exit_with_code(2);
             }
             _ => {}
         }
@@ -2943,7 +2962,7 @@ fn cmd_check(
                         trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
                     println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             CheckOutcome::Deadlock { trace } => {
                 if output_format == OutputFormat::Mermaid {
@@ -2952,7 +2971,7 @@ fn cmd_check(
                     let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
                     println!("{}", serde_json::to_string_pretty(&itf).unwrap());
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             CheckOutcome::Ok {
                 states_explored, ..
@@ -2969,7 +2988,7 @@ fn cmd_check(
                     "Result: STATE LIMIT REACHED ({} states, no trace)",
                     states_explored
                 );
-                std::process::exit(2);
+                exit_with_code(2);
             }
             CheckOutcome::MemoryLimitReached {
                 states_explored, ..
@@ -2978,7 +2997,7 @@ fn cmd_check(
                     "Result: MEMORY LIMIT REACHED ({} states, no trace)",
                     states_explored
                 );
-                std::process::exit(2);
+                exit_with_code(2);
             }
             CheckOutcome::TimeLimitReached {
                 states_explored, ..
@@ -2987,7 +3006,7 @@ fn cmd_check(
                     "Result: TIME LIMIT REACHED ({} states, no trace)",
                     states_explored
                 );
-                std::process::exit(2);
+                exit_with_code(2);
             }
         }
     } else if json {
@@ -3031,7 +3050,7 @@ fn cmd_check(
             _ => 2,
         };
         if exit_code != 0 {
-            std::process::exit(exit_code);
+            exit_with_code(exit_code);
         }
     } else {
         let exit_code = match result {
@@ -3130,7 +3149,7 @@ fn cmd_check(
         };
         if exit_code != 0 {
             print_check_profile(&explorer);
-            std::process::exit(exit_code);
+            exit_with_code(exit_code);
         }
     }
 
@@ -3300,7 +3319,7 @@ fn cmd_check_swarm(
                         OutputFormat::Dot => {
                             // DOT output not meaningful for swarm (no full store)
                             eprintln!("Error: --output dot is not supported with --swarm");
-                            std::process::exit(1);
+                            exit_with_code(1);
                         }
                         OutputFormat::Text => {
                             println!();
@@ -3314,7 +3333,7 @@ fn cmd_check_swarm(
                         }
                     }
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             CheckOutcome::Deadlock { .. } => {
                 // Similar for deadlock — simplified: just report
@@ -3324,7 +3343,7 @@ fn cmd_check_swarm(
                 } else {
                     println!("Result: DEADLOCK (found by swarm in {:.1}s)", secs);
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             _ => {}
         }
@@ -3498,7 +3517,7 @@ fn cmd_simulate(
         }
         match &result {
             SimulateOutcome::InvariantViolation { .. } | SimulateOutcome::Deadlock { .. } => {
-                std::process::exit(1);
+                exit_with_code(1);
             }
             _ => {}
         }
@@ -3552,7 +3571,7 @@ fn cmd_simulate(
                     let state_str = format_state_with_names(state, var_names);
                     println!("    {}: {} -> {}", i, action_str, state_str);
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
             SimulateOutcome::Deadlock { trace, var_names } => {
                 println!("Simulation: DEADLOCK after {} steps", trace.len() - 1);
@@ -3562,7 +3581,7 @@ fn cmd_simulate(
                     let state_str = format_state_with_names(state, var_names);
                     println!("    {}: {} -> {}", i, action_str, state_str);
                 }
-                std::process::exit(1);
+                exit_with_code(1);
             }
         }
     }
@@ -3643,7 +3662,7 @@ fn run_symbolic_check(
             _ => 2,
         };
         if exit_code != 0 {
-            std::process::exit(exit_code);
+            exit_with_code(exit_code);
         }
     } else {
         match result {
@@ -3667,7 +3686,7 @@ fn run_symbolic_check(
                     println!("  Note: this is NOT a reachable violation. The invariant is not inductive,");
                     println!("  meaning it cannot be proved by single-step induction alone.");
                     println!("  Try --k-induction 3 or --ic3 for a stronger proof, or --bfs for exhaustive checking.");
-                    std::process::exit(2);
+                    exit_with_code(2);
                 } else {
                     println!("Result: INVARIANT VIOLATION");
                     println!("  Invariant: {}", invariant);
@@ -3682,7 +3701,7 @@ fn run_symbolic_check(
                             .join(", ");
                         println!("    {}: {} -> {}", i, action_str, state_str);
                     }
-                    std::process::exit(1);
+                    exit_with_code(1);
                 }
             }
             SymbolicOutcome::Unknown { reason } => {
@@ -3690,7 +3709,7 @@ fn run_symbolic_check(
                 println!("Result: UNKNOWN");
                 println!("  Reason: {}", reason);
                 println!("  hint: try --bfs for explicit-state checking, or increase --timeout");
-                std::process::exit(2);
+                exit_with_code(2);
             }
         }
     }
@@ -4642,7 +4661,7 @@ fn cmd_fmt(
             } else {
                 eprintln!("fmt: {} needs formatting", file.display());
             }
-            std::process::exit(1);
+            exit_with_code(1);
         }
         if !json {
             println!("fmt: ok (already formatted)");
@@ -4672,7 +4691,7 @@ fn cmd_fmt(
                     let out =
                         JsonOutput::new("error", secs).with_error(format!("compile error: {}", e));
                     println!("{}", serde_json::to_string(&out).unwrap());
-                    std::process::exit(1);
+                    exit_with_code(1);
                 }
                 return Err(CliError::CompileError {
                     message: e.to_string(),
