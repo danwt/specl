@@ -1301,7 +1301,8 @@ fn main() {
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
-                let (auto_symbolic, reason) = auto_select_strategy(&file, &constant);
+                let (auto_symbolic, has_unbounded, reason) =
+                    auto_select_strategy(&file, &constant);
                 if !quiet {
                     println!("Strategy: {}", reason);
                 }
@@ -1322,42 +1323,51 @@ fn main() {
                         json,
                         check_only.clone(),
                     );
-                    // Fallback: if symbolic fails, try BFS
+                    // Fallback: if symbolic fails, try BFS (unless unbounded)
                     if sym_result.is_err() {
-                        if !quiet {
-                            eprintln!();
-                            eprintln!(
-                                "Symbolic checking failed. Falling back to BFS exploration..."
-                            );
+                        if has_unbounded {
+                            if !quiet {
+                                eprintln!();
+                                eprintln!("Symbolic checking failed and BFS is not possible (unbounded types like Nat/Int).");
+                                eprintln!("Try constraining types with range bounds, or fix the symbolic error.");
+                            }
+                            sym_result
+                        } else {
+                            if !quiet {
+                                eprintln!();
+                                eprintln!(
+                                    "Symbolic checking failed. Falling back to BFS exploration..."
+                                );
+                            }
+                            cmd_check(
+                                &file,
+                                &constant,
+                                max_states,
+                                max_depth,
+                                memory_limit,
+                                max_time,
+                                !no_deadlock,
+                                !no_parallel,
+                                threads,
+                                por,
+                                symmetry,
+                                fast,
+                                bloom,
+                                bloom_bits,
+                                collapse,
+                                tree,
+                                directed,
+                                incremental,
+                                verbose,
+                                quiet,
+                                no_auto,
+                                output,
+                                swarm,
+                                profile,
+                                check_only,
+                                diff,
+                            )
                         }
-                        cmd_check(
-                            &file,
-                            &constant,
-                            max_states,
-                            max_depth,
-                            memory_limit,
-                            max_time,
-                            !no_deadlock,
-                            !no_parallel,
-                            threads,
-                            por,
-                            symmetry,
-                            fast,
-                            bloom,
-                            bloom_bits,
-                            collapse,
-                            tree,
-                            directed,
-                            incremental,
-                            verbose,
-                            quiet,
-                            no_auto,
-                            output,
-                            swarm,
-                            profile,
-                            check_only,
-                            diff,
-                        )
                     } else {
                         sym_result
                     }
@@ -1698,7 +1708,8 @@ fn translate_tla_to_temp(file: &PathBuf, quiet: bool) -> CliResult<(PathBuf, Tem
 /// Analyze a spec to determine the best checking strategy.
 /// Returns (use_symbolic, reason) explaining the choice.
 /// Decide BFS vs symbolic from an already-compiled spec profile.
-fn auto_select_strategy_from_spec(spec: &specl_ir::ir::CompiledSpec) -> (bool, String) {
+/// Returns `(use_symbolic, has_unbounded, reason)`.
+fn auto_select_strategy_from_spec(spec: &specl_ir::ir::CompiledSpec) -> (bool, bool, String) {
     let profile = analyze(spec);
 
     let has_unbounded = profile
@@ -1709,12 +1720,14 @@ fn auto_select_strategy_from_spec(spec: &specl_ir::ir::CompiledSpec) -> (bool, S
     if has_unbounded {
         return (
             true,
+            true,
             "symbolic (unbounded types detected — cannot enumerate all states)".into(),
         );
     }
 
     match profile.state_space_bound {
         Some(b) if b > 1_000_000_000 => (
+            false,
             false,
             format!(
                 "BFS (finite but very large: ~{} states — consider --fast)",
@@ -1723,33 +1736,34 @@ fn auto_select_strategy_from_spec(spec: &specl_ir::ir::CompiledSpec) -> (bool, S
         ),
         Some(b) => (
             false,
+            false,
             format!(
                 "BFS (finite state space: ~{} states)",
                 format_large_number(b)
             ),
         ),
-        None => (false, "BFS (state space bound unknown)".into()),
+        None => (false, false, "BFS (state space bound unknown)".into()),
     }
 }
 
-fn auto_select_strategy(file: &PathBuf, constants: &[String]) -> (bool, String) {
+fn auto_select_strategy(file: &PathBuf, constants: &[String]) -> (bool, bool, String) {
     let source = match fs::read_to_string(file) {
         Ok(s) => Arc::new(s),
-        Err(_) => return (false, "BFS".into()),
+        Err(_) => return (false, false, "BFS".into()),
     };
     let module = match parse(&source) {
         Ok(m) => m,
-        Err(_) => return (false, "BFS".into()),
+        Err(_) => return (false, false, "BFS".into()),
     };
     if specl_types::check_module(&module).is_err() {
-        return (false, "BFS".into());
+        return (false, false, "BFS".into());
     }
     let spec = match compile(&module) {
         Ok(s) => s,
-        Err(_) => return (false, "BFS".into()),
+        Err(_) => return (false, false, "BFS".into()),
     };
     if parse_constants(constants, &spec).is_err() {
-        return (false, "BFS".into());
+        return (false, false, "BFS".into());
     }
     auto_select_strategy_from_spec(&spec)
 }
@@ -1898,7 +1912,7 @@ fn cmd_check_ts(
         )
     } else {
         // Auto-select strategy
-        let (auto_symbolic, reason) = auto_select_strategy_from_spec(&spec);
+        let (auto_symbolic, has_unbounded, reason) = auto_select_strategy_from_spec(&spec);
         if !quiet {
             println!("Strategy: {reason}");
         }
@@ -1921,36 +1935,47 @@ fn cmd_check_ts(
                 check_only_invariants.clone(),
             );
             if sym_result.is_err() {
-                if !quiet {
-                    eprintln!();
-                    eprintln!("Symbolic checking failed. Falling back to BFS exploration...");
+                if has_unbounded {
+                    if !quiet {
+                        eprintln!();
+                        eprintln!("Symbolic checking failed and BFS is not possible (unbounded types like Nat/Int).");
+                        eprintln!("Try constraining types with range bounds, or fix the symbolic error.");
+                    }
+                    sym_result
+                } else {
+                    if !quiet {
+                        eprintln!();
+                        eprintln!(
+                            "Symbolic checking failed. Falling back to BFS exploration..."
+                        );
+                    }
+                    cmd_check_ts_bfs(
+                        spec,
+                        consts,
+                        max_states,
+                        max_depth,
+                        memory_limit_mb,
+                        max_time_secs,
+                        check_deadlock,
+                        parallel,
+                        num_threads,
+                        use_por,
+                        use_symmetry,
+                        fast_check,
+                        bloom,
+                        bloom_bits,
+                        collapse,
+                        tree,
+                        directed,
+                        quiet,
+                        no_auto,
+                        output_format,
+                        profile,
+                        check_only_invariants,
+                        diff_traces,
+                        swarm,
+                    )
                 }
-                cmd_check_ts_bfs(
-                    spec,
-                    consts,
-                    max_states,
-                    max_depth,
-                    memory_limit_mb,
-                    max_time_secs,
-                    check_deadlock,
-                    parallel,
-                    num_threads,
-                    use_por,
-                    use_symmetry,
-                    fast_check,
-                    bloom,
-                    bloom_bits,
-                    collapse,
-                    tree,
-                    directed,
-                    quiet,
-                    no_auto,
-                    output_format,
-                    profile,
-                    check_only_invariants,
-                    diff_traces,
-                    swarm,
-                )
             } else {
                 sym_result
             }
