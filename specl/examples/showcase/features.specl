@@ -1,65 +1,199 @@
 module Features
 
-// Demonstrates less common specl features:
-//   - Set[T] with union, diff, in, intersect, len
-//   - if-then-else expressions in actions
-//   - Nondeterministic init (omit constraint to explore all valid initial states)
+// Comprehensive showcase of every specl language construct.
 //
-// 2 workers compete for 3 resources.
+// Domain: workers compete for tasks from a shared queue. Each worker
+// claims tasks and earns a score. The queue is bounded.
+//
+// Language features demonstrated (see section comments throughout):
+//   Declarations: var, func, init, action, invariant, auxiliary invariant, view
+//   Types: range, Bool, Set[T], Dict[K,V], Seq[T], (T1,T2) tuples
+//   Expressions: let..in, if-then-else, fix, all/any quantifiers (nested)
+//   Set ops: union, diff, intersect, in, not(..), subset_of, powerset, union_all, len
+//   Set comprehension: {x in S if P}
+//   Dict ops: comprehension, merge (|), lookup ([]), keys, values
+//   Seq ops: literal [], concat ++, head, tail, len
+//   Bool ops: and, or, not, implies, iff
+//   Arithmetic: +, -, *, /, %
+//   Tuple: literal (a,b), field access .0 .1
+//   Other: nondeterministic init, require guards, let binding in actions
+//
+// Note: const declarations (e.g. `const N: 0..10`) parameterize specs at
+// check time via `-c N=3`. See two-phase-commit.specl, paxos.specl, and
+// raft.specl for const-parameterized examples.
 //
 // Use: No constants needed
-// Quick: specl check features.specl --no-deadlock --bfs
+// Quick: specl check features.specl --no-deadlock --bfs --no-auto
 
-// Which worker holds each resource (0 = free, 1..2 = worker id)
-var owner: Dict[0..2, 0..2]
+// ─── var: mutable state ───
 
-// Resources held by worker 1 and worker 2
-var held_1: Set[0..2]
-var held_2: Set[0..2]
+var queue: Seq[0..3]                     // Seq type
+var busy: Set[0..1]                      // Set type
+var done: Dict[0..1, 0..3]              // Dict type
+var next_id: 0..3                        // range type
+var paused: Bool                         // Bool type
+var last_claim: (0..1, 0..3)            // Tuple type
 
-// Nondeterministic: mode unconstrained, checker explores all 3 initial values.
-// 0 = idle, 1 = acquiring, 2 = releasing
-var mode: 0..2
+// ─── view: project state for deduplication ───
+// States identical on these vars are merged even if last_claim differs.
+
+view { queue, busy, done, next_id, paused }
+
+// ─── func: reusable helper expressions ───
+
+func ActiveWorkers() {
+    {w in 0..1 if done[w] > 0}              // Set comprehension with filter
+}
+
+func Max(a, b) {
+    if a > b then a else b                   // if-then-else, multi-param func
+}
+
+// ─── init: starting state ───
+// paused intentionally unconstrained: nondeterministic initial state.
+// The checker explores paused=true and paused=false.
 
 init {
-    owner = {r: 0 for r in 0..2};
-    held_1 = {};
-    held_2 = {};
-    // mode intentionally unconstrained: nondeterministic initial state
+    queue = [];                              // empty Seq literal
+    busy = {};                               // empty Set literal
+    done = {w: 0 for w in 0..1};             // Dict comprehension
+    next_id = 0;
+    last_claim = (0, 0);                     // Tuple literal
 }
 
-action Acquire1(r: 0..2) {
-    require owner[r] == 0;
-    owner = owner | {r: 1};
-    held_1 = held_1 union {r};
-    mode = if len(held_1) == 0 then 1 else mode;
+// ─── action: state transitions (guarded by require) ───
+
+action Enqueue() {
+    require not paused;                      // Bool: not
+    require next_id < 3;                     // Arithmetic: <
+    require len(queue) < 3;                  // Seq: len
+    queue = queue ++ [next_id];              // Seq: concat (++)
+    next_id = next_id + 1;                   // Arithmetic: +
 }
 
-action Release1(r: 0..2) {
-    require r in held_1;
-    owner = owner | {r: 0};
-    held_1 = held_1 diff {r};
-    mode = 2;
+action Claim(w: 0..1) {
+    require len(queue) > 0;
+    require not(w in busy);                  // Set: membership + not()
+    let task = head(queue);                  // let binding in action, Seq: head
+    queue = tail(queue);                     // Seq: tail
+    busy = busy union {w};                   // Set: union
+    last_claim = (w, task);                  // Tuple literal
+    done = done | {w: done[w]};              // Dict: merge (|), lookup ([])
 }
 
-action Acquire2(r: 0..2) {
-    require owner[r] == 0;
-    owner = owner | {r: 2};
-    held_2 = held_2 union {r};
-    mode = if len(held_2) == 0 then 1 else mode;
+action Complete(w: 0..1) {
+    require w in busy;                       // Set: in
+    busy = busy diff {w};                    // Set: diff
+    done = done | {w: done[w] + 1};          // Dict: merge update
 }
 
-action Release2(r: 0..2) {
-    require r in held_2;
-    owner = owner | {r: 0};
-    held_2 = held_2 diff {r};
-    mode = 2;
+action TogglePause() {
+    paused = if paused then false else true;  // if-then-else expression
 }
 
-invariant NoConflict {
-    len(held_1 intersect held_2) == 0
+// ─── invariant: safety properties checked in every reachable state ───
+
+// all quantifier + implies
+invariant ScoresValid {
+    all w in 0..1: done[w] >= 0 implies done[w] <= 3
 }
 
-invariant OwnerConsistency {
-    all r in held_1: owner[r] == 1
+// Nested quantifiers
+invariant NoDuplicateOverflow {
+    all w1 in 0..1:
+        all w2 in 0..1:
+            (w1 != w2) implies (done[w1] + done[w2] <= 3)
+}
+
+// let..in binding (expression form, inside invariant)
+invariant QueueBounded {
+    let q_len = len(queue) in
+    let total = q_len + next_id in
+    total <= 6
+}
+
+// Set: intersect
+invariant EmptyIntersect {
+    len(busy intersect {}) == 0
+}
+
+// Set: subset_of + set comprehension with filter
+invariant DoneWorkersValid {
+    {w in 0..1 if done[w] > 0} subset_of 0..1
+}
+
+// iff: biconditional
+invariant PauseSymmetry {
+    (paused iff paused) and (not paused iff not paused)
+}
+
+// any quantifier + or
+invariant SomeWorkerExists {
+    any w in 0..1: done[w] >= 0 or w in busy
+}
+
+// Arithmetic: division (/), modular (%)
+invariant ArithmeticDemo {
+    let half = 3 / 2 in
+    let remainder = next_id % 4 in
+    remainder >= 0 and half >= 0
+}
+
+// Tuple: field access .0, .1
+invariant LastClaimBounded {
+    last_claim.0 <= 1 and last_claim.1 <= 3
+}
+
+// Set: powerset
+invariant BusyInPowerset {
+    busy in powerset(0..1)
+}
+
+// Dict: keys
+invariant AllWorkersTracked {
+    len(keys(done)) == 2
+}
+
+// Dict: values
+invariant ValuesNonNegative {
+    all v in values(done): v >= 0
+}
+
+// fix: find first value satisfying predicate
+invariant FixDemo {
+    len(busy) == 0 or (
+        let first_busy = (fix w in 0..1 : w in busy) in
+        first_busy >= 0
+    )
+}
+
+// Set: union_all over set of sets
+invariant UnionAllDemo {
+    let per_worker = {{w} for w in 0..1 if w in busy} in
+    union_all(per_worker) == busy
+}
+
+// func call in invariant
+invariant ActiveWorkersValid {
+    len(ActiveWorkers()) <= 2
+}
+
+// Multi-param func + if-then-else
+invariant MaxDemo {
+    Max(len(busy), len(queue)) >= 0
+}
+
+// Arithmetic: subtraction (-), multiplication (*)
+invariant ArithMultSub {
+    let product = 2 * next_id in
+    let delta = 3 - len(queue) in
+    product >= 0 and delta >= 0 - 3
+}
+
+// ─── auxiliary invariant: assumed as hypothesis, not checked as goal ───
+// Useful for inductive strengthening in symbolic/k-induction mode.
+// See examples/other/auxiliary-test.specl for a detailed example.
+
+auxiliary invariant NextIdBound {
+    next_id >= len(done)
 }
