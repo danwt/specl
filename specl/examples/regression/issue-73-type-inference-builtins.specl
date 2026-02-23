@@ -1,0 +1,42 @@
+module Issue73TypeInferenceBuiltins
+
+// Regression: built-in functions (keys, values, powerset)
+// must work with untyped function parameters (Type::Var).
+// See https://github.com/danwt/specl/issues/73
+//
+// Note: untyped params cause IR types to be inferred as unbounded (Int),
+// so this example is tested via parse+typecheck only (not model-checked).
+
+const N: 0..3
+
+var d: Dict[0..N, 0..N]
+var s: Set[0..N]
+
+func getKeys(D) { keys(D) }
+func getValues(D) { values(D) }
+func getPowerset(S) { powerset(S) }
+
+init {
+    d = {k: 0 for k in 0..N};
+    s = {};
+}
+
+action Update(k: 0..N, v: 0..N) {
+    d = d | {k: v};
+}
+
+action AddToSet(k: 0..N) {
+    s = s union {k};
+}
+
+invariant KeysWork {
+    getKeys(d) == 0..N
+}
+
+invariant ValuesSubset {
+    all v in getValues(d) : v in 0..N
+}
+
+invariant PowersetContainsSelf {
+    s in getPowerset(s)
+}

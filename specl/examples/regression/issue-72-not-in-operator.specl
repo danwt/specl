@@ -1,0 +1,34 @@
+module Issue72NotInOperator
+
+// Regression: `not in` must parse as a binary operator (BinOp::NotIn).
+// Previously, `not in` could not be parsed — only `not(x in S)` worked.
+// See https://github.com/danwt/specl/issues/72
+//
+// Use: -c N=2
+
+const N: 0..5
+
+var s: Set[0..N]
+
+init {
+    s = {};
+}
+
+action Add(k: 0..N) {
+    require k not in s;
+    s = s union {k};
+}
+
+invariant NotInConsistent {
+    all k in 0..N :
+        k not in s or k in s
+}
+
+func isMissing(S, x) {
+    x not in S
+}
+
+invariant FuncNotIn {
+    all k in 0..N :
+        isMissing(s, k) implies not(k in s)
+}

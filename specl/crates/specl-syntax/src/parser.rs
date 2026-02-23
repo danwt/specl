@@ -619,6 +619,10 @@ impl Parser {
             }
 
             self.advance(); // consume operator
+            // `not in` is two tokens — consume the second one
+            if op == BinOp::NotIn {
+                self.advance();
+            }
 
             // Handle right-associativity
             let next_prec = if op.is_right_assoc() { prec } else { prec + 1 };
@@ -670,6 +674,10 @@ impl Parser {
             TokenKind::Slash => Some(BinOp::Div),
             TokenKind::Percent => Some(BinOp::Mod),
             TokenKind::In if allow_in_op => Some(BinOp::In),
+            // Two-token operator: `not in`
+            TokenKind::Not if allow_in_op && self.peek_ahead_kind(1) == TokenKind::In => {
+                Some(BinOp::NotIn)
+            }
             TokenKind::Union => Some(BinOp::Union),
             TokenKind::Intersect => Some(BinOp::Intersect),
             TokenKind::Diff => Some(BinOp::Diff),

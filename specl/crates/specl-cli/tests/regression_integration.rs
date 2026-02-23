@@ -180,6 +180,123 @@ invariant LetWorks {
     parse_and_typecheck(source).expect("let...in should still parse");
 }
 
+// ─── Issue #72: `not in` binary operator ───
+
+#[test]
+fn issue_72_not_in_parses() {
+    let source = r#"
+module Test
+var s: Set[0..3]
+init { s = {}; }
+action Add(k: 0..3) {
+    require k not in s;
+    s = s union {k};
+}
+invariant NotInWorks {
+    all k in 0..3 : k not in s or k in s
+}
+"#;
+    parse_and_typecheck(source).expect("`not in` should parse as binary operator");
+}
+
+#[test]
+fn issue_72_not_in_func_param() {
+    let source = r#"
+module Test
+var s: Set[0..3]
+func isMissing(S, x) { x not in S }
+init { s = {}; }
+action Add(k: 0..3) { s = s union {k}; }
+invariant FuncNotIn {
+    all k in 0..3 : isMissing(s, k) implies not(k in s)
+}
+"#;
+    parse_and_typecheck(source).expect("`not in` should work in func with untyped params");
+}
+
+#[test]
+fn issue_72_not_in_model_check() {
+    let source = r#"
+module Test
+const N: 0..3
+var s: Set[0..N]
+init { s = {}; }
+action Add(k: 0..N) {
+    require k not in s;
+    s = s union {k};
+}
+invariant NotInConsistent {
+    all k in 0..N : k not in s or k in s
+}
+"#;
+    let outcome = check_spec(source, &[("N", 2)]).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }),
+        "expected OK, got: {outcome:?}"
+    );
+}
+
+// ─── Issue #73: type inference for built-in functions with untyped params ───
+
+#[test]
+fn issue_73_keys_untyped_param() {
+    let source = r#"
+module Test
+var d: Dict[0..3, 0..3]
+func getKeys(D) { keys(D) }
+init { d = {k: 0 for k in 0..3}; }
+action Noop() { d = d; }
+invariant KeysWork { getKeys(d) == 0..3 }
+"#;
+    parse_and_typecheck(source).expect("keys() should work with untyped param");
+}
+
+#[test]
+fn issue_73_values_untyped_param() {
+    let source = r#"
+module Test
+var d: Dict[0..3, 0..3]
+func getValues(D) { values(D) }
+init { d = {k: 0 for k in 0..3}; }
+action Noop() { d = d; }
+invariant ValuesSubset { all v in getValues(d) : v in 0..3 }
+"#;
+    parse_and_typecheck(source).expect("values() should work with untyped param");
+}
+
+#[test]
+fn issue_73_powerset_untyped_param() {
+    let source = r#"
+module Test
+var s: Set[0..3]
+func getPowerset(S) { powerset(S) }
+init { s = {}; }
+action Add(k: 0..3) { s = s union {k}; }
+invariant PowersetContainsSelf { s in getPowerset(s) }
+"#;
+    parse_and_typecheck(source).expect("powerset() should work with untyped param");
+}
+
+#[test]
+fn issue_73_keys_model_check() {
+    let source = r#"
+module Test
+const N: 0..3
+var d: Dict[0..N, 0..N]
+func getKeys(D) { keys(D) }
+init { d = {k: 0 for k in 0..N}; }
+action Update(k: 0..N, v: 0..N) { d = d | {k: v}; }
+invariant KeysDomain { getKeys(d) == 0..N }
+"#;
+    let outcome = check_spec(source, &[("N", 2)]).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }),
+        "expected OK, got: {outcome:?}"
+    );
+}
+
+// ─── Ensure `let...in` still works (no regression from fix) ───
+
 #[test]
 fn let_in_inside_quantifier_body() {
     // In `let x = EXPR in BODY`, `in` is a keyword separator, so membership

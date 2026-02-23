@@ -806,6 +806,12 @@ impl TypeChecker {
                     Type::Fn(key_ty, _) => Type::Set(key_ty),
                     // For sequences, keys returns 1..len(seq), which is Set[Int]
                     Type::Seq(_) => Type::Set(Box::new(Type::Int)),
+                    Type::Var(_) => {
+                        let key = self.var_gen.fresh_type();
+                        let val = self.var_gen.fresh_type();
+                        self.unify(&ty, &Type::Fn(Box::new(key.clone()), Box::new(val)), expr.span)?;
+                        Type::Set(Box::new(key))
+                    }
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Fn(
@@ -824,6 +830,12 @@ impl TypeChecker {
                 let ty = self.env.resolve_type(&ty_raw);
                 match ty {
                     Type::Fn(_, val_ty) => Type::Set(val_ty),
+                    Type::Var(_) => {
+                        let key = self.var_gen.fresh_type();
+                        let val = self.var_gen.fresh_type();
+                        self.unify(&ty, &Type::Fn(Box::new(key), Box::new(val.clone())), expr.span)?;
+                        Type::Set(Box::new(val))
+                    }
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Fn(
@@ -852,6 +864,12 @@ impl TypeChecker {
                             });
                         }
                     },
+                    Type::Var(_) => {
+                        let elem = self.var_gen.fresh_type();
+                        let inner_set = Type::Set(Box::new(elem.clone()));
+                        self.unify(&ty, &Type::Set(Box::new(inner_set)), expr.span)?;
+                        Type::Set(Box::new(elem))
+                    }
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Set(Box::new(Type::Set(Box::new(
@@ -870,6 +888,11 @@ impl TypeChecker {
                 // Powerset takes Set[T] and returns Set[Set[T]]
                 match ty {
                     Type::Set(elem_ty) => Type::Set(Box::new(Type::Set(elem_ty))),
+                    Type::Var(_) => {
+                        let elem = self.var_gen.fresh_type();
+                        self.unify(&ty, &Type::Set(Box::new(elem.clone())), expr.span)?;
+                        Type::Set(Box::new(Type::Set(Box::new(elem))))
+                    }
                     _ => {
                         return Err(TypeError::TypeMismatch {
                             expected: Type::Set(Box::new(self.var_gen.fresh_type())),
