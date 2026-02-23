@@ -2,7 +2,8 @@
 //!
 //! Generates random specl programs exercising language features that the
 //! existing MiniSpec generator does not cover: sets, dicts, quantifiers,
-//! functions, let-bindings, if-then-else, comprehensions, membership tests.
+//! functions, let-bindings, if-then-else, comprehensions, membership tests,
+//! sequences, tuples, fix expressions, iff, subset_of, intersect, powerset.
 //!
 //! Properties tested:
 //!   1. Parse never panics (returns Ok or Err, no crash)
@@ -95,10 +96,20 @@ fn bool_expr_strategy(vars: Vec<String>, depth: u32) -> BoxedStrategy<String> {
         let v2 = vars.clone();
         prop_oneof![
             prop::bool::ANY.prop_map(|b| if b { "true".into() } else { "false".into() }),
-            (prop::sample::select(v), prop::sample::select(vec!["==".to_string(), "!=".into(), "<".into(), "<=".into(), ">".into(), ">=".into()]), 0i64..=5)
+            (
+                prop::sample::select(v),
+                prop::sample::select(vec![
+                    "==".to_string(),
+                    "!=".into(),
+                    "<".into(),
+                    "<=".into(),
+                    ">".into(),
+                    ">=".into()
+                ]),
+                0i64..=5
+            )
                 .prop_map(|(v, op, n)| format!("({v} {op} {n})")),
-            (0u8..=3, prop::sample::select(v2))
-                .prop_map(|(n, v)| format!("({n} in {v})")),
+            (0u8..=3, prop::sample::select(v2)).prop_map(|(n, v)| format!("({n} in {v})")),
         ]
     }
     .boxed();
@@ -139,8 +150,20 @@ fn bool_expr_strategy(vars: Vec<String>, depth: u32) -> BoxedStrategy<String> {
         // Quantifier with membership in body (exercises issue #69 fix)
         3 => {
             let v = v.clone();
-            (prop::sample::select(v), 1u8..=3)
+            (prop::sample::select(v.clone()), 1u8..=3)
                 .prop_map(|(var, bound)| format!("(all _qv in 0..{bound} : _qv in {var})"))
+        },
+        // Iff (biconditional)
+        2 => {
+            let v = v.clone();
+            (bool_expr_strategy(v.clone(), depth - 1), bool_expr_strategy(v, depth - 1))
+                .prop_map(|(l, r)| format!("({l} iff {r})"))
+        },
+        // subset_of
+        2 => {
+            let v = v.clone();
+            (prop::sample::select(v.clone()), prop::sample::select(v))
+                .prop_map(|(l, r)| format!("({l} subset_of {r})"))
         },
     ]
     .boxed()
@@ -314,6 +337,183 @@ invariant FilterSubset {{
     }
 }
 
+// ─── New spec generators (sequences, tuples, fix, set ops) ───
+
+#[derive(Debug, Clone)]
+struct SeqSpec {
+    bound: u8,
+    max_len: u8,
+}
+
+impl SeqSpec {
+    fn to_specl(&self) -> String {
+        let b = self.bound;
+        let ml = self.max_len;
+        format!(
+            r#"module SeqSpec
+
+var msgs: Seq[0..{b}]
+
+init {{ msgs = []; }}
+
+action Send(v: 0..{b}) {{
+    require len(msgs) < {ml};
+    msgs = msgs ++ [v];
+}}
+
+action Recv() {{
+    require len(msgs) > 0;
+    msgs = tail(msgs);
+}}
+
+invariant Bounded {{ len(msgs) <= {ml} }}
+
+invariant HeadInRange {{
+    len(msgs) > 0 implies (head(msgs) >= 0 and head(msgs) <= {b})
+}}
+"#,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct TupleSpec {
+    bound: u8,
+}
+
+impl TupleSpec {
+    fn to_specl(&self) -> String {
+        let b = self.bound;
+        format!(
+            r#"module TupleSpec
+
+var pair: (0..{b}, 0..{b})
+
+init {{ pair = (0, 0); }}
+
+action StepBoth() {{
+    require pair.0 < {b};
+    require pair.1 < {b};
+    pair = (pair.0 + 1, pair.1 + 1);
+}}
+
+action StepFirst() {{
+    require pair.0 < {b};
+    pair = (pair.0 + 1, pair.1);
+}}
+
+invariant FirstBounded {{ pair.0 >= 0 and pair.0 <= {b} }}
+invariant SecondBounded {{ pair.1 >= 0 and pair.1 <= {b} }}
+invariant FirstGeSecond {{ pair.0 >= pair.1 }}
+"#,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct FixSpec {
+    bound: u8,
+}
+
+impl FixSpec {
+    fn to_specl(&self) -> String {
+        let b = self.bound;
+        format!(
+            r#"module FixSpec
+
+var s: Set[0..{b}]
+
+func FirstMissing(ws) {{
+    if (all k in 0..{b} : k in ws) then
+        {b} + 1
+    else
+        fix k in 0..{b} : not(k in ws)
+}}
+
+init {{ s = {{}}; }}
+
+action Add(k: 0..{b}) {{ s = s union {{k}}; }}
+
+invariant FirstMissingValid {{
+    let fm = FirstMissing(s) in fm >= 0
+}}
+
+invariant FirstMissingBound {{
+    FirstMissing(s) <= {b} + 1
+}}
+"#,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct SetOpsSpec {
+    bound: u8,
+}
+
+impl SetOpsSpec {
+    fn to_specl(&self) -> String {
+        let b = self.bound;
+        format!(
+            r#"module SetOpsSpec
+
+var s1: Set[0..{b}]
+var s2: Set[0..{b}]
+
+init {{ s1 = {{}}; s2 = {{}}; }}
+
+action Add1(k: 0..{b}) {{ s1 = s1 union {{k}}; }}
+action Add2(k: 0..{b}) {{ s2 = s2 union {{k}}; }}
+
+invariant IntersectSubset {{
+    (s1 intersect s2) subset_of s1
+}}
+
+invariant UnionContainsBoth {{
+    s1 subset_of (s1 union s2) and s2 subset_of (s1 union s2)
+}}
+
+invariant DiffDisjoint {{
+    len((s1 diff s2) intersect s2) == 0
+}}
+
+invariant IffConsistent {{
+    all k in 0..{b} : (k in s1 iff k in s1)
+}}
+"#,
+        )
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PowersetSpec {
+    bound: u8,
+}
+
+impl PowersetSpec {
+    fn to_specl(&self) -> String {
+        let b = self.bound;
+        format!(
+            r#"module PowersetSpec
+
+var s: Set[0..{b}]
+
+init {{ s = {{}}; }}
+
+action Add(k: 0..{b}) {{ s = s union {{k}}; }}
+
+invariant SelfInPowerset {{ s in powerset(0..{b}) }}
+
+invariant EmptyInPowerset {{ {{}} in powerset(0..{b}) }}
+
+invariant PowersetSize {{
+    all sub in powerset(s) : sub subset_of s
+}}
+"#,
+        )
+    }
+}
+
 // ─── Properties ───
 
 proptest! {
@@ -392,6 +592,78 @@ proptest! {
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
     }
 
+    // ─── New spec generators: no-panic tests ───
+
+    #[test]
+    fn seq_spec_no_panic(bound in 1u8..=2, max_len in 2u8..=4) {
+        let spec = SeqSpec { bound, max_len };
+        let src = spec.to_specl();
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 5_000,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    #[test]
+    fn tuple_spec_no_panic(bound in 1u8..=3) {
+        let spec = TupleSpec { bound };
+        let src = spec.to_specl();
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 5_000,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    #[test]
+    fn fix_spec_no_panic(bound in 1u8..=3) {
+        let spec = FixSpec { bound };
+        let src = spec.to_specl();
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 5_000,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    #[test]
+    fn set_ops_spec_no_panic(bound in 1u8..=3) {
+        let spec = SetOpsSpec { bound };
+        let src = spec.to_specl();
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 5_000,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    #[test]
+    fn powerset_spec_no_panic(bound in 1u8..=2) {
+        let spec = PowersetSpec { bound };
+        let src = spec.to_specl();
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 10_000,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
     // Pretty-print roundtrip tests
 
     #[test]
@@ -434,11 +706,203 @@ proptest! {
         prop_assert_eq!(p1, p2, "pretty-print not idempotent");
     }
 
+    // ─── New spec generators: roundtrip tests ───
+
+    #[test]
+    fn seq_spec_roundtrip(bound in 1u8..=2, max_len in 2u8..=4) {
+        let spec = SeqSpec { bound, max_len };
+        let src = spec.to_specl();
+        let result = roundtrip_pretty(&src);
+        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
+        let (p1, p2) = result.unwrap();
+        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    #[test]
+    fn tuple_spec_roundtrip(bound in 1u8..=3) {
+        let spec = TupleSpec { bound };
+        let src = spec.to_specl();
+        let result = roundtrip_pretty(&src);
+        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
+        let (p1, p2) = result.unwrap();
+        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    #[test]
+    fn fix_spec_roundtrip(bound in 1u8..=3) {
+        let spec = FixSpec { bound };
+        let src = spec.to_specl();
+        let result = roundtrip_pretty(&src);
+        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
+        let (p1, p2) = result.unwrap();
+        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    #[test]
+    fn set_ops_spec_roundtrip(bound in 1u8..=3) {
+        let spec = SetOpsSpec { bound };
+        let src = spec.to_specl();
+        let result = roundtrip_pretty(&src);
+        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
+        let (p1, p2) = result.unwrap();
+        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    #[test]
+    fn powerset_spec_roundtrip(bound in 1u8..=2) {
+        let spec = PowersetSpec { bound };
+        let src = spec.to_specl();
+        let result = roundtrip_pretty(&src);
+        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
+        let (p1, p2) = result.unwrap();
+        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
     // Backend agreement
 
     #[test]
     fn set_spec_backend_agreement(bound in 1u8..=3, n_actions in 1u8..=2) {
         let spec = SetSpec { bound, n_actions };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
+    }
+
+    // ─── Backend agreement for all spec generators ───
+
+    #[test]
+    fn dict_spec_backend_agreement(kb in 1u8..=2, vb in 1u8..=2) {
+        let spec = DictSpec { key_bound: kb, val_bound: vb };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
+    }
+
+    #[test]
+    fn func_spec_backend_agreement(bound in 1u8..=2) {
+        let spec = FuncSpec { bound };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
+    }
+
+    #[test]
+    fn let_if_spec_backend_agreement(bound in 1u8..=3) {
+        let spec = LetIfSpec { bound };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
+    }
+
+    #[test]
+    fn comprehension_spec_backend_agreement(bound in 1u8..=2) {
+        let spec = ComprehensionSpec { bound };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
+    }
+
+    #[test]
+    fn seq_spec_backend_agreement(bound in 1u8..=2, max_len in 2u8..=3) {
+        let spec = SeqSpec { bound, max_len };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
+    }
+
+    #[test]
+    fn set_ops_spec_backend_agreement(bound in 1u8..=2) {
+        let spec = SetOpsSpec { bound };
         let src = spec.to_specl();
         let base = CheckConfig {
             parallel: false,
