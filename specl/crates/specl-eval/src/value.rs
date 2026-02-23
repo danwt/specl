@@ -7,7 +7,6 @@
 //! This reduces per-value memory from 32 bytes to 8 bytes (4x improvement),
 //! and makes Clone O(1) for all types (Arc refcount increment for heap types).
 
-use std::collections::BTreeMap;
 use std::fmt;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -23,7 +22,6 @@ const TAG_SET: u8 = 0x11; // Arc<Vec<Value>>
 const TAG_SEQ: u8 = 0x12; // Arc<Vec<Value>>
 const TAG_FN: u8 = 0x13; // Arc<Vec<(Value, Value)>>
 const TAG_INTMAP: u8 = 0x14; // Arc<Vec<Value>> (dense dict with implicit 0..N keys)
-const TAG_RECORD: u8 = 0x15; // Arc<BTreeMap<String, Value>>
 const TAG_TUPLE: u8 = 0x16; // Arc<Vec<Value>>
 const TAG_SOME: u8 = 0x17; // Arc<Value>
 const TAG_INTMAP2: u8 = 0x18; // Arc<IntMap2Data> (flattened 2-level dict)
@@ -46,7 +44,7 @@ pub struct IntMap2Data {
 /// NaN-boxed runtime value. 8 bytes.
 ///
 /// Stores inline integers (i56), booleans, and None directly.
-/// Heap types (String, Set, Seq, Fn, IntMap, Record, Tuple, Some)
+/// Heap types (String, Set, Seq, Fn, IntMap, Tuple, Some)
 /// are stored as Arc raw pointers for O(1) clone.
 #[repr(transparent)]
 pub struct Value(u64);
@@ -68,7 +66,6 @@ pub enum VK<'a> {
     IntMap(&'a [Value]),
     /// Flattened 2-level dict: (inner_size, flat_data).
     IntMap2(u32, &'a [Value]),
-    Record(&'a BTreeMap<String, Value>),
     Tuple(&'a [Value]),
     None,
     Some(&'a Value),
@@ -182,11 +179,6 @@ impl Value {
     }
 
     #[inline]
-    pub fn record(r: BTreeMap<String, Value>) -> Self {
-        Self::from_heap(TAG_RECORD, Arc::new(r))
-    }
-
-    #[inline]
     pub fn tuple(v: Vec<Value>) -> Self {
         Self::from_heap(TAG_TUPLE, Arc::new(v))
     }
@@ -237,13 +229,6 @@ impl Value {
         is_intmap,
         into_intmap_arc,
         from_intmap_arc
-    );
-    heap_methods!(
-        TAG_RECORD,
-        BTreeMap<String, Value>,
-        is_record,
-        into_record_arc,
-        from_record_arc
     );
     heap_methods!(
         TAG_TUPLE,
@@ -315,7 +300,6 @@ impl Value {
                 let d = unsafe { &*(self.ptr() as *const IntMap2Data) };
                 VK::IntMap2(d.inner_size, d.data.as_slice())
             }
-            TAG_RECORD => VK::Record(unsafe { &*(self.ptr() as *const BTreeMap<String, Value>) }),
             TAG_TUPLE => {
                 let vec = unsafe { &*(self.ptr() as *const Vec<Value>) };
                 VK::Tuple(vec.as_slice())
@@ -337,7 +321,6 @@ impl Value {
             TAG_SET => "Set",
             TAG_SEQ => "Seq",
             TAG_FN | TAG_INTMAP | TAG_INTMAP2 => "Fn",
-            TAG_RECORD => "Dict",
             TAG_TUPLE => "Tuple",
             TAG_NONE => "None",
             TAG_SOME => "Some",
@@ -469,14 +452,6 @@ impl Value {
         }
     }
 
-    pub fn as_record(&self) -> Option<&BTreeMap<String, Value>> {
-        if self.tag() == TAG_RECORD {
-            Some(unsafe { &*(self.ptr() as *const BTreeMap<String, Value>) })
-        } else {
-            None
-        }
-    }
-
     pub fn intmap_to_fn(arr: &[Value]) -> Value {
         Value::func(Arc::new(Self::intmap_to_fn_vec(arr)))
     }
@@ -562,15 +537,6 @@ impl Value {
                     }
                 }
             }
-            VK::Record(r) => {
-                out.push(6);
-                out.extend_from_slice(&(r.len() as u64).to_le_bytes());
-                for (k, v) in r {
-                    out.extend_from_slice(&(k.len() as u64).to_le_bytes());
-                    out.extend_from_slice(k.as_bytes());
-                    v.write_bytes(out);
-                }
-            }
             VK::Tuple(t) => {
                 out.push(7);
                 out.extend_from_slice(&(t.len() as u64).to_le_bytes());
@@ -624,12 +590,6 @@ impl Clone for Value {
                 unsafe { Arc::increment_strong_count(self.ptr() as *const IntMap2Data) };
                 Value(self.0)
             }
-            TAG_RECORD => {
-                unsafe {
-                    Arc::increment_strong_count(self.ptr() as *const BTreeMap<String, Value>)
-                };
-                Value(self.0)
-            }
             TAG_TUPLE => {
                 unsafe { Arc::increment_strong_count(self.ptr() as *const Vec<Value>) };
                 Value(self.0)
@@ -677,9 +637,6 @@ impl Drop for Value {
             },
             TAG_INTMAP2 => unsafe {
                 Arc::decrement_strong_count(self.ptr() as *const IntMap2Data);
-            },
-            TAG_RECORD => unsafe {
-                Arc::decrement_strong_count(self.ptr() as *const BTreeMap<String, Value>);
             },
             TAG_TUPLE => unsafe {
                 Arc::decrement_strong_count(self.ptr() as *const Vec<Value>);
@@ -769,7 +726,6 @@ impl PartialEq for Value {
             TAG_SEQ => self.as_seq() == other.as_seq(),
             TAG_FN => self.as_fn() == other.as_fn(),
             TAG_INTMAP => self.as_intmap() == other.as_intmap(),
-            TAG_RECORD => self.as_record() == other.as_record(),
             TAG_TUPLE => {
                 let a = unsafe { &*(self.ptr() as *const Vec<Value>) };
                 let b = unsafe { &*(other.ptr() as *const Vec<Value>) };
@@ -799,7 +755,6 @@ impl Value {
             TAG_SET => 3,
             TAG_SEQ => 4,
             TAG_FN | TAG_INTMAP | TAG_INTMAP2 => 5,
-            TAG_RECORD => 6,
             TAG_TUPLE => 7,
             TAG_NONE => 8,
             TAG_SOME => 9,
@@ -912,7 +867,6 @@ impl Ord for Value {
                 };
                 to_fn(self).cmp(&to_fn(other))
             }
-            (VK::Record(a), VK::Record(b)) => a.cmp(b),
             (VK::Tuple(a), VK::Tuple(b)) => a.cmp(b),
             (VK::None, VK::None) => Ordering::Equal,
             (VK::Some(a), VK::Some(b)) => a.cmp(b),
@@ -1049,14 +1003,6 @@ impl Hash for Value {
                     }
                 }
             }
-            VK::Record(r) => {
-                6u8.hash(state);
-                r.len().hash(state);
-                for (k, v) in r {
-                    k.hash(state);
-                    v.hash(state);
-                }
-            }
             VK::Tuple(t) => {
                 7u8.hash(state);
                 t.len().hash(state);
@@ -1150,16 +1096,6 @@ impl fmt::Display for Value {
                 }
                 write!(f, "}}")
             }
-            VK::Record(r) => {
-                write!(f, "{{")?;
-                for (i, (k, v)) in r.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", k, v)?;
-                }
-                write!(f, "}}")
-            }
             VK::Tuple(t) => {
                 write!(f, "(")?;
                 for (i, v) in t.iter().enumerate() {
@@ -1206,11 +1142,6 @@ impl fmt::Debug for Value {
             }
             VK::IntMap2(inner_size, data) => {
                 write!(f, "IntMap2(inner_size={}, len={})", inner_size, data.len())
-            }
-            VK::Record(r) => {
-                write!(f, "Dict(")?;
-                f.debug_map().entries(r.iter()).finish()?;
-                write!(f, ")")
             }
             VK::Tuple(t) => {
                 write!(f, "Tuple(")?;

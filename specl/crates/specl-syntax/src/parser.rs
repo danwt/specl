@@ -525,26 +525,11 @@ impl Parser {
                 Ok(TypeExpr::Range(Box::new(lo), Box::new(hi), span))
             }
             TokenKind::LParen => {
-                // Tuple type like (T1, T2, ...)
+                // Parenthesized type expression
                 self.advance();
-                let first = self.parse_type_expr()?;
-                if self.match_token(TokenKind::Comma) {
-                    // It's a tuple type
-                    let mut elements = vec![first];
-                    loop {
-                        elements.push(self.parse_type_expr()?);
-                        if !self.match_token(TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(TokenKind::RParen)?;
-                    let span = start.merge(self.prev_span());
-                    Ok(TypeExpr::Tuple(elements, span))
-                } else {
-                    // Just a parenthesized type - unwrap it
-                    self.expect(TokenKind::RParen)?;
-                    Ok(first)
-                }
+                let inner = self.parse_type_expr()?;
+                self.expect(TokenKind::RParen)?;
+                Ok(inner)
             }
             _ => {
                 // Named type or identifier that could start a range
@@ -772,17 +757,7 @@ impl Parser {
                     );
                 }
             } else if self.match_token(TokenKind::Dot) {
-                // Support both identifier fields (r.name) and numeric fields (t.0, t.1)
-                let field = if let TokenKind::Integer(n) = self.peek_kind() {
-                    let span = self.current_span();
-                    self.advance();
-                    Ident {
-                        name: n.to_string(),
-                        span,
-                    }
-                } else {
-                    self.parse_ident()?
-                };
+                let field = self.parse_ident()?;
                 let span = expr.span.merge(field.span);
                 expr = Expr::new(
                     ExprKind::Field {
@@ -828,19 +803,6 @@ impl Parser {
                 );
                 // Range is terminal - don't allow chaining
                 break;
-            } else if self.match_token(TokenKind::With) {
-                // Record/dict update: expr with { field: value, [key]: value, ... }
-                self.expect(TokenKind::LBrace)?;
-                let updates = self.parse_record_updates()?;
-                self.expect(TokenKind::RBrace)?;
-                let span = expr.span.merge(self.prev_span());
-                expr = Expr::new(
-                    ExprKind::RecordUpdate {
-                        base: Box::new(expr),
-                        updates,
-                    },
-                    span,
-                );
             } else {
                 break;
             }
@@ -910,25 +872,10 @@ impl Parser {
             }
             TokenKind::LParen => {
                 self.advance();
-                let first = self.parse_expr()?;
-                if self.match_token(TokenKind::Comma) {
-                    // It's a tuple literal
-                    let mut elements = vec![first];
-                    loop {
-                        elements.push(self.parse_expr()?);
-                        if !self.match_token(TokenKind::Comma) {
-                            break;
-                        }
-                    }
-                    self.expect(TokenKind::RParen)?;
-                    let span = start.merge(self.prev_span());
-                    Ok(Expr::new(ExprKind::TupleLit(elements), span))
-                } else {
-                    // Just a parenthesized expression
-                    self.expect(TokenKind::RParen)?;
-                    let span = start.merge(self.prev_span());
-                    Ok(Expr::new(ExprKind::Paren(Box::new(first)), span))
-                }
+                let inner = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                let span = start.merge(self.prev_span());
+                Ok(Expr::new(ExprKind::Paren(Box::new(inner)), span))
             }
             TokenKind::LBrace => self.parse_set_or_record_lit(),
             TokenKind::LBracket => self.parse_seq_lit(),
@@ -1308,42 +1255,6 @@ impl Parser {
             },
             span,
         ))
-    }
-
-    /// Parse record update fields: { field: value, [key]: value, ... }
-    fn parse_record_updates(&mut self) -> ParseResult<Vec<RecordFieldUpdate>> {
-        let mut updates = Vec::new();
-
-        if self.check(TokenKind::RBrace) {
-            return Ok(updates);
-        }
-
-        loop {
-            let update = if self.match_token(TokenKind::LBracket) {
-                // Dynamic key: [key]: value
-                let key = self.parse_expr()?;
-                self.expect(TokenKind::RBracket)?;
-                self.expect(TokenKind::Colon)?;
-                let value = self.parse_expr()?;
-                RecordFieldUpdate::Dynamic { key, value }
-            } else {
-                // Static field: field: value
-                let name = self.parse_ident()?;
-                self.expect(TokenKind::Colon)?;
-                let value = self.parse_expr()?;
-                RecordFieldUpdate::Field { name, value }
-            };
-            updates.push(update);
-
-            if !self.match_token(TokenKind::Comma) {
-                break;
-            }
-            if self.check(TokenKind::RBrace) {
-                break; // trailing comma
-            }
-        }
-
-        Ok(updates)
     }
 
     // === Helper methods ===

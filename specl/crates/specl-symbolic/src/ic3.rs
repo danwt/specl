@@ -454,11 +454,6 @@ fn collect_sorts_for_kind(
                 collect_sorts_for_kind(kind, bool_sort, int_sort, out);
             }
         }
-        VarKind::ExplodedRecord { field_kinds, .. } => {
-            for kind in field_kinds {
-                collect_sorts_for_kind(kind, bool_sort, int_sort, out);
-            }
-        }
     }
 }
 

@@ -726,12 +726,6 @@ fn collect_param_refs_recursive(
         CompiledExpr::Field { base, .. } => {
             collect_param_refs_recursive(base, params);
         }
-        CompiledExpr::RecordUpdate { base, updates } => {
-            collect_param_refs_recursive(base, params);
-            for (_, v) in updates {
-                collect_param_refs_recursive(v, params);
-            }
-        }
         // Leaves with no param refs
         CompiledExpr::Bool(_)
         | CompiledExpr::Int(_)
@@ -852,12 +846,6 @@ fn collect_string_literals_in_expr(
         }
         CompiledExpr::Field { base, .. } => {
             collect_string_literals_in_expr(base, out);
-        }
-        CompiledExpr::RecordUpdate { base, updates } => {
-            collect_string_literals_in_expr(base, out);
-            for (_, v) in updates {
-                collect_string_literals_in_expr(v, out);
-            }
         }
         CompiledExpr::Bool(_)
         | CompiledExpr::Int(_)
@@ -1723,11 +1711,6 @@ impl Explorer {
                 Type::Fn(k, v) => {
                     type_contains_range(k, sym_range) || type_contains_range(v, sym_range)
                 }
-                Type::Tuple(elems) => elems.iter().any(|e| type_contains_range(e, sym_range)),
-                Type::Record(rec) => rec
-                    .fields
-                    .values()
-                    .any(|e| type_contains_range(e, sym_range)),
                 _ => false,
             }
         }
@@ -2060,9 +2043,6 @@ impl Explorer {
                     .or_else(|| recurse(lo))
                     .or_else(|| recurse(hi)),
                 CompiledExpr::Range { lo, hi } => recurse(lo).or_else(|| recurse(hi)),
-                CompiledExpr::RecordUpdate { base, updates } => {
-                    recurse(base).or_else(|| updates.iter().find_map(|(_, v)| recurse(v)))
-                }
                 CompiledExpr::Call { func, args } => {
                     recurse(func).or_else(|| args.iter().find_map(&recurse))
                 }
@@ -2270,12 +2250,6 @@ impl Explorer {
             CompiledExpr::DictLit(pairs) => {
                 for (k, v) in pairs {
                     Self::collect_var_refs(k, vars);
-                    Self::collect_var_refs(v, vars);
-                }
-            }
-            CompiledExpr::RecordUpdate { base, updates } => {
-                Self::collect_var_refs(base, vars);
-                for (_, v) in updates {
                     Self::collect_var_refs(v, vars);
                 }
             }
@@ -3505,14 +3479,6 @@ impl Explorer {
                 let elem_domain = self.type_domain(elem_ty);
                 self.power_set(&elem_domain)
             }
-            specl_types::Type::Record(record_type) => {
-                // Generate cartesian product of all field domains
-                self.record_domain(record_type)
-            }
-            specl_types::Type::Tuple(elem_types) => {
-                // Generate cartesian product of all element domains
-                self.tuple_domain(elem_types)
-            }
             specl_types::Type::Fn(key_ty, val_ty) => {
                 // Generate all possible functions from key domain to value domain
                 self.fn_domain(key_ty, val_ty)
@@ -3525,98 +3491,6 @@ impl Explorer {
                 // Default domain
                 vec![Value::none()]
             }
-        }
-    }
-
-    /// Generate all possible record values for a record type.
-    fn record_domain(&self, record_type: &specl_types::RecordType) -> Vec<Value> {
-        use std::collections::BTreeMap;
-
-        let field_names: Vec<&str> = record_type
-            .fields
-            .keys()
-            .map(|name| name.as_str())
-            .collect();
-        let field_domains: Vec<Vec<Value>> = record_type
-            .fields
-            .values()
-            .map(|ty| self.type_domain(ty))
-            .collect();
-
-        if field_domains.is_empty() {
-            return vec![Value::record(BTreeMap::new())];
-        }
-
-        // Compute cartesian product
-        let mut result = vec![];
-        self.enumerate_record_fields(
-            &field_names,
-            &field_domains,
-            0,
-            BTreeMap::new(),
-            &mut |record| {
-                result.push(Value::record(record));
-            },
-        );
-        result
-    }
-
-    fn enumerate_record_fields<F>(
-        &self,
-        field_names: &[&str],
-        field_domains: &[Vec<Value>],
-        idx: usize,
-        current: std::collections::BTreeMap<String, Value>,
-        callback: &mut F,
-    ) where
-        F: FnMut(std::collections::BTreeMap<String, Value>),
-    {
-        if idx >= field_names.len() {
-            callback(current);
-            return;
-        }
-
-        for value in &field_domains[idx] {
-            let mut next = current.clone();
-            next.insert(field_names[idx].to_string(), value.clone());
-            self.enumerate_record_fields(field_names, field_domains, idx + 1, next, callback);
-        }
-    }
-
-    /// Generate all possible tuple values (cartesian product of element domains).
-    fn tuple_domain(&self, elem_types: &[specl_types::Type]) -> Vec<Value> {
-        let elem_domains: Vec<Vec<Value>> =
-            elem_types.iter().map(|ty| self.type_domain(ty)).collect();
-
-        if elem_domains.is_empty() {
-            return vec![Value::tuple(vec![])];
-        }
-
-        let mut result = vec![];
-        self.enumerate_tuple_elements(&elem_domains, 0, vec![], &mut |tuple| {
-            result.push(Value::tuple(tuple));
-        });
-        result
-    }
-
-    fn enumerate_tuple_elements<F>(
-        &self,
-        elem_domains: &[Vec<Value>],
-        idx: usize,
-        current: Vec<Value>,
-        callback: &mut F,
-    ) where
-        F: FnMut(Vec<Value>),
-    {
-        if idx >= elem_domains.len() {
-            callback(current);
-            return;
-        }
-
-        for value in &elem_domains[idx] {
-            let mut next = current.clone();
-            next.push(value.clone());
-            self.enumerate_tuple_elements(elem_domains, idx + 1, next, callback);
         }
     }
 

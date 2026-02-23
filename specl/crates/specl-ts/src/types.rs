@@ -1,7 +1,6 @@
 //! Transition system types — generic, zero specl dependencies.
 
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 /// A generic transition system specification.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -98,12 +97,6 @@ pub enum TsType {
         key: Box<TsType>,
         value: Box<TsType>,
     },
-    Record {
-        fields: BTreeMap<std::string::String, TsType>,
-    },
-    Tuple {
-        elements: Vec<TsType>,
-    },
     Option {
         inner: Box<TsType>,
     },
@@ -154,9 +147,6 @@ pub enum TsExpr {
         elements: Vec<TsExpr>,
     },
     SeqLit {
-        elements: Vec<TsExpr>,
-    },
-    TupleLit {
         elements: Vec<TsExpr>,
     },
     DictLit {
@@ -236,11 +226,6 @@ pub enum TsExpr {
         hi: Box<TsExpr>,
     },
 
-    // Record update
-    RecordUpdate {
-        base: Box<TsExpr>,
-        updates: Vec<(String, TsExpr)>,
-    },
 }
 
 /// Binary operators — same as `specl_ir::BinOp`.

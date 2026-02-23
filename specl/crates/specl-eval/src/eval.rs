@@ -246,23 +246,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
         }
 
-        CompiledExpr::Field { base, field } => {
+        CompiledExpr::Field { base, field: _ } => {
             let base_val = eval(base, ctx)?;
-            match base_val.kind() {
-                VK::Record(r) => r
-                    .get(field)
-                    .cloned()
-                    .ok_or_else(|| EvalError::KeyNotFound(field.clone())),
-                VK::Tuple(t) => {
-                    let idx: usize = field.parse().map_err(|_| {
-                        EvalError::Internal(format!("invalid tuple field: {field}"))
-                    })?;
-                    t.get(idx)
-                        .cloned()
-                        .ok_or_else(|| EvalError::KeyNotFound(field.clone()))
-                }
-                _ => Err(type_mismatch("Dict or Tuple", &base_val)),
-            }
+            Err(type_mismatch("unsupported field access", &base_val))
         }
 
         CompiledExpr::Call { func, args } => {
@@ -310,19 +296,6 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             Err(EvalError::Internal(
                 "action calls should be handled by model checker".to_string(),
             ))
-        }
-
-        CompiledExpr::RecordUpdate { base, updates } => {
-            let base_val = eval(base, ctx)?;
-            if !base_val.is_record() {
-                return Err(type_mismatch("Dict", &base_val));
-            }
-            let mut record = base_val.into_record_arc();
-            let r = Arc::make_mut(&mut record);
-            for (name, value) in updates {
-                r.insert(name.clone(), eval(value, ctx)?);
-            }
-            Ok(Value::from_record_arc(record))
         }
 
         CompiledExpr::FnUpdate { base, key, value } => {

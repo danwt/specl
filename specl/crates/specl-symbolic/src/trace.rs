@@ -271,22 +271,6 @@ fn extract_state(
                 }
                 format!("({})", elems.join(", "))
             }
-            VarKind::ExplodedRecord {
-                field_names,
-                field_kinds,
-            } => {
-                let mut fields = Vec::new();
-                let mut offset = 0;
-                for (name, kind) in field_names.iter().zip(field_kinds.iter()) {
-                    let stride = kind.z3_var_count();
-                    let field_vars = &z3_vars[offset..offset + stride];
-                    let val_str =
-                        format_compound_value(model, kind, field_vars, &layout.string_table);
-                    fields.push(format!("{}: {}", name, val_str));
-                    offset += stride;
-                }
-                format!("{{{}}}", fields.join(", "))
-            }
         };
 
         state.push((entry.name.clone(), value_str));
@@ -409,21 +393,6 @@ fn format_compound_value(
                 offset += stride;
             }
             format!("({})", elems.join(", "))
-        }
-        VarKind::ExplodedRecord {
-            field_names,
-            field_kinds,
-        } => {
-            let mut fields = Vec::new();
-            let mut offset = 0;
-            for (name, kind) in field_names.iter().zip(field_kinds.iter()) {
-                let stride = kind.z3_var_count();
-                let field_vars = &vars[offset..offset + stride];
-                let val_str = format_compound_value(model, kind, field_vars, string_table);
-                fields.push(format!("{}: {}", name, val_str));
-                offset += stride;
-            }
-            format!("{{{}}}", fields.join(", "))
         }
     }
 }

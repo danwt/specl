@@ -355,20 +355,6 @@ fn type_domain_size(ty: &Type) -> Option<u128> {
             let inner_size = type_domain_size(inner)?;
             Some(inner_size + 1)
         }
-        Type::Tuple(elems) => {
-            let mut product: u128 = 1;
-            for e in elems {
-                product = product.saturating_mul(type_domain_size(e)?);
-            }
-            Some(product)
-        }
-        Type::Record(rec) => {
-            let mut product: u128 = 1;
-            for ty in rec.fields.values() {
-                product = product.saturating_mul(type_domain_size(ty)?);
-            }
-            Some(product)
-        }
         _ => None,
     }
 }

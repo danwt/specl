@@ -225,13 +225,6 @@ impl TypeChecker {
                     _ => Ok(Type::Int), // Fallback to Int if bounds aren't literals
                 }
             }
-            TypeExpr::Tuple(elems, _) => {
-                let elem_types: Vec<Type> = elems
-                    .iter()
-                    .map(|ty| self.convert_type_expr(ty))
-                    .collect::<TypeResult<_>>()?;
-                Ok(Type::Tuple(elem_types))
-            }
         }
     }
 
@@ -388,36 +381,6 @@ impl TypeChecker {
                 let base_ty = self.env.resolve_type(&base_ty_raw);
 
                 match &base_ty {
-                    Type::Record(rec) => {
-                        if let Some(field_ty) = rec.get_field(&field.name) {
-                            field_ty.clone()
-                        } else {
-                            return Err(TypeError::InvalidField {
-                                ty: base_ty,
-                                field: field.name.clone(),
-                                span: field.span,
-                            });
-                        }
-                    }
-                    Type::Tuple(elems) => {
-                        if let Ok(idx) = field.name.parse::<usize>() {
-                            if idx < elems.len() {
-                                elems[idx].clone()
-                            } else {
-                                return Err(TypeError::InvalidField {
-                                    ty: base_ty,
-                                    field: field.name.clone(),
-                                    span: field.span,
-                                });
-                            }
-                        } else {
-                            return Err(TypeError::InvalidField {
-                                ty: base_ty,
-                                field: field.name.clone(),
-                                span: field.span,
-                            });
-                        }
-                    }
                     // MVP: Allow field access on Int (for TLA+ specs where elements are records
                     // but type inference defaults to Int). Return Int as the field type.
                     Type::Int => Type::Int,
@@ -522,15 +485,6 @@ impl TypeChecker {
                 }
             }
 
-            ExprKind::TupleLit(elements) => {
-                // Each element can have a different type
-                let elem_types: Vec<Type> = elements
-                    .iter()
-                    .map(|e| self.infer_expr(e))
-                    .collect::<TypeResult<_>>()?;
-                Type::Tuple(elem_types)
-            }
-
             ExprKind::DictLit(entries) => {
                 if entries.is_empty() {
                     // Empty dict - use fresh type variables
@@ -588,64 +542,6 @@ impl TypeChecker {
                 self.env.pop_scope();
 
                 Type::Set(Box::new(element_ty))
-            }
-
-            ExprKind::RecordUpdate { base, updates } => {
-                let base_ty_raw = self.infer_expr(base)?;
-                let base_ty = self.env.resolve_type(&base_ty_raw);
-
-                match &base_ty {
-                    Type::Record(rec) => {
-                        for update in updates {
-                            match update {
-                                RecordFieldUpdate::Field { name, value } => {
-                                    let expected = rec.get_field(&name.name).ok_or_else(|| {
-                                        TypeError::InvalidField {
-                                            ty: base_ty.clone(),
-                                            field: name.name.clone(),
-                                            span: name.span,
-                                        }
-                                    })?;
-                                    let value_ty = self.infer_expr(value)?;
-                                    self.unify(expected, &value_ty, value.span)?;
-                                }
-                                RecordFieldUpdate::Dynamic { key, value } => {
-                                    let _ = self.infer_expr(key)?;
-                                    let _ = self.infer_expr(value)?;
-                                }
-                            }
-                        }
-                        base_ty
-                    }
-                    Type::Fn(key_ty, value_ty) => {
-                        // Function update { f with [k]: v }
-                        for update in updates {
-                            match update {
-                                RecordFieldUpdate::Dynamic { key, value } => {
-                                    let key_actual = self.infer_expr(key)?;
-                                    let value_actual = self.infer_expr(value)?;
-                                    self.unify(key_ty, &key_actual, key.span)?;
-                                    self.unify(value_ty, &value_actual, value.span)?;
-                                }
-                                RecordFieldUpdate::Field { name, .. } => {
-                                    return Err(TypeError::InvalidField {
-                                        ty: base_ty.clone(),
-                                        field: name.name.clone(),
-                                        span: name.span,
-                                    });
-                                }
-                            }
-                        }
-                        base_ty
-                    }
-                    _ => {
-                        return Err(TypeError::InvalidField {
-                            ty: base_ty,
-                            field: "<update>".to_string(),
-                            span: expr.span,
-                        });
-                    }
-                }
             }
 
             ExprKind::Quantifier {
@@ -1179,46 +1075,6 @@ impl TypeChecker {
                 let s2 = self.unify(&a_val, &b_val, span)?;
                 Ok(s1.compose(&s2))
             }
-            (Type::Record(a_rec), Type::Record(b_rec)) => {
-                if a_rec.fields.keys().collect::<Vec<_>>()
-                    != b_rec.fields.keys().collect::<Vec<_>>()
-                {
-                    return Err(TypeError::UnificationFailure {
-                        a: a.clone(),
-                        b: b.clone(),
-                        span,
-                    });
-                }
-
-                let mut subst = Substitution::new();
-                for (name, a_ty) in &a_rec.fields {
-                    let b_ty = b_rec.fields.get(name).unwrap();
-                    let a_ty = a_ty.substitute(&subst);
-                    let b_ty = b_ty.substitute(&subst);
-                    let s = self.unify(&a_ty, &b_ty, span)?;
-                    subst = subst.compose(&s);
-                }
-                Ok(subst)
-            }
-            (Type::Tuple(a_elems), Type::Tuple(b_elems)) => {
-                if a_elems.len() != b_elems.len() {
-                    return Err(TypeError::UnificationFailure {
-                        a: a.clone(),
-                        b: b.clone(),
-                        span,
-                    });
-                }
-
-                let mut subst = Substitution::new();
-                for (a_ty, b_ty) in a_elems.iter().zip(b_elems.iter()) {
-                    let a_ty = a_ty.substitute(&subst);
-                    let b_ty = b_ty.substitute(&subst);
-                    let s = self.unify(&a_ty, &b_ty, span)?;
-                    subst = subst.compose(&s);
-                }
-                Ok(subst)
-            }
-
             // Numeric types: Int subsumes Nat and Range
             (Type::Int, Type::Nat) | (Type::Nat, Type::Int) => Ok(Substitution::new()),
             (Type::Int, Type::Range(_, _)) | (Type::Range(_, _), Type::Int) => {
@@ -1255,8 +1111,6 @@ impl TypeChecker {
             Type::Var(v) => v == var,
             Type::Set(t) | Type::Seq(t) | Type::Option(t) => Self::occurs_in_impl(var, t),
             Type::Fn(k, v) => Self::occurs_in_impl(var, k) || Self::occurs_in_impl(var, v),
-            Type::Record(r) => r.fields.values().any(|t| Self::occurs_in_impl(var, t)),
-            Type::Tuple(elems) => elems.iter().any(|t| Self::occurs_in_impl(var, t)),
             _ => false,
         }
     }

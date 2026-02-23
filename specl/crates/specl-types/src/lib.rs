@@ -8,4 +8,4 @@ pub mod types;
 pub use checker::{check_module, TypeChecker};
 pub use env::{ActionSig, TypeEnv};
 pub use error::{TypeError, TypeResult};
-pub use types::{RecordType, Substitution, Type, TypeVar, TypeVarGen};
+pub use types::{Substitution, Type, TypeVar, TypeVarGen};

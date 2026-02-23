@@ -56,12 +56,6 @@ pub enum VarKind {
     /// Tuple: flattened element variables.
     /// Z3 layout: [elem_0_vars..., elem_1_vars..., ...]
     ExplodedTuple { element_kinds: Vec<VarKind> },
-    /// Record: sorted field names with flattened variables.
-    /// Z3 layout: [field_0_vars..., field_1_vars..., ...]
-    ExplodedRecord {
-        field_names: Vec<String>,
-        field_kinds: Vec<VarKind>,
-    },
 }
 
 impl VarLayout {
@@ -204,30 +198,6 @@ fn type_to_kind(
             Ok(VarKind::ExplodedSeq {
                 max_len,
                 elem_kind: Box::new(elem_kind),
-            })
-        }
-        Type::Tuple(elems) => {
-            let kinds = elems
-                .iter()
-                .map(|t| type_to_kind(t, var_idx, spec, consts, string_table, seq_bound))
-                .collect::<SymbolicResult<Vec<_>>>()?;
-            Ok(VarKind::ExplodedTuple {
-                element_kinds: kinds,
-            })
-        }
-        Type::Record(rec) => {
-            let mut field_names: Vec<String> = rec.fields.keys().cloned().collect();
-            field_names.sort();
-            let field_kinds = field_names
-                .iter()
-                .map(|name| {
-                    let ty = &rec.fields[name];
-                    type_to_kind(ty, var_idx, spec, consts, string_table, seq_bound)
-                })
-                .collect::<SymbolicResult<Vec<_>>>()?;
-            Ok(VarKind::ExplodedRecord {
-                field_names,
-                field_kinds,
             })
         }
         Type::Option(inner) => {
@@ -381,30 +351,6 @@ fn type_to_kind_simple(ty: &Type, seq_bound: usize) -> SymbolicResult<VarKind> {
             Ok(VarKind::ExplodedSeq {
                 max_len: seq_bound,
                 elem_kind: Box::new(elem_kind),
-            })
-        }
-        Type::Tuple(elems) => {
-            let kinds = elems
-                .iter()
-                .map(|t| type_to_kind_simple(t, seq_bound))
-                .collect::<SymbolicResult<Vec<_>>>()?;
-            Ok(VarKind::ExplodedTuple {
-                element_kinds: kinds,
-            })
-        }
-        Type::Record(rec) => {
-            let mut field_names: Vec<String> = rec.fields.keys().cloned().collect();
-            field_names.sort();
-            let field_kinds = field_names
-                .iter()
-                .map(|name| {
-                    let ty = &rec.fields[name];
-                    type_to_kind_simple(ty, seq_bound)
-                })
-                .collect::<SymbolicResult<Vec<_>>>()?;
-            Ok(VarKind::ExplodedRecord {
-                field_names,
-                field_kinds,
             })
         }
         Type::Option(inner) => {
@@ -702,9 +648,6 @@ impl VarKind {
             VarKind::ExplodedOption { inner_kind } => 1 + inner_kind.z3_var_count(),
             VarKind::ExplodedTuple { element_kinds } => {
                 element_kinds.iter().map(|k| k.z3_var_count()).sum()
-            }
-            VarKind::ExplodedRecord { field_kinds, .. } => {
-                field_kinds.iter().map(|k| k.z3_var_count()).sum()
             }
         }
     }

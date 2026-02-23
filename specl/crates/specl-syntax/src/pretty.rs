@@ -293,16 +293,6 @@ impl PrettyPrinter {
                 self.write("..");
                 self.print_expr(hi);
             }
-            TypeExpr::Tuple(elements, _) => {
-                self.write("(");
-                for (i, elem) in elements.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.print_type_expr(elem);
-                }
-                self.write(")");
-            }
         }
     }
 
@@ -400,16 +390,6 @@ impl PrettyPrinter {
                 }
                 self.write("]");
             }
-            ExprKind::TupleLit(elements) => {
-                self.write("(");
-                for (i, elem) in elements.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    self.print_expr(elem);
-                }
-                self.write(")");
-            }
             ExprKind::DictLit(entries) => {
                 if entries.is_empty() {
                     self.write("{:}");
@@ -452,29 +432,6 @@ impl PrettyPrinter {
                 if let Some(f) = filter {
                     self.write(" if ");
                     self.print_expr(f);
-                }
-                self.write(" }");
-            }
-            ExprKind::RecordUpdate { base, updates } => {
-                self.print_expr(base);
-                self.write(" with { ");
-                for (i, update) in updates.iter().enumerate() {
-                    if i > 0 {
-                        self.write(", ");
-                    }
-                    match update {
-                        RecordFieldUpdate::Field { name, value } => {
-                            self.write(&name.name);
-                            self.write(": ");
-                            self.print_expr(value);
-                        }
-                        RecordFieldUpdate::Dynamic { key, value } => {
-                            self.write("[");
-                            self.print_expr(key);
-                            self.write("]: ");
-                            self.print_expr(value);
-                        }
-                    }
                 }
                 self.write(" }");
             }

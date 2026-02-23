@@ -4051,13 +4051,6 @@ fn value_to_json(v: &Value) -> serde_json::Value {
                 .collect();
             serde_json::Value::Object(obj)
         }
-        VK::Record(fields) => {
-            let obj: serde_json::Map<String, serde_json::Value> = fields
-                .iter()
-                .map(|(k, v)| (k.clone(), value_to_json(v)))
-                .collect();
-            serde_json::Value::Object(obj)
-        }
         VK::Tuple(elems) => serde_json::Value::Array(elems.iter().map(value_to_json).collect()),
         VK::None => serde_json::Value::Null,
         VK::IntMap2(inner_size, data) => {
@@ -4118,13 +4111,6 @@ fn value_to_itf(v: &Value) -> serde_json::Value {
                 })
                 .collect();
             serde_json::json!({"#map": entries})
-        }
-        VK::Record(fields) => {
-            let obj: serde_json::Map<String, serde_json::Value> = fields
-                .iter()
-                .map(|(k, v)| (k.clone(), value_to_itf(v)))
-                .collect();
-            serde_json::Value::Object(obj)
         }
         VK::Tuple(elems) => {
             serde_json::json!({"#tup": elems.iter().map(value_to_itf).collect::<Vec<_>>()})
@@ -4384,13 +4370,6 @@ fn format_value_compact(v: &Value) -> String {
                 .iter()
                 .enumerate()
                 .map(|(i, v)| format!("{}:{}", i, v))
-                .collect();
-            format!("{{{}}}", inner.join(","))
-        }
-        VK::Record(r) => {
-            let inner: Vec<String> = r
-                .iter()
-                .map(|(k, v)| format!("{}:{}", k, format_value_compact(v)))
                 .collect();
             format!("{{{}}}", inner.join(","))
         }

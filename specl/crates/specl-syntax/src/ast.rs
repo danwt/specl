@@ -232,8 +232,6 @@ pub enum TypeExpr {
     Option(Box<TypeExpr>, Span),
     /// Range type `lo..hi`.
     Range(Box<Expr>, Box<Expr>, Span),
-    /// Tuple type `(T1, T2, ...)`.
-    Tuple(Vec<TypeExpr>, Span),
 }
 
 impl TypeExpr {
@@ -245,7 +243,6 @@ impl TypeExpr {
             TypeExpr::Dict(_, _, span) => *span,
             TypeExpr::Option(_, span) => *span,
             TypeExpr::Range(_, _, span) => *span,
-            TypeExpr::Tuple(_, span) => *span,
         }
     }
 }
@@ -303,8 +300,6 @@ pub enum ExprKind {
     SetLit(Vec<Expr>),
     /// Sequence literal `[a, b, c]` or empty `[]`.
     SeqLit(Vec<Expr>),
-    /// Tuple literal `(a, b, c)`.
-    TupleLit(Vec<Expr>),
     /// Dict literal `{ key: value, ... }` where keys are expressions.
     DictLit(Vec<(Expr, Expr)>),
     /// Function literal `fn(x in S) => e`.
@@ -320,12 +315,6 @@ pub enum ExprKind {
         var: Ident,
         domain: Box<Expr>,
         filter: Option<Box<Expr>>,
-    },
-
-    /// Record update `e with { field: value, ... }`.
-    RecordUpdate {
-        base: Box<Expr>,
-        updates: Vec<RecordFieldUpdate>,
     },
 
     /// Quantifier `forall x in S: P` or `exists x in S: P`.
@@ -388,15 +377,6 @@ pub enum ExprKind {
 
     /// Parenthesized expression (for preserving source).
     Paren(Box<Expr>),
-}
-
-/// A record field update.
-#[derive(Debug, Clone)]
-pub enum RecordFieldUpdate {
-    /// Simple field update `field: value`.
-    Field { name: Ident, value: Expr },
-    /// Dynamic key update `[key]: value`.
-    Dynamic { key: Expr, value: Expr },
 }
 
 /// Binary operator.

@@ -154,7 +154,7 @@ pub enum CompiledExpr {
     SetLit(Vec<CompiledExpr>),
     /// Sequence literal.
     SeqLit(Vec<CompiledExpr>),
-    /// Tuple literal.
+    /// Tuple literal (internal: Option encoding only).
     TupleLit(Vec<CompiledExpr>),
     /// Dict literal { key: value, ... }.
     DictLit(Vec<(CompiledExpr, CompiledExpr)>),
@@ -207,11 +207,6 @@ pub enum CompiledExpr {
     },
 
     // === Updates ===
-    /// Record update.
-    RecordUpdate {
-        base: Box<CompiledExpr>,
-        updates: Vec<(String, CompiledExpr)>,
-    },
     /// Function update.
     FnUpdate {
         base: Box<CompiledExpr>,
@@ -398,13 +393,6 @@ impl CompiledExpr {
                     })
                     .collect(),
             ),
-            CompiledExpr::RecordUpdate { base, updates } => CompiledExpr::RecordUpdate {
-                base: Box::new(base.shift_locals_inner(amount, depth)),
-                updates: updates
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.shift_locals_inner(amount, depth)))
-                    .collect(),
-            },
             CompiledExpr::Range { lo, hi } => CompiledExpr::Range {
                 lo: Box::new(lo.shift_locals_inner(amount, depth)),
                 hi: Box::new(hi.shift_locals_inner(amount, depth)),

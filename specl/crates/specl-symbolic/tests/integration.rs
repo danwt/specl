@@ -299,28 +299,6 @@ fn kind_auxiliary_invariant_ok() {
 }
 
 // ============================================================================
-// Tuple type tests
-// ============================================================================
-
-#[test]
-fn inductive_tuple_ok() {
-    let outcome = run_symbolic("tuple-test.specl", &[("N", 5)], SymbolicMode::Inductive).unwrap();
-    assert!(
-        matches!(outcome, SymbolicOutcome::Ok { .. }),
-        "expected Ok with tuple type, got: {outcome:?}"
-    );
-}
-
-#[test]
-fn bmc_tuple_ok() {
-    let outcome = run_symbolic("tuple-test.specl", &[("N", 5)], SymbolicMode::Bmc).unwrap();
-    assert!(
-        matches!(outcome, SymbolicOutcome::Ok { .. }),
-        "expected Ok with tuple type BMC, got: {outcome:?}"
-    );
-}
-
-// ============================================================================
 // Option type tests
 // ============================================================================
 

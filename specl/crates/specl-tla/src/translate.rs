@@ -2540,7 +2540,7 @@ impl Translator {
                         specl::ExprKind::Index {
                             base: Box::new(func_expr),
                             index: Box::new(specl::Expr::new(
-                                specl::ExprKind::TupleLit(tuple_args?),
+                                specl::ExprKind::SeqLit(tuple_args?),
                                 span,
                             )),
                         },
@@ -2642,9 +2642,13 @@ impl Translator {
                         let value =
                             self.translate_except_value(&update.value, in_action, &inner_at)?;
                         result = specl::Expr::new(
-                            specl::ExprKind::RecordUpdate {
-                                base: Box::new(result),
-                                updates: vec![specl::RecordFieldUpdate::Dynamic { key, value }],
+                            specl::ExprKind::Binary {
+                                op: specl::BinOp::Union,
+                                left: Box::new(result),
+                                right: Box::new(specl::Expr::new(
+                                    specl::ExprKind::DictLit(vec![(key, value)]),
+                                    span,
+                                )),
                             },
                             span,
                         );
@@ -3056,7 +3060,7 @@ impl Translator {
                         .map(|a| self.translate_expr(a, in_action))
                         .collect();
                     let tuple = specl::Expr::new(
-                        specl::ExprKind::TupleLit(args_translated?),
+                        specl::ExprKind::SeqLit(args_translated?),
                         translate_span(expr.span),
                     );
                     specl::ExprKind::Index {
@@ -3868,9 +3872,13 @@ impl Translator {
                 let value =
                     self.translate_except_value(&update.value, in_action, &at_replacement)?;
                 result = specl::Expr::new(
-                    specl::ExprKind::RecordUpdate {
-                        base: Box::new(result),
-                        updates: vec![specl::RecordFieldUpdate::Dynamic { key, value }],
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::Union,
+                        left: Box::new(result),
+                        right: Box::new(specl::Expr::new(
+                            specl::ExprKind::DictLit(vec![(key, value)]),
+                            span,
+                        )),
                     },
                     span,
                 );
@@ -3906,12 +3914,16 @@ impl Translator {
                     );
                 }
                 let mut nested = specl::Expr::new(
-                    specl::ExprKind::RecordUpdate {
-                        base: Box::new(prefix),
-                        updates: vec![specl::RecordFieldUpdate::Dynamic {
-                            key: keys.last().unwrap().clone(),
-                            value,
-                        }],
+                    specl::ExprKind::Binary {
+                        op: specl::BinOp::Union,
+                        left: Box::new(prefix),
+                        right: Box::new(specl::Expr::new(
+                            specl::ExprKind::DictLit(vec![(
+                                keys.last().unwrap().clone(),
+                                value,
+                            )]),
+                            span,
+                        )),
                     },
                     span,
                 );
@@ -3928,12 +3940,13 @@ impl Translator {
                         );
                     }
                     nested = specl::Expr::new(
-                        specl::ExprKind::RecordUpdate {
-                            base: Box::new(outer_prefix),
-                            updates: vec![specl::RecordFieldUpdate::Dynamic {
-                                key: keys[i].clone(),
-                                value: nested,
-                            }],
+                        specl::ExprKind::Binary {
+                            op: specl::BinOp::Union,
+                            left: Box::new(outer_prefix),
+                            right: Box::new(specl::Expr::new(
+                                specl::ExprKind::DictLit(vec![(keys[i].clone(), nested)]),
+                                span,
+                            )),
                         },
                         span,
                     );

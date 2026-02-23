@@ -275,24 +275,6 @@ invariant IffCommutative { (x == 1 iff x == 1) }
     );
 }
 
-// ─── Tuple operations ───
-
-#[test]
-fn tuple_basic() {
-    assert_no_crash(
-        r#"module Test
-var pair: (0..2, 0..2)
-init { pair = (0, 0); }
-action StepBoth() {
-    require pair.0 < 2;
-    require pair.1 < 2;
-    pair = (pair.0 + 1, pair.1 + 1);
-}
-invariant PairBounded { pair.0 <= 2 and pair.1 <= 2 }
-"#,
-    );
-}
-
 // ─── Set operations chain ───
 
 #[test]

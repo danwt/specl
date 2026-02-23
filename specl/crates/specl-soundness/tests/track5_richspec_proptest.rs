@@ -3,7 +3,7 @@
 //! Generates random specl programs exercising language features that the
 //! existing MiniSpec generator does not cover: sets, dicts, quantifiers,
 //! functions, let-bindings, if-then-else, comprehensions, membership tests,
-//! sequences, tuples, fix expressions, iff, subset_of, intersect, powerset.
+//! sequences, fix expressions, iff, subset_of, intersect, powerset.
 //!
 //! Properties tested:
 //!   1. Parse never panics (returns Ok or Err, no crash)
@@ -337,7 +337,7 @@ invariant FilterSubset {{
     }
 }
 
-// ─── New spec generators (sequences, tuples, fix, set ops) ───
+// ─── New spec generators (sequences, fix, set ops) ───
 
 #[derive(Debug, Clone)]
 struct SeqSpec {
@@ -371,40 +371,6 @@ invariant Bounded {{ len(msgs) <= {ml} }}
 invariant HeadInRange {{
     len(msgs) > 0 implies (head(msgs) >= 0 and head(msgs) <= {b})
 }}
-"#,
-        )
-    }
-}
-
-#[derive(Debug, Clone)]
-struct TupleSpec {
-    bound: u8,
-}
-
-impl TupleSpec {
-    fn to_specl(&self) -> String {
-        let b = self.bound;
-        format!(
-            r#"module TupleSpec
-
-var pair: (0..{b}, 0..{b})
-
-init {{ pair = (0, 0); }}
-
-action StepBoth() {{
-    require pair.0 < {b};
-    require pair.1 < {b};
-    pair = (pair.0 + 1, pair.1 + 1);
-}}
-
-action StepFirst() {{
-    require pair.0 < {b};
-    pair = (pair.0 + 1, pair.1);
-}}
-
-invariant FirstBounded {{ pair.0 >= 0 and pair.0 <= {b} }}
-invariant SecondBounded {{ pair.1 >= 0 and pair.1 <= {b} }}
-invariant FirstGeSecond {{ pair.0 >= pair.1 }}
 "#,
         )
     }
@@ -609,20 +575,6 @@ proptest! {
     }
 
     #[test]
-    fn tuple_spec_no_panic(bound in 1u8..=3) {
-        let spec = TupleSpec { bound };
-        let src = spec.to_specl();
-        let compiled = compile_spec(&src);
-        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
-        let outcome = check_spec(&src, CheckConfig {
-            check_deadlock: false,
-            max_states: 5_000,
-            ..CheckConfig::default()
-        });
-        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
-    }
-
-    #[test]
     fn fix_spec_no_panic(bound in 1u8..=3) {
         let spec = FixSpec { bound };
         let src = spec.to_specl();
@@ -711,16 +663,6 @@ proptest! {
     #[test]
     fn seq_spec_roundtrip(bound in 1u8..=2, max_len in 2u8..=4) {
         let spec = SeqSpec { bound, max_len };
-        let src = spec.to_specl();
-        let result = roundtrip_pretty(&src);
-        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
-        let (p1, p2) = result.unwrap();
-        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
-    }
-
-    #[test]
-    fn tuple_spec_roundtrip(bound in 1u8..=3) {
-        let spec = TupleSpec { bound };
         let src = spec.to_specl();
         let result = roundtrip_pretty(&src);
         prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());

@@ -22,10 +22,6 @@ pub enum Type {
     Fn(Box<Type>, Box<Type>),
     /// Option type `Option[T]`.
     Option(Box<Type>),
-    /// Record type with named fields.
-    Record(RecordType),
-    /// Tuple type `(T1, T2, ...)`.
-    Tuple(Vec<Type>),
     /// Finite range type `lo..hi`.
     Range(i64, i64),
     /// Named type (reference to a type alias).
@@ -53,8 +49,6 @@ impl Type {
             Type::Var(_) => true,
             Type::Set(t) | Type::Seq(t) | Type::Option(t) => t.has_vars(),
             Type::Fn(k, v) => k.has_vars() || v.has_vars(),
-            Type::Record(r) => r.fields.values().any(|t| t.has_vars()),
-            Type::Tuple(elems) => elems.iter().any(|t| t.has_vars()),
             _ => false,
         }
     }
@@ -69,14 +63,6 @@ impl Type {
             Type::Fn(k, v) => {
                 Type::Fn(Box::new(k.substitute(subst)), Box::new(v.substitute(subst)))
             }
-            Type::Record(r) => Type::Record(RecordType {
-                fields: r
-                    .fields
-                    .iter()
-                    .map(|(k, v)| (k.clone(), v.substitute(subst)))
-                    .collect(),
-            }),
-            Type::Tuple(elems) => Type::Tuple(elems.iter().map(|t| t.substitute(subst)).collect()),
             _ => self.clone(),
         }
     }
@@ -93,65 +79,11 @@ impl fmt::Display for Type {
             Type::Seq(t) => write!(f, "Seq[{}]", t),
             Type::Fn(k, v) => write!(f, "dict[{}, {}]", k, v),
             Type::Option(t) => write!(f, "Option[{}]", t),
-            Type::Record(r) => {
-                write!(f, "Dict {{ ")?;
-                for (i, (name, ty)) in r.fields.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}: {}", name, ty)?;
-                }
-                write!(f, " }}")
-            }
-            Type::Tuple(elems) => {
-                write!(f, "(")?;
-                for (i, ty) in elems.iter().enumerate() {
-                    if i > 0 {
-                        write!(f, ", ")?;
-                    }
-                    write!(f, "{}", ty)?;
-                }
-                write!(f, ")")
-            }
             Type::Range(lo, hi) => write!(f, "{}..{}", lo, hi),
             Type::Named(name) => write!(f, "{}", name),
             Type::Var(v) => write!(f, "?{}", v.0),
             Type::Error => write!(f, "<error>"),
         }
-    }
-}
-
-/// A record type with named fields.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct RecordType {
-    /// Ordered map of field names to types.
-    pub fields: BTreeMap<String, Type>,
-}
-
-impl RecordType {
-    /// Create a new empty record type.
-    pub fn new() -> Self {
-        Self {
-            fields: BTreeMap::new(),
-        }
-    }
-
-    /// Create a record type from field definitions.
-    pub fn from_fields(fields: impl IntoIterator<Item = (String, Type)>) -> Self {
-        Self {
-            fields: fields.into_iter().collect(),
-        }
-    }
-
-    /// Get the type of a field.
-    pub fn get_field(&self, name: &str) -> Option<&Type> {
-        self.fields.get(name)
-    }
-}
-
-impl Default for RecordType {
-    fn default() -> Self {
-        Self::new()
     }
 }
 
@@ -275,11 +207,4 @@ mod tests {
         assert_eq!(Type::Var(v2).substitute(&subst), Type::Var(v2));
     }
 
-    #[test]
-    fn test_record_type() {
-        let rec =
-            RecordType::from_fields([("x".to_string(), Type::Nat), ("y".to_string(), Type::Bool)]);
-        assert_eq!(rec.get_field("x"), Some(&Type::Nat));
-        assert_eq!(rec.get_field("z"), None);
-    }
 }

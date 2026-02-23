@@ -4,9 +4,7 @@ use crate::ir::{
     BinOp as IrBinOp, CompiledAction, CompiledExpr, CompiledInvariant, CompiledSpec,
     ConstDecl as IrConstDecl, KeySource, SymmetryGroup, VarDecl as IrVarDecl,
 };
-use specl_syntax::{
-    ActionDecl, ConstValue, Decl, Expr, ExprKind, Module, QuantifierKind, RecordFieldUpdate,
-};
+use specl_syntax::{ActionDecl, ConstValue, Decl, Expr, ExprKind, Module, QuantifierKind};
 use specl_types::{check_module, Type, TypeEnv};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -487,13 +485,6 @@ impl Compiler {
                     .collect::<CompileResult<_>>()?,
             ),
 
-            ExprKind::TupleLit(elements) => CompiledExpr::TupleLit(
-                elements
-                    .iter()
-                    .map(|e| self.compile_expr(e))
-                    .collect::<CompileResult<_>>()?,
-            ),
-
             ExprKind::DictLit(entries) => {
                 let compiled_entries: Vec<_> = entries
                     .iter()
@@ -532,43 +523,6 @@ impl Compiler {
                     element: Box::new(compiled_element),
                     domain: Box::new(compiled_domain),
                     filter: compiled_filter,
-                }
-            }
-
-            ExprKind::RecordUpdate { base, updates } => {
-                let compiled_base = self.compile_expr(base)?;
-                let mut field_updates = Vec::new();
-                let mut dynamic_updates = Vec::new();
-
-                for update in updates {
-                    match update {
-                        RecordFieldUpdate::Field { name, value } => {
-                            field_updates.push((name.name.clone(), self.compile_expr(value)?));
-                        }
-                        RecordFieldUpdate::Dynamic { key, value } => {
-                            dynamic_updates
-                                .push((self.compile_expr(key)?, self.compile_expr(value)?));
-                        }
-                    }
-                }
-
-                // If we have dynamic updates, this is a function update
-                if !dynamic_updates.is_empty() {
-                    // Chain all dynamic updates: f with {[k1]:v1, [k2]:v2} -> FnUpdate(FnUpdate(f, k1, v1), k2, v2)
-                    let mut result = compiled_base;
-                    for (key, value) in dynamic_updates {
-                        result = CompiledExpr::FnUpdate {
-                            base: Box::new(result),
-                            key: Box::new(key),
-                            value: Box::new(value),
-                        };
-                    }
-                    return Ok(result);
-                }
-
-                CompiledExpr::RecordUpdate {
-                    base: Box::new(compiled_base),
-                    updates: field_updates,
                 }
             }
 
@@ -825,12 +779,6 @@ impl Compiler {
                     self.collect_changes_impl(f, changes);
                 }
             }
-            CompiledExpr::RecordUpdate { base, updates } => {
-                self.collect_changes_impl(base, changes);
-                for (_, v) in updates {
-                    self.collect_changes_impl(v, changes);
-                }
-            }
             CompiledExpr::FnUpdate { base, key, value } => {
                 self.collect_changes_impl(base, changes);
                 self.collect_changes_impl(key, changes);
@@ -940,12 +888,6 @@ impl Compiler {
                 self.collect_reads_impl(domain, reads);
                 if let Some(f) = filter {
                     self.collect_reads_impl(f, reads);
-                }
-            }
-            CompiledExpr::RecordUpdate { base, updates } => {
-                self.collect_reads_impl(base, reads);
-                for (_, v) in updates {
-                    self.collect_reads_impl(v, reads);
                 }
             }
             CompiledExpr::FnUpdate { base, key, value } => {
@@ -1239,12 +1181,6 @@ impl Compiler {
                     Self::collect_read_keys_impl(f, info);
                 }
             }
-            CompiledExpr::RecordUpdate { base, updates } => {
-                Self::collect_read_keys_impl(base, info);
-                for (_, v) in updates {
-                    Self::collect_read_keys_impl(v, info);
-                }
-            }
             // FnUpdate chain: var[k1 -> v1][k2 -> v2]...
             // The innermost base Var is the update target, not a whole-variable read.
             CompiledExpr::FnUpdate { base, key, value } => {
@@ -1469,10 +1405,6 @@ fn expr_cost(expr: &CompiledExpr) -> u32 {
         CompiledExpr::FnUpdate { base, key, value } => {
             2 + expr_cost(base) + expr_cost(key) + expr_cost(value)
         }
-        CompiledExpr::RecordUpdate { base, updates } => {
-            2 + expr_cost(base) + updates.iter().map(|(_, v)| expr_cost(v)).sum::<u32>()
-        }
-
         // Calls
         CompiledExpr::Call { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 5,
         CompiledExpr::ActionCall { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 10,

@@ -11,7 +11,7 @@ use crate::ir::{
     SymmetryGroup, UnaryOp, VarDecl,
 };
 use specl_ts::{TransitionSystem, TsAction, TsBinOp, TsExpr, TsType, TsUnaryOp};
-use specl_types::{RecordType, Type};
+use specl_types::Type;
 use std::collections::{HashMap, HashSet};
 use thiserror::Error;
 
@@ -238,9 +238,7 @@ fn validate_expr_indices(
         TsExpr::Unary { operand, .. } => {
             validate_expr_indices(operand, num_vars, num_consts)?;
         }
-        TsExpr::SetLit { elements }
-        | TsExpr::SeqLit { elements }
-        | TsExpr::TupleLit { elements } => {
+        TsExpr::SetLit { elements } | TsExpr::SeqLit { elements } => {
             for e in elements {
                 validate_expr_indices(e, num_vars, num_consts)?;
             }
@@ -308,12 +306,6 @@ fn validate_expr_indices(
         TsExpr::Range { lo, hi } => {
             validate_expr_indices(lo, num_vars, num_consts)?;
             validate_expr_indices(hi, num_vars, num_consts)?;
-        }
-        TsExpr::RecordUpdate { base, updates } => {
-            validate_expr_indices(base, num_vars, num_consts)?;
-            for (_, v) in updates {
-                validate_expr_indices(v, num_vars, num_consts)?;
-            }
         }
         // Leaves with no sub-expressions or no indices to validate
         TsExpr::Bool { .. }
@@ -421,9 +413,6 @@ fn lower_expr(expr: &TsExpr) -> CompiledExpr {
         TsExpr::SeqLit { elements } => {
             CompiledExpr::SeqLit(elements.iter().map(lower_expr).collect())
         }
-        TsExpr::TupleLit { elements } => {
-            CompiledExpr::TupleLit(elements.iter().map(lower_expr).collect())
-        }
         TsExpr::DictLit { entries } => CompiledExpr::DictLit(
             entries
                 .iter()
@@ -491,13 +480,6 @@ fn lower_expr(expr: &TsExpr) -> CompiledExpr {
             lo: Box::new(lower_expr(lo)),
             hi: Box::new(lower_expr(hi)),
         },
-        TsExpr::RecordUpdate { base, updates } => CompiledExpr::RecordUpdate {
-            base: Box::new(lower_expr(base)),
-            updates: updates
-                .iter()
-                .map(|(k, v)| (k.clone(), lower_expr(v)))
-                .collect(),
-        },
     }
 }
 
@@ -513,10 +495,6 @@ pub fn lower_type(ty: &TsType) -> Type {
         TsType::Map { key, value } => {
             Type::Fn(Box::new(lower_type(key)), Box::new(lower_type(value)))
         }
-        TsType::Record { fields } => Type::Record(RecordType::from_fields(
-            fields.iter().map(|(k, v)| (k.clone(), lower_type(v))),
-        )),
-        TsType::Tuple { elements } => Type::Tuple(elements.iter().map(lower_type).collect()),
         TsType::Option { inner } => Type::Option(Box::new(lower_type(inner))),
     }
 }
@@ -617,12 +595,6 @@ fn collect_reads_impl(expr: &CompiledExpr, reads: &mut Vec<usize>) {
             collect_reads_impl(base, reads);
             collect_reads_impl(key, reads);
             collect_reads_impl(value, reads);
-        }
-        CompiledExpr::RecordUpdate { base, updates } => {
-            collect_reads_impl(base, reads);
-            for (_, v) in updates {
-                collect_reads_impl(v, reads);
-            }
         }
         CompiledExpr::Let { value, body } => {
             collect_reads_impl(value, reads);
@@ -863,9 +835,7 @@ fn collect_ts_read_keys(expr: &TsExpr, info: &mut HashMap<usize, (Vec<KeySource>
             collect_ts_read_keys(right, info);
         }
         TsExpr::Unary { operand, .. } => collect_ts_read_keys(operand, info),
-        TsExpr::SetLit { elements }
-        | TsExpr::SeqLit { elements }
-        | TsExpr::TupleLit { elements } => {
+        TsExpr::SetLit { elements } | TsExpr::SeqLit { elements } => {
             for e in elements {
                 collect_ts_read_keys(e, info);
             }
@@ -936,12 +906,6 @@ fn collect_ts_read_keys(expr: &TsExpr, info: &mut HashMap<usize, (Vec<KeySource>
             collect_ts_read_keys(lo, info);
             collect_ts_read_keys(hi, info);
         }
-        TsExpr::RecordUpdate { base, updates } => {
-            collect_ts_read_keys(base, info);
-            for (_, v) in updates {
-                collect_ts_read_keys(v, info);
-            }
-        }
         // Leaves
         TsExpr::Bool { .. }
         | TsExpr::Int { .. }
@@ -1010,9 +974,6 @@ fn expr_cost(expr: &CompiledExpr) -> u32 {
         CompiledExpr::BigUnion(inner) | CompiledExpr::Powerset(inner) => 10 + expr_cost(inner),
         CompiledExpr::FnUpdate { base, key, value } => {
             2 + expr_cost(base) + expr_cost(key) + expr_cost(value)
-        }
-        CompiledExpr::RecordUpdate { base, updates } => {
-            2 + expr_cost(base) + updates.iter().map(|(_, v)| expr_cost(v)).sum::<u32>()
         }
         CompiledExpr::Call { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 5,
         CompiledExpr::ActionCall { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 10,

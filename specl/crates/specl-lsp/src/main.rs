@@ -367,7 +367,6 @@ impl SpeclLanguageServer {
             TypeExpr::Dict(k, v, _) => {
                 Self::first_named_type(k).or_else(|| Self::first_named_type(v))
             }
-            TypeExpr::Tuple(types, _) => types.iter().find_map(|t| Self::first_named_type(t)),
             TypeExpr::Range(_, _, _) => None,
         }
     }
@@ -997,7 +996,7 @@ impl SpeclLanguageServer {
                 Self::walk_expr(left, visitor);
                 Self::walk_expr(right, visitor);
             }
-            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) | ExprKind::TupleLit(exprs) => {
+            ExprKind::SetLit(exprs) | ExprKind::SeqLit(exprs) => {
                 for e in exprs {
                     Self::walk_expr(e, visitor);
                 }
@@ -1006,20 +1005,6 @@ impl SpeclLanguageServer {
                 for (k, v) in pairs {
                     Self::walk_expr(k, visitor);
                     Self::walk_expr(v, visitor);
-                }
-            }
-            ExprKind::RecordUpdate { base, updates } => {
-                Self::walk_expr(base, visitor);
-                for u in updates {
-                    match u {
-                        specl_syntax::RecordFieldUpdate::Field { value, .. } => {
-                            Self::walk_expr(value, visitor);
-                        }
-                        specl_syntax::RecordFieldUpdate::Dynamic { key, value } => {
-                            Self::walk_expr(key, visitor);
-                            Self::walk_expr(value, visitor);
-                        }
-                    }
                 }
             }
             ExprKind::FnLit { domain, body, .. } => {
