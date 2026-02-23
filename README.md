@@ -45,8 +45,11 @@ With parallelism: 1M+ states/second on typical workloads.
 
 ## Examples
 
+> **Language reference:** [`features.specl`](specl/examples/showcase/features.specl) demonstrates every language construct in one spec with inline comments.
+
 | | |
 |---|---|
+| [**Features**](specl/examples/showcase/features.specl) | **Every language construct** — types, set/dict/seq ops, `let`, `fix`, `powerset`, `iff`, tuples, `view`, `auxiliary invariant` |
 | [Peterson](specl/examples/showcase/peterson.specl) | Mutual exclusion for 2 processes |
 | [Dining Philosophers](specl/examples/showcase/dining-philosophers.specl) | Classic concurrency problem |
 | [Two-Phase Commit](specl/examples/showcase/two-phase-commit.specl) | Distributed transaction protocol |
