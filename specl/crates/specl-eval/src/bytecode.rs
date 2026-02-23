@@ -1722,14 +1722,13 @@ fn vm_eval_inner(
                 let base = pop_value(stack)?;
                 match base.kind() {
                     VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(key)? as usize;
-                        let start = k * inner_size as usize;
-                        let row = data[start..start + inner_size as usize].to_vec();
+                        let k = expect_int(key)?;
+                        let row = intmap2_row(data, inner_size, k)?;
                         stack.push(Value::intmap(Arc::new(row)));
                     }
                     VK::IntMap(arr) => {
-                        let k = expect_int(key)? as usize;
-                        stack.push(arr[k].clone());
+                        let k = expect_int(key)?;
+                        stack.push(intmap_get(arr, k)?.clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1773,14 +1772,13 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(key)? as usize;
-                        let start = k * inner_size as usize;
-                        let row = data[start..start + inner_size as usize].to_vec();
+                        let k = expect_int(key)?;
+                        let row = intmap2_row(data, inner_size, k)?;
                         stack.push(Value::intmap(Arc::new(row)));
                     }
                     VK::IntMap(arr) => {
-                        let k = expect_int(key)? as usize;
-                        stack.push(arr[k].clone());
+                        let k = expect_int(key)?;
+                        stack.push(intmap_get(arr, k)?.clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1804,15 +1802,15 @@ fn vm_eval_inner(
                 let outer = &vars[*var_idx as usize];
                 match outer.kind() {
                     VK::IntMap2(inner_size, data) => {
-                        let k1 = expect_int(key1)? as usize;
-                        let k2 = expect_int(key2)? as usize;
-                        stack.push(data[k1 * inner_size as usize + k2].clone());
+                        let k1 = expect_int(key1)?;
+                        let k2 = expect_int(key2)?;
+                        stack.push(intmap2_get(data, inner_size, k1, k2)?.clone());
                     }
                     _ => {
                         let inner_ref = match outer.kind() {
                             VK::IntMap(arr) => {
-                                let k = expect_int(key1)? as usize;
-                                &arr[k]
+                                let k = expect_int(key1)?;
+                                intmap_get(arr, k)?
                             }
                             VK::Fn(map) => Value::fn_get(map, key1)
                                 .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?,
@@ -1825,8 +1823,8 @@ fn vm_eval_inner(
                         };
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
-                                let k = expect_int(key2)? as usize;
-                                stack.push(arr[k].clone());
+                                let k = expect_int(key2)?;
+                                stack.push(intmap_get(arr, k)?.clone());
                             }
                             VK::Fn(inner_map) => {
                                 let val = Value::fn_get(inner_map, key2)
@@ -1851,8 +1849,8 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let idx = expect_int(key)? as usize;
-                        stack.push(Value::bool(arr[idx] == Value::int(*k)));
+                        let idx = expect_int(key)?;
+                        stack.push(Value::bool(*intmap_get(arr, idx)? == Value::int(*k)));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1875,8 +1873,8 @@ fn vm_eval_inner(
                 let expected = Value::bool(*bool_val);
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let idx = expect_int(key)? as usize;
-                        stack.push(Value::bool(arr[idx] == expected));
+                        let idx = expect_int(key)?;
+                        stack.push(Value::bool(*intmap_get(arr, idx)? == expected));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1900,15 +1898,15 @@ fn vm_eval_inner(
                 let expected = Value::bool(*bool_val);
                 match outer.kind() {
                     VK::IntMap2(inner_size, data) => {
-                        let k1 = expect_int(key1)? as usize;
-                        let k2 = expect_int(key2)? as usize;
-                        stack.push(Value::bool(data[k1 * inner_size as usize + k2] == expected));
+                        let k1 = expect_int(key1)?;
+                        let k2 = expect_int(key2)?;
+                        stack.push(Value::bool(*intmap2_get(data, inner_size, k1, k2)? == expected));
                     }
                     _ => {
                         let inner_ref = match outer.kind() {
                             VK::IntMap(arr) => {
-                                let k = expect_int(key1)? as usize;
-                                &arr[k]
+                                let k = expect_int(key1)?;
+                                intmap_get(arr, k)?
                             }
                             VK::Fn(map) => Value::fn_get(map, key1)
                                 .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?,
@@ -1921,8 +1919,8 @@ fn vm_eval_inner(
                         };
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
-                                let k = expect_int(key2)? as usize;
-                                stack.push(Value::bool(arr[k] == expected));
+                                let k = expect_int(key2)?;
+                                stack.push(Value::bool(*intmap_get(arr, k)? == expected));
                             }
                             VK::Fn(inner_map) => {
                                 let val = Value::fn_get(inner_map, key2)
@@ -1946,9 +1944,9 @@ fn vm_eval_inner(
                 let outer = &vars[*var_idx as usize];
                 match outer.kind() {
                     VK::IntMap2(inner_size, data) => {
-                        let k1 = expect_int(key1)? as usize;
-                        let k2 = expect_int(key2)? as usize;
-                        let val = &data[k1 * inner_size as usize + k2];
+                        let k1 = expect_int(key1)?;
+                        let k2 = expect_int(key2)?;
+                        let val = intmap2_get(data, inner_size, k1, k2)?;
                         stack.push(Value::bool(!val.as_bool().ok_or_else(|| {
                             EvalError::TypeMismatch {
                                 expected: "Bool".to_string(),
@@ -1959,8 +1957,8 @@ fn vm_eval_inner(
                     _ => {
                         let inner_ref = match outer.kind() {
                             VK::IntMap(arr) => {
-                                let k = expect_int(key1)? as usize;
-                                &arr[k]
+                                let k = expect_int(key1)?;
+                                intmap_get(arr, k)?
                             }
                             VK::Fn(map) => Value::fn_get(map, key1)
                                 .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?,
@@ -1973,11 +1971,12 @@ fn vm_eval_inner(
                         };
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
-                                let k = expect_int(key2)? as usize;
+                                let k = expect_int(key2)?;
+                                let elem = intmap_get(arr, k)?;
                                 let b =
-                                    arr[k].as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                                    elem.as_bool().ok_or_else(|| EvalError::TypeMismatch {
                                         expected: "Bool".to_string(),
-                                        actual: arr[k].type_name().to_string(),
+                                        actual: elem.type_name().to_string(),
                                     })?;
                                 stack.push(Value::bool(!b));
                             }
@@ -2006,10 +2005,11 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let k = expect_int(key)? as usize;
-                        let b = arr[k].as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                        let k = expect_int(key)?;
+                        let elem = intmap_get(arr, k)?;
+                        let b = elem.as_bool().ok_or_else(|| EvalError::TypeMismatch {
                             expected: "Bool".to_string(),
-                            actual: arr[k].type_name().to_string(),
+                            actual: elem.type_name().to_string(),
                         })?;
                         stack.push(Value::bool(!b));
                     }
@@ -2036,8 +2036,8 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let idx = expect_int(key)? as usize;
-                        let n = expect_int(&arr[idx])?;
+                        let idx = expect_int(key)?;
+                        let n = expect_int(intmap_get(arr, idx)?)?;
                         stack.push(Value::int(n + k));
                     }
                     VK::Fn(map) => {
@@ -2060,8 +2060,8 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let idx = expect_int(key)? as usize;
-                        let n = expect_int(&arr[idx])?;
+                        let idx = expect_int(key)?;
+                        let n = expect_int(intmap_get(arr, idx)?)?;
                         stack.push(Value::bool(n >= *k));
                     }
                     VK::Fn(map) => {
@@ -2084,8 +2084,8 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let idx = expect_int(key)? as usize;
-                        let n = expect_int(&arr[idx])?;
+                        let idx = expect_int(key)?;
+                        let n = expect_int(intmap_get(arr, idx)?)?;
                         stack.push(Value::bool(n < *k));
                     }
                     VK::Fn(map) => {
@@ -2109,8 +2109,8 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 let val = match base.kind() {
                     VK::IntMap(arr) => {
-                        let k = expect_int(key)? as usize;
-                        &arr[k]
+                        let k = expect_int(key)?;
+                        intmap_get(arr, k)?
                     }
                     VK::Fn(map) => Value::fn_get(map, key)
                         .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?,
@@ -2142,9 +2142,15 @@ fn vm_eval_inner(
                 let param = &params[*param_idx as usize];
                 match param.kind() {
                     VK::IntMap(arr) => {
-                        stack.push(arr[*k as usize].clone());
+                        stack.push(intmap_get(arr, *k)?.clone());
                     }
                     VK::Seq(s) => {
+                        if *k < 0 || (*k as usize) >= s.len() {
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: *k,
+                                length: s.len(),
+                            });
+                        }
                         stack.push(s[*k as usize].clone());
                     }
                     VK::Fn(map) => {
@@ -2168,8 +2174,16 @@ fn vm_eval_inner(
                 // as key into a state variable. E.g. currentTerm[msg[2]], state[msg[2]].
                 let param = &params[*param_idx as usize];
                 let inner_key = match param.kind() {
-                    VK::IntMap(arr) => arr[*k as usize].clone(),
-                    VK::Seq(s) => s[*k as usize].clone(),
+                    VK::IntMap(arr) => intmap_get(arr, *k)?.clone(),
+                    VK::Seq(s) => {
+                        if *k < 0 || (*k as usize) >= s.len() {
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: *k,
+                                length: s.len(),
+                            });
+                        }
+                        s[*k as usize].clone()
+                    }
                     VK::Fn(map) => {
                         let key = Value::int(*k);
                         Value::fn_get(map, &key)
@@ -2186,8 +2200,8 @@ fn vm_eval_inner(
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
                     VK::IntMap(arr) => {
-                        let idx = expect_int(&inner_key)? as usize;
-                        stack.push(arr[idx].clone());
+                        let idx = expect_int(&inner_key)?;
+                        stack.push(intmap_get(arr, idx)?.clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, &inner_key)
@@ -2210,14 +2224,13 @@ fn vm_eval_inner(
                 let base = pop_value(stack)?;
                 match base.kind() {
                     VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&key)? as usize;
-                        let start = k * inner_size as usize;
-                        let row = data[start..start + inner_size as usize].to_vec();
+                        let k = expect_int(&key)?;
+                        let row = intmap2_row(data, inner_size, k)?;
                         stack.push(Value::intmap(Arc::new(row)));
                     }
                     VK::IntMap(arr) => {
-                        let k = expect_int(&key)? as usize;
-                        stack.push(arr[k].clone());
+                        let k = expect_int(&key)?;
+                        stack.push(intmap_get(arr, k)?.clone());
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, &key)
@@ -2248,10 +2261,14 @@ fn vm_eval_inner(
                 let key = pop_value(stack)?;
                 let base = pop_value(stack)?;
                 if base.is_intmap2() {
-                    let k = expect_int(&key)? as usize;
+                    let k = expect_int(&key)?;
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let start = k * d.inner_size as usize;
+                    let outer_len = if d.inner_size > 0 { d.data.len() / d.inner_size as usize } else { 0 };
+                    if k < 0 || (k as usize) >= outer_len {
+                        return Err(EvalError::IndexOutOfBounds { index: k, length: outer_len });
+                    }
+                    let start = k as usize * d.inner_size as usize;
                     match value.kind() {
                         VK::IntMap(row) => {
                             d.data[start..start + d.inner_size as usize].clone_from_slice(row);
@@ -2265,9 +2282,12 @@ fn vm_eval_inner(
                     }
                     stack.push(Value::from_intmap2_arc(arc));
                 } else if base.is_intmap() {
+                    let k = expect_int(&key)?;
                     let mut arr = base.into_intmap_arc();
-                    let k = expect_int(&key)? as usize;
-                    Arc::make_mut(&mut arr)[k] = value;
+                    if k < 0 || (k as usize) >= arr.len() {
+                        return Err(EvalError::IndexOutOfBounds { index: k, length: arr.len() });
+                    }
+                    Arc::make_mut(&mut arr)[k as usize] = value;
                     stack.push(Value::from_intmap_arc(arr));
                 } else if base.is_fn() {
                     let mut map = base.into_fn_arc();
@@ -2295,9 +2315,13 @@ fn vm_eval_inner(
                 if base.is_intmap2() {
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
+                    let outer_len = if d.inner_size > 0 { d.data.len() / d.inner_size as usize } else { 0 };
                     for (key, value) in pairs {
-                        let k = expect_int(&key)? as usize;
-                        let start = k * d.inner_size as usize;
+                        let k = expect_int(&key)?;
+                        if k < 0 || (k as usize) >= outer_len {
+                            return Err(EvalError::IndexOutOfBounds { index: k, length: outer_len });
+                        }
+                        let start = k as usize * d.inner_size as usize;
                         match value.kind() {
                             VK::IntMap(row) => {
                                 d.data[start..start + d.inner_size as usize].clone_from_slice(row);
@@ -2315,8 +2339,11 @@ fn vm_eval_inner(
                     let mut arr = base.into_intmap_arc();
                     let data = Arc::make_mut(&mut arr);
                     for (key, value) in pairs {
-                        let k = expect_int(&key)? as usize;
-                        data[k] = value;
+                        let k = expect_int(&key)?;
+                        if k < 0 || (k as usize) >= data.len() {
+                            return Err(EvalError::IndexOutOfBounds { index: k, length: data.len() });
+                        }
+                        data[k as usize] = value;
                     }
                     stack.push(Value::from_intmap_arc(arr));
                 } else if base.is_fn() {
@@ -2339,26 +2366,39 @@ fn vm_eval_inner(
                 let k2 = pop_value(stack)?;
                 let value = pop_value(stack)?;
                 if dict.is_intmap2() {
-                    let k1_int = expect_int(&k1)? as usize;
-                    let k2_int = expect_int(&k2)? as usize;
+                    let k1_int = expect_int(&k1)?;
+                    let k2_int = expect_int(&k2)?;
                     let mut arc = dict.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    d.data[k1_int * d.inner_size as usize + k2_int] = value;
+                    let outer_len = if d.inner_size > 0 { d.data.len() / d.inner_size as usize } else { 0 };
+                    if k1_int < 0 || (k1_int as usize) >= outer_len {
+                        return Err(EvalError::IndexOutOfBounds { index: k1_int, length: outer_len });
+                    }
+                    if k2_int < 0 || (k2_int as usize) >= d.inner_size as usize {
+                        return Err(EvalError::IndexOutOfBounds { index: k2_int, length: d.inner_size as usize });
+                    }
+                    d.data[k1_int as usize * d.inner_size as usize + k2_int as usize] = value;
                     stack.push(Value::from_intmap2_arc(arc));
                 } else if dict.is_intmap() {
+                    let k1_int = expect_int(&k1)?;
                     let mut outer_arc = dict.into_intmap_arc();
-                    let k1_int = expect_int(&k1)? as usize;
                     let outer = Arc::make_mut(&mut outer_arc);
-                    let inner_val = std::mem::replace(&mut outer[k1_int], Value::none());
+                    if k1_int < 0 || (k1_int as usize) >= outer.len() {
+                        return Err(EvalError::IndexOutOfBounds { index: k1_int, length: outer.len() });
+                    }
+                    let inner_val = std::mem::replace(&mut outer[k1_int as usize], Value::none());
                     if inner_val.is_intmap() {
-                        let k2_int = expect_int(&k2)? as usize;
+                        let k2_int = expect_int(&k2)?;
                         let mut inner_arc = inner_val.into_intmap_arc();
-                        Arc::make_mut(&mut inner_arc)[k2_int] = value;
-                        outer[k1_int] = Value::from_intmap_arc(inner_arc);
+                        if k2_int < 0 || (k2_int as usize) >= inner_arc.len() {
+                            return Err(EvalError::IndexOutOfBounds { index: k2_int, length: inner_arc.len() });
+                        }
+                        Arc::make_mut(&mut inner_arc)[k2_int as usize] = value;
+                        outer[k1_int as usize] = Value::from_intmap_arc(inner_arc);
                     } else if inner_val.is_fn() {
                         let mut inner_arc = inner_val.into_fn_arc();
                         Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
-                        outer[k1_int] = Value::from_fn_arc(inner_arc);
+                        outer[k1_int as usize] = Value::from_fn_arc(inner_arc);
                     } else {
                         return Err(EvalError::TypeMismatch {
                             expected: "Fn or IntMap".to_string(),
@@ -2373,10 +2413,13 @@ fn vm_eval_inner(
                         .binary_search_by(|(k, _)| k.cmp(&k1))
                         .map_err(|_| EvalError::KeyNotFound(k1.to_string()))?;
                     if outer[pos].1.is_intmap() {
-                        let k2_int = expect_int(&k2)? as usize;
+                        let k2_int = expect_int(&k2)?;
                         let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
                         let mut inner_arc = inner_val.into_intmap_arc();
-                        Arc::make_mut(&mut inner_arc)[k2_int] = value;
+                        if k2_int < 0 || (k2_int as usize) >= inner_arc.len() {
+                            return Err(EvalError::IndexOutOfBounds { index: k2_int, length: inner_arc.len() });
+                        }
+                        Arc::make_mut(&mut inner_arc)[k2_int as usize] = value;
                         outer[pos].1 = Value::from_intmap_arc(inner_arc);
                     } else if outer[pos].1.is_fn() {
                         let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
@@ -3353,6 +3396,59 @@ fn get_local_int(locals: &[Value]) -> EvalResult<i64> {
         expected: "Int".to_string(),
         actual: v.type_name().to_string(),
     })
+}
+
+/// Bounds-checked IntMap element access. Returns error instead of panicking.
+#[inline(always)]
+fn intmap_get(arr: &[Value], k: i64) -> EvalResult<&Value> {
+    if k < 0 || (k as usize) >= arr.len() {
+        return Err(EvalError::IndexOutOfBounds {
+            index: k,
+            length: arr.len(),
+        });
+    }
+    Ok(&arr[k as usize])
+}
+
+/// Bounds-checked IntMap2 row access (returns a full inner row).
+#[inline(always)]
+fn intmap2_row(data: &[Value], inner_size: u32, k: i64) -> EvalResult<Vec<Value>> {
+    let outer_len = if inner_size > 0 {
+        data.len() / inner_size as usize
+    } else {
+        0
+    };
+    if k < 0 || (k as usize) >= outer_len {
+        return Err(EvalError::IndexOutOfBounds {
+            index: k,
+            length: outer_len,
+        });
+    }
+    let start = k as usize * inner_size as usize;
+    Ok(data[start..start + inner_size as usize].to_vec())
+}
+
+/// Bounds-checked IntMap2 element access (two-key lookup).
+#[inline(always)]
+fn intmap2_get(data: &[Value], inner_size: u32, k1: i64, k2: i64) -> EvalResult<&Value> {
+    let outer_len = if inner_size > 0 {
+        data.len() / inner_size as usize
+    } else {
+        0
+    };
+    if k1 < 0 || (k1 as usize) >= outer_len {
+        return Err(EvalError::IndexOutOfBounds {
+            index: k1,
+            length: outer_len,
+        });
+    }
+    if k2 < 0 || (k2 as usize) >= inner_size as usize {
+        return Err(EvalError::IndexOutOfBounds {
+            index: k2,
+            length: inner_size as usize,
+        });
+    }
+    Ok(&data[k1 as usize * inner_size as usize + k2 as usize])
 }
 
 /// Normalize a domain value to a Set for iteration.

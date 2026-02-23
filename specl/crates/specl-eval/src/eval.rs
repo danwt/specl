@@ -207,13 +207,26 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     Ok(seq[idx as usize].clone())
                 }
                 VK::IntMap(arr) => {
-                    let k = expect_int(&index_val)? as usize;
-                    Ok(arr[k].clone())
+                    let k = expect_int(&index_val)?;
+                    if k < 0 || (k as usize) >= arr.len() {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: arr.len(),
+                        });
+                    }
+                    Ok(arr[k as usize].clone())
                 }
                 VK::IntMap2(inner_size, data) => {
-                    let k = expect_int(&index_val)? as usize;
+                    let k = expect_int(&index_val)?;
                     let sz = inner_size as usize;
-                    let start = k * sz;
+                    let outer_len = if sz > 0 { data.len() / sz } else { 0 };
+                    if k < 0 || (k as usize) >= outer_len {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: outer_len,
+                        });
+                    }
+                    let start = k as usize * sz;
                     Ok(Value::intmap(Arc::new(data[start..start + sz].to_vec())))
                 }
                 VK::Fn(map) => Value::fn_get(map, &index_val)
@@ -261,8 +274,14 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                         ));
                     }
                     let arg = eval(&args[0], ctx)?;
-                    let k = expect_int(&arg)? as usize;
-                    Ok(arr[k].clone())
+                    let k = expect_int(&arg)?;
+                    if k < 0 || (k as usize) >= arr.len() {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: arr.len(),
+                        });
+                    }
+                    Ok(arr[k as usize].clone())
                 }
                 VK::IntMap2(inner_size, data) => {
                     if args.len() != 1 {
@@ -271,9 +290,16 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                         ));
                     }
                     let arg = eval(&args[0], ctx)?;
-                    let k = expect_int(&arg)? as usize;
+                    let k = expect_int(&arg)?;
                     let sz = inner_size as usize;
-                    let start = k * sz;
+                    let outer_len = if sz > 0 { data.len() / sz } else { 0 };
+                    if k < 0 || (k as usize) >= outer_len {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: outer_len,
+                        });
+                    }
+                    let start = k as usize * sz;
                     Ok(Value::intmap(Arc::new(data[start..start + sz].to_vec())))
                 }
                 VK::Fn(map) => {
@@ -303,19 +329,31 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             let key_val = eval(key, ctx)?;
             let value_val = eval(value, ctx)?;
             if base_val.is_intmap() {
+                let k = expect_int(&key_val)?;
                 let mut arr = base_val.into_intmap_arc();
-                let k = expect_int(&key_val)? as usize;
-                Arc::make_mut(&mut arr)[k] = value_val;
+                if k < 0 || (k as usize) >= arr.len() {
+                    return Err(EvalError::IndexOutOfBounds {
+                        index: k,
+                        length: arr.len(),
+                    });
+                }
+                Arc::make_mut(&mut arr)[k as usize] = value_val;
                 Ok(Value::from_intmap_arc(arr))
             } else if base_val.is_intmap2() {
                 let im2 = base_val.into_intmap2_arc();
                 let sz = im2.inner_size as usize;
-                let outer_size = im2.data.len() / sz;
-                let k = expect_int(&key_val)? as usize;
+                let outer_size = if sz > 0 { im2.data.len() / sz } else { 0 };
+                let k = expect_int(&key_val)?;
+                if k < 0 || (k as usize) >= outer_size {
+                    return Err(EvalError::IndexOutOfBounds {
+                        index: k,
+                        length: outer_size,
+                    });
+                }
                 let mut rows: Vec<Value> = (0..outer_size)
                     .map(|i| Value::intmap(Arc::new(im2.data[i * sz..(i + 1) * sz].to_vec())))
                     .collect();
-                rows[k] = value_val;
+                rows[k as usize] = value_val;
                 Ok(Value::intmap(Arc::new(rows)))
             } else if base_val.is_fn() {
                 let mut map = base_val.into_fn_arc();
@@ -918,8 +956,16 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
             let index_val = eval(index, ctx)?;
             match base_val.kind() {
                 VK::IntMap(arr) => {
-                    let k = expect_int(&index_val)? as usize;
-                    arr[k].as_int().ok_or_else(|| type_mismatch("Int", &arr[k]))
+                    let k = expect_int(&index_val)?;
+                    if k < 0 || (k as usize) >= arr.len() {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: arr.len(),
+                        });
+                    }
+                    arr[k as usize]
+                        .as_int()
+                        .ok_or_else(|| type_mismatch("Int", &arr[k as usize]))
                 }
                 VK::IntMap2(_, _) => {
                     // IntMap2[k] returns a row (IntMap), not an Int — fall through
