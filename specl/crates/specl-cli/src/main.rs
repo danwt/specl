@@ -197,8 +197,20 @@ impl Drop for TempFileGuard {
     }
 }
 
+const fn long_version() -> &'static str {
+    concat!(
+        env!("CARGO_PKG_VERSION"),
+        "\ncommit: ",
+        env!("SPECL_GIT_HASH"),
+        "\ndate:   ",
+        env!("SPECL_GIT_DATE"),
+        "\ntarget: ",
+        env!("SPECL_BUILD_TARGET"),
+    )
+}
+
 #[derive(Parser)]
-#[command(name = "specl", version)]
+#[command(name = "specl", version, long_version = long_version())]
 #[command(about = "Specl specification language model checker", long_about = None)]
 struct Cli {
     #[command(subcommand)]
