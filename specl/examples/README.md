@@ -6,6 +6,7 @@
 |-----------|-------------|
 | `showcase/` | 10 curated examples covering all language features — the first place to look |
 | `other/` | 100+ additional specs — protocols, puzzles, stress tests, semaphore problems |
+| `regression/` | Bug-report regression specs — one `.specl` per GitHub issue |
 
 The sibling `benchmarks/` directory contains TLC comparison scripts (`.tla`, `.cfg`, `.sh`) for performance benchmarking against TLC — it has no `.specl` files.
 
@@ -151,3 +152,18 @@ view { has_token }              // only has_token matters for state deduplicatio
 ```
 
 See [Token Ring + View](showcase/token-ring-view.specl).
+
+## Regression Tests
+
+Every bug report gets a `.specl` file in `regression/` and a test in `crates/specl-cli/tests/regression_integration.rs` **before** the fix:
+
+1. File the GitHub issue (e.g. #69)
+2. Create `examples/regression/issue-69-short-description.specl` with a minimal reproducer
+3. Add `// Use:` comment with constants if needed
+4. Add test(s) in `regression_integration.rs` that fail without the fix
+5. Fix the bug — tests now pass
+6. Commit the spec, the test, and the fix together
+
+Naming convention: `issue-{N}-{kebab-case-description}.specl`
+
+Existing regression specs: issues #69 (in operator in quantifier body), #70 (type inference for untyped func params), #72 (not in operator), #73 (type inference for builtins).

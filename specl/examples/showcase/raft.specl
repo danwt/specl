@@ -1,4 +1,5 @@
 module RaftVanlightly
+// Use: -c N=1 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=2
 // Quick BFS:      specl check raft.specl -c N=1 -c MaxVal=0 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=2 --no-deadlock
 //                 956 states, <1s
 // Strenuous BFS:  specl check raft.specl -c N=2 -c MaxVal=1 -c MaxElections=2 -c MaxRestarts=0 -c MaxLogLen=3 --no-deadlock --fast

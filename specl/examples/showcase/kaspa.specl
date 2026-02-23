@@ -17,6 +17,7 @@ module KaspaBridge
 // Executed withdrawals persist: they are on-chain on Kaspa. Hub
 // compare-and-set is the sole mechanism preventing re-confirmation.
 //
+// Use: -c N=3
 // Quick:     specl check kaspa.specl -c N=3 --no-deadlock --bfs --no-auto
 // Strenuous: specl check kaspa.specl -c N=5 --no-deadlock --bfs --no-auto --fast
 
