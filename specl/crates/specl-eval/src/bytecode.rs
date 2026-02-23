@@ -1526,9 +1526,7 @@ pub fn vm_eval_reuse(
         next_vars,
         consts,
         params,
-        &mut bufs.stack,
-        &mut bufs.locals,
-        &mut bufs.loops,
+        bufs,
     )
 }
 
@@ -1556,9 +1554,7 @@ pub fn vm_eval(
     consts: &[Value],
     params: &[Value],
 ) -> EvalResult<Value> {
-    let mut stack: Vec<Value> = Vec::with_capacity(16);
-    let mut locals: Vec<Value> = Vec::new();
-    let mut loops: Vec<LoopState> = Vec::new();
+    let mut bufs = VmBufs::new();
     vm_eval_inner(
         &bytecode.ops,
         &bytecode.fallbacks,
@@ -1566,9 +1562,7 @@ pub fn vm_eval(
         next_vars,
         consts,
         params,
-        &mut stack,
-        &mut locals,
-        &mut loops,
+        &mut bufs,
     )
 }
 
@@ -1580,10 +1574,13 @@ fn vm_eval_inner(
     next_vars: &[Value],
     consts: &[Value],
     params: &[Value],
-    stack: &mut Vec<Value>,
-    locals: &mut Vec<Value>,
-    loops: &mut Vec<LoopState>,
+    bufs: &mut VmBufs,
 ) -> EvalResult<Value> {
+    let VmBufs {
+        stack,
+        locals,
+        loops,
+    } = bufs;
     let mut pc: usize = 0;
 
     loop {

@@ -40,6 +40,7 @@ pub fn check_portfolio(
     let num_strategies = 6;
 
     // Helper to spawn an IC3 thread with a given profile and label
+    #[allow(clippy::too_many_arguments)]
     fn spawn_ic3(
         spec: &CompiledSpec,
         consts: &[Value],

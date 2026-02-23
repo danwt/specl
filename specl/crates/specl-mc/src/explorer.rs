@@ -1180,6 +1180,7 @@ fn enumerate_params_flat<F>(
 /// Enumerate parameter combinations with guard indexing for early pruning.
 /// `params_buf` must be pre-allocated to `num_params` size.
 /// `guard_bufs` is reused across all guard evaluations to avoid per-call allocation.
+#[allow(clippy::too_many_arguments)]
 fn enumerate_params_indexed<F>(
     domains: &[&[Value]],
     guard_index: &GuardIndex,
@@ -3674,6 +3675,7 @@ impl Explorer {
     /// Successor: (next_state, action_index, params) - name formatting deferred.
     /// Uses per-thread operation cache to skip redundant evaluations.
     /// sleep_set: bitmask of action indices to skip (0 = no sleep set).
+    #[allow(clippy::too_many_arguments)]
     fn generate_successors(
         &self,
         state: &State,
@@ -3792,6 +3794,7 @@ impl Explorer {
 
     /// Apply a set of action templates to a state, using the operation cache and
     /// orbit representative filtering. Shared by all exploration paths.
+    #[allow(clippy::too_many_arguments)]
     fn apply_template_actions(
         &self,
         state: &State,
@@ -4288,6 +4291,7 @@ impl Explorer {
     /// Apply a single action instance (action_idx, params) to a state.
     /// Evaluates the effect and pushes the successor into buf.
     /// Simplified version of apply_action for a single parameter combination.
+    #[allow(clippy::too_many_arguments)]
     fn apply_single_instance(
         &self,
         state: &State,
@@ -4338,6 +4342,7 @@ impl Explorer {
     /// Apply an action to a state and push successor states into buffer.
     /// Uses operation cache to skip redundant evaluations when the successor
     /// fingerprint is already in the seen set.
+    #[allow(clippy::too_many_arguments)]
     fn apply_action(
         &self,
         state: &State,
