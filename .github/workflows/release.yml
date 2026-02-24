@@ -33,32 +33,28 @@ jobs:
   build-linux:
     needs: test
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-unknown-linux-gnu
-          - aarch64-unknown-linux-gnu
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cross
-        run: cargo install cross --locked
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: specl
       - name: Build
-        run: cross build --release --target ${{ matrix.target }} -p specl-cli
+        run: cargo build --release -p specl-cli
         working-directory: specl
       - name: Package
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          ARCHIVE="specl-${TAG}-${{ matrix.target }}.tar.gz"
+          ARCHIVE="specl-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
           mkdir staging
-          cp specl/target/${{ matrix.target }}/release/specl staging/
+          cp specl/target/release/specl staging/
           cp LICENSE staging/
           tar -czf "$ARCHIVE" -C staging .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: binary-${{ matrix.target }}
+          name: binary-x86_64-unknown-linux-gnu
           path: ${{ env.ARCHIVE }}
 
   build-macos:
