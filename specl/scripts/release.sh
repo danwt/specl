@@ -52,13 +52,22 @@ sed -i.bak "s/version = \"$OLD_VERSION\" }/version = \"$VERSION\" }/" "$CARGO_TO
 
 rm -f "$CARGO_TOML.bak"
 
+# Update CHANGELOG: move [Unreleased] content under new version heading
+CHANGELOG="$PROJECT_DIR/CHANGELOG.md"
+if [ -f "$CHANGELOG" ]; then
+    DATE=$(date +%Y-%m-%d)
+    sed -i.bak "s/^## \[Unreleased\]/## [Unreleased]\n\n## [$VERSION] - $DATE/" "$CHANGELOG"
+    rm -f "$CHANGELOG.bak"
+    echo "Updated CHANGELOG.md with [$VERSION] - $DATE"
+fi
+
 echo "Running cargo check..."
 cd "$PROJECT_DIR"
 cargo check --workspace
 
 echo "Committing..."
 cd "$REPO_ROOT"
-git add specl/Cargo.toml specl/Cargo.lock
+git add specl/Cargo.toml specl/Cargo.lock specl/CHANGELOG.md
 git commit -m "chore(release): v$VERSION"
 git tag -a "v$VERSION" -m "v$VERSION"
 
