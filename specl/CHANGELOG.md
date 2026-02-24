@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-02-24
+
 ### Features
 
 - Add production-grade Raft specification by @danwt ([012e1b1](https://github.com/danwt/specl/commit/012e1b179d62c50fce033d6f84b9fe4bce278507))
