@@ -30,58 +30,34 @@ jobs:
       - run: cargo test --workspace --exclude specl-tla
       - run: cargo test -p specl-tla --test translate_corpus -- --skip benchmark_tla_files_translate
 
-  build-linux:
+  build:
     needs: test
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - os: macos-13
+            target: x86_64-apple-darwin
+          - os: macos-latest
+            target: aarch64-apple-darwin
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: specl
+          key: release-${{ matrix.target }}
       - name: Build
         run: cargo build --release -p specl-cli
         working-directory: specl
       - name: Package
         run: |
           TAG="${GITHUB_REF#refs/tags/}"
-          ARCHIVE="specl-${TAG}-x86_64-unknown-linux-gnu.tar.gz"
-          mkdir staging
-          cp specl/target/release/specl staging/
-          cp LICENSE staging/
-          tar -czf "$ARCHIVE" -C staging .
-          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: binary-x86_64-unknown-linux-gnu
-          path: ${{ env.ARCHIVE }}
-
-  build-macos:
-    needs: test
-    runs-on: macos-latest
-    strategy:
-      matrix:
-        target:
-          - x86_64-apple-darwin
-          - aarch64-apple-darwin
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-        with:
-          workspaces: specl
-      - name: Build
-        run: cargo build --release --target ${{ matrix.target }} -p specl-cli
-        working-directory: specl
-      - name: Package
-        run: |
-          TAG="${GITHUB_REF#refs/tags/}"
           ARCHIVE="specl-${TAG}-${{ matrix.target }}.tar.gz"
           mkdir staging
-          cp specl/target/${{ matrix.target }}/release/specl staging/
+          cp specl/target/release/specl staging/
           cp LICENSE staging/
           tar -czf "$ARCHIVE" -C staging .
           echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
@@ -92,7 +68,7 @@ jobs:
           path: ${{ env.ARCHIVE }}
 
   release:
-    needs: [build-linux, build-macos]
+    needs: build
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
