@@ -1,0 +1,17 @@
+# cargo-mutants configuration
+# Run with: cargo mutants -p specl-eval -- --test-threads=1
+# Or for mc: cargo mutants -p specl-mc -- --test-threads=1
+
+# Focus mutation testing on the most critical crates
+[filters]
+# Exclude test-only crates and CLI
+exclude_re = [
+    "specl-cli",
+    "specl-lsp",
+    "specl-soundness",
+    "specl-ts",
+]
+
+# Timeout per mutant test (seconds)
+timeout_multiplier = 3.0
+minimum_test_timeout = 30
