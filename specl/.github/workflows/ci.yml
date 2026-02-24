@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --workspace
+      - run: cargo test --workspace --exclude specl-soundness -- --test-threads=1
+        timeout-minutes: 10
+      - run: cargo fmt --check
+      - run: cargo clippy --workspace -- -D warnings
+
+  soundness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Soundness proptest (4096 cases)
+        run: PROPTEST_CASES=4096 cargo test -p specl-soundness -- --test-threads=1
+        timeout-minutes: 30
