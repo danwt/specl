@@ -27,6 +27,10 @@ fn check_with_trace(src: &str) -> CheckOutcome {
     .expect("check should not error")
 }
 
+fn var_as_int(state: &specl_mc::State, idx: usize) -> i64 {
+    state.vars[idx].as_int().expect("variable should be an integer")
+}
+
 #[test]
 fn violation_trace_is_nonempty() {
     let src = r#"module TraceTest
@@ -57,14 +61,12 @@ invariant Small { x < 3 }
     match outcome {
         CheckOutcome::InvariantViolation { trace, .. } => {
             let (first_state, first_action) = &trace[0];
-            // First state's action should be None (it's the init state)
             assert!(
                 first_action.is_none(),
                 "first trace step should have no action (init), got: {:?}",
                 first_action
             );
-            // x should be 0 in the initial state
-            let x_val = first_state.values()[0];
+            let x_val = var_as_int(first_state, 0);
             assert_eq!(x_val, 0, "init state should have x=0, got x={}", x_val);
         }
         other => panic!("expected InvariantViolation, got: {:?}", other),
@@ -83,8 +85,7 @@ invariant Small { x < 3 }
     match outcome {
         CheckOutcome::InvariantViolation { trace, .. } => {
             let (last_state, _) = trace.last().unwrap();
-            // The final state should have x >= 3 (violating x < 3)
-            let x_val = last_state.values()[0];
+            let x_val = var_as_int(last_state, 0);
             assert!(
                 x_val >= 3,
                 "final state should violate x < 3, got x={}",
@@ -97,8 +98,6 @@ invariant Small { x < 3 }
 
 #[test]
 fn violation_trace_steps_are_monotonic() {
-    // In this spec, x only increments by 1 each step.
-    // So the trace values should be 0, 1, 2, 3.
     let src = r#"module TraceMonotonic
 var x: 0..5
 init { x = 0; }
@@ -109,9 +108,8 @@ invariant Small { x < 3 }
     match outcome {
         CheckOutcome::InvariantViolation { trace, .. } => {
             for i in 1..trace.len() {
-                let prev_x = trace[i - 1].0.values()[0];
-                let curr_x = trace[i].0.values()[0];
-                // Each step increments by exactly 1
+                let prev_x = var_as_int(&trace[i - 1].0, 0);
+                let curr_x = var_as_int(&trace[i].0, 0);
                 assert_eq!(
                     curr_x,
                     prev_x + 1,
@@ -137,7 +135,6 @@ invariant Small { x < 3 }
     let outcome = check_with_trace(src);
     match outcome {
         CheckOutcome::InvariantViolation { trace, .. } => {
-            // All steps after init should have an action name
             for (i, (_, action)) in trace.iter().enumerate().skip(1) {
                 assert!(
                     action.is_some(),
@@ -179,7 +176,6 @@ invariant Small { x < 3 }
     )
     .unwrap();
 
-    // Both should find a violation
     assert!(
         matches!(full, CheckOutcome::InvariantViolation { .. }),
         "full should find violation"
@@ -189,7 +185,6 @@ invariant Small { x < 3 }
         "collapse should find violation"
     );
 
-    // Both traces should end at the same violating value
     if let (
         CheckOutcome::InvariantViolation {
             trace: trace_full, ..
@@ -200,8 +195,8 @@ invariant Small { x < 3 }
         },
     ) = (&full, &collapse)
     {
-        let full_final_x = trace_full.last().unwrap().0.values()[0];
-        let collapse_final_x = trace_collapse.last().unwrap().0.values()[0];
+        let full_final_x = var_as_int(&trace_full.last().unwrap().0, 0);
+        let collapse_final_x = var_as_int(&trace_collapse.last().unwrap().0, 0);
         assert_eq!(
             full_final_x, collapse_final_x,
             "violation state should match across backends"
@@ -232,8 +227,7 @@ action Inc() { require x < 3; x = x + 1; }
 
     match outcome {
         CheckOutcome::Deadlock { trace } => {
-            let last_x = trace.last().unwrap().0.values()[0];
-            // x=3 is the deadlock state (no action is enabled)
+            let last_x = var_as_int(&trace.last().unwrap().0, 0);
             assert_eq!(last_x, 3, "deadlock state should have x=3, got x={}", last_x);
         }
         other => panic!("expected Deadlock, got: {:?}", other),

@@ -5,10 +5,9 @@
 //! both backends should agree. For specs with violations, both should find them.
 
 use proptest::prelude::*;
-use specl_eval::Value;
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome};
-use specl_soundness::{check_spec, compile_spec};
+use specl_soundness::check_spec;
 use specl_symbolic::{self, SymbolicConfig, SymbolicMode, SymbolicOutcome};
 
 fn explicit_holds(src: &str) -> Option<bool> {
@@ -36,7 +35,7 @@ fn symbolic_holds(src: &str, mode: SymbolicMode) -> Option<bool> {
         mode,
         depth: 10,
         seq_bound: 3,
-        spacer_profile: Default::default(),
+        spacer_profile: specl_symbolic::SpacerProfile::Default,
         timeout_ms: Some(10_000),
     };
     match specl_symbolic::check(&spec, &[], &config) {
