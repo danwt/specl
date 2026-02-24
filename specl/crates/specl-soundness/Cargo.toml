@@ -13,6 +13,7 @@ specl-types.workspace = true
 specl-ir.workspace = true
 specl-eval.workspace = true
 specl-mc.workspace = true
+specl-symbolic.workspace = true
 proptest.workspace = true
 rand.workspace = true
 tree-sitter.workspace = true
