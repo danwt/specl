@@ -3918,10 +3918,7 @@ impl Translator {
                         op: specl::BinOp::Union,
                         left: Box::new(prefix),
                         right: Box::new(specl::Expr::new(
-                            specl::ExprKind::DictLit(vec![(
-                                keys.last().unwrap().clone(),
-                                value,
-                            )]),
+                            specl::ExprKind::DictLit(vec![(keys.last().unwrap().clone(), value)]),
                             span,
                         )),
                     },

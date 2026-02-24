@@ -28,7 +28,9 @@ fn check_with_trace(src: &str) -> CheckOutcome {
 }
 
 fn var_as_int(state: &specl_mc::State, idx: usize) -> i64 {
-    state.vars[idx].as_int().expect("variable should be an integer")
+    state.vars[idx]
+        .as_int()
+        .expect("variable should be an integer")
 }
 
 #[test]
@@ -43,7 +45,10 @@ invariant Small { x < 3 }
     match outcome {
         CheckOutcome::InvariantViolation { trace, .. } => {
             assert!(!trace.is_empty(), "violation trace should not be empty");
-            assert!(trace.len() >= 2, "trace should have init + at least one step");
+            assert!(
+                trace.len() >= 2,
+                "trace should have init + at least one step"
+            );
         }
         other => panic!("expected InvariantViolation, got: {:?}", other),
     }
@@ -136,11 +141,7 @@ invariant Small { x < 3 }
     match outcome {
         CheckOutcome::InvariantViolation { trace, .. } => {
             for (i, (_, action)) in trace.iter().enumerate().skip(1) {
-                assert!(
-                    action.is_some(),
-                    "step {} should have an action name",
-                    i
-                );
+                assert!(action.is_some(), "step {} should have an action name", i);
             }
         }
         other => panic!("expected InvariantViolation, got: {:?}", other),
@@ -228,7 +229,11 @@ action Inc() { require x < 3; x = x + 1; }
     match outcome {
         CheckOutcome::Deadlock { trace } => {
             let last_x = var_as_int(&trace.last().unwrap().0, 0);
-            assert_eq!(last_x, 3, "deadlock state should have x=3, got x={}", last_x);
+            assert_eq!(
+                last_x, 3,
+                "deadlock state should have x=3, got x={}",
+                last_x
+            );
         }
         other => panic!("expected Deadlock, got: {:?}", other),
     }

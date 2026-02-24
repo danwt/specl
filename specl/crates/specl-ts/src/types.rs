@@ -225,7 +225,6 @@ pub enum TsExpr {
         lo: Box<TsExpr>,
         hi: Box<TsExpr>,
     },
-
 }
 
 /// Binary operators — same as `specl_ir::BinOp`.

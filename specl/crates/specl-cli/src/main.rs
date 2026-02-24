@@ -1301,8 +1301,7 @@ fn main() {
                 )
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
-                let (auto_symbolic, has_unbounded, reason) =
-                    auto_select_strategy(&file, &constant);
+                let (auto_symbolic, has_unbounded, reason) = auto_select_strategy(&file, &constant);
                 if !quiet {
                     println!("Strategy: {}", reason);
                 }
@@ -1939,15 +1938,15 @@ fn cmd_check_ts(
                     if !quiet {
                         eprintln!();
                         eprintln!("Symbolic checking failed and BFS is not possible (unbounded types like Nat/Int).");
-                        eprintln!("Try constraining types with range bounds, or fix the symbolic error.");
+                        eprintln!(
+                            "Try constraining types with range bounds, or fix the symbolic error."
+                        );
                     }
                     sym_result
                 } else {
                     if !quiet {
                         eprintln!();
-                        eprintln!(
-                            "Symbolic checking failed. Falling back to BFS exploration..."
-                        );
+                        eprintln!("Symbolic checking failed. Falling back to BFS exploration...");
                     }
                     cmd_check_ts_bfs(
                         spec,

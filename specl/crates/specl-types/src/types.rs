@@ -206,5 +206,4 @@ mod tests {
         assert_eq!(Type::Var(v1).substitute(&subst), Type::Nat);
         assert_eq!(Type::Var(v2).substitute(&subst), Type::Var(v2));
     }
-
 }

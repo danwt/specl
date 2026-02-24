@@ -1900,7 +1900,9 @@ fn vm_eval_inner(
                     VK::IntMap2(inner_size, data) => {
                         let k1 = expect_int(key1)?;
                         let k2 = expect_int(key2)?;
-                        stack.push(Value::bool(*intmap2_get(data, inner_size, k1, k2)? == expected));
+                        stack.push(Value::bool(
+                            *intmap2_get(data, inner_size, k1, k2)? == expected,
+                        ));
                     }
                     _ => {
                         let inner_ref = match outer.kind() {
@@ -1973,11 +1975,10 @@ fn vm_eval_inner(
                             VK::IntMap(arr) => {
                                 let k = expect_int(key2)?;
                                 let elem = intmap_get(arr, k)?;
-                                let b =
-                                    elem.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-                                        expected: "Bool".to_string(),
-                                        actual: elem.type_name().to_string(),
-                                    })?;
+                                let b = elem.as_bool().ok_or_else(|| EvalError::TypeMismatch {
+                                    expected: "Bool".to_string(),
+                                    actual: elem.type_name().to_string(),
+                                })?;
                                 stack.push(Value::bool(!b));
                             }
                             VK::Fn(inner_map) => {
@@ -2264,9 +2265,16 @@ fn vm_eval_inner(
                     let k = expect_int(&key)?;
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let outer_len = if d.inner_size > 0 { d.data.len() / d.inner_size as usize } else { 0 };
+                    let outer_len = if d.inner_size > 0 {
+                        d.data.len() / d.inner_size as usize
+                    } else {
+                        0
+                    };
                     if k < 0 || (k as usize) >= outer_len {
-                        return Err(EvalError::IndexOutOfBounds { index: k, length: outer_len });
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: outer_len,
+                        });
                     }
                     let start = k as usize * d.inner_size as usize;
                     match value.kind() {
@@ -2285,7 +2293,10 @@ fn vm_eval_inner(
                     let k = expect_int(&key)?;
                     let mut arr = base.into_intmap_arc();
                     if k < 0 || (k as usize) >= arr.len() {
-                        return Err(EvalError::IndexOutOfBounds { index: k, length: arr.len() });
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: arr.len(),
+                        });
                     }
                     Arc::make_mut(&mut arr)[k as usize] = value;
                     stack.push(Value::from_intmap_arc(arr));
@@ -2315,11 +2326,18 @@ fn vm_eval_inner(
                 if base.is_intmap2() {
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let outer_len = if d.inner_size > 0 { d.data.len() / d.inner_size as usize } else { 0 };
+                    let outer_len = if d.inner_size > 0 {
+                        d.data.len() / d.inner_size as usize
+                    } else {
+                        0
+                    };
                     for (key, value) in pairs {
                         let k = expect_int(&key)?;
                         if k < 0 || (k as usize) >= outer_len {
-                            return Err(EvalError::IndexOutOfBounds { index: k, length: outer_len });
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: k,
+                                length: outer_len,
+                            });
                         }
                         let start = k as usize * d.inner_size as usize;
                         match value.kind() {
@@ -2341,7 +2359,10 @@ fn vm_eval_inner(
                     for (key, value) in pairs {
                         let k = expect_int(&key)?;
                         if k < 0 || (k as usize) >= data.len() {
-                            return Err(EvalError::IndexOutOfBounds { index: k, length: data.len() });
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: k,
+                                length: data.len(),
+                            });
                         }
                         data[k as usize] = value;
                     }
@@ -2370,12 +2391,22 @@ fn vm_eval_inner(
                     let k2_int = expect_int(&k2)?;
                     let mut arc = dict.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let outer_len = if d.inner_size > 0 { d.data.len() / d.inner_size as usize } else { 0 };
+                    let outer_len = if d.inner_size > 0 {
+                        d.data.len() / d.inner_size as usize
+                    } else {
+                        0
+                    };
                     if k1_int < 0 || (k1_int as usize) >= outer_len {
-                        return Err(EvalError::IndexOutOfBounds { index: k1_int, length: outer_len });
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k1_int,
+                            length: outer_len,
+                        });
                     }
                     if k2_int < 0 || (k2_int as usize) >= d.inner_size as usize {
-                        return Err(EvalError::IndexOutOfBounds { index: k2_int, length: d.inner_size as usize });
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k2_int,
+                            length: d.inner_size as usize,
+                        });
                     }
                     d.data[k1_int as usize * d.inner_size as usize + k2_int as usize] = value;
                     stack.push(Value::from_intmap2_arc(arc));
@@ -2384,14 +2415,20 @@ fn vm_eval_inner(
                     let mut outer_arc = dict.into_intmap_arc();
                     let outer = Arc::make_mut(&mut outer_arc);
                     if k1_int < 0 || (k1_int as usize) >= outer.len() {
-                        return Err(EvalError::IndexOutOfBounds { index: k1_int, length: outer.len() });
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k1_int,
+                            length: outer.len(),
+                        });
                     }
                     let inner_val = std::mem::replace(&mut outer[k1_int as usize], Value::none());
                     if inner_val.is_intmap() {
                         let k2_int = expect_int(&k2)?;
                         let mut inner_arc = inner_val.into_intmap_arc();
                         if k2_int < 0 || (k2_int as usize) >= inner_arc.len() {
-                            return Err(EvalError::IndexOutOfBounds { index: k2_int, length: inner_arc.len() });
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: k2_int,
+                                length: inner_arc.len(),
+                            });
                         }
                         Arc::make_mut(&mut inner_arc)[k2_int as usize] = value;
                         outer[k1_int as usize] = Value::from_intmap_arc(inner_arc);
@@ -2417,7 +2454,10 @@ fn vm_eval_inner(
                         let inner_val = std::mem::replace(&mut outer[pos].1, Value::none());
                         let mut inner_arc = inner_val.into_intmap_arc();
                         if k2_int < 0 || (k2_int as usize) >= inner_arc.len() {
-                            return Err(EvalError::IndexOutOfBounds { index: k2_int, length: inner_arc.len() });
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: k2_int,
+                                length: inner_arc.len(),
+                            });
                         }
                         Arc::make_mut(&mut inner_arc)[k2_int as usize] = value;
                         outer[pos].1 = Value::from_intmap_arc(inner_arc);
