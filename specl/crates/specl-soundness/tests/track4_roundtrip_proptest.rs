@@ -32,7 +32,7 @@ fn synth_spec(n_vars: u8, bound: u8, step: u8) -> String {
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 512,
+        cases: 1024,
         .. ProptestConfig::default()
     })]
 

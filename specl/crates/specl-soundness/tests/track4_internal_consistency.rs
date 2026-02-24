@@ -31,6 +31,7 @@ fn base_config() -> CheckConfig {
         bloom: false,
         collapse: false,
         tree: false,
+        max_time_secs: 10,
         ..CheckConfig::default()
     }
 }

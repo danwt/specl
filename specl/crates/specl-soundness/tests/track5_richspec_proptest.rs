@@ -1,4 +1,4 @@
-//! Track 5: Rich spec generation for parser/type-checker/evaluator robustness.
+//! Rich spec generation for parser/type-checker/evaluator robustness.
 //!
 //! Generates random specl programs exercising language features that the
 //! existing MiniSpec generator does not cover: sets, dicts, quantifiers,
@@ -484,7 +484,7 @@ invariant PowersetSize {{
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 256,
+        cases: 512,
         .. ProptestConfig::default()
     })]
 
@@ -497,6 +497,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -511,6 +512,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -525,6 +527,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -539,6 +542,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -553,6 +557,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -569,6 +574,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -583,6 +589,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -597,6 +604,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 5_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -611,6 +619,7 @@ proptest! {
         let outcome = check_spec(&src, CheckConfig {
             check_deadlock: false,
             max_states: 10_000,
+            max_time_secs: 5,
             ..CheckConfig::default()
         });
         prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
@@ -887,5 +896,156 @@ proptest! {
         if let Ok(module) = parsed {
             let _ = specl_types::check_module(&module);
         }
+    }
+
+    // ─── Sequence operations: slicing, indexing, nested ───
+
+    #[test]
+    fn seq_slice_no_panic(bound in 1u8..=2, max_len in 2u8..=3) {
+        let src = format!(
+            r#"module SeqSlice
+var msgs: Seq[0..{bound}]
+init {{ msgs = []; }}
+action Send(v: 0..{bound}) {{ require len(msgs) < {max_len}; msgs = msgs ++ [v]; }}
+action Recv() {{ require len(msgs) > 0; msgs = tail(msgs); }}
+invariant SliceValid {{
+    len(msgs) >= 2 implies len(msgs[0..2]) == 2
+}}
+invariant TailSlice {{
+    len(msgs) > 0 implies len(tail(msgs)) == len(msgs) - 1
+}}
+"#,
+        );
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 5_000,
+            max_time_secs: 5,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    #[test]
+    fn seq_indexing_no_panic(bound in 1u8..=2, max_len in 2u8..=3) {
+        let src = format!(
+            r#"module SeqIndex
+var msgs: Seq[0..{bound}]
+init {{ msgs = []; }}
+action Send(v: 0..{bound}) {{ require len(msgs) < {max_len}; msgs = msgs ++ [v]; }}
+action Recv() {{ require len(msgs) > 0; msgs = tail(msgs); }}
+invariant HeadIsFirst {{
+    len(msgs) > 0 implies head(msgs) == msgs[0]
+}}
+"#,
+        );
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 5_000,
+            max_time_secs: 5,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    // ─── Nested types: Set[Set[T]], Dict[K, Set[V]] ───
+
+    #[test]
+    fn nested_set_of_set_no_panic(bound in 1u8..=2) {
+        let src = format!(
+            r#"module NestedSetSet
+var ss: Set[Set[0..{bound}]]
+init {{ ss = {{{{}}}}; }}
+action AddSubset(k: 0..{bound}) {{
+    ss = ss union {{{{{k}}}}};
+}}
+invariant EmptyInSS {{ {{}} in ss }}
+"#,
+        );
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 10_000,
+            max_time_secs: 5,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    #[test]
+    fn nested_dict_set_value_no_panic(kb in 1u8..=2, vb in 1u8..=2) {
+        let src = format!(
+            r#"module NestedDictSet
+var d: Dict[0..{kb}, Set[0..{vb}]]
+init {{ d = {{k: {{}} for k in 0..{kb}}}; }}
+action AddToKey(k: 0..{kb}, v: 0..{vb}) {{ d = d | {{k: d[k] union {{v}}}}; }}
+invariant AllSubsets {{ all k in 0..{kb} : d[k] subset_of 0..{vb} }}
+"#,
+        );
+        let compiled = compile_spec(&src);
+        prop_assert!(compiled.is_ok(), "compile failed: {:?}", compiled.err());
+        let outcome = check_spec(&src, CheckConfig {
+            check_deadlock: false,
+            max_states: 10_000,
+            max_time_secs: 5,
+            ..CheckConfig::default()
+        });
+        prop_assert!(outcome.is_ok(), "check failed: {:?}", outcome.err());
+    }
+
+    // ─── Nested type roundtrips ───
+
+    #[test]
+    fn nested_set_of_set_roundtrip(bound in 1u8..=2) {
+        let src = format!(
+            r#"module NestedSetSetRT
+var ss: Set[Set[0..{bound}]]
+init {{ ss = {{{{}}}}; }}
+action AddSubset(k: 0..{bound}) {{
+    ss = ss union {{{{{k}}}}};
+}}
+invariant EmptyInSS {{ {{}} in ss }}
+"#,
+        );
+        let result = roundtrip_pretty(&src);
+        prop_assert!(result.is_ok(), "roundtrip failed: {:?}", result.err());
+        let (p1, p2) = result.unwrap();
+        prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    #[test]
+    fn seq_spec_backend_agreement_extended(bound in 1u8..=2, max_len in 2u8..=3) {
+        let src = format!(
+            r#"module SeqExtended
+var msgs: Seq[0..{bound}]
+init {{ msgs = []; }}
+action Send(v: 0..{bound}) {{ require len(msgs) < {max_len}; msgs = msgs ++ [v]; }}
+action Recv() {{ require len(msgs) > 0; msgs = tail(msgs); }}
+invariant Bounded {{ len(msgs) <= {max_len} }}
+invariant HeadInRange {{ len(msgs) > 0 implies (head(msgs) >= 0 and head(msgs) <= {bound}) }}
+"#,
+        );
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            max_time_secs: 5,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+
+        let full = check_spec(&src, base.clone()).expect("full");
+        let expected = states_from_outcome(&full);
+
+        let fast = check_spec(&src, CheckConfig { fast_check: true, ..base.clone() }).expect("fast");
+        prop_assert_eq!(states_from_outcome(&fast), expected, "fast disagreement");
+
+        let collapse = check_spec(&src, CheckConfig { collapse: true, ..base.clone() }).expect("collapse");
+        prop_assert_eq!(states_from_outcome(&collapse), expected, "collapse disagreement");
     }
 }
