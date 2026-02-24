@@ -12,6 +12,8 @@ libfuzzer-sys = "0.4"
 specl-syntax = { path = "../crates/specl-syntax" }
 specl-types = { path = "../crates/specl-types" }
 specl-ir = { path = "../crates/specl-ir" }
+specl-eval = { path = "../crates/specl-eval" }
+specl-mc = { path = "../crates/specl-mc" }
 
 [[bin]]
 name = "parse"
@@ -26,4 +28,9 @@ doc = false
 [[bin]]
 name = "full_pipeline"
 path = "fuzz_targets/full_pipeline.rs"
+doc = false
+
+[[bin]]
+name = "check_model"
+path = "fuzz_targets/check_model.rs"
 doc = false
