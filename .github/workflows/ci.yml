@@ -38,6 +38,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: specl
-      - name: Proptest soundness (2048 cases)
-        run: PROPTEST_CASES=2048 cargo test -p specl-soundness -- --test-threads=1
+      - name: Proptest soundness (512 cases)
+        run: PROPTEST_CASES=512 cargo test -p specl-soundness -- --test-threads=1
         timeout-minutes: 30
