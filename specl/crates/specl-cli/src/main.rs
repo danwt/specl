@@ -167,6 +167,38 @@ pub enum CliError {
     TranslateError { message: String },
 }
 
+impl From<std::io::Error> for CliError {
+    fn from(e: std::io::Error) -> Self {
+        CliError::IoError {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<specl_ir::CompileError> for CliError {
+    fn from(e: specl_ir::CompileError) -> Self {
+        CliError::CompileError {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<specl_ir::from_ts::LowerError> for CliError {
+    fn from(e: specl_ir::from_ts::LowerError) -> Self {
+        CliError::CompileError {
+            message: e.to_string(),
+        }
+    }
+}
+
+impl From<specl_mc::CheckError> for CliError {
+    fn from(e: specl_mc::CheckError) -> Self {
+        CliError::CheckError {
+            message: e.to_string(),
+        }
+    }
+}
+
 impl CliError {
     fn from_parse_error(e: specl_syntax::ParseError, source: Arc<String>, filename: &str) -> Self {
         let span = e.span();
@@ -1446,17 +1478,13 @@ fn main() {
 
 fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
+    let source = Arc::new(fs::read_to_string(file)?);
 
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
     specl_types::check_module(&module)
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-    let spec = compile(&module).map_err(|e| CliError::CompileError {
-        message: e.to_string(),
-    })?;
+    let spec = compile(&module)?;
     let consts = parse_constants(constants, &spec)?;
 
     let profile = analyze(&spec);
@@ -1672,9 +1700,7 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
 
 /// Translate a TLA+ file to a temporary .specl file for checking.
 fn translate_tla_to_temp(file: &PathBuf, quiet: bool) -> CliResult<(PathBuf, TempFileGuard)> {
-    let source = fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?;
+    let source = fs::read_to_string(file)?;
     let specl_source = specl_tla::translate(&source).map_err(|e| CliError::TranslateError {
         message: format!("auto-translating {}: {}", file.display(), e),
     })?;
@@ -1690,9 +1716,7 @@ fn translate_tla_to_temp(file: &PathBuf, quiet: bool) -> CliResult<(PathBuf, Tem
         .parent()
         .unwrap_or_else(|| std::path::Path::new("."))
         .join(&tmp_name);
-    fs::write(&tmp_path, &specl_source).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?;
+    fs::write(&tmp_path, &specl_source)?;
     if !quiet {
         println!(
             "Note: translated {} to specl ({} bytes)",
@@ -1809,9 +1833,7 @@ fn cmd_check_ts(
     timeout: u64,
     swarm: Option<usize>,
 ) -> CliResult<()> {
-    let content = fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?;
+    let content = fs::read_to_string(file)?;
 
     info!("deserializing transition system...");
     let ts: specl_ts::TransitionSystem =
@@ -1820,9 +1842,7 @@ fn cmd_check_ts(
         })?;
 
     info!("lowering to IR...");
-    let spec = specl_ir::from_ts::lower(&ts).map_err(|e| CliError::CompileError {
-        message: e.to_string(),
-    })?;
+    let spec = specl_ir::from_ts::lower(&ts)?;
 
     let consts = parse_constants(constants, &spec)?;
 
@@ -2119,117 +2139,31 @@ fn cmd_check_ts_bfs(
         print_profile(&spec_profile, use_por, use_symmetry);
     }
 
-    let mut actual_por = use_por;
-    let mut actual_symmetry = use_symmetry;
-    let mut actual_fast = fast_check;
-    let mut actual_collapse = collapse;
-
     let user_has_explicit_storage = fast_check || bloom || collapse || tree || directed;
+    let resolved = auto_enable_features(
+        &spec_profile,
+        &spec,
+        use_por,
+        use_symmetry,
+        fast_check,
+        collapse,
+        user_has_explicit_storage,
+        no_auto,
+        quiet,
+    );
+    let actual_por = resolved.por;
+    let actual_symmetry = resolved.symmetry;
+    let actual_fast = resolved.fast;
+    let actual_collapse = resolved.collapse;
 
-    if !no_auto {
-        if !use_por && spec_profile.independence_ratio > 0.3 {
-            actual_por = true;
-            if !quiet {
-                let pct = (spec_profile.independence_ratio * 100.0) as u32;
-                println!("Auto-enabled: --por ({}% independent actions)", pct);
-            }
-        }
-        if !use_symmetry && spec_profile.has_symmetry {
-            let sym_warnings = Explorer::find_symmetry_warnings(&spec);
-            if sym_warnings.is_empty() {
-                actual_symmetry = true;
-                if !quiet {
-                    let sizes: Vec<String> = spec_profile
-                        .symmetry_domain_sizes
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect();
-                    println!(
-                        "Auto-enabled: --symmetry (symmetric domains: {})",
-                        sizes.join(", ")
-                    );
-                }
-            }
-        }
-
-        if !user_has_explicit_storage {
-            if let Some(estimated) = spec_profile.state_space_bound {
-                if estimated > 50_000_000 {
-                    actual_fast = true;
-                    if !quiet {
-                        println!(
-                            "Auto-enabled: --fast (estimated {} states)",
-                            format_large_number(estimated)
-                        );
-                    }
-                } else if estimated > 5_000_000 {
-                    actual_collapse = true;
-                    if !quiet {
-                        println!(
-                            "Auto-enabled: --collapse (estimated {} states)",
-                            format_large_number(estimated)
-                        );
-                    }
-                }
-            }
-        }
-
-        if !quiet
-            && (actual_por != use_por
-                || actual_symmetry != use_symmetry
-                || actual_fast != fast_check
-                || actual_collapse != collapse)
-        {
-            println!();
-        }
-    }
-
-    // Validate incompatible storage modes
-    let storage_modes: Vec<&str> = [
-        (actual_fast, "--fast"),
-        (bloom, "--bloom"),
-        (actual_collapse, "--collapse"),
-        (tree, "--tree"),
-    ]
-    .iter()
-    .filter(|(flag, _)| *flag)
-    .map(|(_, name)| *name)
-    .collect();
-    if storage_modes.len() > 1 {
-        let msg = format!(
-            "Error: incompatible storage modes: {}. Pick one.",
-            storage_modes.join(", ")
-        );
-        if output_format != OutputFormat::Text {
-            let out = JsonOutput::new("error", 0.0).with_error(msg);
-            println!("{}", serde_json::to_string(&out).unwrap());
-        } else {
-            eprintln!("{msg}");
-        }
-        exit_with_code(1);
-    }
-
-    if directed && (actual_fast || bloom || actual_collapse || tree) {
-        let other = if actual_fast {
-            "--fast"
-        } else if bloom {
-            "--bloom"
-        } else if actual_collapse {
-            "--collapse"
-        } else {
-            "--tree"
-        };
-        let msg = format!(
-            "Error: --directed is incompatible with {other} (directed uses its own priority queue)"
-        );
-        if output_format != OutputFormat::Text {
-            let out = JsonOutput::new("error", 0.0).with_error(msg);
-            println!("{}", serde_json::to_string(&out).unwrap());
-        } else {
-            eprintln!("{msg}");
-        }
-        exit_with_code(1);
-    }
+    validate_storage_modes(
+        actual_fast,
+        bloom,
+        actual_collapse,
+        tree,
+        directed,
+        output_format,
+    );
 
     // Swarm verification
     if let Some(n) = swarm {
@@ -2264,48 +2198,7 @@ fn cmd_check_ts_bfs(
     // Progress spinner
     let progress = Arc::new(ProgressCounters::new());
     let start = Instant::now();
-
-    let spinner = if std::io::stderr().is_terminal() && !quiet {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-        pb.enable_steady_tick(Duration::from_millis(100));
-        pb.set_message("starting...");
-        let p = progress.clone();
-        let pb2 = pb.clone();
-        let start2 = start;
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(100));
-            let checked = p.checked.load(std::sync::atomic::Ordering::Relaxed);
-            if checked == 0 {
-                continue;
-            }
-            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
-            let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
-            let elapsed = start2.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 {
-                checked as f64 / elapsed
-            } else {
-                0.0
-            };
-            pb2.set_message(format!(
-                "{} found | {} checked | depth {} | {} states/s",
-                format_large_number(states as u128),
-                format_large_number(checked as u128),
-                depth,
-                format_large_number(rate as u128),
-            ));
-            if pb2.is_finished() {
-                break;
-            }
-        });
-        Some(pb)
-    } else {
-        None
-    };
+    let spinner = create_spinner(&progress, start, quiet);
 
     let config = CheckConfig {
         check_deadlock,
@@ -2330,9 +2223,7 @@ fn cmd_check_ts_bfs(
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
-    let result = explorer.check().map_err(|e| CliError::CheckError {
-        message: e.to_string(),
-    })?;
+    let result = explorer.check()?;
 
     let elapsed = start.elapsed();
     if let Some(ref pb) = spinner {
@@ -2598,9 +2489,7 @@ fn cmd_check(
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
+    let source = Arc::new(fs::read_to_string(file)?);
 
     info!("parsing...");
     let module =
@@ -2615,9 +2504,7 @@ fn cmd_check(
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
 
     info!("compiling...");
-    let spec = compile(&module).map_err(|e| CliError::CompileError {
-        message: e.to_string(),
-    })?;
+    let spec = compile(&module)?;
 
     // Parse constants
     let consts = parse_constants(constants, &spec)?;
@@ -2646,131 +2533,32 @@ fn cmd_check(
         eprintln!("  If checking hangs, use --bmc for symbolic checking instead.");
     }
 
-    let mut actual_por = use_por;
-    let mut actual_symmetry = use_symmetry;
-    let mut actual_fast = fast_check;
-    let mut actual_collapse = collapse;
-
-    // Check if user set any explicit storage/strategy flags
     let user_has_explicit_storage = fast_check || bloom || collapse || tree || directed;
+    let resolved = auto_enable_features(
+        &spec_profile,
+        &spec,
+        use_por,
+        use_symmetry,
+        fast_check,
+        collapse,
+        user_has_explicit_storage,
+        no_auto,
+        quiet,
+    );
+    let actual_por = resolved.por;
+    let actual_symmetry = resolved.symmetry;
+    let actual_fast = resolved.fast;
+    let actual_collapse = resolved.collapse;
 
-    if !no_auto {
-        if !use_por && spec_profile.independence_ratio > 0.3 {
-            actual_por = true;
-            if !quiet {
-                let pct = (spec_profile.independence_ratio * 100.0) as u32;
-                println!("Auto-enabled: --por ({}% independent actions)", pct);
-            }
-        }
-        if !use_symmetry && spec_profile.has_symmetry {
-            let sym_warnings = specl_mc::Explorer::find_symmetry_warnings(&spec);
-            if sym_warnings.is_empty() {
-                actual_symmetry = true;
-                if !quiet {
-                    let sizes: Vec<String> = spec_profile
-                        .symmetry_domain_sizes
-                        .iter()
-                        .map(|s| s.to_string())
-                        .collect();
-                    println!(
-                        "Auto-enabled: --symmetry (symmetric domains: {})",
-                        sizes.join(", ")
-                    );
-                }
-            } else if !quiet {
-                let sizes: Vec<String> = spec_profile
-                    .symmetry_domain_sizes
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
-                println!(
-                    "Skipped auto --symmetry (domains: {}): spec has asymmetric patterns",
-                    sizes.join(", ")
-                );
-            }
-        }
+    validate_storage_modes(
+        actual_fast,
+        bloom,
+        actual_collapse,
+        tree,
+        directed,
+        output_format,
+    );
 
-        // Auto-select storage mode based on estimated state space
-        if !user_has_explicit_storage {
-            if let Some(estimated) = spec_profile.state_space_bound {
-                if estimated > 50_000_000 {
-                    actual_fast = true;
-                    if !quiet {
-                        println!(
-                            "Auto-enabled: --fast (estimated {} states, fingerprint-only saves memory). Traces unavailable in this mode.",
-                            format_large_number(estimated)
-                        );
-                    }
-                } else if estimated > 5_000_000 {
-                    actual_collapse = true;
-                    if !quiet {
-                        println!(
-                            "Auto-enabled: --collapse (estimated {} states, compressed storage)",
-                            format_large_number(estimated)
-                        );
-                    }
-                }
-            }
-        }
-
-        if !quiet
-            && (actual_por != use_por
-                || actual_symmetry != use_symmetry
-                || actual_fast != fast_check
-                || actual_collapse != collapse)
-        {
-            println!();
-        }
-    }
-
-    // --- Validate incompatible explicit-state flag combinations (#25) ---
-    let storage_modes: Vec<&str> = [
-        (actual_fast, "--fast"),
-        (bloom, "--bloom"),
-        (actual_collapse, "--collapse"),
-        (tree, "--tree"),
-    ]
-    .iter()
-    .filter(|(flag, _)| *flag)
-    .map(|(_, name)| *name)
-    .collect();
-    if storage_modes.len() > 1 {
-        let msg = format!(
-            "Error: incompatible storage modes: {}. Pick one.",
-            storage_modes.join(", ")
-        );
-        if output_format != OutputFormat::Text {
-            let out = JsonOutput::new("error", 0.0).with_error(msg);
-            println!("{}", serde_json::to_string(&out).unwrap());
-        } else {
-            eprintln!("{msg}");
-        }
-        exit_with_code(1);
-    }
-
-    if directed && (actual_fast || bloom || actual_collapse || tree) {
-        let other = if actual_fast {
-            "--fast"
-        } else if bloom {
-            "--bloom"
-        } else if actual_collapse {
-            "--collapse"
-        } else {
-            "--tree"
-        };
-        let msg = format!(
-            "Error: --directed is incompatible with {other} (directed uses its own priority queue)"
-        );
-        if output_format != OutputFormat::Text {
-            let out = JsonOutput::new("error", 0.0).with_error(msg);
-            println!("{}", serde_json::to_string(&out).unwrap());
-        } else {
-            eprintln!("{msg}");
-        }
-        exit_with_code(1);
-    }
-
-    // --- Auto-correct flags that only work in sequential mode (#22, #23) ---
     let mut parallel = parallel;
     if profile && parallel {
         if !quiet {
@@ -2779,16 +2567,10 @@ fn cmd_check(
         parallel = false;
     }
 
-    // --- Decouple --bloom from fast_check (#24) ---
-    // bloom is a storage backend, not a checking strategy
-    // do NOT silently force fast_check when bloom is set
-
-    // --- Warn that --directed is always sequential (#21) ---
     if directed && parallel && !quiet {
         eprintln!("Note: --directed uses priority BFS which is sequential");
     }
 
-    // --- Warn that --bloom is probabilistic/unsound ---
     if bloom && !quiet {
         eprintln!("Warning: --bloom is probabilistic and may miss bugs. For exhaustive verification use --fast or default mode.");
     }
@@ -2811,52 +2593,9 @@ fn cmd_check(
         );
     }
 
-    // Set up shared progress counters + spinner on its own timer thread
     let progress = Arc::new(ProgressCounters::new());
     let start = Instant::now();
-
-    let spinner = if std::io::stderr().is_terminal() && !quiet {
-        let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::with_template("{spinner:.cyan} {msg}")
-                .unwrap()
-                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
-        );
-        pb.enable_steady_tick(Duration::from_millis(100));
-        pb.set_message("starting...");
-        // Spinner reads from shared atomics on its own 100ms tick — never blocks
-        let p = progress.clone();
-        let pb2 = pb.clone();
-        let start2 = start;
-        std::thread::spawn(move || loop {
-            std::thread::sleep(Duration::from_millis(100));
-            let checked = p.checked.load(std::sync::atomic::Ordering::Relaxed);
-            if checked == 0 {
-                continue;
-            }
-            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
-            let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
-            let elapsed = start2.elapsed().as_secs_f64();
-            let rate = if elapsed > 0.0 {
-                checked as f64 / elapsed
-            } else {
-                0.0
-            };
-            pb2.set_message(format!(
-                "{} found | {} checked | depth {} | {} states/s",
-                format_large_number(states as u128),
-                format_large_number(checked as u128),
-                depth,
-                format_large_number(rate as u128),
-            ));
-            if pb2.is_finished() {
-                break;
-            }
-        });
-        Some(pb)
-    } else {
-        None
-    };
+    let spinner = create_spinner(&progress, start, quiet);
 
     let config = CheckConfig {
         check_deadlock,
@@ -2904,9 +2643,7 @@ fn cmd_check(
         explorer.pre_seed_fingerprints(fps);
     }
 
-    let result = explorer.check().map_err(|e| CliError::CheckError {
-        message: e.to_string(),
-    })?;
+    let result = explorer.check()?;
 
     // Save fingerprints for incremental re-use
     if let Some(hash) = cache_hash {
@@ -3314,9 +3051,7 @@ fn cmd_check_swarm(
                     tree: false,
                 };
                 let mut explorer = Explorer::new((*spec).clone(), (*consts).clone(), config);
-                let result = explorer.check().map_err(|e| CliError::CheckError {
-                    message: e.to_string(),
-                })?;
+                let result = explorer.check()?;
                 let total_secs = start.elapsed().as_secs_f64();
                 if let CheckOutcome::InvariantViolation { invariant, trace } = result {
                     match output_format {
@@ -3411,9 +3146,7 @@ fn cmd_check_symbolic(
     check_only: Vec<String>,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
+    let source = Arc::new(fs::read_to_string(file)?);
 
     info!("parsing...");
     let module =
@@ -3428,9 +3161,7 @@ fn cmd_check_symbolic(
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
 
     info!("compiling...");
-    let spec = compile(&module).map_err(|e| CliError::CompileError {
-        message: e.to_string(),
-    })?;
+    let spec = compile(&module)?;
 
     let consts = parse_constants(constants, &spec)?;
 
@@ -3496,17 +3227,13 @@ fn cmd_simulate(
 ) -> CliResult<()> {
     let json = output == OutputFormat::Json;
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
+    let source = Arc::new(fs::read_to_string(file)?);
 
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
     specl_types::check_module(&module)
         .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-    let spec = compile(&module).map_err(|e| CliError::CompileError {
-        message: e.to_string(),
-    })?;
+    let spec = compile(&module)?;
     let consts = parse_constants(constants, &spec)?;
 
     let config = CheckConfig {
@@ -3516,11 +3243,7 @@ fn cmd_simulate(
 
     let mut explorer = Explorer::new(spec, consts, config);
     let start = Instant::now();
-    let result = explorer
-        .simulate(max_steps, seed)
-        .map_err(|e| CliError::CheckError {
-            message: e.to_string(),
-        })?;
+    let result = explorer.simulate(max_steps, seed)?;
     let secs = start.elapsed().as_secs_f64();
 
     if output == OutputFormat::Itf || output == OutputFormat::Mermaid {
@@ -4562,6 +4285,211 @@ fn parse_action_params(name: &str) -> (String, Vec<i64>) {
     }
 }
 
+struct ResolvedFlags {
+    por: bool,
+    symmetry: bool,
+    fast: bool,
+    collapse: bool,
+}
+
+/// Auto-enable POR, symmetry, fast, and collapse based on spec analysis.
+#[allow(clippy::too_many_arguments)]
+fn auto_enable_features(
+    spec_profile: &specl_ir::analyze::SpecProfile,
+    spec: &specl_ir::CompiledSpec,
+    use_por: bool,
+    use_symmetry: bool,
+    fast_check: bool,
+    collapse: bool,
+    user_has_explicit_storage: bool,
+    no_auto: bool,
+    quiet: bool,
+) -> ResolvedFlags {
+    let mut resolved = ResolvedFlags {
+        por: use_por,
+        symmetry: use_symmetry,
+        fast: fast_check,
+        collapse,
+    };
+
+    if no_auto {
+        return resolved;
+    }
+
+    if !use_por && spec_profile.independence_ratio > 0.3 {
+        resolved.por = true;
+        if !quiet {
+            let pct = (spec_profile.independence_ratio * 100.0) as u32;
+            println!("Auto-enabled: --por ({}% independent actions)", pct);
+        }
+    }
+    if !use_symmetry && spec_profile.has_symmetry {
+        let sym_warnings = Explorer::find_symmetry_warnings(spec);
+        if sym_warnings.is_empty() {
+            resolved.symmetry = true;
+            if !quiet {
+                let sizes: Vec<String> = spec_profile
+                    .symmetry_domain_sizes
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect();
+                println!(
+                    "Auto-enabled: --symmetry (symmetric domains: {})",
+                    sizes.join(", ")
+                );
+            }
+        } else if !quiet {
+            let sizes: Vec<String> = spec_profile
+                .symmetry_domain_sizes
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+            println!(
+                "Skipped auto --symmetry (domains: {}): spec has asymmetric patterns",
+                sizes.join(", ")
+            );
+        }
+    }
+
+    if !user_has_explicit_storage {
+        if let Some(estimated) = spec_profile.state_space_bound {
+            if estimated > 50_000_000 {
+                resolved.fast = true;
+                if !quiet {
+                    println!(
+                        "Auto-enabled: --fast (estimated {} states)",
+                        format_large_number(estimated)
+                    );
+                }
+            } else if estimated > 5_000_000 {
+                resolved.collapse = true;
+                if !quiet {
+                    println!(
+                        "Auto-enabled: --collapse (estimated {} states)",
+                        format_large_number(estimated)
+                    );
+                }
+            }
+        }
+    }
+
+    if !quiet
+        && (resolved.por != use_por
+            || resolved.symmetry != use_symmetry
+            || resolved.fast != fast_check
+            || resolved.collapse != collapse)
+    {
+        println!();
+    }
+
+    resolved
+}
+
+/// Validate that incompatible storage modes are not combined.
+fn validate_storage_modes(
+    fast: bool,
+    bloom: bool,
+    collapse: bool,
+    tree: bool,
+    directed: bool,
+    output_format: OutputFormat,
+) {
+    let storage_modes: Vec<&str> = [
+        (fast, "--fast"),
+        (bloom, "--bloom"),
+        (collapse, "--collapse"),
+        (tree, "--tree"),
+    ]
+    .iter()
+    .filter(|(flag, _)| *flag)
+    .map(|(_, name)| *name)
+    .collect();
+
+    if storage_modes.len() > 1 {
+        let msg = format!(
+            "Error: incompatible storage modes: {}. Pick one.",
+            storage_modes.join(", ")
+        );
+        if output_format != OutputFormat::Text {
+            let out = JsonOutput::new("error", 0.0).with_error(msg);
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else {
+            eprintln!("{msg}");
+        }
+        exit_with_code(1);
+    }
+
+    if directed && (fast || bloom || collapse || tree) {
+        let other = if fast {
+            "--fast"
+        } else if bloom {
+            "--bloom"
+        } else if collapse {
+            "--collapse"
+        } else {
+            "--tree"
+        };
+        let msg = format!(
+            "Error: --directed is incompatible with {other} (directed uses its own priority queue)"
+        );
+        if output_format != OutputFormat::Text {
+            let out = JsonOutput::new("error", 0.0).with_error(msg);
+            println!("{}", serde_json::to_string(&out).unwrap());
+        } else {
+            eprintln!("{msg}");
+        }
+        exit_with_code(1);
+    }
+}
+
+/// Create a progress spinner that reads from shared atomic counters.
+fn create_spinner(
+    progress: &Arc<ProgressCounters>,
+    start: Instant,
+    quiet: bool,
+) -> Option<ProgressBar> {
+    if std::io::stderr().is_terminal() && !quiet {
+        let pb = ProgressBar::new_spinner();
+        pb.set_style(
+            ProgressStyle::with_template("{spinner:.cyan} {msg}")
+                .unwrap()
+                .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
+        );
+        pb.enable_steady_tick(Duration::from_millis(100));
+        pb.set_message("starting...");
+        let p = progress.clone();
+        let pb2 = pb.clone();
+        std::thread::spawn(move || loop {
+            std::thread::sleep(Duration::from_millis(100));
+            let checked = p.checked.load(std::sync::atomic::Ordering::Relaxed);
+            if checked == 0 {
+                continue;
+            }
+            let states = p.states.load(std::sync::atomic::Ordering::Relaxed);
+            let depth = p.depth.load(std::sync::atomic::Ordering::Relaxed);
+            let elapsed = start.elapsed().as_secs_f64();
+            let rate = if elapsed > 0.0 {
+                checked as f64 / elapsed
+            } else {
+                0.0
+            };
+            pb2.set_message(format!(
+                "{} found | {} checked | depth {} | {} states/s",
+                format_large_number(states as u128),
+                format_large_number(checked as u128),
+                depth,
+                format_large_number(rate as u128),
+            ));
+            if pb2.is_finished() {
+                break;
+            }
+        });
+        Some(pb)
+    } else {
+        None
+    }
+}
+
 /// Print spec profile, warnings, and recommendations.
 /// Skips recommendations for optimizations already enabled.
 fn print_profile(
@@ -4692,9 +4620,7 @@ fn cmd_fmt(
     let filename = file.display().to_string();
     let start = Instant::now();
 
-    let source = Arc::new(fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?);
+    let source = Arc::new(fs::read_to_string(file)?);
 
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
@@ -4717,9 +4643,7 @@ fn cmd_fmt(
             println!("fmt: ok (already formatted)");
         }
     } else if write {
-        fs::write(file, &formatted).map_err(|e| CliError::IoError {
-            message: e.to_string(),
-        })?;
+        fs::write(file, &formatted)?;
         if !json {
             println!("fmt: formatted {}", file.display());
         }
@@ -5055,18 +4979,14 @@ fn format_memory(mb: f64) -> String {
 }
 
 fn cmd_translate(file: &PathBuf, output: Option<&PathBuf>) -> CliResult<()> {
-    let source = fs::read_to_string(file).map_err(|e| CliError::IoError {
-        message: e.to_string(),
-    })?;
+    let source = fs::read_to_string(file)?;
 
     let specl_source = specl_tla::translate(&source).map_err(|e| CliError::TranslateError {
         message: e.to_string(),
     })?;
 
     if let Some(output_path) = output {
-        fs::write(output_path, &specl_source).map_err(|e| CliError::IoError {
-            message: e.to_string(),
-        })?;
+        fs::write(output_path, &specl_source)?;
         println!(
             "translated: {} -> {}",
             file.display(),

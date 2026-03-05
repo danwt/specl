@@ -289,15 +289,17 @@ impl TypeChecker {
                     leftmost = inner_left;
                 }
                 let mut result_ty = self.infer_expr(leftmost)?;
+                let mut left_span = leftmost.span;
                 for (op, right_expr) in chain.into_iter().rev() {
                     let right_ty = self.infer_expr(right_expr)?;
                     result_ty = self.check_binary_types(
                         op,
                         &result_ty,
-                        leftmost.span,
+                        left_span,
                         &right_ty,
                         right_expr.span,
                     )?;
+                    left_span = left_span.merge(right_expr.span);
                 }
                 result_ty
             }

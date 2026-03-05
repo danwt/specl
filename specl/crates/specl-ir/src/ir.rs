@@ -271,6 +271,161 @@ pub enum CompiledExpr {
 }
 
 impl CompiledExpr {
+    /// Apply a callback to every immediate child expression.
+    /// Use this for recursive traversals to avoid duplicating the match structure.
+    pub fn for_each_child(&self, mut f: impl FnMut(&CompiledExpr)) {
+        self.for_each_child_ref(&mut f);
+    }
+
+    fn for_each_child_ref(&self, f: &mut impl FnMut(&CompiledExpr)) {
+        match self {
+            CompiledExpr::Bool(_)
+            | CompiledExpr::Int(_)
+            | CompiledExpr::String(_)
+            | CompiledExpr::Var(_)
+            | CompiledExpr::PrimedVar(_)
+            | CompiledExpr::Const(_)
+            | CompiledExpr::Local(_)
+            | CompiledExpr::Param(_)
+            | CompiledExpr::Changes(_)
+            | CompiledExpr::Unchanged(_)
+            | CompiledExpr::Enabled(_) => {}
+
+            CompiledExpr::Binary { left, right, .. } => {
+                f(left);
+                f(right);
+            }
+            CompiledExpr::Unary { operand, .. } => f(operand),
+            CompiledExpr::Index { base, index } => {
+                f(base);
+                f(index);
+            }
+            CompiledExpr::Slice { base, lo, hi } => {
+                f(base);
+                f(lo);
+                f(hi);
+            }
+            CompiledExpr::FnUpdate { base, key, value } => {
+                f(base);
+                f(key);
+                f(value);
+            }
+            CompiledExpr::FnLit { domain, body } => {
+                f(domain);
+                f(body);
+            }
+            CompiledExpr::SetComprehension {
+                element,
+                domain,
+                filter,
+            } => {
+                f(element);
+                f(domain);
+                if let Some(filt) = filter {
+                    f(filt);
+                }
+            }
+            CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
+                f(domain);
+                f(body);
+            }
+            CompiledExpr::Fix { domain, predicate } => {
+                if let Some(d) = domain {
+                    f(d);
+                }
+                f(predicate);
+            }
+            CompiledExpr::Let { value, body } => {
+                f(value);
+                f(body);
+            }
+            CompiledExpr::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                f(cond);
+                f(then_branch);
+                f(else_branch);
+            }
+            CompiledExpr::SetLit(elems)
+            | CompiledExpr::SeqLit(elems)
+            | CompiledExpr::TupleLit(elems) => {
+                for e in elems {
+                    f(e);
+                }
+            }
+            CompiledExpr::DictLit(pairs) => {
+                for (k, v) in pairs {
+                    f(k);
+                    f(v);
+                }
+            }
+            CompiledExpr::Range { lo, hi } => {
+                f(lo);
+                f(hi);
+            }
+            CompiledExpr::Len(e)
+            | CompiledExpr::Keys(e)
+            | CompiledExpr::Values(e)
+            | CompiledExpr::BigUnion(e)
+            | CompiledExpr::Powerset(e)
+            | CompiledExpr::SeqHead(e)
+            | CompiledExpr::SeqTail(e) => f(e),
+            CompiledExpr::Field { base, .. } => f(base),
+            CompiledExpr::Call { func, args } => {
+                f(func);
+                for a in args {
+                    f(a);
+                }
+            }
+            CompiledExpr::ActionCall { args, .. } => {
+                for a in args {
+                    f(a);
+                }
+            }
+        }
+    }
+
+    /// Collect all `Var` indices referenced in this expression tree.
+    /// Returns a sorted, deduplicated list of variable indices.
+    pub fn collect_var_reads(&self) -> Vec<usize> {
+        let mut reads = Vec::new();
+        let extract = |e: &CompiledExpr| match e {
+            CompiledExpr::Var(idx) => Some(*idx),
+            _ => None,
+        };
+        Self::collect_matching(self, &mut reads, &extract);
+        reads.sort();
+        reads.dedup();
+        reads
+    }
+
+    /// Collect all `PrimedVar` and `Changes` indices referenced in this expression tree.
+    /// Returns a sorted, deduplicated list of variable indices.
+    pub fn collect_var_changes(&self) -> Vec<usize> {
+        let mut changes = Vec::new();
+        let extract = |e: &CompiledExpr| match e {
+            CompiledExpr::PrimedVar(idx) | CompiledExpr::Changes(idx) => Some(*idx),
+            _ => None,
+        };
+        Self::collect_matching(self, &mut changes, &extract);
+        changes.sort();
+        changes.dedup();
+        changes
+    }
+
+    fn collect_matching(
+        expr: &CompiledExpr,
+        out: &mut Vec<usize>,
+        extract: &impl Fn(&CompiledExpr) -> Option<usize>,
+    ) {
+        if let Some(idx) = extract(expr) {
+            out.push(idx);
+        }
+        expr.for_each_child(|child| Self::collect_matching(child, out, extract));
+    }
+
     /// Shift all free Local indices up by `amount`.
     /// Used when an expression compiled in one scope is placed inside
     /// nested Let bindings that add locals before it executes.

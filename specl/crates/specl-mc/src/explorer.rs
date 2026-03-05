@@ -151,6 +151,7 @@ fn params_to_i64s(params: &[Value]) -> Vec<i64> {
 }
 
 /// Lock-free progress counters shared between the explorer and the CLI spinner.
+#[derive(Debug)]
 pub struct ProgressCounters {
     pub states: AtomicUsize,
     pub depth: AtomicUsize,
@@ -177,6 +178,7 @@ impl ProgressCounters {
 }
 
 /// Configuration for the model checker.
+#[derive(Debug)]
 pub struct CheckConfig {
     /// Whether to check for deadlocks.
     pub check_deadlock: bool,
@@ -274,31 +276,6 @@ impl Clone for CheckConfig {
     }
 }
 
-impl std::fmt::Debug for CheckConfig {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CheckConfig")
-            .field("check_deadlock", &self.check_deadlock)
-            .field("max_states", &self.max_states)
-            .field("max_depth", &self.max_depth)
-            .field("memory_limit_mb", &self.memory_limit_mb)
-            .field("parallel", &self.parallel)
-            .field("num_threads", &self.num_threads)
-            .field("use_por", &self.use_por)
-            .field("use_symmetry", &self.use_symmetry)
-            .field("fast_check", &self.fast_check)
-            .field("progress", &self.progress.as_ref().map(|_| "..."))
-            .field("action_shuffle_seed", &self.action_shuffle_seed)
-            .field("profile", &self.profile)
-            .field("bloom", &self.bloom)
-            .field("bloom_bits", &self.bloom_bits)
-            .field("directed", &self.directed)
-            .field("max_time_secs", &self.max_time_secs)
-            .field("check_only_invariants", &self.check_only_invariants)
-            .field("collapse", &self.collapse)
-            .finish()
-    }
-}
-
 /// Profiling data collected during model checking.
 #[derive(Debug, Clone)]
 pub struct ProfileData {
@@ -317,12 +294,9 @@ pub struct ProfileData {
 /// PC-indexed dispatch table for specs where actions guard on `require pc[p] == N`.
 /// Maps PC values to the action indices that can fire for that value. Actions without
 /// the PC guard pattern are always tried (fallback).
-#[allow(dead_code)]
 struct PcDispatchTable {
     /// The state variable index for the PC dict (e.g., `pc`).
     var_idx: u16,
-    /// The parameter index for the process ID (e.g., `p`).
-    param_idx: u16,
     /// Map from PC value -> list of action indices with that guard.
     dispatch: std::collections::HashMap<i64, Vec<usize>>,
     /// Actions that don't have the PC guard pattern (always tried).
@@ -395,7 +369,6 @@ fn detect_pc_dispatch(compiled_guards: &[Bytecode], n_actions: usize) -> Option<
 
     Some(PcDispatchTable {
         var_idx: *var_idx,
-        param_idx: *param_idx,
         dispatch,
         fallback,
     })
@@ -623,241 +596,20 @@ fn collect_param_refs_recursive(
     expr: &CompiledExpr,
     params: &mut std::collections::HashSet<usize>,
 ) {
-    match expr {
-        CompiledExpr::Param(idx) => {
-            params.insert(*idx);
-        }
-        CompiledExpr::Binary { left, right, .. } => {
-            collect_param_refs_recursive(left, params);
-            collect_param_refs_recursive(right, params);
-        }
-        CompiledExpr::Unary { operand, .. } => {
-            collect_param_refs_recursive(operand, params);
-        }
-        CompiledExpr::Index { base, index } => {
-            collect_param_refs_recursive(base, params);
-            collect_param_refs_recursive(index, params);
-        }
-        CompiledExpr::FnUpdate { base, key, value } => {
-            collect_param_refs_recursive(base, params);
-            collect_param_refs_recursive(key, params);
-            collect_param_refs_recursive(value, params);
-        }
-        CompiledExpr::FnLit { domain, body } => {
-            collect_param_refs_recursive(domain, params);
-            collect_param_refs_recursive(body, params);
-        }
-        CompiledExpr::SetComprehension {
-            element,
-            domain,
-            filter,
-        } => {
-            collect_param_refs_recursive(element, params);
-            collect_param_refs_recursive(domain, params);
-            if let Some(f) = filter {
-                collect_param_refs_recursive(f, params);
-            }
-        }
-        CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
-            collect_param_refs_recursive(domain, params);
-            collect_param_refs_recursive(body, params);
-        }
-        CompiledExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_param_refs_recursive(cond, params);
-            collect_param_refs_recursive(then_branch, params);
-            collect_param_refs_recursive(else_branch, params);
-        }
-        CompiledExpr::Let { value, body } => {
-            collect_param_refs_recursive(value, params);
-            collect_param_refs_recursive(body, params);
-        }
-        CompiledExpr::Len(e)
-        | CompiledExpr::Keys(e)
-        | CompiledExpr::Values(e)
-        | CompiledExpr::Powerset(e)
-        | CompiledExpr::BigUnion(e)
-        | CompiledExpr::SeqHead(e)
-        | CompiledExpr::SeqTail(e) => {
-            collect_param_refs_recursive(e, params);
-        }
-        CompiledExpr::Fix { domain, predicate } => {
-            if let Some(domain) = domain {
-                collect_param_refs_recursive(domain, params);
-            }
-            collect_param_refs_recursive(predicate, params);
-        }
-        CompiledExpr::Range { lo, hi } => {
-            collect_param_refs_recursive(lo, params);
-            collect_param_refs_recursive(hi, params);
-        }
-        CompiledExpr::Slice { base, lo, hi } => {
-            collect_param_refs_recursive(base, params);
-            collect_param_refs_recursive(lo, params);
-            collect_param_refs_recursive(hi, params);
-        }
-        CompiledExpr::Call { func, args } => {
-            collect_param_refs_recursive(func, params);
-            for a in args {
-                collect_param_refs_recursive(a, params);
-            }
-        }
-        CompiledExpr::ActionCall { args, .. } => {
-            for a in args {
-                collect_param_refs_recursive(a, params);
-            }
-        }
-        CompiledExpr::SetLit(elems)
-        | CompiledExpr::SeqLit(elems)
-        | CompiledExpr::TupleLit(elems) => {
-            for e in elems {
-                collect_param_refs_recursive(e, params);
-            }
-        }
-        CompiledExpr::DictLit(pairs) => {
-            for (k, v) in pairs {
-                collect_param_refs_recursive(k, params);
-                collect_param_refs_recursive(v, params);
-            }
-        }
-        CompiledExpr::Field { base, .. } => {
-            collect_param_refs_recursive(base, params);
-        }
-        // Leaves with no param refs
-        CompiledExpr::Bool(_)
-        | CompiledExpr::Int(_)
-        | CompiledExpr::String(_)
-        | CompiledExpr::Const(_)
-        | CompiledExpr::Var(_)
-        | CompiledExpr::PrimedVar(_)
-        | CompiledExpr::Local(_)
-        | CompiledExpr::Unchanged(_)
-        | CompiledExpr::Changes(_)
-        | CompiledExpr::Enabled(_) => {}
+    if let CompiledExpr::Param(idx) = expr {
+        params.insert(*idx);
     }
+    expr.for_each_child(|child| collect_param_refs_recursive(child, params));
 }
 
 fn collect_string_literals_in_expr(
     expr: &CompiledExpr,
     out: &mut std::collections::BTreeSet<String>,
 ) {
-    match expr {
-        CompiledExpr::String(s) => {
-            out.insert(s.clone());
-        }
-        CompiledExpr::Binary { left, right, .. } => {
-            collect_string_literals_in_expr(left, out);
-            collect_string_literals_in_expr(right, out);
-        }
-        CompiledExpr::Unary { operand, .. } => {
-            collect_string_literals_in_expr(operand, out);
-        }
-        CompiledExpr::Index { base, index } => {
-            collect_string_literals_in_expr(base, out);
-            collect_string_literals_in_expr(index, out);
-        }
-        CompiledExpr::FnUpdate { base, key, value } => {
-            collect_string_literals_in_expr(base, out);
-            collect_string_literals_in_expr(key, out);
-            collect_string_literals_in_expr(value, out);
-        }
-        CompiledExpr::FnLit { domain, body } => {
-            collect_string_literals_in_expr(domain, out);
-            collect_string_literals_in_expr(body, out);
-        }
-        CompiledExpr::SetComprehension {
-            element,
-            domain,
-            filter,
-        } => {
-            collect_string_literals_in_expr(element, out);
-            collect_string_literals_in_expr(domain, out);
-            if let Some(f) = filter {
-                collect_string_literals_in_expr(f, out);
-            }
-        }
-        CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
-            collect_string_literals_in_expr(domain, out);
-            collect_string_literals_in_expr(body, out);
-        }
-        CompiledExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_string_literals_in_expr(cond, out);
-            collect_string_literals_in_expr(then_branch, out);
-            collect_string_literals_in_expr(else_branch, out);
-        }
-        CompiledExpr::Let { value, body } => {
-            collect_string_literals_in_expr(value, out);
-            collect_string_literals_in_expr(body, out);
-        }
-        CompiledExpr::Len(e)
-        | CompiledExpr::Keys(e)
-        | CompiledExpr::Values(e)
-        | CompiledExpr::Powerset(e)
-        | CompiledExpr::BigUnion(e)
-        | CompiledExpr::SeqHead(e)
-        | CompiledExpr::SeqTail(e) => {
-            collect_string_literals_in_expr(e, out);
-        }
-        CompiledExpr::Fix { domain, predicate } => {
-            if let Some(domain) = domain {
-                collect_string_literals_in_expr(domain, out);
-            }
-            collect_string_literals_in_expr(predicate, out);
-        }
-        CompiledExpr::Range { lo, hi } => {
-            collect_string_literals_in_expr(lo, out);
-            collect_string_literals_in_expr(hi, out);
-        }
-        CompiledExpr::Slice { base, lo, hi } => {
-            collect_string_literals_in_expr(base, out);
-            collect_string_literals_in_expr(lo, out);
-            collect_string_literals_in_expr(hi, out);
-        }
-        CompiledExpr::Call { func, args } => {
-            collect_string_literals_in_expr(func, out);
-            for a in args {
-                collect_string_literals_in_expr(a, out);
-            }
-        }
-        CompiledExpr::ActionCall { args, .. } => {
-            for a in args {
-                collect_string_literals_in_expr(a, out);
-            }
-        }
-        CompiledExpr::SetLit(elems)
-        | CompiledExpr::SeqLit(elems)
-        | CompiledExpr::TupleLit(elems) => {
-            for e in elems {
-                collect_string_literals_in_expr(e, out);
-            }
-        }
-        CompiledExpr::DictLit(pairs) => {
-            for (k, v) in pairs {
-                collect_string_literals_in_expr(k, out);
-                collect_string_literals_in_expr(v, out);
-            }
-        }
-        CompiledExpr::Field { base, .. } => {
-            collect_string_literals_in_expr(base, out);
-        }
-        CompiledExpr::Bool(_)
-        | CompiledExpr::Int(_)
-        | CompiledExpr::Const(_)
-        | CompiledExpr::Var(_)
-        | CompiledExpr::PrimedVar(_)
-        | CompiledExpr::Local(_)
-        | CompiledExpr::Param(_)
-        | CompiledExpr::Unchanged(_)
-        | CompiledExpr::Changes(_)
-        | CompiledExpr::Enabled(_) => {}
+    if let CompiledExpr::String(s) = expr {
+        out.insert(s.clone());
     }
+    expr.for_each_child(|child| collect_string_literals_in_expr(child, out));
 }
 
 fn collect_strings_from_value(value: &Value, out: &mut std::collections::BTreeSet<String>) {
@@ -2184,120 +1936,15 @@ impl Explorer {
     /// Collect variable indices referenced in an expression.
     fn collect_var_refs(expr: &CompiledExpr, vars: &mut std::collections::HashSet<usize>) {
         match expr {
-            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+            CompiledExpr::Var(idx)
+            | CompiledExpr::PrimedVar(idx)
+            | CompiledExpr::Unchanged(idx)
+            | CompiledExpr::Changes(idx) => {
                 vars.insert(*idx);
             }
-            CompiledExpr::Binary { left, right, .. } => {
-                Self::collect_var_refs(left, vars);
-                Self::collect_var_refs(right, vars);
-            }
-            CompiledExpr::Unary { operand, .. } => {
-                Self::collect_var_refs(operand, vars);
-            }
-            CompiledExpr::Index { base, index } => {
-                Self::collect_var_refs(base, vars);
-                Self::collect_var_refs(index, vars);
-            }
-            CompiledExpr::FnUpdate { base, key, value } => {
-                Self::collect_var_refs(base, vars);
-                Self::collect_var_refs(key, vars);
-                Self::collect_var_refs(value, vars);
-            }
-            CompiledExpr::FnLit { domain, body } => {
-                Self::collect_var_refs(domain, vars);
-                Self::collect_var_refs(body, vars);
-            }
-            CompiledExpr::SetComprehension {
-                element,
-                domain,
-                filter,
-            } => {
-                Self::collect_var_refs(element, vars);
-                Self::collect_var_refs(domain, vars);
-                if let Some(f) = filter {
-                    Self::collect_var_refs(f, vars);
-                }
-            }
-            CompiledExpr::Forall { domain, body } | CompiledExpr::Exists { domain, body } => {
-                Self::collect_var_refs(domain, vars);
-                Self::collect_var_refs(body, vars);
-            }
-            CompiledExpr::Fix { domain, predicate } => {
-                if let Some(domain) = domain {
-                    Self::collect_var_refs(domain, vars);
-                }
-                Self::collect_var_refs(predicate, vars);
-            }
-            CompiledExpr::If {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                Self::collect_var_refs(cond, vars);
-                Self::collect_var_refs(then_branch, vars);
-                Self::collect_var_refs(else_branch, vars);
-            }
-            CompiledExpr::Let { value, body } => {
-                Self::collect_var_refs(value, vars);
-                Self::collect_var_refs(body, vars);
-            }
-            CompiledExpr::SetLit(elems)
-            | CompiledExpr::SeqLit(elems)
-            | CompiledExpr::TupleLit(elems) => {
-                for e in elems {
-                    Self::collect_var_refs(e, vars);
-                }
-            }
-            CompiledExpr::DictLit(pairs) => {
-                for (k, v) in pairs {
-                    Self::collect_var_refs(k, vars);
-                    Self::collect_var_refs(v, vars);
-                }
-            }
-            CompiledExpr::Field { base, .. } => {
-                Self::collect_var_refs(base, vars);
-            }
-            CompiledExpr::Range { lo, hi } => {
-                Self::collect_var_refs(lo, vars);
-                Self::collect_var_refs(hi, vars);
-            }
-            CompiledExpr::Slice { base, lo, hi } => {
-                Self::collect_var_refs(base, vars);
-                Self::collect_var_refs(lo, vars);
-                Self::collect_var_refs(hi, vars);
-            }
-            CompiledExpr::Len(e)
-            | CompiledExpr::Keys(e)
-            | CompiledExpr::Values(e)
-            | CompiledExpr::BigUnion(e)
-            | CompiledExpr::Powerset(e)
-            | CompiledExpr::SeqHead(e)
-            | CompiledExpr::SeqTail(e) => {
-                Self::collect_var_refs(e, vars);
-            }
-            CompiledExpr::Call { func, args } => {
-                Self::collect_var_refs(func, vars);
-                for a in args {
-                    Self::collect_var_refs(a, vars);
-                }
-            }
-            CompiledExpr::ActionCall { args, .. } => {
-                for a in args {
-                    Self::collect_var_refs(a, vars);
-                }
-            }
-            CompiledExpr::Unchanged(idx) | CompiledExpr::Changes(idx) => {
-                vars.insert(*idx);
-            }
-            // Leaves with no var refs
-            CompiledExpr::Bool(_)
-            | CompiledExpr::Int(_)
-            | CompiledExpr::String(_)
-            | CompiledExpr::Const(_)
-            | CompiledExpr::Local(_)
-            | CompiledExpr::Param(_)
-            | CompiledExpr::Enabled(_) => {}
+            _ => {}
         }
+        expr.for_each_child(|child| Self::collect_var_refs(child, vars));
     }
 
     /// Canonicalize a state if symmetry reduction is enabled.

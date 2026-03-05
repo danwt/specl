@@ -559,75 +559,10 @@ fn build_string_table(spec: &CompiledSpec) -> Vec<String> {
 }
 
 fn collect_strings_from_expr(expr: &CompiledExpr, out: &mut Vec<String>) {
-    match expr {
-        CompiledExpr::String(s) => out.push(s.clone()),
-        CompiledExpr::Binary { left, right, .. } => {
-            collect_strings_from_expr(left, out);
-            collect_strings_from_expr(right, out);
-        }
-        CompiledExpr::Unary { operand, .. } => collect_strings_from_expr(operand, out),
-        CompiledExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_strings_from_expr(cond, out);
-            collect_strings_from_expr(then_branch, out);
-            collect_strings_from_expr(else_branch, out);
-        }
-        CompiledExpr::Let { value, body, .. } => {
-            collect_strings_from_expr(value, out);
-            collect_strings_from_expr(body, out);
-        }
-        CompiledExpr::Forall { body, domain, .. } | CompiledExpr::Exists { body, domain, .. } => {
-            collect_strings_from_expr(domain, out);
-            collect_strings_from_expr(body, out);
-        }
-        CompiledExpr::FnLit { domain, body, .. } => {
-            collect_strings_from_expr(domain, out);
-            collect_strings_from_expr(body, out);
-        }
-        CompiledExpr::Index { base, index } => {
-            collect_strings_from_expr(base, out);
-            collect_strings_from_expr(index, out);
-        }
-        CompiledExpr::SetComprehension {
-            element,
-            domain,
-            filter,
-            ..
-        } => {
-            collect_strings_from_expr(element, out);
-            collect_strings_from_expr(domain, out);
-            if let Some(f) = filter {
-                collect_strings_from_expr(f, out);
-            }
-        }
-        CompiledExpr::SetLit(elems) | CompiledExpr::SeqLit(elems) => {
-            for e in elems {
-                collect_strings_from_expr(e, out);
-            }
-        }
-        CompiledExpr::Range { lo, hi } => {
-            collect_strings_from_expr(lo, out);
-            collect_strings_from_expr(hi, out);
-        }
-        CompiledExpr::DictLit(pairs) => {
-            for (k, v) in pairs {
-                collect_strings_from_expr(k, out);
-                collect_strings_from_expr(v, out);
-            }
-        }
-        CompiledExpr::Fix {
-            domain, predicate, ..
-        } => {
-            if let Some(domain) = domain {
-                collect_strings_from_expr(domain, out);
-            }
-            collect_strings_from_expr(predicate, out);
-        }
-        _ => {}
+    if let CompiledExpr::String(s) = expr {
+        out.push(s.clone());
     }
+    expr.for_each_child(|child| collect_strings_from_expr(child, out));
 }
 
 impl VarKind {

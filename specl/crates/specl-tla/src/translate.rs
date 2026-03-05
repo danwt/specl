@@ -74,235 +74,46 @@ impl Translator {
     /// Check if an expression contains a call (OpApp) to the given operator name.
     fn body_references_self(name: &str, expr: &TlaExpr) -> bool {
         match &expr.kind {
+            TlaExprKind::Ident(n) if n == name => return true,
             TlaExprKind::OpApp {
-                name: call_name,
-                args,
-            } => {
-                if call_name == name {
-                    return true;
-                }
-                args.iter().any(|a| Self::body_references_self(name, a))
-            }
-            TlaExprKind::Ident(n) => n == name,
-            TlaExprKind::Binary { left, right, .. } => {
-                Self::body_references_self(name, left) || Self::body_references_self(name, right)
-            }
-            TlaExprKind::Unary { operand, .. } => Self::body_references_self(name, operand),
-            TlaExprKind::SetEnum { elements } | TlaExprKind::Tuple { elements } => {
-                elements.iter().any(|e| Self::body_references_self(name, e))
-            }
-            TlaExprKind::Record { fields } => fields
-                .iter()
-                .any(|(_, e)| Self::body_references_self(name, e)),
-            TlaExprKind::FieldAccess { base, .. } => Self::body_references_self(name, base),
-            TlaExprKind::IfThenElse {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                Self::body_references_self(name, cond)
-                    || Self::body_references_self(name, then_branch)
-                    || Self::body_references_self(name, else_branch)
-            }
-            TlaExprKind::Paren(inner) | TlaExprKind::Primed(inner) => {
-                Self::body_references_self(name, inner)
-            }
-            TlaExprKind::Range { lo, hi } => {
-                Self::body_references_self(name, lo) || Self::body_references_self(name, hi)
-            }
-            TlaExprKind::FunctionApp { func, args } => {
-                Self::body_references_self(name, func)
-                    || args.iter().any(|a| Self::body_references_self(name, a))
-            }
-            TlaExprKind::FunctionDef { domain, body, .. } => {
-                Self::body_references_self(name, domain) || Self::body_references_self(name, body)
-            }
-            TlaExprKind::FunctionSet { domain, range } => {
-                Self::body_references_self(name, domain) || Self::body_references_self(name, range)
-            }
-            TlaExprKind::RecordSet { fields } => fields
-                .iter()
-                .any(|(_, e)| Self::body_references_self(name, e)),
-            TlaExprKind::LetIn { defs, body } => {
-                defs.iter()
-                    .any(|d| Self::body_references_self(name, &d.body))
-                    || Self::body_references_self(name, body)
-            }
-            TlaExprKind::Forall { body, bindings, .. }
-            | TlaExprKind::Exists { body, bindings, .. } => {
-                Self::body_references_self(name, body)
-                    || bindings
-                        .iter()
-                        .any(|b| Self::body_references_self(name, &b.domain))
-            }
-            TlaExprKind::SetMap {
-                element, domain, ..
-            } => {
-                Self::body_references_self(name, element)
-                    || Self::body_references_self(name, domain)
-            }
-            TlaExprKind::SetFilter {
-                predicate, domain, ..
-            } => {
-                Self::body_references_self(name, predicate)
-                    || Self::body_references_self(name, domain)
-            }
-            TlaExprKind::Choose {
-                predicate, domain, ..
-            } => {
-                Self::body_references_self(name, predicate)
-                    || domain
-                        .as_ref()
-                        .is_some_and(|d| Self::body_references_self(name, d))
-            }
-            TlaExprKind::Except { base, updates } => {
-                Self::body_references_self(name, base)
-                    || updates.iter().any(|u| {
-                        u.path.iter().any(|p| Self::body_references_self(name, p))
-                            || Self::body_references_self(name, &u.value)
-                    })
-            }
-            TlaExprKind::Domain(inner)
-            | TlaExprKind::PowerSet(inner)
-            | TlaExprKind::BigUnion(inner)
-            | TlaExprKind::Always(inner)
-            | TlaExprKind::Eventually(inner)
-            | TlaExprKind::Enabled(inner) => Self::body_references_self(name, inner),
-            TlaExprKind::LeadsTo { left, right }
-            | TlaExprKind::BoxAction {
-                action: left,
-                vars: right,
-            }
-            | TlaExprKind::AngleAction {
-                action: left,
-                vars: right,
-            } => Self::body_references_self(name, left) || Self::body_references_self(name, right),
-            TlaExprKind::WeakFairness { vars, action }
-            | TlaExprKind::StrongFairness { vars, action } => {
-                Self::body_references_self(name, vars) || Self::body_references_self(name, action)
-            }
-            TlaExprKind::Unchanged(vars) => vars.iter().any(|v| v.name == name),
-            TlaExprKind::Case { arms, other } => {
-                arms.iter().any(|(cond, body)| {
-                    Self::body_references_self(name, cond) || Self::body_references_self(name, body)
-                }) || other
-                    .as_ref()
-                    .is_some_and(|e| Self::body_references_self(name, e))
-            }
-            TlaExprKind::InstanceOp { instance, args, .. } => {
-                Self::body_references_self(name, instance)
-                    || args.iter().any(|a| Self::body_references_self(name, a))
-            }
-            _ => false,
+                name: call_name, ..
+            } if call_name == name => return true,
+            TlaExprKind::Unchanged(vars) if vars.iter().any(|v| v.name == name) => return true,
+            _ => {}
         }
+        let mut found = false;
+        expr.for_each_child(|child| {
+            if !found && Self::body_references_self(name, child) {
+                found = true;
+            }
+        });
+        found
     }
 
     /// Check if an expression references any state variables.
     fn references_state_vars(&self, expr: &TlaExpr) -> bool {
         match &expr.kind {
-            TlaExprKind::Ident(name) => self.state_vars.contains(name),
-            TlaExprKind::Primed(inner) => self.references_state_vars(inner),
-            TlaExprKind::Binary { left, right, .. } => {
-                self.references_state_vars(left) || self.references_state_vars(right)
-            }
-            TlaExprKind::Unary { operand, .. } => self.references_state_vars(operand),
-            TlaExprKind::Forall { bindings, body } | TlaExprKind::Exists { bindings, body } => {
-                bindings
-                    .iter()
-                    .any(|b| self.references_state_vars(&b.domain))
-                    || self.references_state_vars(body)
-            }
-            TlaExprKind::IfThenElse {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                self.references_state_vars(cond)
-                    || self.references_state_vars(then_branch)
-                    || self.references_state_vars(else_branch)
-            }
-            TlaExprKind::SetEnum { elements } | TlaExprKind::Tuple { elements } => {
-                elements.iter().any(|e| self.references_state_vars(e))
-            }
-            TlaExprKind::SetMap {
-                element, domain, ..
-            }
-            | TlaExprKind::SetFilter {
-                domain,
-                predicate: element,
-                ..
-            } => self.references_state_vars(element) || self.references_state_vars(domain),
-            TlaExprKind::FunctionApp { func, args } => {
-                self.references_state_vars(func)
-                    || args.iter().any(|a| self.references_state_vars(a))
-            }
-            TlaExprKind::OpApp { name, args } => {
-                // Check if the operator being called is known to reference state
+            TlaExprKind::Ident(name) if self.state_vars.contains(name) => return true,
+            TlaExprKind::OpApp { name, .. }
                 if self.stateful_predicates.contains_key(name)
-                    || self.action_helpers.contains_key(name)
-                {
-                    return true;
-                }
-                args.iter().any(|a| self.references_state_vars(a))
+                    || self.action_helpers.contains_key(name) =>
+            {
+                return true
             }
-            TlaExprKind::Record { fields } => {
-                fields.iter().any(|(_, e)| self.references_state_vars(e))
+            TlaExprKind::Unchanged(vars)
+                if vars.iter().any(|v| self.state_vars.contains(&v.name)) =>
+            {
+                return true
             }
-            TlaExprKind::FieldAccess { base, .. } => self.references_state_vars(base),
-            TlaExprKind::FunctionDef { domain, body, .. } => {
-                self.references_state_vars(domain) || self.references_state_vars(body)
-            }
-            TlaExprKind::Except { base, updates } => {
-                self.references_state_vars(base)
-                    || updates.iter().any(|u| {
-                        u.path.iter().any(|p| self.references_state_vars(p))
-                            || self.references_state_vars(&u.value)
-                    })
-            }
-            TlaExprKind::LetIn { defs, body } => {
-                defs.iter().any(|d| self.references_state_vars(&d.body))
-                    || self.references_state_vars(body)
-            }
-            TlaExprKind::Range { lo, hi } => {
-                self.references_state_vars(lo) || self.references_state_vars(hi)
-            }
-            TlaExprKind::Paren(inner) => self.references_state_vars(inner),
-            TlaExprKind::Choose {
-                domain, predicate, ..
-            } => {
-                domain
-                    .as_ref()
-                    .is_some_and(|d| self.references_state_vars(d))
-                    || self.references_state_vars(predicate)
-            }
-            TlaExprKind::FunctionSet { domain, range } => {
-                self.references_state_vars(domain) || self.references_state_vars(range)
-            }
-            TlaExprKind::RecordSet { fields } => {
-                fields.iter().any(|(_, e)| self.references_state_vars(e))
-            }
-            TlaExprKind::Domain(e)
-            | TlaExprKind::PowerSet(e)
-            | TlaExprKind::BigUnion(e)
-            | TlaExprKind::Always(e)
-            | TlaExprKind::Eventually(e)
-            | TlaExprKind::Enabled(e) => self.references_state_vars(e),
-            TlaExprKind::LeadsTo { left, right }
-            | TlaExprKind::BoxAction {
-                action: left,
-                vars: right,
-            }
-            | TlaExprKind::AngleAction {
-                action: left,
-                vars: right,
-            } => self.references_state_vars(left) || self.references_state_vars(right),
-            TlaExprKind::WeakFairness { vars, action }
-            | TlaExprKind::StrongFairness { vars, action } => {
-                self.references_state_vars(vars) || self.references_state_vars(action)
-            }
-            TlaExprKind::Unchanged(vars) => vars.iter().any(|v| self.state_vars.contains(&v.name)),
-            _ => false,
+            _ => {}
         }
+        let mut found = false;
+        expr.for_each_child(|child| {
+            if !found && self.references_state_vars(child) {
+                found = true;
+            }
+        });
+        found
     }
 
     /// Check if an operator is a pure constant (no params, doesn't reference state vars).
@@ -1774,47 +1585,19 @@ impl Translator {
 
     fn contains_primed_var(&self, expr: &TlaExpr) -> bool {
         match &expr.kind {
-            TlaExprKind::Primed(_) => true,
-            TlaExprKind::Binary { left, right, .. } => {
-                self.contains_primed_var(left) || self.contains_primed_var(right)
+            TlaExprKind::Primed(_) | TlaExprKind::Unchanged(_) => return true,
+            TlaExprKind::OpApp { name, .. } if self.action_helpers.contains_key(name) => {
+                return true
             }
-            TlaExprKind::Unary { operand, .. } => self.contains_primed_var(operand),
-            TlaExprKind::Forall { body, .. } => self.contains_primed_var(body),
-            TlaExprKind::Exists { body, .. } => self.contains_primed_var(body),
-            TlaExprKind::IfThenElse {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                self.contains_primed_var(cond)
-                    || self.contains_primed_var(then_branch)
-                    || self.contains_primed_var(else_branch)
-            }
-            TlaExprKind::Unchanged(_) => true,
-            TlaExprKind::LetIn { defs, body } => {
-                defs.iter().any(|d| self.contains_primed_var(&d.body))
-                    || self.contains_primed_var(body)
-            }
-            TlaExprKind::Paren(inner) => self.contains_primed_var(inner),
-            TlaExprKind::FunctionApp { func, args } => {
-                self.contains_primed_var(func) || args.iter().any(|a| self.contains_primed_var(a))
-            }
-            TlaExprKind::OpApp { name, args } => {
-                // Check if the operator being called is an action helper (has primed vars in body)
-                if self.action_helpers.contains_key(name) {
-                    return true;
-                }
-                args.iter().any(|a| self.contains_primed_var(a))
-            }
-            TlaExprKind::Except { base, updates } => {
-                self.contains_primed_var(base)
-                    || updates.iter().any(|u| {
-                        u.path.iter().any(|p| self.contains_primed_var(p))
-                            || self.contains_primed_var(&u.value)
-                    })
-            }
-            _ => false,
+            _ => {}
         }
+        let mut found = false;
+        expr.for_each_child(|child| {
+            if !found && self.contains_primed_var(child) {
+                found = true;
+            }
+        });
+        found
     }
 
     fn is_invariant(&self, expr: &TlaExpr) -> bool {
@@ -1876,37 +1659,21 @@ impl Translator {
             | TlaExprKind::AngleAction { .. }
             | TlaExprKind::WeakFairness { .. }
             | TlaExprKind::StrongFairness { .. }
-            | TlaExprKind::Enabled(_) => true,
-            TlaExprKind::Ident(name) => {
-                matches!(name.as_str(), "Init" | "Next" | "Spec" | "vars")
+            | TlaExprKind::Enabled(_) => return true,
+            TlaExprKind::Ident(name) | TlaExprKind::OpApp { name, .. }
+                if matches!(name.as_str(), "Init" | "Next" | "Spec" | "vars") =>
+            {
+                return true
             }
-            TlaExprKind::OpApp { name, args } => {
-                matches!(name.as_str(), "Init" | "Next" | "Spec" | "vars")
-                    || args.iter().any(|a| self.contains_temporal_or_spec_refs(a))
-            }
-            TlaExprKind::Binary { left, right, .. } => {
-                self.contains_temporal_or_spec_refs(left)
-                    || self.contains_temporal_or_spec_refs(right)
-            }
-            TlaExprKind::Unary { operand, .. } => self.contains_temporal_or_spec_refs(operand),
-            TlaExprKind::Forall { bindings, body } | TlaExprKind::Exists { bindings, body } => {
-                bindings
-                    .iter()
-                    .any(|b| self.contains_temporal_or_spec_refs(&b.domain))
-                    || self.contains_temporal_or_spec_refs(body)
-            }
-            TlaExprKind::IfThenElse {
-                cond,
-                then_branch,
-                else_branch,
-            } => {
-                self.contains_temporal_or_spec_refs(cond)
-                    || self.contains_temporal_or_spec_refs(then_branch)
-                    || self.contains_temporal_or_spec_refs(else_branch)
-            }
-            TlaExprKind::Paren(inner) => self.contains_temporal_or_spec_refs(inner),
-            _ => false,
+            _ => {}
         }
+        let mut found = false;
+        expr.for_each_child(|child| {
+            if !found && self.contains_temporal_or_spec_refs(child) {
+                found = true;
+            }
+        });
+        found
     }
 
     fn translate_init_expr(&self, expr: &TlaExpr) -> Result<specl::Expr, TranslateError> {

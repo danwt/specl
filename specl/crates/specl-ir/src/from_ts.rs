@@ -354,10 +354,10 @@ fn lower_action(action: &TsAction, num_vars: usize) -> CompiledAction {
     }
 
     // Collect reads from guard and assignment values
-    let mut reads = collect_reads(&guard);
+    let mut reads = guard.collect_var_reads();
     for assignment in &action.assignments {
         let lowered = lower_expr(&assignment.value);
-        reads.extend(collect_reads(&lowered));
+        reads.extend(lowered.collect_var_reads());
     }
     reads.sort();
     reads.dedup();
@@ -530,97 +530,6 @@ fn lower_unaryop(op: TsUnaryOp) -> UnaryOp {
     match op {
         TsUnaryOp::Not => UnaryOp::Not,
         TsUnaryOp::Neg => UnaryOp::Neg,
-    }
-}
-
-// --- Analysis helpers (replicated from compile.rs) ---
-
-fn collect_reads(expr: &CompiledExpr) -> Vec<usize> {
-    let mut reads = Vec::new();
-    collect_reads_impl(expr, &mut reads);
-    reads.sort();
-    reads.dedup();
-    reads
-}
-
-fn collect_reads_impl(expr: &CompiledExpr, reads: &mut Vec<usize>) {
-    match expr {
-        CompiledExpr::Var(idx) => reads.push(*idx),
-        CompiledExpr::Binary { left, right, .. } => {
-            collect_reads_impl(left, reads);
-            collect_reads_impl(right, reads);
-        }
-        CompiledExpr::Unary { operand, .. } => collect_reads_impl(operand, reads),
-        CompiledExpr::SetLit(elems)
-        | CompiledExpr::SeqLit(elems)
-        | CompiledExpr::TupleLit(elems) => {
-            for e in elems {
-                collect_reads_impl(e, reads);
-            }
-        }
-        CompiledExpr::DictLit(entries) => {
-            for (k, v) in entries {
-                collect_reads_impl(k, reads);
-                collect_reads_impl(v, reads);
-            }
-        }
-        CompiledExpr::Index { base, index } => {
-            collect_reads_impl(base, reads);
-            collect_reads_impl(index, reads);
-        }
-        CompiledExpr::Slice { base, lo, hi } => {
-            collect_reads_impl(base, reads);
-            collect_reads_impl(lo, reads);
-            collect_reads_impl(hi, reads);
-        }
-        CompiledExpr::Field { base, .. } => collect_reads_impl(base, reads),
-        CompiledExpr::Forall { domain, body }
-        | CompiledExpr::Exists { domain, body }
-        | CompiledExpr::FnLit { domain, body } => {
-            collect_reads_impl(domain, reads);
-            collect_reads_impl(body, reads);
-        }
-        CompiledExpr::SetComprehension {
-            element,
-            domain,
-            filter,
-        } => {
-            collect_reads_impl(element, reads);
-            collect_reads_impl(domain, reads);
-            if let Some(f) = filter {
-                collect_reads_impl(f, reads);
-            }
-        }
-        CompiledExpr::FnUpdate { base, key, value } => {
-            collect_reads_impl(base, reads);
-            collect_reads_impl(key, reads);
-            collect_reads_impl(value, reads);
-        }
-        CompiledExpr::Let { value, body } => {
-            collect_reads_impl(value, reads);
-            collect_reads_impl(body, reads);
-        }
-        CompiledExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => {
-            collect_reads_impl(cond, reads);
-            collect_reads_impl(then_branch, reads);
-            collect_reads_impl(else_branch, reads);
-        }
-        CompiledExpr::Range { lo, hi } => {
-            collect_reads_impl(lo, reads);
-            collect_reads_impl(hi, reads);
-        }
-        CompiledExpr::SeqHead(inner)
-        | CompiledExpr::SeqTail(inner)
-        | CompiledExpr::Len(inner)
-        | CompiledExpr::Keys(inner)
-        | CompiledExpr::Values(inner) => {
-            collect_reads_impl(inner, reads);
-        }
-        _ => {}
     }
 }
 

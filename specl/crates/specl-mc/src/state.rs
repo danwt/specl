@@ -77,6 +77,14 @@ impl fmt::Display for Fingerprint {
     }
 }
 
+/// Splitmix64-style mixing of a scalar value at a variable position.
+#[inline]
+fn splitmix_hash(idx: usize, bits: u64) -> u64 {
+    let h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(0x9e3779b97f4a7c15);
+    let h = (h ^ bits).wrapping_mul(0x517cc1b727220a95);
+    h ^ (h >> 32)
+}
+
 /// Hash a single variable at a given position.
 /// Specialized fast path for Int/Bool (dominant types in protocol specs)
 /// using splitmix64-style mixing. IntMap of inline types (Int/Bool/None)
@@ -84,16 +92,8 @@ impl fmt::Display for Fingerprint {
 #[inline]
 pub(crate) fn hash_var(idx: usize, val: &Value) -> u64 {
     match val.kind() {
-        VK::Int(n) => {
-            let h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(0x9e3779b97f4a7c15);
-            let h = (h ^ (n as u64)).wrapping_mul(0x517cc1b727220a95);
-            h ^ (h >> 32)
-        }
-        VK::Bool(b) => {
-            let h = ((idx as u64) ^ 0x2d358dccaa6c78a5).wrapping_mul(0x9e3779b97f4a7c15);
-            let h = (h ^ (b as u64)).wrapping_mul(0x517cc1b727220a95);
-            h ^ (h >> 32)
-        }
+        VK::Int(n) => splitmix_hash(idx, n as u64),
+        VK::Bool(b) => splitmix_hash(idx, b as u64),
         VK::IntMap(arr) => hash_intmap(idx, arr),
         VK::IntMap2(inner_size, data) => hash_intmap2(idx, inner_size, data),
         _ => {

@@ -1164,203 +1164,133 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
 
         // Pattern: Var(i), DictGet → VarDictGet(i)
         if let (Op::Var(var_idx), Op::DictGet) = (&ops[i], &ops[i + 1]) {
-            let var_idx = *var_idx;
-            ops[i] = Op::VarDictGet(var_idx);
-            ops.remove(i + 1);
-            // Patch jump targets after removal
-            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+            ops[i] = Op::VarDictGet(*var_idx);
+            fuse_remove_1(ops, i, &mut jump_targets);
             continue;
         }
 
         // Pattern: Var(i), Param(j), DictGet → VarParamDictGet(i, j) (3 → 1)
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::Var(var_idx), Op::Param(param_idx), Op::DictGet) =
-                (&ops[i], &ops[i + 1], &ops[i + 2])
-            {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                ops[i] = Op::VarParamDictGet(var_idx, param_idx);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::Var(v), Op::Param(p), Op::DictGet) = (&ops[i], &ops[i + 1], &ops[i + 2]) {
+                ops[i] = Op::VarParamDictGet(*v, *p);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: Var(i), Int(k), IntEq → VarIntEq(i, k) (3 → 1)
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::Var(var_idx), Op::Int(k), Op::IntEq) = (&ops[i], &ops[i + 1], &ops[i + 2]) {
-                let var_idx = *var_idx;
-                let k = *k;
-                ops[i] = Op::VarIntEq(var_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::Var(v), Op::Int(k), Op::IntEq) = (&ops[i], &ops[i + 1], &ops[i + 2]) {
+                ops[i] = Op::VarIntEq(*v, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParamDictGet(a, b), Param(c), DictGet → VarParam2DictGet(a, b, c)
         // Two-level dict lookup: vars[a][params[b]][params[c]] without intermediate Arc clone.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParamDictGet(var_idx, param1_idx), Op::Param(param2_idx), Op::DictGet) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParamDictGet(v, p1), Op::Param(p2), Op::DictGet) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param1_idx = *param1_idx;
-                let param2_idx = *param2_idx;
-                ops[i] = Op::VarParam2DictGet(var_idx, param1_idx, param2_idx);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParam2DictGet(*v, *p1, *p2);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParamDictGet(a, b), Int(k), IntEq → VarParamDictGetIntEq(a, b, k)
         // Dict lookup + comparison: vars[a][params[b]] == k without cloning the dict.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntEq) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParamDictGet(v, p), Op::Int(k), Op::IntEq) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                let k = *k;
-                ops[i] = Op::VarParamDictGetIntEq(var_idx, param_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParamDictGetIntEq(*v, *p, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParamDictGet(a, b), Bool(v), Eq → VarParamDictGetBoolEq(a, b, v)
         // Dict lookup + bool compare: vars[a][params[b]] == v without cloning.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Bool(v), Op::Eq) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParamDictGet(vi, p), Op::Bool(b), Op::Eq) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                let v = *v;
-                ops[i] = Op::VarParamDictGetBoolEq(var_idx, param_idx, v);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParamDictGetBoolEq(*vi, *p, *b);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParam2DictGet(a, b, c), Bool(v), Eq → VarParam2DictGetBoolEq(a, b, c, v)
         // Two-level dict lookup + bool compare: vars[a][params[b]][params[c]] == v without cloning.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParam2DictGet(var_idx, param1_idx, param2_idx), Op::Bool(v), Op::Eq) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParam2DictGet(v, p1, p2), Op::Bool(b), Op::Eq) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param1_idx = *param1_idx;
-                let param2_idx = *param2_idx;
-                let v = *v;
-                ops[i] = Op::VarParam2DictGetBoolEq(var_idx, param1_idx, param2_idx, v);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParam2DictGetBoolEq(*v, *p1, *p2, *b);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParamDictGet(a, b), Len → VarParamDictGetLen(a, b)
         // len(vars[a][params[b]]) without cloning the intermediate collection.
-        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Len) = (&ops[i], &ops[i + 1]) {
-            let var_idx = *var_idx;
-            let param_idx = *param_idx;
-            ops[i] = Op::VarParamDictGetLen(var_idx, param_idx);
-            ops.remove(i + 1);
-            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+        if let (Op::VarParamDictGet(v, p), Op::Len) = (&ops[i], &ops[i + 1]) {
+            ops[i] = Op::VarParamDictGetLen(*v, *p);
+            fuse_remove_1(ops, i, &mut jump_targets);
             continue;
         }
 
         // Pattern: VarParam2DictGet(a, b, c), Not → VarParam2DictGetNot(a, b, c)
         // not vars[a][params[b]][params[c]] — avoids clone + drop of intermediate bool.
-        if let (Op::VarParam2DictGet(var_idx, param1_idx, param2_idx), Op::Not) =
-            (&ops[i], &ops[i + 1])
-        {
-            let var_idx = *var_idx;
-            let param1_idx = *param1_idx;
-            let param2_idx = *param2_idx;
-            ops[i] = Op::VarParam2DictGetNot(var_idx, param1_idx, param2_idx);
-            ops.remove(i + 1);
-            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+        if let (Op::VarParam2DictGet(v, p1, p2), Op::Not) = (&ops[i], &ops[i + 1]) {
+            ops[i] = Op::VarParam2DictGetNot(*v, *p1, *p2);
+            fuse_remove_1(ops, i, &mut jump_targets);
             continue;
         }
 
         // Pattern: VarParamDictGet(a, b), Not → VarParamDictGetNot(a, b)
         // not vars[a][params[b]] — avoids clone + drop.
-        if let (Op::VarParamDictGet(var_idx, param_idx), Op::Not) = (&ops[i], &ops[i + 1]) {
-            let var_idx = *var_idx;
-            let param_idx = *param_idx;
-            ops[i] = Op::VarParamDictGetNot(var_idx, param_idx);
-            ops.remove(i + 1);
-            patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+        if let (Op::VarParamDictGet(v, p), Op::Not) = (&ops[i], &ops[i + 1]) {
+            ops[i] = Op::VarParamDictGetNot(*v, *p);
+            fuse_remove_1(ops, i, &mut jump_targets);
             continue;
         }
 
         // Pattern: VarParamDictGet(a, b), Int(k), Add → VarParamDictGetIntAdd(a, b, k)
         // vars[a][params[b]] + k — avoids clone + drop for dict lookup + add.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::Add) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParamDictGet(v, p), Op::Int(k), Op::Add) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                let k = *k;
-                ops[i] = Op::VarParamDictGetIntAdd(var_idx, param_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParamDictGetIntAdd(*v, *p, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParamDictGet(a, b), Int(k), IntGe → VarParamDictGetIntGe(a, b, k)
         // vars[a][params[b]] >= k — avoids clone + drop.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntGe) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParamDictGet(v, p), Op::Int(k), Op::IntGe) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                let k = *k;
-                ops[i] = Op::VarParamDictGetIntGe(var_idx, param_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParamDictGetIntGe(*v, *p, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: VarParamDictGet(a, b), Int(k), IntLt → VarParamDictGetIntLt(a, b, k)
         // vars[a][params[b]] < k — avoids clone + drop.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::VarParamDictGet(var_idx, param_idx), Op::Int(k), Op::IntLt) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::VarParamDictGet(v, p), Op::Int(k), Op::IntLt) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                let k = *k;
-                ops[i] = Op::VarParamDictGetIntLt(var_idx, param_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParamDictGetIntLt(*v, *p, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
@@ -1368,41 +1298,47 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
         // Pattern: Param(p), Int(k), DictGet → ParamIntDictGet(p, k) (3 → 1)
         // Direct seq/dict index on parameter: params[p][k]
         // Very common in message-parameterized actions: msg[0], msg[2], msg[3], etc.
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::Param(param_idx), Op::Int(k), Op::DictGet) =
-                (&ops[i], &ops[i + 1], &ops[i + 2])
-            {
-                let param_idx = *param_idx;
-                let k = *k;
-                ops[i] = Op::ParamIntDictGet(param_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::Param(p), Op::Int(k), Op::DictGet) = (&ops[i], &ops[i + 1], &ops[i + 2]) {
+                ops[i] = Op::ParamIntDictGet(*p, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         // Pattern: Var(v), ParamIntDictGet(p, k), DictGet → VarParamIntDictGet2(v, p, k) (3 → 1)
         // Two-level lookup: vars[v][params[p][k]] — e.g. currentTerm[msg[2]], state[msg[2]]
-        if i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false) {
-            if let (Op::Var(var_idx), Op::ParamIntDictGet(param_idx, k), Op::DictGet) =
+        if can_fuse_3(i, ops, &jump_targets) {
+            if let (Op::Var(v), Op::ParamIntDictGet(p, k), Op::DictGet) =
                 (&ops[i], &ops[i + 1], &ops[i + 2])
             {
-                let var_idx = *var_idx;
-                let param_idx = *param_idx;
-                let k = *k;
-                ops[i] = Op::VarParamIntDictGet2(var_idx, param_idx, k);
-                ops.remove(i + 2);
-                patch_jumps_after_remove(ops, i + 2, &mut jump_targets);
-                ops.remove(i + 1);
-                patch_jumps_after_remove(ops, i + 1, &mut jump_targets);
+                ops[i] = Op::VarParamIntDictGet2(*v, *p, *k);
+                fuse_remove_2(ops, i, &mut jump_targets);
                 continue;
             }
         }
 
         i += 1;
     }
+}
+
+/// Check if a 3-instruction fusion is safe (i+2 exists and is not a jump target).
+fn can_fuse_3(i: usize, ops: &[Op], jump_targets: &[bool]) -> bool {
+    i + 2 < ops.len() && !jump_targets.get(i + 2).copied().unwrap_or(false)
+}
+
+/// Fuse 2→1: remove instruction at i+1 and patch jumps.
+fn fuse_remove_1(ops: &mut Vec<Op>, i: usize, jump_targets: &mut Vec<bool>) {
+    ops.remove(i + 1);
+    patch_jumps_after_remove(ops, i + 1, jump_targets);
+}
+
+/// Fuse 3→1: remove instructions at i+2 and i+1 and patch jumps.
+fn fuse_remove_2(ops: &mut Vec<Op>, i: usize, jump_targets: &mut Vec<bool>) {
+    ops.remove(i + 2);
+    patch_jumps_after_remove(ops, i + 2, jump_targets);
+    ops.remove(i + 1);
+    patch_jumps_after_remove(ops, i + 1, jump_targets);
 }
 
 /// After removing an instruction at position `removed_pos`, patch all jump targets

@@ -226,8 +226,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                             length: outer_len,
                         });
                     }
-                    let start = k as usize * sz;
-                    Ok(Value::intmap(Arc::new(data[start..start + sz].to_vec())))
+                    Ok(Value::intmap2_row(data, sz, k as usize))
                 }
                 VK::Fn(map) => Value::fn_get(map, &index_val)
                     .cloned()
@@ -299,8 +298,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                             length: outer_len,
                         });
                     }
-                    let start = k as usize * sz;
-                    Ok(Value::intmap(Arc::new(data[start..start + sz].to_vec())))
+                    Ok(Value::intmap2_row(data, sz, k as usize))
                 }
                 VK::Fn(map) => {
                     if args.len() != 1 {
@@ -350,9 +348,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                         length: outer_size,
                     });
                 }
-                let mut rows: Vec<Value> = (0..outer_size)
-                    .map(|i| Value::intmap(Arc::new(im2.data[i * sz..(i + 1) * sz].to_vec())))
-                    .collect();
+                let mut rows = Value::intmap2_to_rows(&im2.data, sz);
                 rows[k as usize] = value_val;
                 Ok(Value::intmap(Arc::new(rows)))
             } else if base_val.is_fn() {
@@ -663,11 +659,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     Ok(Value::set(Arc::new(vals)))
                 }
                 VK::IntMap2(inner_size, data) => {
-                    let sz = inner_size as usize;
-                    let outer_size = data.len() / sz;
-                    let mut vals: Vec<Value> = (0..outer_size)
-                        .map(|i| Value::intmap(Arc::new(data[i * sz..(i + 1) * sz].to_vec())))
-                        .collect();
+                    let mut vals = Value::intmap2_to_rows(data, inner_size as usize);
                     vals.sort();
                     vals.dedup();
                     Ok(Value::set(Arc::new(vals)))
@@ -1052,56 +1044,48 @@ fn is_int_expr(expr: &CompiledExpr) -> bool {
     )
 }
 
-/// Exists over powerset: iterate bitmasks without materializing all 2^n subsets.
+/// Iterate over powerset bitmasks without materializing all 2^n subsets.
+/// `short_circuit_on` controls early exit: true for exists, false for forall.
+fn quantify_over_powerset_bool(
+    domain_expr: &CompiledExpr,
+    body: &CompiledExpr,
+    ctx: &mut EvalContext,
+    short_circuit_on: bool,
+) -> EvalResult<bool> {
+    let base = eval_set_domain(domain_expr, ctx)?;
+    let n = base.len();
+    let mut subset_buf = Vec::with_capacity(n);
+    for mask in 0..(1usize << n) {
+        subset_buf.clear();
+        for (i, elem) in base.iter().enumerate() {
+            if mask & (1 << i) != 0 {
+                subset_buf.push(elem.clone());
+            }
+        }
+        ctx.push_local(Value::set(Arc::new(subset_buf.clone())));
+        let result = eval_bool(body, ctx)?;
+        ctx.pop_local();
+        if result == short_circuit_on {
+            return Ok(short_circuit_on);
+        }
+    }
+    Ok(!short_circuit_on)
+}
+
 fn exists_over_powerset_bool(
     domain_expr: &CompiledExpr,
     body: &CompiledExpr,
     ctx: &mut EvalContext,
 ) -> EvalResult<bool> {
-    let base = eval_set_domain(domain_expr, ctx)?;
-    let n = base.len();
-    let mut subset_buf = Vec::with_capacity(n);
-    for mask in 0..(1usize << n) {
-        subset_buf.clear();
-        for (i, elem) in base.iter().enumerate() {
-            if mask & (1 << i) != 0 {
-                subset_buf.push(elem.clone());
-            }
-        }
-        ctx.push_local(Value::set(Arc::new(subset_buf.clone())));
-        let result = eval_bool(body, ctx)?;
-        ctx.pop_local();
-        if result {
-            return Ok(true);
-        }
-    }
-    Ok(false)
+    quantify_over_powerset_bool(domain_expr, body, ctx, true)
 }
 
-/// Forall over powerset: iterate bitmasks without materializing all 2^n subsets.
 fn forall_over_powerset_bool(
     domain_expr: &CompiledExpr,
     body: &CompiledExpr,
     ctx: &mut EvalContext,
 ) -> EvalResult<bool> {
-    let base = eval_set_domain(domain_expr, ctx)?;
-    let n = base.len();
-    let mut subset_buf = Vec::with_capacity(n);
-    for mask in 0..(1usize << n) {
-        subset_buf.clear();
-        for (i, elem) in base.iter().enumerate() {
-            if mask & (1 << i) != 0 {
-                subset_buf.push(elem.clone());
-            }
-        }
-        ctx.push_local(Value::set(Arc::new(subset_buf.clone())));
-        let result = eval_bool(body, ctx)?;
-        ctx.pop_local();
-        if !result {
-            return Ok(false);
-        }
-    }
-    Ok(true)
+    quantify_over_powerset_bool(domain_expr, body, ctx, false)
 }
 
 /// Evaluate a domain expression and return the elements as a Vec.
@@ -1413,13 +1397,7 @@ fn dematerialize_to_intmap(val: &Value) -> Arc<Vec<Value>> {
     match val.kind() {
         VK::IntMap(_) => val.clone().into_intmap_arc(),
         VK::IntMap2(inner_size, data) => {
-            let sz = inner_size as usize;
-            let outer_size = data.len() / sz;
-            Arc::new(
-                (0..outer_size)
-                    .map(|i| Value::intmap(Arc::new(data[i * sz..(i + 1) * sz].to_vec())))
-                    .collect(),
-            )
+            Arc::new(Value::intmap2_to_rows(data, inner_size as usize))
         }
         _ => unreachable!("dematerialize_to_intmap called on non-IntMap/IntMap2"),
     }

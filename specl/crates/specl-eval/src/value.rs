@@ -452,6 +452,24 @@ impl Value {
         }
     }
 
+    /// Extract a single row from IntMap2 flat data as an IntMap.
+    pub fn intmap2_row(data: &[Value], inner_size: usize, row: usize) -> Value {
+        let start = row * inner_size;
+        Value::intmap(Arc::new(data[start..start + inner_size].to_vec()))
+    }
+
+    /// Expand IntMap2 flat data into a Vec of IntMap rows.
+    pub fn intmap2_to_rows(data: &[Value], inner_size: usize) -> Vec<Value> {
+        let outer_size = if inner_size > 0 {
+            data.len() / inner_size
+        } else {
+            0
+        };
+        (0..outer_size)
+            .map(|i| Self::intmap2_row(data, inner_size, i))
+            .collect()
+    }
+
     pub fn intmap_to_fn(arr: &[Value]) -> Value {
         Value::func(Arc::new(Self::intmap_to_fn_vec(arr)))
     }

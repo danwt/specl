@@ -86,6 +86,176 @@ impl TlaExpr {
     pub fn new(kind: TlaExprKind, span: Span) -> Self {
         Self { kind, span }
     }
+
+    /// Call `f` on each direct child expression.
+    pub fn for_each_child(&self, mut f: impl FnMut(&TlaExpr)) {
+        self.for_each_child_ref(&mut f);
+    }
+
+    fn for_each_child_ref(&self, f: &mut impl FnMut(&TlaExpr)) {
+        match &self.kind {
+            // Leaves — no children
+            TlaExprKind::Bool(_)
+            | TlaExprKind::Int(_)
+            | TlaExprKind::String(_)
+            | TlaExprKind::Ident(_)
+            | TlaExprKind::ExceptAt
+            | TlaExprKind::Unchanged(_) => {}
+
+            // Single child
+            TlaExprKind::Primed(e)
+            | TlaExprKind::Paren(e)
+            | TlaExprKind::Domain(e)
+            | TlaExprKind::PowerSet(e)
+            | TlaExprKind::BigUnion(e)
+            | TlaExprKind::Always(e)
+            | TlaExprKind::Eventually(e)
+            | TlaExprKind::Enabled(e) => f(e),
+
+            TlaExprKind::Unary { operand, .. } => f(operand),
+            TlaExprKind::FieldAccess { base, .. } => f(base),
+
+            // Two children
+            TlaExprKind::Binary { left, right, .. }
+            | TlaExprKind::Range {
+                lo: left,
+                hi: right,
+            }
+            | TlaExprKind::FunctionSet {
+                domain: left,
+                range: right,
+            }
+            | TlaExprKind::FunctionCombine { left, right }
+            | TlaExprKind::SingletonFunction {
+                key: left,
+                value: right,
+            }
+            | TlaExprKind::LeadsTo { left, right }
+            | TlaExprKind::BoxAction {
+                action: left,
+                vars: right,
+            }
+            | TlaExprKind::AngleAction {
+                action: left,
+                vars: right,
+            }
+            | TlaExprKind::WeakFairness {
+                vars: left,
+                action: right,
+            }
+            | TlaExprKind::StrongFairness {
+                vars: left,
+                action: right,
+            } => {
+                f(left);
+                f(right);
+            }
+
+            TlaExprKind::SetMap {
+                element, domain, ..
+            }
+            | TlaExprKind::SetFilter {
+                domain,
+                predicate: element,
+                ..
+            } => {
+                f(element);
+                f(domain);
+            }
+
+            TlaExprKind::FunctionDef { domain, body, .. } => {
+                f(domain);
+                f(body);
+            }
+
+            // Three children
+            TlaExprKind::IfThenElse {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                f(cond);
+                f(then_branch);
+                f(else_branch);
+            }
+
+            // Vec children
+            TlaExprKind::SetEnum { elements } | TlaExprKind::Tuple { elements } => {
+                for e in elements {
+                    f(e);
+                }
+            }
+
+            TlaExprKind::OpApp { args, .. } => {
+                for a in args {
+                    f(a);
+                }
+            }
+
+            TlaExprKind::FunctionApp { func, args } => {
+                f(func);
+                for a in args {
+                    f(a);
+                }
+            }
+
+            TlaExprKind::InstanceOp { instance, args, .. } => {
+                f(instance);
+                for a in args {
+                    f(a);
+                }
+            }
+
+            TlaExprKind::Record { fields } | TlaExprKind::RecordSet { fields } => {
+                for (_, e) in fields {
+                    f(e);
+                }
+            }
+
+            TlaExprKind::Choose {
+                domain, predicate, ..
+            } => {
+                if let Some(d) = domain {
+                    f(d);
+                }
+                f(predicate);
+            }
+
+            TlaExprKind::Except { base, updates } => {
+                f(base);
+                for u in updates {
+                    for p in &u.path {
+                        f(p);
+                    }
+                    f(&u.value);
+                }
+            }
+
+            TlaExprKind::LetIn { defs, body } => {
+                for d in defs {
+                    f(&d.body);
+                }
+                f(body);
+            }
+
+            TlaExprKind::Forall { bindings, body } | TlaExprKind::Exists { bindings, body } => {
+                for b in bindings {
+                    f(&b.domain);
+                }
+                f(body);
+            }
+
+            TlaExprKind::Case { arms, other } => {
+                for (cond, body) in arms {
+                    f(cond);
+                    f(body);
+                }
+                if let Some(e) = other {
+                    f(e);
+                }
+            }
+        }
+    }
 }
 
 /// The kind of a TLA+ expression.
