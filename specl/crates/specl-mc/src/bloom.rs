@@ -52,7 +52,7 @@ impl BloomFilter {
     /// twice, which is harmless).
     pub fn insert(&self, fp: Fingerprint) -> bool {
         let mut was_new = false;
-        let (h1, h2) = self.hash_pair(fp);
+        let (h1, h2) = Self::hash_pair(fp);
         for i in 0..self.num_hashes {
             let pos = self.bit_position(h1, h2, i);
             let word_idx = pos / 64;
@@ -71,7 +71,7 @@ impl BloomFilter {
 
     /// Check if a fingerprint might be in the set (may return false positives).
     pub fn contains(&self, fp: Fingerprint) -> bool {
-        let (h1, h2) = self.hash_pair(fp);
+        let (h1, h2) = Self::hash_pair(fp);
         for i in 0..self.num_hashes {
             let pos = self.bit_position(h1, h2, i);
             let word_idx = pos / 64;
@@ -109,7 +109,7 @@ impl BloomFilter {
     /// Generate two base hashes from a fingerprint using double hashing.
     /// h_i(x) = (h1 + i * h2) mod num_bits
     #[inline]
-    fn hash_pair(&self, fp: Fingerprint) -> (u64, u64) {
+    fn hash_pair(fp: Fingerprint) -> (u64, u64) {
         let h1 = fp.as_u64();
         let h2 = h1.wrapping_mul(0x9E3779B97F4A7C15).wrapping_add(0x6A09E667);
         (h1, h2)

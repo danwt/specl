@@ -178,7 +178,7 @@ impl ProgressCounters {
 }
 
 /// Configuration for the model checker.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CheckConfig {
     /// Whether to check for deadlocks.
     pub check_deadlock: bool,
@@ -246,32 +246,6 @@ impl Default for CheckConfig {
             check_only_invariants: Vec::new(),
             collapse: false,
             tree: false,
-        }
-    }
-}
-
-impl Clone for CheckConfig {
-    fn clone(&self) -> Self {
-        Self {
-            check_deadlock: self.check_deadlock,
-            max_states: self.max_states,
-            max_depth: self.max_depth,
-            memory_limit_mb: self.memory_limit_mb,
-            parallel: self.parallel,
-            num_threads: self.num_threads,
-            use_por: self.use_por,
-            use_symmetry: self.use_symmetry,
-            fast_check: self.fast_check,
-            progress: self.progress.clone(),
-            action_shuffle_seed: self.action_shuffle_seed,
-            profile: self.profile,
-            bloom: self.bloom,
-            bloom_bits: self.bloom_bits,
-            directed: self.directed,
-            max_time_secs: self.max_time_secs,
-            check_only_invariants: self.check_only_invariants.clone(),
-            collapse: self.collapse,
-            tree: self.tree,
         }
     }
 }
@@ -2315,7 +2289,8 @@ impl Explorer {
         }
 
         while let Some(fp) = queue.pop_front() {
-            let info = self.store.get(&fp).unwrap();
+            // store uses full tracking in phase 2 (set by clear(true) above)
+            let info = self.store.get(&fp).expect("phase 2 uses full tracking");
             let state = &info.state;
             let depth = info.depth;
 
@@ -2389,7 +2364,8 @@ impl Explorer {
         }
 
         while let Some(fp) = queue.pop_front() {
-            let info = self.store.get(&fp).unwrap();
+            // store uses full tracking in phase 2 (set by clear(true) above)
+            let info = self.store.get(&fp).expect("phase 2 uses full tracking");
             let state = &info.state;
             let depth = info.depth;
 
@@ -3055,7 +3031,7 @@ impl Explorer {
         self.enumerate_states(
             &domains,
             0,
-            vec![Value::none(); self.spec.vars.len()],
+            &mut vec![Value::none(); self.spec.vars.len()],
             &mut |state: State| {
                 let mut ctx = EvalContext::new(&state.vars, &state.vars, &self.consts, &[]);
                 match eval(&self.spec.init, &mut ctx) {
@@ -3078,26 +3054,27 @@ impl Explorer {
         &self,
         domains: &[Vec<Value>],
         var_idx: usize,
-        current: Vec<Value>,
+        current: &mut Vec<Value>,
         callback: &mut F,
     ) where
         F: FnMut(State),
     {
         if var_idx >= domains.len() {
             let state = if let Some(ref mask) = self.view_mask {
-                State::new_with_view(current, mask)
+                State::new_with_view(current.clone(), mask)
             } else {
-                State::new(current)
+                State::new(current.clone())
             };
             callback(state);
             return;
         }
 
+        let saved = current[var_idx].clone();
         for value in &domains[var_idx] {
-            let mut next = current.clone();
-            next[var_idx] = value.clone();
-            self.enumerate_states(domains, var_idx + 1, next, callback);
+            current[var_idx] = value.clone();
+            self.enumerate_states(domains, var_idx + 1, current, callback);
         }
+        current[var_idx] = saved;
     }
 
     /// Get domains for each variable based on their types.
@@ -3125,7 +3102,7 @@ impl Explorer {
             specl_types::Type::Set(elem_ty) => {
                 // Generate power set of element domain (limited)
                 let elem_domain = self.type_domain(elem_ty);
-                self.power_set(&elem_domain)
+                Self::power_set(&elem_domain)
             }
             specl_types::Type::Fn(key_ty, val_ty) => {
                 // Generate all possible functions from key domain to value domain
@@ -3173,7 +3150,7 @@ impl Explorer {
         }
 
         let mut result = vec![];
-        self.enumerate_fn_values(&key_domain, &val_domain, 0, Vec::new(), &mut |map| {
+        self.enumerate_fn_values(&key_domain, &val_domain, 0, &mut Vec::new(), &mut |map| {
             result.push(Value::func(std::sync::Arc::new(map)));
         });
         result
@@ -3184,21 +3161,20 @@ impl Explorer {
         key_domain: &[Value],
         val_domain: &[Value],
         idx: usize,
-        current: Vec<(Value, Value)>,
+        current: &mut Vec<(Value, Value)>,
         callback: &mut F,
     ) where
         F: FnMut(Vec<(Value, Value)>),
     {
         if idx >= key_domain.len() {
-            callback(current);
+            callback(current.clone());
             return;
         }
 
         for value in val_domain {
-            let mut next = current.clone();
-            // key_domain is sorted so appending in order keeps the vec sorted
-            next.push((key_domain[idx].clone(), value.clone()));
-            self.enumerate_fn_values(key_domain, val_domain, idx + 1, next, callback);
+            current.push((key_domain[idx].clone(), value.clone()));
+            self.enumerate_fn_values(key_domain, val_domain, idx + 1, current, callback);
+            current.pop();
         }
     }
 
@@ -3225,7 +3201,7 @@ impl Explorer {
 
         // Generate sequences of length 1, 2, ..., max_len
         for len in 1..=max_len {
-            self.enumerate_seqs(&elem_domain, len, vec![], &mut |seq| {
+            self.enumerate_seqs(&elem_domain, len, &mut vec![], &mut |seq| {
                 result.push(Value::seq(seq));
             });
         }
@@ -3237,25 +3213,25 @@ impl Explorer {
         &self,
         elem_domain: &[Value],
         len: usize,
-        current: Vec<Value>,
+        current: &mut Vec<Value>,
         callback: &mut F,
     ) where
         F: FnMut(Vec<Value>),
     {
         if current.len() >= len {
-            callback(current);
+            callback(current.clone());
             return;
         }
 
         for elem in elem_domain {
-            let mut next = current.clone();
-            next.push(elem.clone());
-            self.enumerate_seqs(elem_domain, len, next, callback);
+            current.push(elem.clone());
+            self.enumerate_seqs(elem_domain, len, current, callback);
+            current.pop();
         }
     }
 
     /// Generate power set of a domain (limited to small sets).
-    fn power_set(&self, domain: &[Value]) -> Vec<Value> {
+    fn power_set(domain: &[Value]) -> Vec<Value> {
         let max_elems = domain.len().min(5); // Limit to avoid explosion
         let mut result = vec![Value::empty_set()];
 
@@ -3804,9 +3780,7 @@ impl Explorer {
             }
 
             // BFS soundness: only use non-singleton ample sets
-            if ample.len() > 1
-                && (best_ample.is_none() || ample.len() < best_ample.as_ref().unwrap().len())
-            {
+            if ample.len() > 1 && best_ample.as_ref().is_none_or(|b| ample.len() < b.len()) {
                 best_ample = Some(ample.into_iter().collect());
             }
         }
@@ -4441,7 +4415,7 @@ impl Explorer {
         self.enumerate_changed(
             &changed_domains,
             0,
-            (*state.vars).clone(),
+            &mut (*state.vars).clone(),
             &mut |next_vars: Vec<Value>| {
                 let mut ctx = EvalContext::new(&state.vars, &next_vars, &self.consts, params);
                 if eval(&action.effect, &mut ctx)
@@ -4468,22 +4442,24 @@ impl Explorer {
         &self,
         domains: &[Vec<Value>],
         idx: usize,
-        mut current: Vec<Value>,
+        current: &mut Vec<Value>,
         callback: &mut F,
         changes: &[usize],
     ) where
         F: FnMut(Vec<Value>),
     {
         if idx >= domains.len() {
-            callback(current);
+            callback(current.clone());
             return;
         }
 
         let var_idx = changes[idx];
+        let saved = current[var_idx].clone();
         for value in &domains[idx] {
             current[var_idx] = value.clone();
-            self.enumerate_changed(domains, idx + 1, current.clone(), callback, changes);
+            self.enumerate_changed(domains, idx + 1, current, callback, changes);
         }
+        current[var_idx] = saved;
     }
 
     /// Check if an invariant holds in a state using bytecode VM.

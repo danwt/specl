@@ -73,7 +73,7 @@ pub fn check_bmc(
             match solver.check() {
                 SatResult::Sat => {
                     info!(invariant = inv.name, depth = k, "invariant violation found");
-                    let model = solver.get_model().unwrap();
+                    let model = solver.get_model().expect("SAT result must have model");
                     let trace = extract_trace(&model, &layout, &all_step_vars, spec, consts, k);
                     return Ok(SymbolicOutcome::InvariantViolation {
                         invariant: inv.name.clone(),

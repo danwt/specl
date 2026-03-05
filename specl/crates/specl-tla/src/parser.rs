@@ -1657,8 +1657,7 @@ impl Parser {
     fn peek_is(&self, kind: &TokenKind) -> bool {
         self.tokens
             .get(self.position + 1)
-            .map(|t| std::mem::discriminant(&t.kind) == std::mem::discriminant(kind))
-            .unwrap_or(false)
+            .is_some_and(|t| std::mem::discriminant(&t.kind) == std::mem::discriminant(kind))
     }
 
     fn is_at_end(&self) -> bool {

@@ -841,12 +841,10 @@ impl Parser {
                 Ok(Expr::new(ExprKind::Int(n), start))
             }
             TokenKind::StringLit(s) => {
-                let s = s.clone();
                 self.advance();
                 Ok(Expr::new(ExprKind::String(s), start))
             }
             TokenKind::Ident(name) => {
-                let name = name.clone();
                 self.advance();
                 // Check for range expression (suppressed inside brackets for slice)
                 if self.in_bracket == 0 && self.check(TokenKind::DotDot) {
@@ -1263,7 +1261,6 @@ impl Parser {
         let span = self.current_span();
         match self.peek_kind() {
             TokenKind::Ident(name) => {
-                let name = name.clone();
                 self.advance();
                 Ok(Ident::new(name, span))
             }
@@ -1311,8 +1308,7 @@ impl Parser {
     fn peek_ahead_kind(&self, offset: usize) -> TokenKind {
         self.tokens
             .get(self.pos + offset)
-            .map(|t| t.kind.clone())
-            .unwrap_or(TokenKind::Eof)
+            .map_or(TokenKind::Eof, |t| t.kind.clone())
     }
 
     fn current_span(&self) -> Span {

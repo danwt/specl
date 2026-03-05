@@ -109,6 +109,7 @@ fn make_diagnostic(span: Span, message: String) -> Diagnostic {
     }
 }
 
+#[allow(clippy::unused_self)]
 impl SpeclLanguageServer {
     fn new(client: Client) -> Self {
         Self {
@@ -1811,8 +1812,7 @@ impl SpeclLanguageServer {
                 let abs_start = search_from + start;
                 let url_end = line[abs_start..]
                     .find(|c: char| c.is_whitespace() || c == ')' || c == ']' || c == '>')
-                    .map(|e| abs_start + e)
-                    .unwrap_or(line.len());
+                    .map_or(line.len(), |e| abs_start + e);
                 let url_str = &line[abs_start..url_end];
                 if let Ok(target) = Url::parse(url_str) {
                     links.push(DocumentLink {

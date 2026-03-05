@@ -55,6 +55,7 @@ struct Translator {
     recursive_ops: std::collections::HashSet<String>,
 }
 
+#[allow(clippy::unused_self)]
 impl Translator {
     fn new() -> Self {
         Self {
@@ -1150,7 +1151,7 @@ impl Translator {
                                     param_names,
                                     types,
                                     arg_name,
-                                    (*key_ty.clone()).clone(),
+                                    *key_ty.clone(),
                                 );
                             }
                         }
@@ -2787,7 +2788,7 @@ impl Translator {
                         let var = specl::Ident::new("__x", span);
                         let fn_expr = specl::Expr::new(
                             specl::ExprKind::FnLit {
-                                var: var.clone(),
+                                var,
                                 domain: Box::new(domain_expr),
                                 body: Box::new(elem_expr),
                             },
@@ -3351,7 +3352,7 @@ impl Translator {
                     specl::ExprKind::Quantifier {
                         kind: specl::QuantifierKind::Forall,
                         bindings: vec![specl::Binding {
-                            var: i_var.clone(),
+                            var: i_var,
                             domain: i_domain,
                             span,
                         }],
@@ -3442,8 +3443,8 @@ impl Translator {
             specl::ExprKind::Quantifier {
                 kind: specl::QuantifierKind::Forall,
                 bindings: vec![specl::Binding {
-                    var: k_var.clone(),
-                    domain: specl::Expr::new(specl::ExprKind::Keys(Box::new(x.clone())), span),
+                    var: k_var,
+                    domain: specl::Expr::new(specl::ExprKind::Keys(Box::new(x)), span),
                     span,
                 }],
                 body: Box::new(specl::Expr::new(
@@ -3493,7 +3494,7 @@ impl Translator {
             specl::ExprKind::Quantifier {
                 kind: specl::QuantifierKind::Forall,
                 bindings: vec![specl::Binding {
-                    var: i_var.clone(),
+                    var: i_var,
                     domain,
                     span,
                 }],

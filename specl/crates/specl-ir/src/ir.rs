@@ -666,3 +666,124 @@ impl From<specl_syntax::UnaryOp> for UnaryOp {
         }
     }
 }
+
+/// Estimate the evaluation cost of a compiled expression for guard reordering.
+/// Lower cost = cheaper to evaluate = should be checked first (short-circuit).
+pub fn expr_cost(expr: &CompiledExpr) -> u32 {
+    match expr {
+        CompiledExpr::Bool(_)
+        | CompiledExpr::Int(_)
+        | CompiledExpr::String(_)
+        | CompiledExpr::Var(_)
+        | CompiledExpr::PrimedVar(_)
+        | CompiledExpr::Const(_)
+        | CompiledExpr::Local(_)
+        | CompiledExpr::Param(_)
+        | CompiledExpr::Changes(_)
+        | CompiledExpr::Unchanged(_)
+        | CompiledExpr::Enabled(_) => 1,
+
+        CompiledExpr::Binary { left, right, .. } => 1 + expr_cost(left) + expr_cost(right),
+        CompiledExpr::Unary { operand, .. } => 1 + expr_cost(operand),
+        CompiledExpr::Index { base, index } => 2 + expr_cost(base) + expr_cost(index),
+        CompiledExpr::Let { value, body } => 1 + expr_cost(value) + expr_cost(body),
+        CompiledExpr::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => 1 + expr_cost(cond) + expr_cost(then_branch).max(expr_cost(else_branch)),
+
+        CompiledExpr::SetLit(elems)
+        | CompiledExpr::SeqLit(elems)
+        | CompiledExpr::TupleLit(elems) => elems.iter().map(expr_cost).sum::<u32>() + 1,
+        CompiledExpr::DictLit(pairs) => {
+            pairs
+                .iter()
+                .map(|(k, v)| expr_cost(k) + expr_cost(v))
+                .sum::<u32>()
+                + 1
+        }
+
+        CompiledExpr::Forall { domain, body }
+        | CompiledExpr::Exists { domain, body }
+        | CompiledExpr::FnLit { domain, body } => 10 + expr_cost(domain) * expr_cost(body),
+        CompiledExpr::Fix { domain, predicate } => {
+            let domain_cost = domain.as_ref().map_or(1, |d| expr_cost(d));
+            10 + domain_cost * expr_cost(predicate)
+        }
+        CompiledExpr::SetComprehension {
+            domain,
+            filter: Some(predicate),
+            ..
+        } => 10 + expr_cost(domain) * expr_cost(predicate),
+        CompiledExpr::SetComprehension {
+            domain,
+            element,
+            filter: None,
+        } => 10 + expr_cost(domain) * expr_cost(element),
+
+        CompiledExpr::Slice { base, lo, hi } => 3 + expr_cost(base) + expr_cost(lo) + expr_cost(hi),
+        CompiledExpr::Field { base, .. } => 1 + expr_cost(base),
+        CompiledExpr::SeqHead(inner) | CompiledExpr::SeqTail(inner) => 2 + expr_cost(inner),
+        CompiledExpr::Len(inner) | CompiledExpr::Keys(inner) | CompiledExpr::Values(inner) => {
+            2 + expr_cost(inner)
+        }
+        CompiledExpr::BigUnion(inner) | CompiledExpr::Powerset(inner) => 10 + expr_cost(inner),
+
+        CompiledExpr::FnUpdate { base, key, value } => {
+            2 + expr_cost(base) + expr_cost(key) + expr_cost(value)
+        }
+        CompiledExpr::Call { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 5,
+        CompiledExpr::ActionCall { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 10,
+
+        CompiledExpr::Range { lo, hi } => 2 + expr_cost(lo) + expr_cost(hi),
+    }
+}
+
+/// Check if two actions are potentially refinable for instance-level POR.
+/// Both actions must have keyed access to all shared variables.
+pub fn check_refinable(a: &CompiledAction, b: &CompiledAction) -> bool {
+    fn find_key_info(
+        key_params: &[(usize, Option<Vec<KeySource>>)],
+        var_idx: usize,
+    ) -> Option<&Option<Vec<KeySource>>> {
+        key_params
+            .iter()
+            .find(|(v, _)| *v == var_idx)
+            .map(|(_, k)| k)
+    }
+
+    for &var_idx in &a.changes {
+        if b.reads.contains(&var_idx) || b.changes.contains(&var_idx) {
+            match find_key_info(&a.write_key_params, var_idx) {
+                Some(Some(_)) => {}
+                _ => return false,
+            }
+            if b.changes.contains(&var_idx) {
+                match find_key_info(&b.write_key_params, var_idx) {
+                    Some(Some(_)) => {}
+                    _ => return false,
+                }
+            }
+            if b.reads.contains(&var_idx) {
+                match find_key_info(&b.read_key_params, var_idx) {
+                    Some(Some(_)) => {}
+                    _ => return false,
+                }
+            }
+        }
+    }
+    for &var_idx in &b.changes {
+        if a.reads.contains(&var_idx) && !a.changes.contains(&var_idx) {
+            match find_key_info(&b.write_key_params, var_idx) {
+                Some(Some(_)) => {}
+                _ => return false,
+            }
+            match find_key_info(&a.read_key_params, var_idx) {
+                Some(Some(_)) => {}
+                _ => return false,
+            }
+        }
+    }
+    true
+}

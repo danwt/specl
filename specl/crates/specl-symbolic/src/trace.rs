@@ -157,14 +157,15 @@ fn extract_state(
                 .eval(&z3_vars[0], true)
                 .and_then(|v| v.as_bool())
                 .and_then(|b| b.as_bool())
-                .map(|b| b.to_string())
-                .unwrap_or_else(|| "?".to_string()),
+                .map_or_else(|| "?".to_string(), |b| b.to_string()),
             VarKind::Int { .. } => model
                 .eval(&z3_vars[0], true)
                 .and_then(|v| v.as_int())
                 .and_then(|i| i.as_i64())
-                .map(|n| format_int_value(n, &entry.kind, &layout.string_table))
-                .unwrap_or_else(|| "?".to_string()),
+                .map_or_else(
+                    || "?".to_string(),
+                    |n| format_int_value(n, &entry.kind, &layout.string_table),
+                ),
             VarKind::ExplodedDict {
                 key_lo,
                 key_hi,
@@ -360,14 +361,15 @@ fn format_compound_value(
             .eval(&vars[0], true)
             .and_then(|v| v.as_bool())
             .and_then(|b| b.as_bool())
-            .map(|b| b.to_string())
-            .unwrap_or_else(|| "?".to_string()),
+            .map_or_else(|| "?".to_string(), |b| b.to_string()),
         VarKind::Int { .. } => model
             .eval(&vars[0], true)
             .and_then(|v| v.as_int())
             .and_then(|i| i.as_i64())
-            .map(|n| format_int_value(n, kind, string_table))
-            .unwrap_or_else(|| "?".to_string()),
+            .map_or_else(
+                || "?".to_string(),
+                |n| format_int_value(n, kind, string_table),
+            ),
         VarKind::ExplodedOption { inner_kind } => {
             let present = model
                 .eval(&vars[0], true)

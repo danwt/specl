@@ -1,7 +1,7 @@
 //! AST to IR compiler.
 
 use crate::ir::{
-    BinOp as IrBinOp, CompiledAction, CompiledExpr, CompiledInvariant, CompiledSpec,
+    self, BinOp as IrBinOp, CompiledAction, CompiledExpr, CompiledInvariant, CompiledSpec,
     ConstDecl as IrConstDecl, KeySource, SymmetryGroup, VarDecl as IrVarDecl,
 };
 use specl_syntax::{ActionDecl, ConstValue, Decl, Expr, ExprKind, Module, QuantifierKind};
@@ -217,7 +217,7 @@ impl Compiler {
         }
 
         // Detect symmetry groups from variable types
-        let symmetry_groups = self.detect_symmetry_groups(&vars);
+        let symmetry_groups = Self::detect_symmetry_groups(&vars);
 
         // Compute refinable pairs for instance-level POR.
         // A pair (i,j) is refinable if they are template-dependent but all shared
@@ -229,7 +229,7 @@ impl Compiler {
                 // action template can be independent if they access disjoint keys.
                 for j in i..n {
                     if !independent[i][j] {
-                        let refinable = Self::check_refinable(&actions[i], &actions[j]);
+                        let refinable = ir::check_refinable(&actions[i], &actions[j]);
                         rp[i][j] = refinable;
                         rp[j][i] = refinable;
                     }
@@ -260,19 +260,17 @@ impl Compiler {
             .params
             .iter()
             .map(|p| {
-                let ty = self.env.resolve_type(
-                    &self
-                        .env
-                        .lookup_action(&decl.name.name)
-                        .map(|sig| {
+                let ty = self
+                    .env
+                    .resolve_type(&self.env.lookup_action(&decl.name.name).map_or(
+                        specl_types::Type::Error,
+                        |sig| {
                             sig.params
                                 .iter()
                                 .find(|(n, _)| n == &p.name.name)
-                                .map(|(_, t)| t.clone())
-                                .unwrap_or(specl_types::Type::Error)
-                        })
-                        .unwrap_or(specl_types::Type::Error),
-                );
+                                .map_or(specl_types::Type::Error, |(_, t)| t.clone())
+                        },
+                    ));
                 (p.name.name.clone(), ty)
             })
             .collect();
@@ -310,8 +308,7 @@ impl Compiler {
                         .var_indices
                         .iter()
                         .find(|(_, &i)| i == idx)
-                        .map(|(n, _)| n.clone())
-                        .unwrap_or_else(|| format!("var_{}", idx));
+                        .map_or_else(|| format!("var_{}", idx), |(n, _)| n.clone());
                     return Err(CompileError::DuplicateAssignment {
                         var: var_name,
                         action: decl.name.name.clone(),
@@ -341,7 +338,7 @@ impl Compiler {
 
         self.params.clear();
 
-        let guard_cost = expr_cost(&guard);
+        let guard_cost = ir::expr_cost(&guard);
         Ok(CompiledAction {
             name: decl.name.name.clone(),
             params: param_types,
@@ -697,15 +694,13 @@ impl Compiler {
     fn lookup_var_type(&self, name: &str) -> Type {
         self.env
             .lookup_var(name)
-            .map(|ty| self.env.resolve_type(ty))
-            .unwrap_or(specl_types::Type::Error)
+            .map_or(specl_types::Type::Error, |ty| self.env.resolve_type(ty))
     }
 
     fn lookup_const_type(&self, name: &str) -> Type {
         self.env
             .lookup_const(name)
-            .map(|ty| self.env.resolve_type(ty))
-            .unwrap_or(specl_types::Type::Error)
+            .map_or(specl_types::Type::Error, |ty| self.env.resolve_type(ty))
     }
 
     /// Analyze effect to extract write key params for instance-level POR.
@@ -1037,7 +1032,7 @@ impl Compiler {
     /// Detect symmetry groups from variable types.
     /// A symmetry group contains variables with Fn[0..N, T] type where they share
     /// the same domain size N.
-    fn detect_symmetry_groups(&self, vars: &[IrVarDecl]) -> Vec<SymmetryGroup> {
+    fn detect_symmetry_groups(vars: &[IrVarDecl]) -> Vec<SymmetryGroup> {
         use std::collections::HashMap;
 
         // Map domain_size -> list of variable indices with Fn[0..domain_size, T] type
@@ -1062,140 +1057,6 @@ impl Compiler {
                 variables,
             })
             .collect()
-    }
-    /// Check if two template-dependent actions could be instance-independent.
-    /// True iff every shared variable (in the write/read intersection) has keyed
-    /// access on both sides.
-    fn check_refinable(a: &CompiledAction, b: &CompiledAction) -> bool {
-        fn find_key_info(
-            key_params: &[(usize, Option<Vec<KeySource>>)],
-            var_idx: usize,
-        ) -> Option<&Option<Vec<KeySource>>> {
-            key_params
-                .iter()
-                .find(|(v, _)| *v == var_idx)
-                .map(|(_, k)| k)
-        }
-
-        // For each variable that A writes and B reads or writes
-        for &var_idx in &a.changes {
-            if b.reads.contains(&var_idx) || b.changes.contains(&var_idx) {
-                // A must have keyed write access
-                match find_key_info(&a.write_key_params, var_idx) {
-                    Some(Some(_)) => {} // Keyed — ok
-                    _ => return false,  // Unkeyed or missing — not refinable
-                }
-                // B must have keyed access for both reads and writes
-                if b.changes.contains(&var_idx) {
-                    match find_key_info(&b.write_key_params, var_idx) {
-                        Some(Some(_)) => {}
-                        _ => return false,
-                    }
-                }
-                if b.reads.contains(&var_idx) {
-                    match find_key_info(&b.read_key_params, var_idx) {
-                        Some(Some(_)) => {}
-                        _ => return false,
-                    }
-                }
-            }
-        }
-        // Symmetric: B writes, A reads
-        for &var_idx in &b.changes {
-            if a.reads.contains(&var_idx) && !a.changes.contains(&var_idx) {
-                // Already checked A.changes above; only check A.reads here
-                match find_key_info(&b.write_key_params, var_idx) {
-                    Some(Some(_)) => {}
-                    _ => return false,
-                }
-                match find_key_info(&a.read_key_params, var_idx) {
-                    Some(Some(_)) => {}
-                    _ => return false,
-                }
-            }
-        }
-        true
-    }
-}
-
-/// Estimate the evaluation cost of a compiled expression for guard reordering.
-/// Lower cost = cheaper to evaluate = should be checked first (short-circuit).
-fn expr_cost(expr: &CompiledExpr) -> u32 {
-    match expr {
-        // Leaves: O(1)
-        CompiledExpr::Bool(_)
-        | CompiledExpr::Int(_)
-        | CompiledExpr::String(_)
-        | CompiledExpr::Var(_)
-        | CompiledExpr::PrimedVar(_)
-        | CompiledExpr::Const(_)
-        | CompiledExpr::Local(_)
-        | CompiledExpr::Param(_)
-        | CompiledExpr::Changes(_)
-        | CompiledExpr::Unchanged(_)
-        | CompiledExpr::Enabled(_) => 1,
-
-        // Simple operations
-        CompiledExpr::Binary { left, right, .. } => 1 + expr_cost(left) + expr_cost(right),
-        CompiledExpr::Unary { operand, .. } => 1 + expr_cost(operand),
-        CompiledExpr::Index { base, index } => 2 + expr_cost(base) + expr_cost(index),
-        CompiledExpr::Let { value, body } => 1 + expr_cost(value) + expr_cost(body),
-        CompiledExpr::If {
-            cond,
-            then_branch,
-            else_branch,
-        } => 1 + expr_cost(cond) + expr_cost(then_branch).max(expr_cost(else_branch)),
-
-        // Collection literals
-        CompiledExpr::SetLit(elems)
-        | CompiledExpr::SeqLit(elems)
-        | CompiledExpr::TupleLit(elems) => elems.iter().map(expr_cost).sum::<u32>() + 1,
-        CompiledExpr::DictLit(pairs) => {
-            pairs
-                .iter()
-                .map(|(k, v)| expr_cost(k) + expr_cost(v))
-                .sum::<u32>()
-                + 1
-        }
-
-        // Quantifiers and comprehensions: expensive (iterate domain)
-        CompiledExpr::Forall { domain, body }
-        | CompiledExpr::Exists { domain, body }
-        | CompiledExpr::FnLit { domain, body } => 10 + expr_cost(domain) * expr_cost(body),
-        CompiledExpr::Fix { domain, predicate } => {
-            let domain_cost = domain.as_ref().map_or(1, |d| expr_cost(d));
-            10 + domain_cost * expr_cost(predicate)
-        }
-        CompiledExpr::SetComprehension {
-            domain,
-            filter: Some(predicate),
-            ..
-        } => 10 + expr_cost(domain) * expr_cost(predicate),
-        CompiledExpr::SetComprehension {
-            domain,
-            element,
-            filter: None,
-        } => 10 + expr_cost(domain) * expr_cost(element),
-
-        // Access operations
-        CompiledExpr::Slice { base, lo, hi } => 3 + expr_cost(base) + expr_cost(lo) + expr_cost(hi),
-        CompiledExpr::Field { base, .. } => 1 + expr_cost(base),
-        CompiledExpr::SeqHead(inner) | CompiledExpr::SeqTail(inner) => 2 + expr_cost(inner),
-        CompiledExpr::Len(inner) | CompiledExpr::Keys(inner) | CompiledExpr::Values(inner) => {
-            2 + expr_cost(inner)
-        }
-        CompiledExpr::BigUnion(inner) | CompiledExpr::Powerset(inner) => 10 + expr_cost(inner),
-
-        // Updates
-        CompiledExpr::FnUpdate { base, key, value } => {
-            2 + expr_cost(base) + expr_cost(key) + expr_cost(value)
-        }
-        // Calls
-        CompiledExpr::Call { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 5,
-        CompiledExpr::ActionCall { args, .. } => args.iter().map(expr_cost).sum::<u32>() + 10,
-
-        // Range
-        CompiledExpr::Range { lo, hi } => 2 + expr_cost(lo) + expr_cost(hi),
     }
 }
 

@@ -458,13 +458,20 @@ impl Value {
         Value::intmap(Arc::new(data[start..start + inner_size].to_vec()))
     }
 
+    /// Number of outer keys in an IntMap2 (flat data length / inner row size).
+    /// Returns 0 when `inner_size` is 0.
+    #[inline]
+    pub fn intmap2_outer_len(inner_size: usize, data_len: usize) -> usize {
+        if inner_size == 0 {
+            0
+        } else {
+            data_len / inner_size
+        }
+    }
+
     /// Expand IntMap2 flat data into a Vec of IntMap rows.
     pub fn intmap2_to_rows(data: &[Value], inner_size: usize) -> Vec<Value> {
-        let outer_size = if inner_size > 0 {
-            data.len() / inner_size
-        } else {
-            0
-        };
+        let outer_size = Self::intmap2_outer_len(inner_size, data.len());
         (0..outer_size)
             .map(|i| Self::intmap2_row(data, inner_size, i))
             .collect()
@@ -536,11 +543,7 @@ impl Value {
             }
             VK::IntMap2(inner_size, data) => {
                 // Serialize as nested IntMap (outer Fn tag 5, inner Fn tag 5)
-                let outer_size = if inner_size > 0 {
-                    data.len() / inner_size as usize
-                } else {
-                    0
-                };
+                let outer_size = Value::intmap2_outer_len(inner_size as usize, data.len());
                 out.push(5);
                 out.extend_from_slice(&(outer_size as u64).to_le_bytes());
                 for i in 0..outer_size {
@@ -709,11 +712,7 @@ impl PartialEq for Value {
                 // IntMap2 vs IntMap/Fn: expand IntMap2 to logical nested representation
                 (VK::IntMap2(inner_size, data), VK::IntMap(arr))
                 | (VK::IntMap(arr), VK::IntMap2(inner_size, data)) => {
-                    let outer_size = if inner_size > 0 {
-                        data.len() / inner_size as usize
-                    } else {
-                        0
-                    };
+                    let outer_size = Value::intmap2_outer_len(inner_size as usize, data.len());
                     if arr.len() != outer_size {
                         return false;
                     }
@@ -866,11 +865,8 @@ impl Ord for Value {
                         VK::IntMap(arr) => Value::intmap_to_fn_vec(arr),
                         VK::Fn(f) => f.to_vec(),
                         VK::IntMap2(inner_size, data) => {
-                            let outer_size = if inner_size > 0 {
-                                data.len() / inner_size as usize
-                            } else {
-                                0
-                            };
+                            let outer_size =
+                                Value::intmap2_outer_len(inner_size as usize, data.len());
                             (0..outer_size)
                                 .map(|i| {
                                     let base = i * inner_size as usize;
@@ -1002,11 +998,7 @@ impl Hash for Value {
             }
             VK::IntMap2(inner_size, data) => {
                 // Hash as equivalent nested IntMap for consistency.
-                let outer_size = if inner_size > 0 {
-                    data.len() / inner_size as usize
-                } else {
-                    0
-                };
+                let outer_size = Value::intmap2_outer_len(inner_size as usize, data.len());
                 5u8.hash(state);
                 outer_size.hash(state);
                 for i in 0..outer_size {
@@ -1092,11 +1084,7 @@ impl fmt::Display for Value {
                 write!(f, "}}")
             }
             VK::IntMap2(inner_size, data) => {
-                let outer_size = if inner_size > 0 {
-                    data.len() / inner_size as usize
-                } else {
-                    0
-                };
+                let outer_size = Value::intmap2_outer_len(inner_size as usize, data.len());
                 write!(f, "fn{{")?;
                 for i in 0..outer_size {
                     if i > 0 {

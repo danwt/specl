@@ -67,7 +67,7 @@ impl<'a> Lexer<'a> {
             '}' => TokenKind::RBrace,
 
             // Parentheses
-            '(' => self.lex_lparen(),
+            '(' => TokenKind::LParen,
             ')' => TokenKind::RParen,
 
             // Other operators
@@ -386,11 +386,6 @@ impl<'a> Lexer<'a> {
         } else {
             TokenKind::LBracket
         }
-    }
-
-    fn lex_lparen(&mut self) -> TokenKind {
-        // We already checked for (* comments in skip_whitespace_and_comments
-        TokenKind::LParen
     }
 
     fn lex_tilde(&mut self) -> TokenKind {

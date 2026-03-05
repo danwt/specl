@@ -217,8 +217,8 @@ impl TypeChecker {
                 }
 
                 // Extract literal values if possible
-                let lo_val = self.extract_int_literal(lo);
-                let hi_val = self.extract_int_literal(hi);
+                let lo_val = Self::extract_int_literal(lo);
+                let hi_val = Self::extract_int_literal(hi);
 
                 match (lo_val, hi_val) {
                     (Some(lo), Some(hi)) => Ok(Type::Range(lo, hi)),
@@ -228,15 +228,9 @@ impl TypeChecker {
         }
     }
 
-    /// Extract an integer literal value from an expression.
-    fn extract_int_literal(&self, expr: &Expr) -> Option<i64> {
+    fn extract_int_literal(expr: &Expr) -> Option<i64> {
         match &expr.kind {
             ExprKind::Int(n) => Some(*n),
-            ExprKind::Ident(_name) => {
-                // Check if it's a constant with a known value
-                // For now, we can't resolve constant values at type-checking time
-                None
-            }
             _ => None,
         }
     }
@@ -1048,7 +1042,7 @@ impl TypeChecker {
                 if b.has_vars() && matches!(b, Type::Var(v2) if *v == v2) {
                     // Same variable
                     Ok(Substitution::new())
-                } else if self.occurs_in(v, &b) {
+                } else if Self::occurs_in_impl(v, &b) {
                     Err(TypeError::OccursCheck { span })
                 } else {
                     let mut subst = Substitution::new();
@@ -1057,7 +1051,7 @@ impl TypeChecker {
                 }
             }
             (_, Type::Var(v)) => {
-                if self.occurs_in(v, &a) {
+                if Self::occurs_in_impl(v, &a) {
                     Err(TypeError::OccursCheck { span })
                 } else {
                     let mut subst = Substitution::new();
@@ -1101,11 +1095,6 @@ impl TypeChecker {
                 span,
             }),
         }
-    }
-
-    /// Check if a type variable occurs in a type.
-    fn occurs_in(&self, var: &crate::types::TypeVar, ty: &Type) -> bool {
-        Self::occurs_in_impl(var, ty)
     }
 
     fn occurs_in_impl(var: &crate::types::TypeVar, ty: &Type) -> bool {

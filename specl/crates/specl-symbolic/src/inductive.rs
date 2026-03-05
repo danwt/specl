@@ -93,7 +93,7 @@ pub fn check_inductive(
         match solver.check() {
             SatResult::Sat => {
                 info!(invariant = inv.name, "invariant is NOT inductive");
-                let model = solver.get_model().unwrap();
+                let model = solver.get_model().expect("SAT result must have model");
                 let trace = extract_trace(&model, &layout, &all_step_vars, spec, consts, 1);
                 return Ok(SymbolicOutcome::InvariantViolation {
                     invariant: inv.name.clone(),

@@ -112,7 +112,7 @@ fn check_base_case(
             match solver.check() {
                 SatResult::Sat => {
                     info!(invariant = inv.name, depth, "base case violation found");
-                    let model = solver.get_model().unwrap();
+                    let model = solver.get_model().expect("SAT result must have model");
                     let trace = extract_trace(&model, layout, &all_step_vars, spec, consts, depth);
                     return Ok(Some(SymbolicOutcome::InvariantViolation {
                         invariant: inv.name.clone(),
@@ -227,7 +227,7 @@ fn check_inductive_step_with_cti(
             match solver.check() {
                 SatResult::Sat => {
                     info!(invariant = inv.name, k, cti_iter, "extracting CTI");
-                    let model = solver.get_model().unwrap();
+                    let model = solver.get_model().expect("SAT result must have model");
 
                     // Extract state at step k-1 (last assumption step)
                     let equalities =

@@ -4,7 +4,8 @@
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
 use crate::eval::{
-    eval, eval_bool, eval_int, expect_int, sorted_vec_diff, sorted_vec_union, type_mismatch,
+    check_membership, eval, eval_bool, eval_int, expect_int, intmap2_outer_len, sorted_vec_diff,
+    sorted_vec_union, type_mismatch,
 };
 use crate::value::{IntMap2Data, Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
@@ -1407,10 +1408,9 @@ pub fn vm_eval_bool(
     params: &[Value],
 ) -> EvalResult<bool> {
     let result = vm_eval(bytecode, vars, next_vars, consts, params)?;
-    result.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Bool".to_string(),
-        actual: result.type_name().to_string(),
-    })
+    result
+        .as_bool()
+        .ok_or_else(|| type_mismatch("Bool", &result))
 }
 
 /// Reusable VM evaluation buffers.
@@ -1476,10 +1476,9 @@ pub fn vm_eval_bool_reuse(
     bufs: &mut VmBufs,
 ) -> EvalResult<bool> {
     let result = vm_eval_reuse(bytecode, vars, next_vars, consts, params, bufs)?;
-    result.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Bool".to_string(),
-        actual: result.type_name().to_string(),
-    })
+    result
+        .as_bool()
+        .ok_or_else(|| type_mismatch("Bool", &result))
 }
 
 /// Execute bytecode and return the result as a Value.
@@ -1682,12 +1681,7 @@ fn vm_eval_inner(
                         }
                         stack.push(seq[idx as usize].clone());
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or Seq".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or Seq", &base)),
                 }
             }
             Op::VarIntEq(var_idx, k) => {
@@ -1695,10 +1689,7 @@ fn vm_eval_inner(
                 match vars[*var_idx as usize].as_int() {
                     Some(v) => stack.push(Value::bool(v == *k)),
                     None => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Int".to_string(),
-                            actual: vars[*var_idx as usize].type_name().to_string(),
-                        });
+                        return Err(type_mismatch("Int", &vars[*var_idx as usize]));
                     }
                 }
             }
@@ -1722,12 +1713,7 @@ fn vm_eval_inner(
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         stack.push(val);
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or Seq".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or Seq", base)),
                 }
             }
             Op::VarParam2DictGet(var_idx, param1_idx, param2_idx) => {
@@ -1750,12 +1736,7 @@ fn vm_eval_inner(
                             }
                             VK::Fn(map) => Value::fn_get(map, key1)
                                 .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?,
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: outer.type_name().to_string(),
-                                })
-                            }
+                            _ => return Err(type_mismatch("Fn or IntMap", outer)),
                         };
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
@@ -1768,12 +1749,7 @@ fn vm_eval_inner(
                                     .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
                                 stack.push(val);
                             }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: inner_ref.type_name().to_string(),
-                                })
-                            }
+                            _ => return Err(type_mismatch("Fn or IntMap", inner_ref)),
                         }
                     }
                 }
@@ -1793,12 +1769,7 @@ fn vm_eval_inner(
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         stack.push(Value::bool(val.as_int() == Some(*k)));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
             Op::VarParamDictGetBoolEq(var_idx, param_idx, bool_val) => {
@@ -1817,12 +1788,7 @@ fn vm_eval_inner(
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         stack.push(Value::bool(*val == expected));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
             Op::VarParam2DictGetBoolEq(var_idx, param1_idx, param2_idx, bool_val) => {
@@ -1848,12 +1814,7 @@ fn vm_eval_inner(
                             }
                             VK::Fn(map) => Value::fn_get(map, key1)
                                 .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?,
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: outer.type_name().to_string(),
-                                })
-                            }
+                            _ => return Err(type_mismatch("Fn or IntMap", outer)),
                         };
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
@@ -1865,12 +1826,7 @@ fn vm_eval_inner(
                                     .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
                                 stack.push(Value::bool(*val == expected));
                             }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: inner_ref.type_name().to_string(),
-                                })
-                            }
+                            _ => return Err(type_mismatch("Fn or IntMap", inner_ref)),
                         }
                     }
                 }
@@ -1885,12 +1841,9 @@ fn vm_eval_inner(
                         let k1 = expect_int(key1)?;
                         let k2 = expect_int(key2)?;
                         let val = intmap2_get(data, inner_size, k1, k2)?;
-                        stack.push(Value::bool(!val.as_bool().ok_or_else(|| {
-                            EvalError::TypeMismatch {
-                                expected: "Bool".to_string(),
-                                actual: val.type_name().to_string(),
-                            }
-                        })?));
+                        stack.push(Value::bool(
+                            !val.as_bool().ok_or_else(|| type_mismatch("Bool", val))?,
+                        ));
                     }
                     _ => {
                         let inner_ref = match outer.kind() {
@@ -1900,38 +1853,23 @@ fn vm_eval_inner(
                             }
                             VK::Fn(map) => Value::fn_get(map, key1)
                                 .ok_or_else(|| EvalError::KeyNotFound(key1.to_string()))?,
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: outer.type_name().to_string(),
-                                })
-                            }
+                            _ => return Err(type_mismatch("Fn or IntMap", outer)),
                         };
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
                                 let k = expect_int(key2)?;
                                 let elem = intmap_get(arr, k)?;
-                                let b = elem.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-                                    expected: "Bool".to_string(),
-                                    actual: elem.type_name().to_string(),
-                                })?;
+                                let b =
+                                    elem.as_bool().ok_or_else(|| type_mismatch("Bool", elem))?;
                                 stack.push(Value::bool(!b));
                             }
                             VK::Fn(inner_map) => {
                                 let val = Value::fn_get(inner_map, key2)
                                     .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
-                                let b = val.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-                                    expected: "Bool".to_string(),
-                                    actual: val.type_name().to_string(),
-                                })?;
+                                let b = val.as_bool().ok_or_else(|| type_mismatch("Bool", val))?;
                                 stack.push(Value::bool(!b));
                             }
-                            _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "Fn or IntMap".to_string(),
-                                    actual: inner_ref.type_name().to_string(),
-                                })
-                            }
+                            _ => return Err(type_mismatch("Fn or IntMap", inner_ref)),
                         }
                     }
                 }
@@ -1944,27 +1882,16 @@ fn vm_eval_inner(
                     VK::IntMap(arr) => {
                         let k = expect_int(key)?;
                         let elem = intmap_get(arr, k)?;
-                        let b = elem.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-                            expected: "Bool".to_string(),
-                            actual: elem.type_name().to_string(),
-                        })?;
+                        let b = elem.as_bool().ok_or_else(|| type_mismatch("Bool", elem))?;
                         stack.push(Value::bool(!b));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
-                        let b = val.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-                            expected: "Bool".to_string(),
-                            actual: val.type_name().to_string(),
-                        })?;
+                        let b = val.as_bool().ok_or_else(|| type_mismatch("Bool", val))?;
                         stack.push(Value::bool(!b));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
             Op::VarParamDictGetIntAdd(var_idx, param_idx, k) => {
@@ -1983,12 +1910,7 @@ fn vm_eval_inner(
                         let n = expect_int(val)?;
                         stack.push(Value::int(n + k));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
             Op::VarParamDictGetIntGe(var_idx, param_idx, k) => {
@@ -2007,12 +1929,7 @@ fn vm_eval_inner(
                         let n = expect_int(val)?;
                         stack.push(Value::bool(n >= *k));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
             Op::VarParamDictGetIntLt(var_idx, param_idx, k) => {
@@ -2031,12 +1948,7 @@ fn vm_eval_inner(
                         let n = expect_int(val)?;
                         stack.push(Value::bool(n < *k));
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
             Op::VarParamDictGetLen(var_idx, param_idx) => {
@@ -2051,24 +1963,14 @@ fn vm_eval_inner(
                     }
                     VK::Fn(map) => Value::fn_get(map, key)
                         .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?,
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 };
                 let len = match val.kind() {
                     VK::Set(s) => s.len() as i64,
                     VK::Seq(s) => s.len() as i64,
                     VK::Fn(f) => f.len() as i64,
                     VK::IntMap(arr) => arr.len() as i64,
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Set, Seq, or Fn".to_string(),
-                            actual: val.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Set, Seq, or Fn", val)),
                 };
                 stack.push(Value::int(len));
             }
@@ -2097,12 +1999,7 @@ fn vm_eval_inner(
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         stack.push(val);
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Seq, Fn, or IntMap".to_string(),
-                            actual: param.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Seq, Fn, or IntMap", param)),
                 }
             }
             Op::VarParamIntDictGet2(var_idx, param_idx, k) => {
@@ -2127,12 +2024,7 @@ fn vm_eval_inner(
                             .cloned()
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Seq, Fn, or IntMap".to_string(),
-                            actual: param.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Seq, Fn, or IntMap", param)),
                 };
                 let base = &vars[*var_idx as usize];
                 match base.kind() {
@@ -2146,12 +2038,7 @@ fn vm_eval_inner(
                             .ok_or_else(|| EvalError::KeyNotFound(inner_key.to_string()))?;
                         stack.push(val);
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
             }
 
@@ -2185,12 +2072,7 @@ fn vm_eval_inner(
                         }
                         stack.push(seq[idx as usize].clone());
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or Seq".to_string(),
-                            actual: base.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Fn or Seq", &base)),
                 }
             }
             Op::DictUpdate => {
@@ -2201,11 +2083,7 @@ fn vm_eval_inner(
                     let k = expect_int(&key)?;
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let outer_len = if d.inner_size > 0 {
-                        d.data.len() / d.inner_size as usize
-                    } else {
-                        0
-                    };
+                    let outer_len = intmap2_outer_len(d.inner_size, d.data.len());
                     if k < 0 || (k as usize) >= outer_len {
                         return Err(EvalError::IndexOutOfBounds {
                             index: k,
@@ -2218,10 +2096,7 @@ fn vm_eval_inner(
                             d.data[start..start + d.inner_size as usize].clone_from_slice(row);
                         }
                         _ => {
-                            return Err(EvalError::TypeMismatch {
-                                expected: "IntMap".to_string(),
-                                actual: value.type_name().to_string(),
-                            });
+                            return Err(type_mismatch("IntMap", &value));
                         }
                     }
                     stack.push(Value::from_intmap2_arc(arc));
@@ -2241,10 +2116,7 @@ fn vm_eval_inner(
                     Value::fn_insert(Arc::make_mut(&mut map), key, value);
                     stack.push(Value::from_fn_arc(map));
                 } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
-                        actual: base.type_name().to_string(),
-                    });
+                    return Err(type_mismatch("Fn", &base));
                 }
             }
             Op::DictUpdateN(n) => {
@@ -2262,11 +2134,7 @@ fn vm_eval_inner(
                 if base.is_intmap2() {
                     let mut arc = base.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let outer_len = if d.inner_size > 0 {
-                        d.data.len() / d.inner_size as usize
-                    } else {
-                        0
-                    };
+                    let outer_len = intmap2_outer_len(d.inner_size, d.data.len());
                     for (key, value) in pairs {
                         let k = expect_int(&key)?;
                         if k < 0 || (k as usize) >= outer_len {
@@ -2281,10 +2149,7 @@ fn vm_eval_inner(
                                 d.data[start..start + d.inner_size as usize].clone_from_slice(row);
                             }
                             _ => {
-                                return Err(EvalError::TypeMismatch {
-                                    expected: "IntMap".to_string(),
-                                    actual: value.type_name().to_string(),
-                                });
+                                return Err(type_mismatch("IntMap", &value));
                             }
                         }
                     }
@@ -2311,10 +2176,7 @@ fn vm_eval_inner(
                     }
                     stack.push(Value::from_fn_arc(map));
                 } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn".to_string(),
-                        actual: base.type_name().to_string(),
-                    });
+                    return Err(type_mismatch("Fn", &base));
                 }
             }
             Op::NestedDictUpdate2 => {
@@ -2327,11 +2189,7 @@ fn vm_eval_inner(
                     let k2_int = expect_int(&k2)?;
                     let mut arc = dict.into_intmap2_arc();
                     let d = Arc::make_mut(&mut arc);
-                    let outer_len = if d.inner_size > 0 {
-                        d.data.len() / d.inner_size as usize
-                    } else {
-                        0
-                    };
+                    let outer_len = intmap2_outer_len(d.inner_size, d.data.len());
                     if k1_int < 0 || (k1_int as usize) >= outer_len {
                         return Err(EvalError::IndexOutOfBounds {
                             index: k1_int,
@@ -2373,10 +2231,7 @@ fn vm_eval_inner(
                         Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
                         outer[k1_int as usize] = Value::from_fn_arc(inner_arc);
                     } else {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: inner_val.type_name().to_string(),
-                        });
+                        return Err(type_mismatch("Fn or IntMap", &inner_val));
                     }
                     stack.push(Value::from_intmap_arc(outer_arc));
                 } else if dict.is_fn() {
@@ -2403,17 +2258,11 @@ fn vm_eval_inner(
                         Value::fn_insert(Arc::make_mut(&mut inner_arc), k2, value);
                         outer[pos].1 = Value::from_fn_arc(inner_arc);
                     } else {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: outer[pos].1.type_name().to_string(),
-                        });
+                        return Err(type_mismatch("Fn or IntMap", &outer[pos].1));
                     }
                     stack.push(Value::from_fn_arc(outer_arc));
                 } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn or IntMap".to_string(),
-                        actual: dict.type_name().to_string(),
-                    });
+                    return Err(type_mismatch("Fn or IntMap", &dict));
                 }
             }
             Op::NestedDictUpdate3 => {
@@ -2436,10 +2285,7 @@ fn vm_eval_inner(
                             Value::fn_insert(Arc::make_mut(&mut inner_arc), k3, value);
                             Ok(Value::from_fn_arc(inner_arc))
                         } else {
-                            Err(EvalError::TypeMismatch {
-                                expected: "Fn or IntMap".to_string(),
-                                actual: inner_val.type_name().to_string(),
-                            })
+                            Err(type_mismatch("Fn or IntMap", &inner_val))
                         }
                     };
 
@@ -2466,10 +2312,7 @@ fn vm_eval_inner(
                         mid[pos2].1 = update_inner(inner_val, k3, value)?;
                         Ok(Value::from_fn_arc(mid_arc))
                     } else {
-                        Err(EvalError::TypeMismatch {
-                            expected: "Fn or IntMap".to_string(),
-                            actual: mid_val.type_name().to_string(),
-                        })
+                        Err(type_mismatch("Fn or IntMap", &mid_val))
                     }
                 };
 
@@ -2490,10 +2333,7 @@ fn vm_eval_inner(
                     outer[pos1].1 = update_mid(mid_val, k2, k3, value)?;
                     stack.push(Value::from_fn_arc(outer_arc));
                 } else {
-                    return Err(EvalError::TypeMismatch {
-                        expected: "Fn or IntMap".to_string(),
-                        actual: dict.type_name().to_string(),
-                    });
+                    return Err(type_mismatch("Fn or IntMap", &dict));
                 }
             }
             Op::Len => {
@@ -2504,66 +2344,21 @@ fn vm_eval_inner(
                     VK::Fn(f) => f.len() as i64,
                     VK::IntMap(arr) => arr.len() as i64,
                     VK::IntMap2(inner_size, data) => {
-                        if inner_size > 0 {
-                            (data.len() / inner_size as usize) as i64
-                        } else {
-                            0
-                        }
+                        intmap2_outer_len(inner_size, data.len()) as i64
                     }
-                    _ => {
-                        return Err(EvalError::TypeMismatch {
-                            expected: "Set, Seq, or Fn".to_string(),
-                            actual: val.type_name().to_string(),
-                        })
-                    }
+                    _ => return Err(type_mismatch("Set, Seq, or Fn", &val)),
                 };
                 stack.push(Value::int(len));
             }
             Op::Contains => {
                 let right_val = pop_value(stack)?;
                 let elem = pop_value(stack)?;
-                let result = match right_val.kind() {
-                    VK::Set(s) => Value::set_contains(s, &elem),
-                    VK::Fn(f) => Value::fn_get(f, &elem).is_some(),
-                    VK::IntMap(arr) => {
-                        let k = expect_int(&elem)? as usize;
-                        k < arr.len()
-                    }
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&elem)? as usize;
-                        let outer_size = if inner_size > 0 {
-                            data.len() / inner_size as usize
-                        } else {
-                            0
-                        };
-                        k < outer_size
-                    }
-                    _ => return Err(type_mismatch("Set or Dict", &right_val)),
-                };
-                stack.push(Value::bool(result));
+                stack.push(Value::bool(check_membership(&elem, &right_val)?));
             }
             Op::NotContains => {
                 let right_val = pop_value(stack)?;
                 let elem = pop_value(stack)?;
-                let result = match right_val.kind() {
-                    VK::Set(s) => !Value::set_contains(s, &elem),
-                    VK::Fn(f) => Value::fn_get(f, &elem).is_none(),
-                    VK::IntMap(arr) => {
-                        let k = expect_int(&elem)? as usize;
-                        k >= arr.len()
-                    }
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&elem)? as usize;
-                        let outer_size = if inner_size > 0 {
-                            data.len() / inner_size as usize
-                        } else {
-                            0
-                        };
-                        k >= outer_size
-                    }
-                    _ => return Err(type_mismatch("Set or Dict", &right_val)),
-                };
-                stack.push(Value::bool(result));
+                stack.push(Value::bool(!check_membership(&elem, &right_val)?));
             }
 
             // Local variable management
@@ -2603,12 +2398,7 @@ fn vm_eval_inner(
                     continue;
                 }
                 let current = get_local_int(locals)?;
-                let hi = loops
-                    .last()
-                    .ok_or_else(|| {
-                        EvalError::Internal("bytecode loop stack underflow".to_string())
-                    })?
-                    .hi;
+                let hi = loops.last().ok_or_else(loop_underflow)?.hi;
                 if current >= hi {
                     locals.pop();
                     loops.pop();
@@ -2616,9 +2406,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(locals_underflow)? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2650,12 +2438,7 @@ fn vm_eval_inner(
                     continue;
                 }
                 let current = get_local_int(locals)?;
-                let hi = loops
-                    .last()
-                    .ok_or_else(|| {
-                        EvalError::Internal("bytecode loop stack underflow".to_string())
-                    })?
-                    .hi;
+                let hi = loops.last().ok_or_else(loop_underflow)?.hi;
                 if current >= hi {
                     locals.pop();
                     loops.pop();
@@ -2663,9 +2446,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(locals_underflow)? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2690,9 +2471,7 @@ fn vm_eval_inner(
             }
             Op::CountRangeStep { body_pc, end_pc } => {
                 let pred = pop_bool(stack)?;
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 if pred {
                     loop_state.counter += 1;
                 }
@@ -2705,9 +2484,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(locals_underflow)? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2733,9 +2510,7 @@ fn vm_eval_inner(
             }
             Op::SetCompRangeStep { body_pc, end_pc } => {
                 let element = pop_value(stack)?;
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.set_buf.push(element);
                 let current = get_local_int(locals)?;
                 if current >= loop_state.hi {
@@ -2748,26 +2523,16 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(locals_underflow)? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
             Op::SetCompRangeAdvance { body_pc, end_pc } => {
                 let current = get_local_int(locals)?;
-                let loop_state = loops.last().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last().ok_or_else(loop_underflow)?;
                 if current >= loop_state.hi {
-                    let mut set_buf = std::mem::take(
-                        &mut loops
-                            .last_mut()
-                            .ok_or_else(|| {
-                                EvalError::Internal("bytecode loop stack underflow".to_string())
-                            })?
-                            .set_buf,
-                    );
+                    let mut set_buf =
+                        std::mem::take(&mut loops.last_mut().ok_or_else(loop_underflow)?.set_buf);
                     locals.pop();
                     loops.pop();
                     set_buf.sort();
@@ -2776,9 +2541,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(locals_underflow)? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2811,9 +2574,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
@@ -2823,9 +2584,8 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(locals_underflow)? =
+                    set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2858,9 +2618,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
@@ -2870,9 +2628,8 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(locals_underflow)? =
+                    set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2899,9 +2656,7 @@ fn vm_eval_inner(
             }
             Op::SetCompSetStep { body_pc, end_pc } => {
                 let element = pop_value(stack)?;
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.set_buf.push(element);
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
@@ -2915,16 +2670,13 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(locals_underflow)? =
+                    set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
             Op::SetCompSetAdvance { body_pc, end_pc } => {
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.counter += 1;
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
@@ -2937,9 +2689,8 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = set[loop_state.counter as usize].clone();
+                *locals.last_mut().ok_or_else(locals_underflow)? =
+                    set[loop_state.counter as usize].clone();
                 pc = *body_pc as usize;
                 continue;
             }
@@ -2971,9 +2722,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 if loop_state.counter >= loop_state.hi {
                     locals.pop();
                     loops.pop();
@@ -2990,9 +2739,8 @@ fn vm_eval_inner(
                         loop_state.set_buf.push(elem.clone());
                     }
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::set(Arc::new(loop_state.set_buf.clone()));
+                *locals.last_mut().ok_or_else(locals_underflow)? =
+                    Value::set(Arc::new(loop_state.set_buf.clone()));
                 pc = *body_pc as usize;
                 continue;
             }
@@ -3023,9 +2771,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 if loop_state.counter >= loop_state.hi {
                     locals.pop();
                     loops.pop();
@@ -3042,9 +2788,8 @@ fn vm_eval_inner(
                         loop_state.set_buf.push(elem.clone());
                     }
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::set(Arc::new(loop_state.set_buf.clone()));
+                *locals.last_mut().ok_or_else(locals_underflow)? =
+                    Value::set(Arc::new(loop_state.set_buf.clone()));
                 pc = *body_pc as usize;
                 continue;
             }
@@ -3071,9 +2816,7 @@ fn vm_eval_inner(
             Op::FnLitRangeStep { body_pc, end_pc } => {
                 let body_val = pop_value(stack)?;
                 let current = get_local_int(locals)?;
-                let loop_state = loops.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode loop stack underflow".to_string())
-                })?;
+                let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.fn_buf.push((Value::int(current), body_val));
                 if current >= loop_state.hi {
                     let fn_buf = std::mem::take(&mut loop_state.fn_buf);
@@ -3117,9 +2860,7 @@ fn vm_eval_inner(
                     pc = *end_pc as usize;
                     continue;
                 }
-                *locals.last_mut().ok_or_else(|| {
-                    EvalError::Internal("bytecode locals underflow".to_string())
-                })? = Value::int(current + 1);
+                *locals.last_mut().ok_or_else(locals_underflow)? = Value::int(current + 1);
                 pc = *body_pc as usize;
                 continue;
             }
@@ -3331,6 +3072,16 @@ fn vm_eval_inner(
 // ============================================================================
 
 #[inline(always)]
+fn loop_underflow() -> EvalError {
+    EvalError::Internal("bytecode loop stack underflow".to_string())
+}
+
+#[inline(always)]
+fn locals_underflow() -> EvalError {
+    EvalError::Internal("bytecode locals underflow".to_string())
+}
+
+#[inline(always)]
 fn pop_value(stack: &mut Vec<Value>) -> EvalResult<Value> {
     stack
         .pop()
@@ -3339,19 +3090,13 @@ fn pop_value(stack: &mut Vec<Value>) -> EvalResult<Value> {
 
 fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
     let v = pop_value(stack)?;
-    v.as_int().ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Int".to_string(),
-        actual: v.type_name().to_string(),
-    })
+    v.as_int().ok_or_else(|| type_mismatch("Int", &v))
 }
 
 #[inline(always)]
 fn pop_bool(stack: &mut Vec<Value>) -> EvalResult<bool> {
     let v = pop_value(stack)?;
-    v.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Bool".to_string(),
-        actual: v.type_name().to_string(),
-    })
+    v.as_bool().ok_or_else(|| type_mismatch("Bool", &v))
 }
 
 #[inline(always)]
@@ -3359,19 +3104,13 @@ fn peek_bool(stack: &[Value]) -> EvalResult<bool> {
     let v = stack
         .last()
         .ok_or_else(|| EvalError::Internal("bytecode stack underflow".to_string()))?;
-    v.as_bool().ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Bool".to_string(),
-        actual: v.type_name().to_string(),
-    })
+    v.as_bool().ok_or_else(|| type_mismatch("Bool", v))
 }
 
 #[inline(always)]
 fn get_local_int(locals: &[Value]) -> EvalResult<i64> {
     let v = locals.last().unwrap();
-    v.as_int().ok_or_else(|| EvalError::TypeMismatch {
-        expected: "Int".to_string(),
-        actual: v.type_name().to_string(),
-    })
+    v.as_int().ok_or_else(|| type_mismatch("Int", v))
 }
 
 /// Bounds-checked IntMap element access. Returns error instead of panicking.
@@ -3389,11 +3128,7 @@ fn intmap_get(arr: &[Value], k: i64) -> EvalResult<&Value> {
 /// Bounds-checked IntMap2 row access (returns a full inner row).
 #[inline(always)]
 fn intmap2_row(data: &[Value], inner_size: u32, k: i64) -> EvalResult<Vec<Value>> {
-    let outer_len = if inner_size > 0 {
-        data.len() / inner_size as usize
-    } else {
-        0
-    };
+    let outer_len = intmap2_outer_len(inner_size, data.len());
     if k < 0 || (k as usize) >= outer_len {
         return Err(EvalError::IndexOutOfBounds {
             index: k,
@@ -3407,11 +3142,7 @@ fn intmap2_row(data: &[Value], inner_size: u32, k: i64) -> EvalResult<Vec<Value>
 /// Bounds-checked IntMap2 element access (two-key lookup).
 #[inline(always)]
 fn intmap2_get(data: &[Value], inner_size: u32, k1: i64, k2: i64) -> EvalResult<&Value> {
-    let outer_len = if inner_size > 0 {
-        data.len() / inner_size as usize
-    } else {
-        0
-    };
+    let outer_len = intmap2_outer_len(inner_size, data.len());
     if k1 < 0 || (k1 as usize) >= outer_len {
         return Err(EvalError::IndexOutOfBounds {
             index: k1,
@@ -3442,11 +3173,7 @@ fn normalize_domain(domain: Value) -> EvalResult<Value> {
             Ok(Value::set(Arc::new(keys)))
         }
         VK::IntMap2(inner_size, data) => {
-            let outer_size = if inner_size > 0 {
-                data.len() / inner_size as usize
-            } else {
-                0
-            };
+            let outer_size = intmap2_outer_len(inner_size, data.len());
             let keys: Vec<Value> = (0..outer_size as i64).map(Value::int).collect();
             Ok(Value::set(Arc::new(keys)))
         }

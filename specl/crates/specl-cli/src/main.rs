@@ -1216,7 +1216,7 @@ fn main() {
                     no_auto,
                     output,
                     profile,
-                    check_only.clone(),
+                    check_only,
                     diff,
                     bmc,
                     bmc_depth,
@@ -1300,7 +1300,7 @@ fn main() {
                     sp,
                     timeout,
                     json,
-                    check_only.clone(),
+                    check_only,
                 )
             } else if use_bfs {
                 cmd_check(
@@ -1328,7 +1328,7 @@ fn main() {
                     output,
                     swarm,
                     profile,
-                    check_only.clone(),
+                    check_only,
                     diff,
                 )
             } else {
@@ -3954,7 +3954,7 @@ fn format_state_with_names(state: &State, var_names: &[String]) -> String {
         .iter()
         .enumerate()
         .map(|(i, v)| {
-            let name = var_names.get(i).map(|s| s.as_str()).unwrap_or("?");
+            let name = var_names.get(i).map_or("?", |s| s.as_str());
             format!("{}={}", name, v)
         })
         .collect::<Vec<_>>()
@@ -3972,7 +3972,7 @@ fn print_text_trace(trace: &[(State, Option<String>)], var_names: &[String], dif
             let mut changes = Vec::new();
             for (idx, v) in state.vars.iter().enumerate() {
                 if idx >= prev.vars.len() || *v != prev.vars[idx] {
-                    let name = var_names.get(idx).map(|s| s.as_str()).unwrap_or("?");
+                    let name = var_names.get(idx).map_or("?", |s| s.as_str());
                     changes.push(format!("{}={}", name, v));
                 }
             }
@@ -4031,7 +4031,7 @@ fn store_to_dot(
             .iter()
             .enumerate()
             .map(|(i, v)| {
-                let name = var_names.get(i).map(|s| s.as_str()).unwrap_or("?");
+                let name = var_names.get(i).map_or("?", |s| s.as_str());
                 format!("{}={}", name, format_value_compact(v))
             })
             .collect::<Vec<_>>()
@@ -4229,7 +4229,7 @@ fn trace_to_mermaid(
                 .enumerate()
                 .filter(|(j, v)| *v != &prev_state.vars[*j])
                 .map(|(j, v)| {
-                    let name = var_names.get(j).map(|s| s.as_str()).unwrap_or("?");
+                    let name = var_names.get(j).map_or("?", |s| s.as_str());
                     format!("{}={}", name, v)
                 })
                 .collect();
@@ -4781,7 +4781,7 @@ fn run_check_iteration(
 
     // Type check
     if let Err(e) = specl_types::check_module(&module) {
-        let err = CliError::from_type_error(e, source.clone(), &filename);
+        let err = CliError::from_type_error(e, source, &filename);
         eprintln!("{:?}", miette::Report::new(err));
         return;
     }

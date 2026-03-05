@@ -710,7 +710,7 @@ impl<'a> EncoderCtx<'a> {
                         };
                     } else {
                         let key_z3 = self.encode_int(keys[0])?;
-                        return self.build_ite_chain(&key_z3, vars, key_lo);
+                        return Self::build_ite_chain(&key_z3, vars, key_lo);
                     }
                 }
 
@@ -775,7 +775,7 @@ impl<'a> EncoderCtx<'a> {
                     }
                 } else {
                     let idx_z3 = self.encode_int(keys[0])?;
-                    self.build_ite_chain(&idx_z3, elem_vars, 0)
+                    Self::build_ite_chain(&idx_z3, elem_vars, 0)
                 }
             }
             VarKind::ExplodedSet { lo, .. } => {
@@ -794,7 +794,7 @@ impl<'a> EncoderCtx<'a> {
                     }
                 } else {
                     let key_z3 = self.encode_int(keys[0])?;
-                    self.build_ite_chain(&key_z3, vars, lo)
+                    Self::build_ite_chain(&key_z3, vars, lo)
                 }
             }
             VarKind::Bool | VarKind::Int { .. } => {
@@ -853,7 +853,7 @@ impl<'a> EncoderCtx<'a> {
     }
 
     /// Compute len of a VarKind from its Z3 vars.
-    fn len_of_kind(&self, kind: &VarKind, vars: &[Dynamic]) -> SymbolicResult<Dynamic> {
+    fn len_of_kind(kind: &VarKind, vars: &[Dynamic]) -> SymbolicResult<Dynamic> {
         match kind {
             VarKind::ExplodedSeq { .. } => Ok(vars[0].clone()),
             VarKind::ExplodedSet { .. } => {
@@ -880,7 +880,7 @@ impl<'a> EncoderCtx<'a> {
         keys: &[&CompiledExpr],
     ) -> SymbolicResult<Dynamic> {
         if keys.is_empty() {
-            return self.len_of_kind(kind, vars);
+            return Self::len_of_kind(kind, vars);
         }
 
         match kind {
@@ -898,7 +898,7 @@ impl<'a> EncoderCtx<'a> {
                     let offset = (concrete_key - key_lo) as usize * stride;
                     let slot_vars = &vars[offset..offset + stride];
                     if remaining.is_empty() {
-                        self.len_of_kind(value_kind, slot_vars)
+                        Self::len_of_kind(value_kind, slot_vars)
                     } else {
                         self.resolve_nested_len(value_kind, slot_vars, remaining)
                     }
@@ -910,13 +910,13 @@ impl<'a> EncoderCtx<'a> {
                         let offset = k * stride;
                         let slot_vars = &vars[offset..offset + stride];
                         let len = if remaining.is_empty() {
-                            self.len_of_kind(value_kind, slot_vars)?
+                            Self::len_of_kind(value_kind, slot_vars)?
                         } else {
                             self.resolve_nested_len(value_kind, slot_vars, remaining)?
                         };
                         len_vals.push(len);
                     }
-                    self.build_ite_chain(&key_z3, &len_vals, key_lo)
+                    Self::build_ite_chain(&key_z3, &len_vals, key_lo)
                 }
             }
             _ => Err(SymbolicError::Encoding(
@@ -1086,7 +1086,7 @@ impl<'a> EncoderCtx<'a> {
                         Ok(Dynamic::from_ast(&final_val))
                     } else {
                         let elem_z3 = self.encode_int(elem)?;
-                        let result = self.build_ite_chain(&elem_z3, z3_vars, lo)?;
+                        let result = Self::build_ite_chain(&elem_z3, z3_vars, lo)?;
                         let result_bool = result.as_bool().unwrap();
                         let final_val = if negate {
                             result_bool.not()
@@ -1336,7 +1336,7 @@ impl<'a> EncoderCtx<'a> {
                         Ok(Dynamic::from_ast(&final_val))
                     } else {
                         let elem_z3 = self.encode_int(elem)?;
-                        let result = self.build_ite_chain(&elem_z3, set_vars, lo)?;
+                        let result = Self::build_ite_chain(&elem_z3, set_vars, lo)?;
                         let result_bool = result.as_bool().unwrap();
                         let final_val = if negate {
                             result_bool.not()
@@ -1369,7 +1369,7 @@ impl<'a> EncoderCtx<'a> {
                             let elem_z3 = self.encode_int(elem)?;
                             let z3_vars: Vec<Dynamic> =
                                 flags.iter().map(|b| Dynamic::from_ast(b)).collect();
-                            let result = self.build_ite_chain(&elem_z3, &z3_vars, lo)?;
+                            let result = Self::build_ite_chain(&elem_z3, &z3_vars, lo)?;
                             let result_bool = result.as_bool().unwrap();
                             let final_val = if negate {
                                 result_bool.not()
@@ -1483,13 +1483,13 @@ impl<'a> EncoderCtx<'a> {
             let offset = k * stride;
             let slot_vars = &z3_vars[offset..offset + stride];
             let len = if keys.is_empty() {
-                self.len_of_kind(value_kind, slot_vars)?
+                Self::len_of_kind(value_kind, slot_vars)?
             } else {
                 self.resolve_nested_len(value_kind, slot_vars, keys)?
             };
             len_vals.push(len);
         }
-        self.build_ite_chain(outer_key_z3, &len_vals, key_lo)
+        Self::build_ite_chain(outer_key_z3, &len_vals, key_lo)
     }
 
     /// Resolve an index chain to find the Set slot vars and kind.
@@ -1553,7 +1553,7 @@ impl<'a> EncoderCtx<'a> {
             let head_vars: Vec<Dynamic> = (0..num_keys)
                 .map(|k| z3_vars[k * stride + 1].clone())
                 .collect();
-            return self.build_ite_chain(key_z3, &head_vars, *key_lo);
+            return Self::build_ite_chain(key_z3, &head_vars, *key_lo);
         }
         Err(SymbolicError::Encoding(
             "compound local head on non-dict".into(),
@@ -1897,7 +1897,7 @@ impl<'a> EncoderCtx<'a> {
     }
 
     /// Build an ITE chain for symbolic key lookup.
-    fn build_ite_chain(&self, key: &Int, vars: &[Dynamic], base: i64) -> SymbolicResult<Dynamic> {
+    fn build_ite_chain(key: &Int, vars: &[Dynamic], base: i64) -> SymbolicResult<Dynamic> {
         if vars.is_empty() {
             return Err(SymbolicError::Encoding("empty ITE chain".into()));
         }

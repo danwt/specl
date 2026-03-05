@@ -218,15 +218,14 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 }
                 VK::IntMap2(inner_size, data) => {
                     let k = expect_int(&index_val)?;
-                    let sz = inner_size as usize;
-                    let outer_len = if sz > 0 { data.len() / sz } else { 0 };
+                    let outer_len = intmap2_outer_len(inner_size, data.len());
                     if k < 0 || (k as usize) >= outer_len {
                         return Err(EvalError::IndexOutOfBounds {
                             index: k,
                             length: outer_len,
                         });
                     }
-                    Ok(Value::intmap2_row(data, sz, k as usize))
+                    Ok(Value::intmap2_row(data, inner_size as usize, k as usize))
                 }
                 VK::Fn(map) => Value::fn_get(map, &index_val)
                     .cloned()
@@ -258,7 +257,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
         }
 
-        CompiledExpr::Field { base, field: _ } => {
+        CompiledExpr::Field { base, .. } => {
             let base_val = eval(base, ctx)?;
             Err(type_mismatch("unsupported field access", &base_val))
         }
@@ -290,15 +289,14 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     }
                     let arg = eval(&args[0], ctx)?;
                     let k = expect_int(&arg)?;
-                    let sz = inner_size as usize;
-                    let outer_len = if sz > 0 { data.len() / sz } else { 0 };
+                    let outer_len = intmap2_outer_len(inner_size, data.len());
                     if k < 0 || (k as usize) >= outer_len {
                         return Err(EvalError::IndexOutOfBounds {
                             index: k,
                             length: outer_len,
                         });
                     }
-                    Ok(Value::intmap2_row(data, sz, k as usize))
+                    Ok(Value::intmap2_row(data, inner_size as usize, k as usize))
                 }
                 VK::Fn(map) => {
                     if args.len() != 1 {
@@ -618,9 +616,9 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                 VK::Set(s) => Ok(Value::int(s.len() as i64)),
                 VK::Fn(m) => Ok(Value::int(m.len() as i64)),
                 VK::IntMap(arr) => Ok(Value::int(arr.len() as i64)),
-                VK::IntMap2(inner_size, data) => {
-                    Ok(Value::int((data.len() / inner_size as usize) as i64))
-                }
+                VK::IntMap2(inner_size, data) => Ok(Value::int(
+                    (intmap2_outer_len(inner_size, data.len())) as i64,
+                )),
                 _ => Err(type_mismatch("Seq, Set, or Fn", &val)),
             }
         }
@@ -633,7 +631,7 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
                     (0..arr.len() as i64).map(Value::int).collect(),
                 ))),
                 VK::IntMap2(inner_size, data) => {
-                    let outer_size = data.len() / inner_size as usize;
+                    let outer_size = intmap2_outer_len(inner_size, data.len());
                     Ok(Value::set(Arc::new(
                         (0..outer_size as i64).map(Value::int).collect(),
                     )))
@@ -756,36 +754,12 @@ pub fn eval_bool(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<bool>
             BinOp::In => {
                 let left_val = eval(left, ctx)?;
                 let right_val = eval(right, ctx)?;
-                match right_val.kind() {
-                    VK::Set(s) => Ok(Value::set_contains(s, &left_val)),
-                    VK::Fn(f) => Ok(Value::fn_get(f, &left_val).is_some()),
-                    VK::IntMap(arr) => {
-                        let k = expect_int(&left_val)? as usize;
-                        Ok(k < arr.len())
-                    }
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&left_val)? as usize;
-                        Ok(k < data.len() / inner_size as usize)
-                    }
-                    _ => Err(type_mismatch("Set or Dict", &right_val)),
-                }
+                check_membership(&left_val, &right_val)
             }
             BinOp::NotIn => {
                 let left_val = eval(left, ctx)?;
                 let right_val = eval(right, ctx)?;
-                match right_val.kind() {
-                    VK::Set(s) => Ok(!Value::set_contains(s, &left_val)),
-                    VK::Fn(f) => Ok(Value::fn_get(f, &left_val).is_none()),
-                    VK::IntMap(arr) => {
-                        let k = expect_int(&left_val)? as usize;
-                        Ok(k >= arr.len())
-                    }
-                    VK::IntMap2(inner_size, data) => {
-                        let k = expect_int(&left_val)? as usize;
-                        Ok(k >= data.len() / inner_size as usize)
-                    }
-                    _ => Err(type_mismatch("Set or Dict", &right_val)),
-                }
+                Ok(!check_membership(&left_val, &right_val)?)
             }
             BinOp::SubsetOf => {
                 let left_val = eval(left, ctx)?;
@@ -1001,7 +975,9 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                 VK::Seq(s) => Ok(s.len() as i64),
                 VK::Fn(f) => Ok(f.len() as i64),
                 VK::IntMap(arr) => Ok(arr.len() as i64),
-                VK::IntMap2(inner_size, data) => Ok((data.len() / inner_size as usize) as i64),
+                VK::IntMap2(inner_size, data) => {
+                    Ok((intmap2_outer_len(inner_size, data.len())) as i64)
+                }
                 _ => Err(type_mismatch("Set, Seq, or Fn", &val)),
             }
         }
@@ -1232,32 +1208,8 @@ fn eval_binary(
             Ok(Value::int(a % b))
         }
 
-        BinOp::In => match right_val.kind() {
-            VK::Set(s) => Ok(Value::bool(Value::set_contains(s, &left_val))),
-            VK::Fn(f) => Ok(Value::bool(Value::fn_get(f, &left_val).is_some())),
-            VK::IntMap(arr) => {
-                let k = expect_int(&left_val)? as usize;
-                Ok(Value::bool(k < arr.len()))
-            }
-            VK::IntMap2(inner_size, data) => {
-                let k = expect_int(&left_val)? as usize;
-                Ok(Value::bool(k < data.len() / inner_size as usize))
-            }
-            _ => Err(type_mismatch("Set or Dict", &right_val)),
-        },
-        BinOp::NotIn => match right_val.kind() {
-            VK::Set(s) => Ok(Value::bool(!Value::set_contains(s, &left_val))),
-            VK::Fn(f) => Ok(Value::bool(Value::fn_get(f, &left_val).is_none())),
-            VK::IntMap(arr) => {
-                let k = expect_int(&left_val)? as usize;
-                Ok(Value::bool(k >= arr.len()))
-            }
-            VK::IntMap2(inner_size, data) => {
-                let k = expect_int(&left_val)? as usize;
-                Ok(Value::bool(k >= data.len() / inner_size as usize))
-            }
-            _ => Err(type_mismatch("Set or Dict", &right_val)),
-        },
+        BinOp::In => Ok(Value::bool(check_membership(&left_val, &right_val)?)),
+        BinOp::NotIn => Ok(Value::bool(!check_membership(&left_val, &right_val)?)),
 
         BinOp::Union => {
             if left_val.is_set_v() && right_val.is_set_v() {
@@ -1411,7 +1363,7 @@ fn extract_domain_elements(val: &Value) -> EvalResult<Vec<Value>> {
         VK::Fn(m) => Ok(m.iter().map(|(k, _)| k.clone()).collect()),
         VK::IntMap(arr) => Ok((0..arr.len() as i64).map(Value::int).collect()),
         VK::IntMap2(inner_size, data) => {
-            let outer_size = data.len() / inner_size as usize;
+            let outer_size = intmap2_outer_len(inner_size, data.len());
             Ok((0..outer_size as i64).map(Value::int).collect())
         }
         _ => Err(type_mismatch("Set or Dict", val)),
@@ -1505,6 +1457,27 @@ fn sorted_vec_is_subset(a: &[Value], b: &[Value]) -> bool {
         j += 1;
     }
     true
+}
+
+#[inline]
+pub(crate) fn intmap2_outer_len(inner_size: u32, data_len: usize) -> usize {
+    Value::intmap2_outer_len(inner_size as usize, data_len)
+}
+
+pub(crate) fn check_membership(left_val: &Value, right_val: &Value) -> EvalResult<bool> {
+    match right_val.kind() {
+        VK::Set(s) => Ok(Value::set_contains(s, left_val)),
+        VK::Fn(f) => Ok(Value::fn_get(f, left_val).is_some()),
+        VK::IntMap(arr) => {
+            let k = expect_int(left_val)? as usize;
+            Ok(k < arr.len())
+        }
+        VK::IntMap2(inner_size, data) => {
+            let k = expect_int(left_val)? as usize;
+            Ok(k < intmap2_outer_len(inner_size, data.len()))
+        }
+        _ => Err(type_mismatch("Set or Dict", right_val)),
+    }
 }
 
 pub(crate) fn type_mismatch(expected: &str, actual: &Value) -> EvalError {
