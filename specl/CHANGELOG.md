@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Bug Fixes
+
+- Fix unused variable clippy warnings on Rust 1.94+ in CLI help match arm
+
 ## [3.1.0] - 2026-03-06
 
 ### Performance
