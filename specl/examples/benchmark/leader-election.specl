@@ -1,0 +1,38 @@
+module LeaderElection
+
+// Ring-based leader election (LCR algorithm).
+// Each process sends its ID around the ring; the highest ID wins.
+// Use --no-deadlock (terminal states are expected).
+// N=8 -> ~96K states, N=10 -> ~866K states.
+
+const N: Int
+
+var inbox: Dict[0..N, Set[0..N]]
+
+var leader: Dict[0..N, 0..1]
+
+var active: Dict[0..N, Bool]
+
+init {
+    inbox = { i: {i} for i in 0..N };
+    leader = { i: 0 for i in 0..N };
+    active = { i: true for i in 0..N };
+}
+
+action Send(p: 0..N, msg: 0..N) {
+    require active[p];
+    require msg in inbox[p];
+    let next = (p + 1) % (N + 1);
+    leader = if msg == next then leader union { next: 1 } else leader;
+    inbox = (if msg > next then inbox union { next: inbox[next] union {msg} } else inbox) union { p: inbox[p] diff {msg} };
+}
+
+action Deactivate(p: 0..N) {
+    require active[p];
+    require inbox[p] == {};
+    active = active union { p: false };
+}
+
+invariant AtMostOneLeader {
+    not (any p in 0..N: any q in 0..N: p != q and leader[p] == 1 and leader[q] == 1)
+}

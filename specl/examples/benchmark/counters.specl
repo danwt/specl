@@ -1,0 +1,36 @@
+module Counters
+
+const N: 0..10
+
+const M: 0..20
+
+var c: Dict[0..N, 0..M]
+
+init {
+    c = { i: 0 for i in 0..N };
+}
+
+action Inc(i: 0..N) {
+    require c[i] < M;
+    c = c union { i: c[i] + 1 };
+}
+
+action Dec(i: 0..N) {
+    require c[i] > 0;
+    c = c union { i: c[i] - 1 };
+}
+
+action Transfer(i: 0..N, j: 0..N) {
+    require i != j;
+    require c[i] > 0;
+    require c[j] < M;
+    c = c union { i: c[i] - 1, j: c[j] + 1 };
+}
+
+invariant InRange {
+    all i in 0..N: c[i] >= 0 and c[i] <= M
+}
+
+invariant BoundedSum {
+    len({ i for i in 0..N if c[i] > M / 2 }) <= N + 1
+}

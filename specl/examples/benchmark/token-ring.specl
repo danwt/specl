@@ -1,0 +1,50 @@
+module TokenRing
+
+// Token-ring mutual exclusion.
+// Each process waits for token, enters critical section, works, exits, passes token.
+// State space is small due to strong mutual exclusion constraint.
+// N=10 -> ~253 states.
+
+const N: Int
+
+var token: 0..N
+
+var state: Dict[0..N, 0..2]
+
+var counter: Dict[0..N, 0..N]
+
+init {
+    token = 0;
+    state = { i: 0 for i in 0..N };
+    counter = { i: 0 for i in 0..N };
+}
+
+action Enter(p: 0..N) {
+    require token == p;
+    require state[p] == 0;
+    state = state union { p: 1 };
+}
+
+action Work(p: 0..N) {
+    require state[p] == 1;
+    require counter[p] < N;
+    counter = counter union { p: counter[p] + 1 };
+}
+
+action Exit(p: 0..N) {
+    require state[p] == 1;
+    state = state union { p: 2 };
+}
+
+action Pass(p: 0..N) {
+    require state[p] == 2;
+    let next = (p + 1) % (N + 1) in token = next and state = state union { p: 0 } and counter = counter union { p: 0 };
+}
+
+invariant MutualExclusion {
+    all p in 0..N: all q in 0..N: (p != q) implies not (state[p] == 1 and state[q] == 1)
+}
+
+invariant TokenUnique {
+    token in 0..N
+}
