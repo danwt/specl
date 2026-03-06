@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-03-06
+
 ### Performance
 
 - Tighten release profile: fat LTO, debug=false, codegen-units=1 (~20% throughput improvement on Raft benchmark)
