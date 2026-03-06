@@ -1,6 +1,7 @@
 //! State storage for model checking.
 
 use crate::bloom::BloomFilter;
+use crate::ParamValues;
 use crate::fpset::AtomicFPSet;
 use crate::state::{Fingerprint, FingerprintBuildHasher, State};
 use crate::tree_table::TreeTable;
@@ -21,7 +22,7 @@ pub struct StateInfo {
     /// Index of the action that led to this state (None for initial states).
     pub action_idx: Option<usize>,
     /// Parameter values used when firing the action (for trace display).
-    pub param_values: Option<Vec<i64>>,
+    pub param_values: Option<ParamValues>,
     /// Depth from initial state.
     pub depth: usize,
 }
@@ -37,7 +38,7 @@ struct CompressedStateInfo {
     /// Index of the action that led to this state.
     action_idx: Option<usize>,
     /// Parameter values used when firing the action.
-    param_values: Option<Vec<i64>>,
+    param_values: Option<ParamValues>,
     /// Depth from initial state.
     depth: usize,
 }
@@ -105,7 +106,7 @@ struct TreeStateInfo {
     /// Index of the action that led to this state.
     action_idx: Option<usize>,
     /// Parameter values used when firing the action.
-    param_values: Option<Vec<i64>>,
+    param_values: Option<ParamValues>,
     /// Depth from initial state.
     depth: usize,
 }
@@ -263,7 +264,7 @@ impl StateStore {
         state: State,
         predecessor: Option<Fingerprint>,
         action_idx: Option<usize>,
-        param_values: Option<Vec<i64>>,
+        param_values: Option<ParamValues>,
         depth: usize,
     ) -> bool {
         let fp = state.fingerprint();
@@ -277,7 +278,7 @@ impl StateStore {
         state: State,
         predecessor: Option<Fingerprint>,
         action_idx: Option<usize>,
-        param_values: Option<Vec<i64>>,
+        param_values: Option<ParamValues>,
         depth: usize,
     ) -> bool {
         match &self.backend {
@@ -660,8 +661,8 @@ mod tests {
         let fp2 = s2.fingerprint();
 
         store.insert(s0, None, Some(0), None, 0);
-        store.insert(s1, Some(fp0), Some(1), Some(vec![1]), 1);
-        store.insert(s2, Some(fp1), Some(2), Some(vec![2]), 2);
+        store.insert(s1, Some(fp0), Some(1), Some(smallvec::smallvec![1]), 1);
+        store.insert(s2, Some(fp1), Some(2), Some(smallvec::smallvec![2]), 2);
 
         let action_names = vec!["init".to_string(), "step1".to_string(), "step2".to_string()];
         let trace = store.trace_to(&fp2, &action_names);
@@ -764,8 +765,8 @@ mod tests {
         let fp2 = s2.fingerprint();
 
         store.insert(s0, None, Some(0), None, 0);
-        store.insert(s1, Some(fp0), Some(1), Some(vec![1]), 1);
-        store.insert(s2, Some(fp1), Some(2), Some(vec![2]), 2);
+        store.insert(s1, Some(fp0), Some(1), Some(smallvec::smallvec![1]), 1);
+        store.insert(s2, Some(fp1), Some(2), Some(smallvec::smallvec![2]), 2);
 
         let action_names = vec!["init".to_string(), "step1".to_string(), "step2".to_string()];
         let trace = store.trace_to(&fp2, &action_names);

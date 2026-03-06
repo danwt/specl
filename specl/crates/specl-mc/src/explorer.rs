@@ -130,8 +130,10 @@ enum AmpleResult {
     Instances(Vec<(usize, Vec<Value>)>),
 }
 
+use crate::ParamValues;
+
 /// Extract i64 parameter values from Value slice for trace storage.
-fn params_to_i64s(params: &[Value]) -> Vec<i64> {
+fn params_to_i64s(params: &[Value]) -> ParamValues {
     params
         .iter()
         .map(|v| {
@@ -2427,7 +2429,7 @@ impl Explorer {
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
         let mut var_hashes_buf = Vec::new();
-        let mut successors: Vec<(State, usize, Vec<i64>)> = Vec::new();
+        let mut successors: Vec<(State, usize, ParamValues)> = Vec::new();
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
@@ -2776,7 +2778,7 @@ impl Explorer {
                     struct ParBufs {
                         op_caches: Vec<OpCache>,
                         params: Vec<Value>,
-                        successors: Vec<(State, usize, Vec<i64>)>,
+                        successors: Vec<(State, usize, ParamValues)>,
                         next_vars: Vec<Value>,
                         guard_bufs: VmBufs,
                         effect_bufs: VmBufs,
@@ -3296,7 +3298,7 @@ impl Explorer {
     fn generate_successors(
         &self,
         state: &State,
-        buf: &mut Vec<(State, usize, Vec<i64>)>,
+        buf: &mut Vec<(State, usize, ParamValues)>,
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
         guard_bufs: &mut VmBufs,
@@ -3416,7 +3418,7 @@ impl Explorer {
         &self,
         state: &State,
         actions: &[usize],
-        buf: &mut Vec<(State, usize, Vec<i64>)>,
+        buf: &mut Vec<(State, usize, ParamValues)>,
         next_vars_buf: &mut Vec<Value>,
         sleep_set: u64,
         guard_bufs: &mut VmBufs,
@@ -3984,7 +3986,7 @@ impl Explorer {
         state: &State,
         action_idx: usize,
         params: &[Value],
-        buf: &mut Vec<(State, usize, Vec<i64>)>,
+        buf: &mut Vec<(State, usize, ParamValues)>,
         next_vars_buf: &mut Vec<Value>,
         effect_bufs: &mut VmBufs,
         var_hashes_buf: &mut Vec<u64>,
@@ -4034,7 +4036,7 @@ impl Explorer {
         &self,
         state: &State,
         action_idx: usize,
-        buf: &mut Vec<(State, usize, Vec<i64>)>,
+        buf: &mut Vec<(State, usize, ParamValues)>,
         next_vars_buf: &mut Vec<Value>,
         cache: &mut OpCache,
         orbit_reps: &SmallVec<[Vec<usize>; 4]>,
@@ -4181,7 +4183,7 @@ impl Explorer {
                                         let pvals = if needs_pvals {
                                             params_to_i64s(params)
                                         } else {
-                                            Vec::new()
+                                            ParamValues::new()
                                         };
                                         buf.push((next_state, action_idx, pvals));
                                     }
@@ -4213,7 +4215,7 @@ impl Explorer {
                                         let pvals = if needs_pvals {
                                             params_to_i64s(params)
                                         } else {
-                                            Vec::new()
+                                            ParamValues::new()
                                         };
                                         buf.push((next_state, action_idx, pvals));
                                     }
@@ -4227,7 +4229,7 @@ impl Explorer {
                         let pvals = if needs_pvals {
                             params_to_i64s(params)
                         } else {
-                            Vec::new()
+                            ParamValues::new()
                         };
                         for next_state in next_states {
                             buf.push((next_state, action_idx, pvals.clone()));
@@ -4287,7 +4289,7 @@ impl Explorer {
                                     let pvals = if needs_pvals {
                                         params_to_i64s(params)
                                     } else {
-                                        Vec::new()
+                                        ParamValues::new()
                                     };
                                     buf.push((next_state, action_idx, pvals));
                                 }
@@ -4331,7 +4333,7 @@ impl Explorer {
                                     let pvals = if needs_pvals {
                                         params_to_i64s(params)
                                     } else {
-                                        Vec::new()
+                                        ParamValues::new()
                                     };
                                     buf.push((next_state, action_idx, pvals));
                                 }
@@ -4346,7 +4348,7 @@ impl Explorer {
                     let pvals = if needs_pvals {
                         params_to_i64s(params)
                     } else {
-                        Vec::new()
+                        ParamValues::new()
                     };
                     for next_state in next_states {
                         buf.push((next_state, action_idx, pvals.clone()));
@@ -4602,7 +4604,7 @@ impl Explorer {
         }
 
         let mut current = state;
-        let mut successors_buf: Vec<(State, usize, Vec<i64>)> = Vec::new();
+        let mut successors_buf: Vec<(State, usize, ParamValues)> = Vec::new();
         let mut next_vars_buf: Vec<Value> = Vec::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
