@@ -1376,9 +1376,13 @@ impl Explorer {
             })
             .collect();
 
-        // Warn if symmetry is enabled but spec may be asymmetric
+        // Disable symmetry if spec has asymmetric patterns (soundness-critical)
         if explorer.config.use_symmetry && !explorer.spec.symmetry_groups.is_empty() {
-            explorer.check_symmetry_soundness();
+            let warnings = explorer.check_symmetry_soundness();
+            if !warnings.is_empty() {
+                tracing::info!("symmetry disabled: asymmetric patterns detected");
+                explorer.config.use_symmetry = false;
+            }
         }
 
         explorer
