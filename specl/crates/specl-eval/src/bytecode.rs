@@ -3136,7 +3136,11 @@ mod tests {
 
     #[test]
     fn op_enum_size() {
-        assert_eq!(std::mem::size_of::<Op>(), 16, "Op enum size changed — verify cache implications");
+        assert_eq!(
+            std::mem::size_of::<Op>(),
+            16,
+            "Op enum size changed — verify cache implications"
+        );
     }
 
     #[test]
