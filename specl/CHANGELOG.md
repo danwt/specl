@@ -4,7 +4,21 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
-## [3.0.1] - 2026-02-24
+### Performance
+
+- Tighten release profile: fat LTO, debug=false, codegen-units=1 (~20% throughput improvement on Raft benchmark)
+- Remove dead AtomicU32 execution_count from Bytecode struct
+- Use SmallVec for action parameter values (avoids heap allocation for 0-2 params)
+
+### Bug Fixes
+
+- Fix --auto symmetry reduction: disable symmetry when asymmetric patterns detected instead of ignoring warnings
+
+### Testing
+
+- Add POR and symmetry correctness proptests (7 new tests)
+- Add 4 large-state-space benchmark specs (counters, leader-election, cache-coherence, token-ring)
+- Reduce default proptest cases to 32 for fast dev cycle (CI uses 512)
 
 ## [3.0.1] - 2026-02-24
 

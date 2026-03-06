@@ -1,10 +1,10 @@
 //! State storage for model checking.
 
 use crate::bloom::BloomFilter;
-use crate::ParamValues;
 use crate::fpset::AtomicFPSet;
 use crate::state::{Fingerprint, FingerprintBuildHasher, State};
 use crate::tree_table::TreeTable;
+use crate::ParamValues;
 use dashmap::DashMap;
 use specl_eval::Value;
 use std::cell::UnsafeCell;
