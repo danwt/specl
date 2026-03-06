@@ -239,7 +239,7 @@ fn compute_var_hashes_and_fingerprint(
 #[derive(Debug, Clone)]
 pub struct State {
     /// Variable values indexed by variable index.
-    pub vars: Arc<Vec<Value>>,
+    pub vars: Arc<[Value]>,
     /// Cached per-variable hashes: var_hashes[i] = hash_var(i, vars[i]).
     /// Enables O(1) fingerprint updates and O(1) xor_hash_vars lookups.
     pub var_hashes: Arc<[u64]>,
@@ -260,7 +260,7 @@ impl State {
     pub fn new(vars: Vec<Value>) -> Self {
         let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars, None);
         Self {
-            vars: Arc::new(vars),
+            vars: Arc::from(vars),
             var_hashes: Arc::from(hashes),
             fp,
         }
@@ -271,7 +271,7 @@ impl State {
     pub fn new_with_view(vars: Vec<Value>, view_mask: &[bool]) -> Self {
         let (hashes, fp) = compute_var_hashes_and_fingerprint(&vars, Some(view_mask));
         Self {
-            vars: Arc::new(vars),
+            vars: Arc::from(vars),
             var_hashes: Arc::from(hashes),
             fp,
         }
@@ -285,7 +285,7 @@ impl State {
         var_hashes: &[u64],
     ) -> Self {
         Self {
-            vars: Arc::new(vars),
+            vars: Arc::from(vars),
             var_hashes: Arc::from(var_hashes),
             fp,
         }
@@ -300,7 +300,7 @@ impl State {
             .map(|(i, v)| hash_var(i, v))
             .collect();
         Self {
-            vars: Arc::new(vars),
+            vars: Arc::from(vars),
             var_hashes: Arc::from(hashes.as_slice()),
             fp,
         }
@@ -336,7 +336,7 @@ impl State {
             return self.clone();
         }
 
-        let mut vars = (*self.vars).clone();
+        let mut vars = self.vars.to_vec();
 
         for group in groups {
             if group.domain_size == 0 || group.variables.is_empty() {
@@ -365,28 +365,29 @@ impl State {
 /// 3. The canonical permutation maps each element to its sorted position
 ///
 /// Complexity: O(n log n) instead of O(n!)
-/// Build serialized signatures for each domain element across all symmetric variables.
-/// signature[i] = serialized values for element i across all vars in the group.
-fn build_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<Vec<Vec<u8>>> {
+/// Compute a hash-based signature for each domain element across all symmetric variables.
+/// Each element gets a single u64 hash combining its values across all vars in the group.
+fn build_hash_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<u64> {
     (0..group.domain_size)
         .map(|i| {
-            group
-                .variables
-                .iter()
-                .map(|&var_idx| match vars[var_idx].kind() {
+            let mut h: u64 = 0;
+            for (vi, &var_idx) in group.variables.iter().enumerate() {
+                let val_bits = match vars[var_idx].kind() {
                     VK::IntMap(arr) => {
                         if i < arr.len() {
-                            arr[i].to_bytes()
+                            arr[i].raw_bits()
                         } else {
-                            vec![]
+                            0
                         }
                     }
                     VK::Fn(map) => Value::fn_get(map, &Value::int(i as i64))
-                        .map(|v| v.to_bytes())
-                        .unwrap_or_default(),
-                    _ => vec![],
-                })
-                .collect()
+                        .map(|v| v.raw_bits())
+                        .unwrap_or(0),
+                    _ => 0,
+                };
+                h ^= splitmix_hash(vi, val_bits);
+            }
+            h
         })
         .collect()
 }
@@ -394,17 +395,17 @@ fn build_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<Vec<Vec<u8>>> 
 fn compute_canonical_permutation(vars: &[Value], group: &SymmetryGroup) -> Vec<usize> {
     let n = group.domain_size;
 
-    let mut signatures: Vec<(Vec<Vec<u8>>, usize)> = build_signatures(vars, group)
+    let mut signatures: Vec<(u64, usize)> = build_hash_signatures(vars, group)
         .into_iter()
         .enumerate()
         .map(|(i, sig)| (sig, i))
         .collect();
 
-    signatures.sort_by(|a, b| a.0.cmp(&b.0));
+    signatures.sort_unstable();
 
     let mut perm = vec![0; n];
-    for (new_idx, (_, old_idx)) in signatures.iter().enumerate() {
-        perm[*old_idx] = new_idx;
+    for (new_idx, &(_, old_idx)) in signatures.iter().enumerate() {
+        perm[old_idx] = new_idx;
     }
 
     perm
@@ -423,7 +424,7 @@ pub fn orbit_representatives(vars: &[Value], group: &SymmetryGroup) -> Vec<usize
         return vec![];
     }
 
-    let signatures = build_signatures(vars, group);
+    let signatures = build_hash_signatures(vars, group);
 
     // Since state is canonical, signatures are already sorted.
     // Pick one representative per distinct signature.

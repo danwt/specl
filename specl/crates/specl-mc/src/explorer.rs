@@ -2824,9 +2824,6 @@ impl Explorer {
                             for (next_state, action_idx, pvals) in successors {
                                 let canonical = self.maybe_canonicalize(next_state);
                                 let next_fp = canonical.fingerprint();
-                                if self.store.contains(&next_fp) {
-                                    continue;
-                                }
                                 let is_new = if fp_only_par {
                                     self.store.insert_fp_only(next_fp)
                                 } else {
@@ -2882,9 +2879,6 @@ impl Explorer {
                                 for (next_state, action_idx, pvals) in full_succ {
                                     let canonical = self.maybe_canonicalize(next_state);
                                     let next_fp = canonical.fingerprint();
-                                    if self.store.contains(&next_fp) {
-                                        continue;
-                                    }
                                     let is_new = if fp_only_par {
                                         self.store.insert_fp_only(next_fp)
                                     } else {
@@ -3013,7 +3007,7 @@ impl Explorer {
                 if let Some(ref mask) = self.view_mask {
                     let states = states
                         .into_iter()
-                        .map(|s| State::new_with_view((*s.vars).clone(), mask))
+                        .map(|s| State::new_with_view(s.vars.to_vec(), mask))
                         .collect();
                     return Ok(states);
                 }
@@ -3549,17 +3543,106 @@ impl Explorer {
     /// The cycle proviso (C3') is checked by the caller: at least one successor must be
     /// new. If not, the caller falls back to full expansion.
     fn compute_stubborn_set(&self, enabled: &[usize]) -> Vec<usize> {
-        use std::collections::HashSet;
-
         if enabled.len() <= 1 {
             return enabled.to_vec();
         }
 
-        let enabled_set: HashSet<usize> = enabled.iter().copied().collect();
         let n_actions = self.spec.actions.len();
 
-        // Key selection: prefer actions relevant to invariants (COI) to avoid missing
-        // violation traces. If no COI-relevant action is enabled, fall back to first enabled.
+        // Fast path: use u64 bitmasks when action count fits (covers most specs)
+        if n_actions <= 64 {
+            return self.compute_stubborn_set_bitmask(enabled, n_actions);
+        }
+
+        // Fallback for >64 actions
+        self.compute_stubborn_set_hashset(enabled, n_actions)
+    }
+
+    fn compute_stubborn_set_bitmask(&self, enabled: &[usize], n_actions: usize) -> Vec<usize> {
+        let enabled_mask: u64 = enabled.iter().fold(0u64, |m, &a| m | (1u64 << a));
+        let relevant_mask: u64 = self
+            .relevant_actions
+            .as_ref()
+            .map(|r| r.iter().fold(0u64, |m, &a| m | (1u64 << a)))
+            .unwrap_or(0);
+        let all_mask: u64 = if n_actions == 64 {
+            u64::MAX
+        } else {
+            (1u64 << n_actions) - 1
+        };
+
+        let t_key = if relevant_mask != 0 {
+            enabled
+                .iter()
+                .find(|&&a| relevant_mask & (1u64 << a) != 0)
+                .copied()
+                .unwrap_or(enabled[0])
+        } else {
+            enabled[0]
+        };
+
+        let mut stubborn: u64 = 1u64 << t_key;
+        let mut worklist: Vec<usize> = vec![t_key];
+
+        while let Some(t) = worklist.pop() {
+            if enabled_mask & (1u64 << t) != 0 {
+                for &t_nds in &self.nds[t] {
+                    let bit = 1u64 << t_nds;
+                    if enabled_mask & bit != 0 && stubborn & bit == 0 {
+                        stubborn |= bit;
+                        worklist.push(t_nds);
+                    }
+                }
+            } else {
+                for &t_nes in &self.nes[t] {
+                    let bit = 1u64 << t_nes;
+                    if stubborn & bit == 0 {
+                        stubborn |= bit;
+                        worklist.push(t_nes);
+                        break;
+                    }
+                }
+            }
+
+            if stubborn & all_mask == all_mask {
+                return enabled.to_vec();
+            }
+        }
+
+        let mut result: Vec<usize> = enabled
+            .iter()
+            .filter(|&&a| stubborn & (1u64 << a) != 0)
+            .copied()
+            .collect();
+
+        // POR visibility condition
+        if result.len() < enabled.len() {
+            let result_mask: u64 = result.iter().fold(0u64, |m, &a| m | (1u64 << a));
+            if result_mask & self.visible_actions != 0 {
+                return enabled.to_vec();
+            }
+        }
+
+        // Ensure at least one COI-relevant action
+        if relevant_mask != 0 {
+            let has_relevant = result.iter().any(|&a| relevant_mask & (1u64 << a) != 0);
+            if !has_relevant {
+                for &a in enabled {
+                    if relevant_mask & (1u64 << a) != 0 {
+                        result.push(a);
+                    }
+                }
+            }
+        }
+
+        result
+    }
+
+    fn compute_stubborn_set_hashset(&self, enabled: &[usize], n_actions: usize) -> Vec<usize> {
+        use std::collections::HashSet;
+
+        let enabled_set: HashSet<usize> = enabled.iter().copied().collect();
+
         let t_key = if let Some(ref relevant) = self.relevant_actions {
             let relevant_set: HashSet<usize> = relevant.iter().copied().collect();
             enabled
@@ -3576,17 +3659,12 @@ impl Explorer {
 
         while let Some(t) = worklist.pop() {
             if enabled_set.contains(&t) {
-                // Enabled: add all NDS(t) that are also enabled
-                // (actions that could disable t's guard — must be in stubborn set
-                // to ensure t remains enabled throughout)
                 for &t_nds in &self.nds[t] {
                     if enabled_set.contains(&t_nds) && stubborn.insert(t_nds) {
                         worklist.push(t_nds);
                     }
                 }
             } else {
-                // Disabled: pick one NES(t) to potentially enable this action.
-                // Deterministic: pick the smallest index not already in the set.
                 for &t_nes in &self.nes[t] {
                     if stubborn.insert(t_nes) {
                         worklist.push(t_nes);
@@ -3595,23 +3673,17 @@ impl Explorer {
                 }
             }
 
-            // Early exit: if stubborn set already contains all actions, no reduction
             if stubborn.len() >= n_actions {
                 return enabled.to_vec();
             }
         }
 
-        // Return only enabled actions in the stubborn set, preserving input order
         let mut result: Vec<usize> = enabled
             .iter()
             .filter(|a| stubborn.contains(a))
             .copied()
             .collect();
 
-        // POR visibility condition: if the stubborn set contains any action that
-        // writes to a variable used in an invariant, the reduction is unsound because
-        // it may hide interleavings that lead to invariant violations. In that case,
-        // expand to all enabled actions (no reduction).
         if result.len() < enabled.len() {
             let stubborn_mask: u64 =
                 result
@@ -3622,20 +3694,14 @@ impl Explorer {
             }
         }
 
-        // Safety fix: ensure stubborn set includes at least one COI-relevant action
-        // to avoid missing invariant violation traces. If the stubborn set contains
-        // only irrelevant actions, add all enabled COI-relevant actions.
         if let Some(ref relevant) = self.relevant_actions {
             let relevant_set: HashSet<usize> = relevant.iter().copied().collect();
             let has_relevant = result.iter().any(|a| relevant_set.contains(a));
             if !has_relevant {
-                let coi_enabled: Vec<usize> = enabled
-                    .iter()
-                    .filter(|a| relevant_set.contains(a))
-                    .copied()
-                    .collect();
-                if !coi_enabled.is_empty() {
-                    result.extend(coi_enabled);
+                for &a in enabled {
+                    if relevant_set.contains(&a) {
+                        result.push(a);
+                    }
                 }
             }
         }
@@ -4415,7 +4481,7 @@ impl Explorer {
         self.enumerate_changed(
             &changed_domains,
             0,
-            &mut (*state.vars).clone(),
+            &mut state.vars.to_vec(),
             &mut |next_vars: Vec<Value>| {
                 let mut ctx = EvalContext::new(&state.vars, &next_vars, &self.consts, params);
                 if eval(&action.effect, &mut ctx)

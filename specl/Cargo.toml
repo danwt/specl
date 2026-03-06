@@ -72,6 +72,12 @@ proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
 [profile.release]
-lto = "thin"
+lto = "fat"
 codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+[profile.release-with-debug]
+inherits = "release"
+strip = "none"
 debug = true
