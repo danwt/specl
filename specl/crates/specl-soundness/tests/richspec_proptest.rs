@@ -484,7 +484,8 @@ invariant PowersetSize {{
 
 proptest! {
     #![proptest_config(ProptestConfig {
-        cases: 512,
+        // Default: 32 for fast dev cycle. Override in CI with PROPTEST_CASES=512.
+        cases: 32,
         .. ProptestConfig::default()
     })]
 

@@ -56,7 +56,7 @@ fn strategy() -> impl Strategy<Value = MiniSpec> {
 proptest! {
     #![proptest_config(ProptestConfig {
         // Override in CI with PROPTEST_CASES env var.
-        cases: 512,
+        cases: 32,
         .. ProptestConfig::default()
     })]
 
