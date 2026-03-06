@@ -13,8 +13,18 @@
 //!   5. Evaluation never panics on well-typed, checked specs
 
 use proptest::prelude::*;
-use specl_mc::CheckConfig;
+use specl_mc::{CheckConfig, CheckOutcome};
 use specl_soundness::{check_spec, compile_spec, roundtrip_pretty, states_from_outcome};
+
+fn outcome_is_ok(outcome: &CheckOutcome) -> bool {
+    matches!(
+        outcome,
+        CheckOutcome::Ok { .. }
+            | CheckOutcome::StateLimitReached { .. }
+            | CheckOutcome::MemoryLimitReached { .. }
+            | CheckOutcome::TimeLimitReached { .. }
+    )
+}
 
 // ─── Expression generators ───
 
@@ -1008,6 +1018,132 @@ invariant HeadIsFirst {{
         }
         let (p1, p2) = result.unwrap();
         prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    // ─── POR soundness: outcome must match baseline ───
+
+    #[test]
+    fn set_spec_por_soundness(bound in 1u8..=3, n_actions in 1u8..=2) {
+        let spec = SetSpec { bound, n_actions };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let por = check_spec(&src, CheckConfig { use_por: true, ..base }).expect("por");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&por), "POR changed outcome");
+    }
+
+    #[test]
+    fn dict_spec_por_soundness(kb in 1u8..=2, vb in 1u8..=2) {
+        let spec = DictSpec { key_bound: kb, val_bound: vb };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let por = check_spec(&src, CheckConfig { use_por: true, ..base }).expect("por");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&por), "POR changed outcome");
+    }
+
+    #[test]
+    fn seq_spec_por_soundness(bound in 1u8..=2, max_len in 2u8..=3) {
+        let spec = SeqSpec { bound, max_len };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let por = check_spec(&src, CheckConfig { use_por: true, ..base }).expect("por");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&por), "POR changed outcome");
+    }
+
+    // ─── Symmetry soundness: outcome must match baseline ───
+    // Symmetry is auto-detected from Dict[0..N, T] variables.
+
+    #[test]
+    fn dict_spec_symmetry_soundness(kb in 1u8..=2, vb in 1u8..=2) {
+        let spec = DictSpec { key_bound: kb, val_bound: vb };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let sym = check_spec(&src, CheckConfig { use_symmetry: true, ..base }).expect("symmetry");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&sym), "Symmetry changed outcome");
+    }
+
+    #[test]
+    fn set_ops_spec_symmetry_soundness(bound in 1u8..=2) {
+        let spec = SetOpsSpec { bound };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let sym = check_spec(&src, CheckConfig { use_symmetry: true, ..base }).expect("symmetry");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&sym), "Symmetry changed outcome");
+    }
+
+    #[test]
+    fn comprehension_spec_symmetry_soundness(bound in 1u8..=2) {
+        let spec = ComprehensionSpec { bound };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let sym = check_spec(&src, CheckConfig { use_symmetry: true, ..base }).expect("symmetry");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&sym), "Symmetry changed outcome");
+    }
+
+    // ─── Combined POR + Symmetry soundness ───
+
+    #[test]
+    fn dict_spec_por_and_symmetry_soundness(kb in 1u8..=2, vb in 1u8..=2) {
+        let spec = DictSpec { key_bound: kb, val_bound: vb };
+        let src = spec.to_specl();
+        let base = CheckConfig {
+            parallel: false,
+            check_deadlock: false,
+            max_states: 5_000,
+            use_por: false,
+            use_symmetry: false,
+            ..CheckConfig::default()
+        };
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let both = check_spec(&src, CheckConfig { use_por: true, use_symmetry: true, ..base }).expect("por+sym");
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&both), "POR+Symmetry changed outcome");
     }
 
     #[test]
