@@ -290,12 +290,6 @@ struct LoopState {
 pub struct Bytecode {
     pub ops: Vec<Op>,
     pub fallbacks: Vec<CompiledExpr>,
-    /// Number of times this bytecode has been executed.
-    /// Used for adaptive re-optimization: after a threshold, a deeper
-    /// peephole pass runs to fuse patterns missed by the initial pass.
-    pub execution_count: std::sync::atomic::AtomicU32,
-    /// Whether the adaptive re-optimization pass has run.
-    pub is_reoptimized: std::sync::atomic::AtomicBool,
 }
 
 // ============================================================================
@@ -995,8 +989,6 @@ impl Compiler {
         Bytecode {
             ops: self.ops,
             fallbacks: self.fallbacks,
-            execution_count: std::sync::atomic::AtomicU32::new(0),
-            is_reoptimized: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -1060,46 +1052,6 @@ pub fn compile_expr(expr: &CompiledExpr) -> Bytecode {
     let mut bc = compiler.finish();
     peephole_optimize(&mut bc.ops);
     bc
-}
-
-/// Adaptive re-optimization threshold. After this many executions,
-/// a second peephole pass runs if the bytecode hasn't been re-optimized yet.
-const REOPT_THRESHOLD: u32 = 1000;
-
-/// Check if bytecode needs re-optimization based on execution count.
-/// Returns true if the bytecode crossed the threshold and the flag was set.
-pub fn needs_reoptimize(bytecode: &Bytecode) -> bool {
-    if bytecode
-        .is_reoptimized
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        return false;
-    }
-    let count = bytecode
-        .execution_count
-        .load(std::sync::atomic::Ordering::Relaxed);
-    if count >= REOPT_THRESHOLD {
-        // CAS to ensure only one thread triggers re-optimization
-        bytecode
-            .is_reoptimized
-            .compare_exchange(
-                false,
-                true,
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Relaxed,
-            )
-            .is_ok()
-    } else {
-        false
-    }
-}
-
-/// Re-optimize bytecode with an additional peephole pass.
-/// Called after the execution threshold is reached. Safe to call
-/// only when no other threads are executing this bytecode (e.g.,
-/// between BFS batches).
-pub fn reoptimize(bytecode: &mut Bytecode) {
-    peephole_optimize(&mut bytecode.ops);
 }
 
 /// Peephole optimization: fuse common instruction sequences into superinstructions.
@@ -1449,9 +1401,6 @@ pub fn vm_eval_reuse(
     params: &[Value],
     bufs: &mut VmBufs,
 ) -> EvalResult<Value> {
-    bytecode
-        .execution_count
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     bufs.stack.clear();
     bufs.locals.clear();
     bufs.loops.clear();
@@ -3184,6 +3133,11 @@ fn normalize_domain(domain: Value) -> EvalResult<Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn op_enum_size() {
+        assert_eq!(std::mem::size_of::<Op>(), 16, "Op enum size changed — verify cache implications");
+    }
 
     #[test]
     fn test_simple_int_arithmetic() {
