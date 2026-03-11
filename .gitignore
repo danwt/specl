@@ -23,3 +23,5 @@ MC*.out
 *.gz
 
 *.z3-trace
+
+fuzz/target/
