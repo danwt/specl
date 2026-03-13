@@ -30,7 +30,7 @@ The showcase is a small, carefully chosen set of examples that together:
 | [Paxos](showcase/paxos.specl) | Consensus | 95 | `powerset`, set comprehensions, complex nested quantifiers |
 | [Redlock](showcase/redlock.specl) | Distributed locking | 153 | `Set`, `union`, intentional invariant violation (Kleppmann attack) |
 | [Raft](showcase/raft.specl) | Consensus (complex) | 386 | `Seq`, `Set[Seq[Int]]`, `++`, slicing, `head`/`tail`/`len`, `union`/`diff`, message passing |
-| **[Features](showcase/features.specl)** | **Language reference** | **185** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, `view`, `auxiliary invariant`, nondeterministic init** |
+| **[Features](showcase/features.specl)** | **Language reference** | **191** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, `view`, `auxiliary invariant`, nondeterministic init, nondeterministic action parameters** |
 
 ### Verification Results
 
@@ -106,6 +106,49 @@ len(held intersect other) == 0   // disjointness check
 ```
 
 See [Redlock](showcase/redlock.specl), [Kaspa](showcase/kaspa.specl), [Features](showcase/features.specl).
+
+### Nondeterministic choice (action parameters)
+
+Action parameters are how nondeterministic choice works. The checker explores every value in the parameter's domain, and `require` guards prune infeasible choices.
+
+```specl
+// The checker tries every a in 1..10 and keeps those where b < 100
+action DoSomething(a: 1..10) {
+    let b = val + a in
+    require b < 100;
+    val = b;
+}
+```
+
+**Common mistake:** `any` is NOT a nondeterministic choice — it's a boolean existential quantifier ("does there exist..."). The bound variable is scoped only to the body after the colon.
+
+```specl
+// WRONG — a is not in scope outside the `any` body
+action Bad() {
+    any a in 1..10: true;
+    val = val + a;             // error: undefined variable a
+}
+
+// RIGHT — use an action parameter
+action Good(a: 1..10) {
+    val = val + a;
+}
+```
+
+See [Peterson](showcase/peterson.specl), [Paxos](showcase/paxos.specl), [Features](showcase/features.specl).
+
+### `any`/`all` quantifiers
+
+`any` (existential) and `all` (universal) are boolean expressions, not nondeterministic binders. They return `Bool`.
+
+```specl
+any c in 0..N: cache[c] == 3        // "does there exist c such that..."
+all a in Q: maxBal[a] >= b          // "for every a in Q..."
+```
+
+The bound variable is scoped only to the body expression after the colon. For nondeterministic choice, use action parameters (see above).
+
+See [Two-Phase Commit](showcase/two-phase-commit.specl), [Paxos](showcase/paxos.specl), [Features](showcase/features.specl).
 
 ### if-then-else expressions
 

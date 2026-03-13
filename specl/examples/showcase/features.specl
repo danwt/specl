@@ -15,7 +15,7 @@ module Features
 //   Seq ops: literal [], concat ++, head, tail, len
 //   Bool ops: and, or, not, implies, iff
 //   Arithmetic: +, -, *, /, %
-//   Other: nondeterministic init, require guards, let binding in actions
+//   Other: nondeterministic init, nondeterministic action parameters, require guards, let binding in actions
 //
 // Note: const declarations (e.g. `const N: 0..10`) parameterize specs at
 // check time via `-c N=3`. See two-phase-commit.specl, paxos.specl, and
@@ -59,6 +59,11 @@ init {
 }
 
 // ─── action: state transitions (guarded by require) ───
+// Action parameters (e.g. `w: 0..1`) are how nondeterministic choice works.
+// The checker explores every value in the parameter's domain. Use `require`
+// to prune values that don't satisfy a guard.
+// Note: `any` is NOT a nondeterministic choice — it's a boolean quantifier
+// (existential: "does there exist..."). See the invariant section below.
 
 action Enqueue() {
     require not paused;                      // Bool: not
@@ -123,7 +128,8 @@ invariant PauseSymmetry {
     (paused iff paused) and (not paused iff not paused)
 }
 
-// any quantifier + or
+// any quantifier (existential: "does there exist w such that...") — returns Bool.
+// This is NOT nondeterministic choice. For nondeterminism, use action parameters.
 invariant SomeWorkerExists {
     any w in 0..1: done[w] >= 0 or w in busy
 }
