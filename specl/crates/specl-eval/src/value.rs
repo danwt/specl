@@ -9,7 +9,7 @@
 
 use std::fmt;
 use std::hash::{Hash, Hasher};
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 // === Tag constants (bits 56-63) ===
 
@@ -323,11 +323,15 @@ impl Value {
     }
 
     pub fn empty_set() -> Self {
-        Value::set(Arc::new(Vec::new()))
+        static EMPTY_SET: LazyLock<Value> =
+            LazyLock::new(|| Value::set(Arc::new(Vec::new())));
+        EMPTY_SET.clone()
     }
 
     pub fn empty_seq() -> Self {
-        Value::seq(Vec::new())
+        static EMPTY_SEQ: LazyLock<Value> =
+            LazyLock::new(|| Value::seq(Vec::new()));
+        EMPTY_SEQ.clone()
     }
 
     pub fn range(lo: i64, hi: i64) -> Self {
