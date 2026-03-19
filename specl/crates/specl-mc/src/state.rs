@@ -450,7 +450,7 @@ fn apply_permutation(vars: &mut [Value], group: &SymmetryGroup, perm: &[usize]) 
                         }
                     })
                     .collect();
-                new_map.sort_by(|a, b| a.0.cmp(&b.0));
+                new_map.sort_unstable_by(|a, b| a.0.cmp(&b.0));
                 vars[var_idx] = Value::func(Arc::new(new_map));
             }
             _ => {}

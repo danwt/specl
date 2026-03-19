@@ -4,11 +4,12 @@
 //! loop, eliminating recursive dispatch overhead of the tree-walk interpreter.
 
 use crate::eval::{
-    check_membership, eval, eval_bool, eval_int, expect_int, intmap2_outer_len, sorted_vec_diff,
-    sorted_vec_union, type_mismatch,
+    check_membership, eval, eval_bool, eval_int, expect_int, intmap2_outer_len, is_int_expr,
+    sorted_vec_diff, sorted_vec_union, type_mismatch,
 };
 use crate::value::{IntMap2Data, Value, VK};
 use crate::{EvalContext, EvalError, EvalResult};
+use smallvec::SmallVec;
 use specl_ir::{BinOp, CompiledExpr, UnaryOp};
 use std::sync::Arc;
 
@@ -1032,19 +1033,6 @@ fn expr_structural_eq(a: &CompiledExpr, b: &CompiledExpr) -> bool {
     }
 }
 
-/// Check if an expression is statically known to produce an Int.
-fn is_int_expr(expr: &CompiledExpr) -> bool {
-    matches!(
-        expr,
-        CompiledExpr::Int(_)
-            | CompiledExpr::Len(_)
-            | CompiledExpr::Binary {
-                op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod,
-                ..
-            }
-    )
-}
-
 /// Compile a CompiledExpr to bytecode with peephole optimization.
 pub fn compile_expr(expr: &CompiledExpr) -> Bytecode {
     let mut compiler = Compiler::new();
@@ -1528,7 +1516,7 @@ fn vm_eval_inner(
             }
             Op::Neg => {
                 let a = pop_int(stack)?;
-                stack.push(Value::int(-a));
+                stack.push(Value::int(a.checked_neg().ok_or(EvalError::Overflow)?));
             }
 
             // Boolean
@@ -1855,13 +1843,13 @@ fn vm_eval_inner(
                     VK::IntMap(arr) => {
                         let idx = expect_int(key)?;
                         let n = expect_int(intmap_get(arr, idx)?)?;
-                        stack.push(Value::int(n + k));
+                        stack.push(Value::int(n.checked_add(*k).ok_or(EvalError::Overflow)?));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
                         let n = expect_int(val)?;
-                        stack.push(Value::int(n + k));
+                        stack.push(Value::int(n.checked_add(*k).ok_or(EvalError::Overflow)?));
                     }
                     _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
@@ -2076,7 +2064,7 @@ fn vm_eval_inner(
                 // Stack: [dict, k1, v1, k2, v2, ..., kN, vN] (dict deepest)
                 // Pop N (value, key) pairs in reverse order
                 let n = *n as usize;
-                let mut pairs = Vec::with_capacity(n);
+                let mut pairs: SmallVec<[(Value, Value); 8]> = SmallVec::with_capacity(n);
                 for _ in 0..n {
                     let value = pop_value(stack)?;
                     let key = pop_value(stack)?;
@@ -3061,6 +3049,7 @@ fn pop_value(stack: &mut Vec<Value>) -> EvalResult<Value> {
         .ok_or_else(|| EvalError::Internal("bytecode stack underflow".to_string()))
 }
 
+#[inline(always)]
 fn pop_int(stack: &mut Vec<Value>) -> EvalResult<i64> {
     let v = pop_value(stack)?;
     v.as_int().ok_or_else(|| type_mismatch("Int", &v))

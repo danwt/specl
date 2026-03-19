@@ -1017,7 +1017,7 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
 
 /// Check if an expression is statically known to produce an Int.
 #[inline]
-fn is_int_expr(expr: &CompiledExpr) -> bool {
+pub(crate) fn is_int_expr(expr: &CompiledExpr) -> bool {
     matches!(
         expr,
         CompiledExpr::Int(_)
@@ -1188,17 +1188,17 @@ fn eval_binary(
         BinOp::Add => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::int(a + b))
+            a.checked_add(b).map(Value::int).ok_or(EvalError::Overflow)
         }
         BinOp::Sub => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::int(a - b))
+            a.checked_sub(b).map(Value::int).ok_or(EvalError::Overflow)
         }
         BinOp::Mul => {
             let a = expect_int(&left_val)?;
             let b = expect_int(&right_val)?;
-            Ok(Value::int(a * b))
+            a.checked_mul(b).map(Value::int).ok_or(EvalError::Overflow)
         }
         BinOp::Div => {
             let a = expect_int(&left_val)?;
@@ -1206,7 +1206,7 @@ fn eval_binary(
             if b == 0 {
                 return Err(EvalError::DivisionByZero);
             }
-            Ok(Value::int(a / b))
+            a.checked_div(b).map(Value::int).ok_or(EvalError::Overflow)
         }
         BinOp::Mod => {
             let a = expect_int(&left_val)?;
@@ -1214,7 +1214,7 @@ fn eval_binary(
             if b == 0 {
                 return Err(EvalError::DivisionByZero);
             }
-            Ok(Value::int(a % b))
+            a.checked_rem(b).map(Value::int).ok_or(EvalError::Overflow)
         }
 
         BinOp::In => Ok(Value::bool(check_membership(&left_val, &right_val)?)),
@@ -1332,7 +1332,7 @@ fn eval_unary(op: UnaryOp, operand: &CompiledExpr, ctx: &mut EvalContext) -> Eva
         }
         UnaryOp::Neg => {
             let n = expect_int(&val)?;
-            Ok(Value::int(-n))
+            n.checked_neg().map(Value::int).ok_or(EvalError::Overflow)
         }
     }
 }

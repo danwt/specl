@@ -2222,13 +2222,15 @@ impl Explorer {
     /// fingerprint-based hash to ensure exploration diversity.
     fn invariant_heuristic(&self, state: &State) -> u32 {
         let mut passing = 0u32;
+        let mut bufs = VmBufs::new();
         for (inv_idx, _inv) in self.spec.invariants.iter().enumerate() {
-            let result = vm_eval_bool(
+            let result = vm_eval_bool_reuse(
                 &self.compiled_invariants[inv_idx],
                 &state.vars,
                 &state.vars,
                 &self.consts,
                 &[],
+                &mut bufs,
             );
             match result {
                 Ok(true) => passing += 1,
@@ -2283,6 +2285,7 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
+        let mut successors = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2312,7 +2315,7 @@ impl Explorer {
             }
 
             // Generate successors
-            let mut successors = Vec::new();
+            successors.clear();
             self.generate_successors(
                 state,
                 &mut successors,
@@ -2324,7 +2327,7 @@ impl Explorer {
                 &mut op_caches,
                 &mut params_buf,
             )?;
-            for (next_state, action_idx, pvals) in successors {
+            for (next_state, action_idx, pvals) in successors.drain(..) {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
                 if self.store.insert(
@@ -2358,6 +2361,7 @@ impl Explorer {
         let num_actions = self.spec.actions.len();
         let mut op_caches: Vec<OpCache> = (0..num_actions).map(|_| OpCache::new()).collect();
         let mut params_buf = Vec::new();
+        let mut successors = Vec::new();
 
         // Generate initial states
         let initial_states = self.generate_initial_states()?;
@@ -2376,7 +2380,7 @@ impl Explorer {
             let depth = info.depth;
 
             // Check for deadlock
-            let mut successors = Vec::new();
+            successors.clear();
             self.generate_successors(
                 state,
                 &mut successors,
@@ -2396,8 +2400,7 @@ impl Explorer {
                 }
             }
 
-            // Generate successors
-            for (next_state, action_idx, pvals) in successors {
+            for (next_state, action_idx, pvals) in successors.drain(..) {
                 let canonical = self.maybe_canonicalize(next_state);
                 let next_fp = canonical.fingerprint();
                 if self.store.insert(
@@ -3465,10 +3468,11 @@ impl Explorer {
 
     /// Get indices of all enabled actions for a state.
     fn get_enabled_actions(&self, state: &State) -> CheckResult<Vec<usize>> {
-        let mut enabled = Vec::new();
+        let mut enabled = Vec::with_capacity(self.spec.actions.len());
+        let mut guard_bufs = VmBufs::new();
 
         for (idx, action) in self.spec.actions.iter().enumerate() {
-            if self.is_action_enabled(state, action, idx)? {
+            if self.is_action_enabled(state, action, idx, &mut guard_bufs)? {
                 enabled.push(idx);
             }
         }
@@ -3482,11 +3486,11 @@ impl Explorer {
         state: &State,
         _action: &CompiledAction,
         action_idx: usize,
+        guard_bufs: &mut VmBufs,
     ) -> CheckResult<bool> {
         let param_domains = self.build_domain_refs(action_idx, state);
         let guard_bc = &self.compiled_guards[action_idx];
         let mut enabled = false;
-        let mut guard_bufs = VmBufs::new();
 
         if let Some(guard_index) = &self.guard_indices[action_idx] {
             if let Some(ref pre_guard) = guard_index.pre_guard {
@@ -3496,7 +3500,7 @@ impl Explorer {
                     &state.vars,
                     &self.consts,
                     &[],
-                    &mut guard_bufs,
+                    guard_bufs,
                 )
                 .unwrap_or(false)
                 {
@@ -3515,7 +3519,7 @@ impl Explorer {
                 &mut |_params: &[Value]| {
                     enabled = true;
                 },
-                &mut guard_bufs,
+                guard_bufs,
             );
         } else {
             let mut params_buf = SmallVec::new();
@@ -3524,9 +3528,14 @@ impl Explorer {
                 &mut params_buf,
                 &mut |params: &[Value]| {
                     if !enabled {
-                        if let Ok(true) =
-                            vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
-                        {
+                        if let Ok(true) = vm_eval_bool_reuse(
+                            guard_bc,
+                            &state.vars,
+                            &state.vars,
+                            &self.consts,
+                            params,
+                            guard_bufs,
+                        ) {
                             enabled = true;
                         }
                     }
@@ -3761,8 +3770,15 @@ impl Explorer {
                 &param_domains,
                 &mut params_buf,
                 &mut |params: &[Value]| {
-                    if vm_eval_bool(guard_bc, &state.vars, &state.vars, &self.consts, params)
-                        .unwrap_or(false)
+                    if vm_eval_bool_reuse(
+                        guard_bc,
+                        &state.vars,
+                        &state.vars,
+                        &self.consts,
+                        params,
+                        &mut guard_bufs,
+                    )
+                    .unwrap_or(false)
                     {
                         instances.push((action_idx, params.to_vec()));
                     }
@@ -4566,8 +4582,9 @@ impl Explorer {
 
     /// Check if any action is enabled in a state.
     fn any_action_enabled(&self, state: &State) -> CheckResult<bool> {
+        let mut guard_bufs = VmBufs::new();
         for (action_idx, action) in self.spec.actions.iter().enumerate() {
-            if self.is_action_enabled(state, action, action_idx)? {
+            if self.is_action_enabled(state, action, action_idx, &mut guard_bufs)? {
                 return Ok(true);
             }
         }
