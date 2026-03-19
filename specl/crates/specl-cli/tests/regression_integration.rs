@@ -351,3 +351,155 @@ fn overflow_detected_in_eval() {
         "expected EvalError::Overflow"
     );
 }
+
+#[test]
+fn overflow_detected_in_eval_mul() {
+    use specl_eval::{eval, EvalContext};
+    use specl_ir::{BinOp, CompiledExpr};
+
+    let big = CompiledExpr::Int(i64::MAX);
+    let two = CompiledExpr::Int(2);
+    let overflow_expr = CompiledExpr::Binary {
+        op: BinOp::Mul,
+        left: Box::new(big),
+        right: Box::new(two),
+    };
+    let vars: Vec<Value> = vec![];
+    let consts: Vec<Value> = vec![];
+    let params: Vec<Value> = vec![];
+    let mut ctx = EvalContext::new(&vars, &vars, &consts, &params);
+    let result = eval(&overflow_expr, &mut ctx);
+    assert!(result.is_err(), "i64::MAX * 2 should produce overflow");
+    assert!(
+        matches!(result.unwrap_err(), EvalError::Overflow),
+        "expected EvalError::Overflow"
+    );
+}
+
+#[test]
+fn overflow_spec_handled_gracefully() {
+    // The model checker silently treats eval errors in action effects as
+    // "action disabled" (no successors). This test verifies the checker
+    // doesn't crash when an action causes overflow.
+    let source = r#"
+module Overflow
+var x: 0..100000
+init { x = 100000; }
+action Square() { x = x * x; }
+invariant NoOverflow { x >= 0 }
+"#;
+    let result = check_spec(source, &[]);
+    assert!(
+        result.is_ok(),
+        "model checker should handle overflow gracefully, got: {result:?}"
+    );
+}
+
+// ─── Bounds checking ───
+
+#[test]
+fn bounds_check_dict_missing_key_graceful() {
+    // Dict access with a missing key in an action effect is treated as
+    // "action disabled" by the model checker (no crash).
+    let source = r#"
+module BoundsCheck
+var d: Dict[0..2, 0..5]
+var result: 0..5
+init {
+    d = {k: k for k in 0..2};
+    result = 0;
+}
+action LookupOutOfBounds() {
+    result = d[3];
+}
+invariant ResultValid { result >= 0 }
+"#;
+    let result = check_spec(source, &[]);
+    assert!(
+        result.is_ok(),
+        "model checker should handle missing key gracefully, got: {result:?}"
+    );
+}
+
+#[test]
+fn bounds_check_seq_index_out_of_bounds_graceful() {
+    // Seq access with an out-of-bounds index in an action effect is treated
+    // as "action disabled" by the model checker (no crash).
+    let source = r#"
+module SeqBounds
+var s: Seq[0..3]
+var result: 0..3
+init {
+    s = [1, 2];
+    result = 0;
+}
+action IndexOutOfBounds() {
+    result = s[5];
+}
+invariant ResultValid { result >= 0 }
+"#;
+    let result = check_spec(source, &[]);
+    assert!(
+        result.is_ok(),
+        "model checker should handle out-of-bounds index gracefully, got: {result:?}"
+    );
+}
+
+#[test]
+fn bounds_check_key_not_found_in_eval() {
+    // Verify that dict key-not-found produces EvalError::KeyNotFound at the eval level.
+    use specl_eval::{eval, EvalContext};
+    use specl_ir::CompiledExpr;
+
+    // Build: {0: 10, 1: 20}[5]  -- key 5 doesn't exist
+    let dict_expr = CompiledExpr::DictLit(vec![
+        (CompiledExpr::Int(0), CompiledExpr::Int(10)),
+        (CompiledExpr::Int(1), CompiledExpr::Int(20)),
+    ]);
+    let index_expr = CompiledExpr::Index {
+        base: Box::new(dict_expr),
+        index: Box::new(CompiledExpr::Int(5)),
+    };
+    let vars: Vec<Value> = vec![];
+    let consts: Vec<Value> = vec![];
+    let params: Vec<Value> = vec![];
+    let mut ctx = EvalContext::new(&vars, &vars, &consts, &params);
+    let result = eval(&index_expr, &mut ctx);
+    assert!(
+        result.is_err(),
+        "dict access with missing key should produce error"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, EvalError::KeyNotFound(_)),
+        "expected KeyNotFound, got: {err:?}"
+    );
+}
+
+#[test]
+fn bounds_check_seq_index_in_eval() {
+    // Verify that seq index-out-of-bounds produces EvalError::IndexOutOfBounds at the eval level.
+    use specl_eval::{eval, EvalContext};
+    use specl_ir::CompiledExpr;
+
+    // Build: [10, 20][5]  -- index 5 is out of bounds for length-2 seq
+    let seq_expr = CompiledExpr::SeqLit(vec![CompiledExpr::Int(10), CompiledExpr::Int(20)]);
+    let index_expr = CompiledExpr::Index {
+        base: Box::new(seq_expr),
+        index: Box::new(CompiledExpr::Int(5)),
+    };
+    let vars: Vec<Value> = vec![];
+    let consts: Vec<Value> = vec![];
+    let params: Vec<Value> = vec![];
+    let mut ctx = EvalContext::new(&vars, &vars, &consts, &params);
+    let result = eval(&index_expr, &mut ctx);
+    assert!(
+        result.is_err(),
+        "seq access with out-of-bounds index should produce error"
+    );
+    let err = result.unwrap_err();
+    assert!(
+        matches!(err, EvalError::IndexOutOfBounds { .. }),
+        "expected IndexOutOfBounds, got: {err:?}"
+    );
+}
