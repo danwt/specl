@@ -1412,9 +1412,7 @@ impl Parser {
                     }
                     depth -= 1;
                 }
-                TokenKind::Let | TokenKind::All | TokenKind::Any | TokenKind::Fix
-                    if depth == 0 =>
-                {
+                TokenKind::Let | TokenKind::All | TokenKind::Any | TokenKind::Fix if depth == 0 => {
                     pending_keyword_ins += 1;
                 }
                 TokenKind::In if depth == 0 => {

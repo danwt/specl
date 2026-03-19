@@ -3560,28 +3560,20 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
         let value_str = parts[1].trim();
 
         // Find the constant
-        let const_decl =
-            spec.consts
-                .iter()
-                .find(|c| c.name == name)
-                .ok_or_else(|| {
-                    let available: Vec<&str> =
-                        spec.consts.iter().map(|c| c.name.as_str()).collect();
-                    CliError::Other {
-                        message: if available.is_empty() {
-                            format!(
-                                "unknown constant '{}': this spec has no constants",
-                                name
-                            )
-                        } else {
-                            format!(
-                                "unknown constant '{}' (available: {})",
-                                name,
-                                available.join(", ")
-                            )
-                        },
-                    }
-                })?;
+        let const_decl = spec.consts.iter().find(|c| c.name == name).ok_or_else(|| {
+            let available: Vec<&str> = spec.consts.iter().map(|c| c.name.as_str()).collect();
+            CliError::Other {
+                message: if available.is_empty() {
+                    format!("unknown constant '{}': this spec has no constants", name)
+                } else {
+                    format!(
+                        "unknown constant '{}' (available: {})",
+                        name,
+                        available.join(", ")
+                    )
+                },
+            }
+        })?;
 
         // Parse the value
         let value = parse_value(value_str)?;
@@ -3679,14 +3671,20 @@ fn split_top_level_csv(s: &str) -> CliResult<Vec<&str>> {
 
         if brace_depth < 0 || bracket_depth < 0 || paren_depth < 0 {
             return Err(CliError::Other {
-                message: format!("unbalanced brackets in value '{}': extra closing delimiter", s),
+                message: format!(
+                    "unbalanced brackets in value '{}': extra closing delimiter",
+                    s
+                ),
             });
         }
     }
 
     if in_string || brace_depth != 0 || bracket_depth != 0 || paren_depth != 0 {
         return Err(CliError::Other {
-            message: format!("unbalanced delimiters in value '{}': unclosed bracket, brace, paren, or string", s),
+            message: format!(
+                "unbalanced delimiters in value '{}': unclosed bracket, brace, paren, or string",
+                s
+            ),
         });
     }
 

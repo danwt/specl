@@ -323,14 +323,12 @@ impl Value {
     }
 
     pub fn empty_set() -> Self {
-        static EMPTY_SET: LazyLock<Value> =
-            LazyLock::new(|| Value::set(Arc::new(Vec::new())));
+        static EMPTY_SET: LazyLock<Value> = LazyLock::new(|| Value::set(Arc::new(Vec::new())));
         EMPTY_SET.clone()
     }
 
     pub fn empty_seq() -> Self {
-        static EMPTY_SEQ: LazyLock<Value> =
-            LazyLock::new(|| Value::seq(Vec::new()));
+        static EMPTY_SEQ: LazyLock<Value> = LazyLock::new(|| Value::seq(Vec::new()));
         EMPTY_SEQ.clone()
     }
 
