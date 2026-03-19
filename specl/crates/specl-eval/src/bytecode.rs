@@ -1463,9 +1463,28 @@ fn vm_eval_inner(
             Op::Bool(b) => stack.push(Value::bool(*b)),
             Op::PushValue(v) => stack.push(v.clone()),
 
-            Op::Var(idx) => stack.push(vars[*idx as usize].clone()),
-            Op::PrimedVar(idx) => stack.push(next_vars[*idx as usize].clone()),
-            Op::Const(idx) => stack.push(consts[*idx as usize].clone()),
+            Op::Var(idx) => {
+                let i = *idx as usize;
+                stack.push(vars.get(i).ok_or(EvalError::UndefinedVariable(i))?.clone());
+            }
+            Op::PrimedVar(idx) => {
+                let i = *idx as usize;
+                stack.push(
+                    next_vars
+                        .get(i)
+                        .ok_or(EvalError::UndefinedVariable(i))?
+                        .clone(),
+                );
+            }
+            Op::Const(idx) => {
+                let i = *idx as usize;
+                stack.push(
+                    consts
+                        .get(i)
+                        .ok_or(EvalError::UndefinedConstant(i))?
+                        .clone(),
+                );
+            }
             Op::Param(idx) => {
                 let i = *idx as usize;
                 if i >= params.len() {
@@ -3081,7 +3100,7 @@ fn peek_bool(stack: &[Value]) -> EvalResult<bool> {
 
 #[inline(always)]
 fn get_local_int(locals: &[Value]) -> EvalResult<i64> {
-    let v = locals.last().unwrap();
+    let v = locals.last().ok_or_else(locals_underflow)?;
     v.as_int().ok_or_else(|| type_mismatch("Int", v))
 }
 
