@@ -3,13 +3,66 @@
 use dashmap::DashMap;
 use ropey::Rope;
 use specl_syntax::{
-    parse, pretty_print, ConstValue, Decl, Expr, ExprKind, Lexer, Span, TokenKind, TypeExpr,
+    parse, pretty_print, ConstValue, Decl, Expr, ExprKind, Lexer, Span, Token, TokenKind, TypeExpr,
 };
 use specl_types::check_module;
+use std::panic;
 use tower_lsp::jsonrpc::Result;
 use tower_lsp::lsp_types::*;
 use tower_lsp::{Client, LanguageServer, LspService, Server};
-use tracing::{debug, info};
+use tracing::{debug, error, info};
+
+/// Parse source, catching panics from parser bugs.
+/// Returns None on both parse errors and panics - use for features where
+/// graceful degradation (returning no results) is acceptable.
+fn safe_parse(source: &str) -> Option<specl_syntax::Module> {
+    let source_ref = panic::AssertUnwindSafe(source);
+    match panic::catch_unwind(move || parse(*source_ref)) {
+        Ok(Ok(module)) => Some(module),
+        Ok(Err(_)) => None,
+        Err(payload) => {
+            let msg = panic_payload_to_string(&payload);
+            error!("parser panicked: msg={msg}");
+            None
+        }
+    }
+}
+
+/// Format a module, catching panics from pretty printer bugs.
+fn safe_pretty_print(module: &specl_syntax::Module) -> Option<String> {
+    let module_ref = panic::AssertUnwindSafe(module);
+    match panic::catch_unwind(move || pretty_print(*module_ref)) {
+        Ok(s) => Some(s),
+        Err(payload) => {
+            let msg = panic_payload_to_string(&payload);
+            error!("pretty printer panicked: msg={msg}");
+            None
+        }
+    }
+}
+
+/// Tokenize source, catching panics from lexer bugs.
+fn safe_tokenize(source: &str) -> Vec<Token> {
+    let source_ref = panic::AssertUnwindSafe(source);
+    match panic::catch_unwind(move || Lexer::new(*source_ref).tokenize()) {
+        Ok(tokens) => tokens,
+        Err(payload) => {
+            let msg = panic_payload_to_string(&payload);
+            error!("lexer panicked: msg={msg}");
+            vec![]
+        }
+    }
+}
+
+fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
 
 /// Document state stored by the server.
 struct Document {
@@ -141,7 +194,26 @@ impl SpeclLanguageServer {
     }
 
     /// Get diagnostics for source code.
+    /// Catches panics from parser/checker bugs to prevent server crashes.
     fn get_diagnostics(source: &str) -> Vec<Diagnostic> {
+        let source_ref = panic::AssertUnwindSafe(source);
+        match panic::catch_unwind(move || Self::get_diagnostics_inner(*source_ref)) {
+            Ok(diags) => diags,
+            Err(payload) => {
+                let msg = panic_payload_to_string(&payload);
+                error!("diagnostics panicked: msg={msg}");
+                vec![Diagnostic {
+                    range: Range::default(),
+                    severity: Some(DiagnosticSeverity::ERROR),
+                    source: Some("specl".to_string()),
+                    message: format!("internal error: {msg}"),
+                    ..Default::default()
+                }]
+            }
+        }
+    }
+
+    fn get_diagnostics_inner(source: &str) -> Vec<Diagnostic> {
         let module = match parse(source) {
             Ok(m) => m,
             Err(e) => return vec![make_diagnostic(e.span(), e.to_string())],
@@ -192,7 +264,7 @@ impl SpeclLanguageServer {
 
     /// Get hover information at a position.
     fn get_hover(&self, source: &str, position: Position) -> Option<Hover> {
-        let module = parse(source).ok()?;
+        let module = safe_parse(source)?;
         let line = position.line + 1;
         let col = position.character + 1;
 
@@ -289,7 +361,7 @@ impl SpeclLanguageServer {
             });
         }
 
-        if let Ok(module) = parse(source) {
+        if let Some(module) = safe_parse(source) {
             for decl in &module.decls {
                 match decl {
                     Decl::Var(d) => {
@@ -400,7 +472,7 @@ impl SpeclLanguageServer {
 
     /// Find the type definition for the identifier at position (goto type definition).
     fn get_type_definition(&self, source: &str, position: Position, uri: &Url) -> Option<Location> {
-        let module = parse(source).ok()?;
+        let module = safe_parse(source)?;
         let word = Self::word_at_position(source, position)?;
 
         // Find the type annotation for this identifier
@@ -424,7 +496,7 @@ impl SpeclLanguageServer {
 
     /// Find definition at a position.
     fn get_definition(&self, source: &str, position: Position, uri: &Url) -> Option<Location> {
-        let module = parse(source).ok()?;
+        let module = safe_parse(source)?;
         let word = Self::word_at_position(source, position)?;
 
         for decl in &module.decls {
@@ -483,9 +555,9 @@ impl SpeclLanguageServer {
 
     /// Get document symbols for the outline view.
     fn get_document_symbols(&self, source: &str) -> Vec<DocumentSymbol> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         let mut symbols = Vec::new();
@@ -591,7 +663,7 @@ impl SpeclLanguageServer {
             None => return vec![],
         };
 
-        let tokens = Lexer::new(source).tokenize();
+        let tokens = safe_tokenize(source);
         let mut locations = Vec::new();
 
         for token in &tokens {
@@ -610,12 +682,12 @@ impl SpeclLanguageServer {
 
     /// Get code lenses: reference counts for actions and funcs.
     fn get_code_lenses(&self, source: &str, uri: &Url) -> Vec<CodeLens> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
-        let tokens = Lexer::new(source).tokenize();
+        let tokens = safe_tokenize(source);
         let mut lenses = Vec::new();
 
         for decl in &module.decls {
@@ -644,15 +716,20 @@ impl SpeclLanguageServer {
                 format!("{} references", ref_count)
             };
 
+            let arguments = match (
+                serde_json::to_value(uri.as_str()),
+                serde_json::to_value(range.start),
+            ) {
+                (Ok(uri_val), Ok(pos_val)) => Some(vec![uri_val, pos_val]),
+                _ => None,
+            };
+
             lenses.push(CodeLens {
                 range,
                 command: Some(Command {
                     title,
                     command: "editor.action.findReferences".to_string(),
-                    arguments: Some(vec![
-                        serde_json::to_value(uri.as_str()).unwrap(),
-                        serde_json::to_value(range.start).unwrap(),
-                    ]),
+                    arguments,
                 }),
                 data: None,
             });
@@ -669,7 +746,7 @@ impl SpeclLanguageServer {
     ) -> Option<LinkedEditingRanges> {
         let word = Self::word_at_position(source, position)?;
 
-        let tokens = Lexer::new(source).tokenize();
+        let tokens = safe_tokenize(source);
         let ranges: Vec<Range> = tokens
             .iter()
             .filter_map(|token| {
@@ -699,7 +776,7 @@ impl SpeclLanguageServer {
             None => return vec![],
         };
 
-        let module = parse(source).ok();
+        let module = safe_parse(source);
         let is_write_target = |span: &Span| -> bool {
             // Check if this occurrence is a declaration name (definition site)
             if let Some(ref m) = module {
@@ -714,7 +791,7 @@ impl SpeclLanguageServer {
             false
         };
 
-        let tokens = Lexer::new(source).tokenize();
+        let tokens = safe_tokenize(source);
         let mut highlights = Vec::new();
 
         for token in &tokens {
@@ -785,7 +862,7 @@ impl SpeclLanguageServer {
         let func_name = &line[start..end];
 
         // Find the declaration and build signature
-        let module = parse(source).ok()?;
+        let module = safe_parse(source)?;
         for decl in &module.decls {
             match decl {
                 Decl::Action(d) if d.name.name == func_name => {
@@ -847,9 +924,9 @@ impl SpeclLanguageServer {
 
     /// Get inlay hints for parameter names at action/func call sites.
     fn get_inlay_hints(&self, source: &str) -> Vec<InlayHint> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         // Build lookup: name -> param names
@@ -1049,9 +1126,9 @@ impl SpeclLanguageServer {
 
     /// Get folding ranges for declarations (blocks that can be collapsed).
     fn get_folding_ranges(&self, source: &str) -> Vec<FoldingRange> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         // Pre-compute line start offsets for byte-to-line conversion
@@ -1062,7 +1139,7 @@ impl SpeclLanguageServer {
         let byte_to_line = |byte_offset: usize| -> u32 {
             match line_starts.binary_search(&byte_offset) {
                 Ok(i) => i as u32,
-                Err(i) => (i - 1) as u32,
+                Err(i) => i.saturating_sub(1) as u32,
             }
         };
 
@@ -1126,9 +1203,9 @@ impl SpeclLanguageServer {
 
     /// Get selection ranges for smart expand/shrink selection.
     fn get_selection_ranges(&self, source: &str, positions: &[Position]) -> Vec<SelectionRange> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => {
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => {
                 return positions
                     .iter()
                     .map(|p| SelectionRange {
@@ -1206,7 +1283,7 @@ impl SpeclLanguageServer {
             Ok(i) => i,
             Err(i) => i.saturating_sub(1),
         };
-        let line_start = line_starts[line_idx];
+        let line_start = line_starts.get(line_idx).copied().unwrap_or(0);
         let col = byte_offset.saturating_sub(line_start) as u32;
         (line_idx as u32, col)
     }
@@ -1223,11 +1300,11 @@ impl SpeclLanguageServer {
 
     /// Get semantic tokens for syntax highlighting.
     fn get_semantic_tokens(&self, source: &str) -> Vec<SemanticToken> {
-        let tokens = Lexer::new(source).tokenize();
+        let tokens = safe_tokenize(source);
 
         let mut var_names = std::collections::HashSet::new();
         let mut func_names = std::collections::HashSet::new();
-        if let Ok(module) = parse(source) {
+        if let Some(module) = safe_parse(source) {
             for decl in &module.decls {
                 match decl {
                     Decl::Var(d) => {
@@ -1338,9 +1415,9 @@ impl SpeclLanguageServer {
                 continue;
             }
 
-            let delta_line = line - prev_line;
+            let delta_line = line.saturating_sub(prev_line);
             let delta_start = if delta_line == 0 {
-                start_char - prev_start
+                start_char.saturating_sub(prev_start)
             } else {
                 start_char
             };
@@ -1367,9 +1444,9 @@ impl SpeclLanguageServer {
             let uri = entry.key().clone();
             let content = entry.value().content.to_string();
 
-            let module = match parse(&content) {
-                Ok(m) => m,
-                Err(_) => continue,
+            let module = match safe_parse(&content) {
+                Some(m) => m,
+                None => continue,
             };
 
             for decl in &module.decls {
@@ -1417,9 +1494,9 @@ impl SpeclLanguageServer {
         uri: &Url,
         diagnostics: &[Diagnostic],
     ) -> Vec<CodeActionOrCommand> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         let mut actions = Vec::new();
@@ -1672,9 +1749,9 @@ impl SpeclLanguageServer {
         position: Position,
         uri: &Url,
     ) -> Vec<CallHierarchyItem> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         let word = match Self::word_at_position(source, position) {
@@ -1706,9 +1783,9 @@ impl SpeclLanguageServer {
         target_name: &str,
         uri: &Url,
     ) -> Vec<CallHierarchyIncomingCall> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         let mut result = Vec::new();
@@ -1741,9 +1818,9 @@ impl SpeclLanguageServer {
         caller_name: &str,
         uri: &Url,
     ) -> Vec<CallHierarchyOutgoingCall> {
-        let module = match parse(source) {
-            Ok(m) => m,
-            Err(_) => return vec![],
+        let module = match safe_parse(source) {
+            Some(m) => m,
+            None => return vec![],
         };
 
         // Find the declaration for caller_name
@@ -2165,12 +2242,12 @@ impl LanguageServer for SpeclLanguageServer {
         };
 
         // Verify it references a known declaration
-        if let Ok(module) = parse(&content) {
+        if let Some(module) = safe_parse(&content) {
             for decl in &module.decls {
                 if let Some((name, _)) = decl_name_span(decl) {
                     if name == word {
                         // Find the exact token range at cursor position
-                        let tokens = Lexer::new(&content).tokenize();
+                        let tokens = safe_tokenize(&content);
                         for token in &tokens {
                             if let TokenKind::Ident(n) = &token.kind {
                                 if n == &word {
@@ -2267,11 +2344,13 @@ impl LanguageServer for SpeclLanguageServer {
 
         let content = doc.content.to_string();
 
-        let Ok(module) = parse(&content) else {
+        let Some(module) = safe_parse(&content) else {
             return Ok(None);
         };
 
-        let formatted = pretty_print(&module);
+        let Some(formatted) = safe_pretty_print(&module) else {
+            return Ok(None);
+        };
 
         let line_count = doc.content.len_lines();
         let last_line_len = doc.content.line(line_count.saturating_sub(1)).len_chars();
@@ -2303,11 +2382,13 @@ impl LanguageServer for SpeclLanguageServer {
 
         let content = doc.content.to_string();
 
-        let Ok(module) = parse(&content) else {
+        let Some(module) = safe_parse(&content) else {
             return Ok(None);
         };
 
-        let formatted = pretty_print(&module);
+        let Some(formatted) = safe_pretty_print(&module) else {
+            return Ok(None);
+        };
 
         // Return a text edit that replaces the selected range with the
         // corresponding formatted content. Since pretty_print reformats the
@@ -2355,11 +2436,13 @@ impl LanguageServer for SpeclLanguageServer {
 
         let content = doc.content.to_string();
 
-        let Ok(module) = parse(&content) else {
+        let Some(module) = safe_parse(&content) else {
             return Ok(None);
         };
 
-        let formatted = pretty_print(&module);
+        let Some(formatted) = safe_pretty_print(&module) else {
+            return Ok(None);
+        };
 
         // Replace the entire document with the formatted version
         let line_count = doc.content.len_lines();
