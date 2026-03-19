@@ -239,6 +239,41 @@ impl CliError {
 
 type CliResult<T> = Result<T, CliError>;
 
+/// Parse, type-check, and compile a specl source file.
+fn compile_spec(
+    file: &PathBuf,
+) -> CliResult<(specl_syntax::Module, specl_ir::CompiledSpec, Arc<String>)> {
+    let filename = file.display().to_string();
+    let source = Arc::new(read_file(file)?);
+
+    info!("parsing...");
+    let module =
+        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
+
+    info!("type checking...");
+    specl_types::check_module(&module)
+        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
+
+    info!("compiling...");
+    let spec = compile(&module)?;
+
+    Ok((module, spec, source))
+}
+
+/// Warn if spec has Seq[T] variables that will be bounded in symbolic mode.
+fn warn_seq_vars(spec: &specl_ir::CompiledSpec, seq_bound: usize, quiet: bool) {
+    let has_seq_vars = spec
+        .vars
+        .iter()
+        .any(|v| matches!(&v.ty, specl_types::Type::Seq(..)));
+    if has_seq_vars && !quiet {
+        eprintln!(
+            "Note: Seq[T] variables bounded to length {}. Increase --seq-bound if sequences may be longer.",
+            seq_bound
+        );
+    }
+}
+
 /// Temporary file that is deleted when dropped.
 struct TempFileGuard(PathBuf);
 impl Drop for TempFileGuard {
@@ -1156,7 +1191,7 @@ fn main() {
             seq_bound,
             spacer_profile,
             timeout,
-            verbose,
+            verbose: _,
             quiet,
             no_auto,
             output,
@@ -1166,48 +1201,51 @@ fn main() {
             ..
         } => {
             let orig_file = file.unwrap();
+            let quiet = quiet || output != OutputFormat::Text;
+            let json = output == OutputFormat::Json;
+
+            let sym_flags = SymbolicFlags {
+                bmc,
+                bmc_depth,
+                inductive,
+                k_induction,
+                ic3,
+                portfolio,
+                golem,
+                seq_bound,
+                spacer_profile: parse_spacer_profile(&spacer_profile),
+                timeout,
+            };
+
+            let bfs_flags = BfsFlags {
+                max_states,
+                max_depth,
+                memory_limit_mb: memory_limit,
+                max_time_secs: max_time,
+                check_deadlock: !no_deadlock,
+                parallel: !no_parallel,
+                num_threads: threads,
+                use_por: por,
+                use_symmetry: symmetry,
+                fast_check: fast,
+                bloom,
+                bloom_bits,
+                collapse,
+                tree,
+                directed,
+                incremental,
+                quiet,
+                no_auto,
+                output_format: output,
+                profile,
+                check_only_invariants: check_only,
+                diff_traces: diff,
+                swarm,
+            };
 
             // Transition system JSON: deserialize, lower, check directly
             if orig_file.display().to_string().ends_with(".ts.json") {
-                let inner = cmd_check_ts(
-                    &orig_file,
-                    &constant,
-                    bfs,
-                    symbolic,
-                    max_states,
-                    max_depth,
-                    memory_limit,
-                    max_time,
-                    !no_deadlock,
-                    !no_parallel,
-                    threads,
-                    por,
-                    symmetry,
-                    fast,
-                    bloom,
-                    bloom_bits,
-                    collapse,
-                    tree,
-                    directed,
-                    verbose,
-                    quiet,
-                    no_auto,
-                    output,
-                    profile,
-                    check_only,
-                    diff,
-                    bmc,
-                    bmc_depth,
-                    inductive,
-                    k_induction,
-                    ic3,
-                    portfolio,
-                    golem,
-                    seq_bound,
-                    &spacer_profile,
-                    timeout,
-                    swarm,
-                );
+                let inner = cmd_check_ts(&orig_file, &constant, &sym_flags, &bfs_flags);
                 if let Err(e) = inner {
                     eprintln!("{:?}", miette::Report::new(e));
                     exit_with_code(1);
@@ -1227,27 +1265,9 @@ fn main() {
             } else {
                 (orig_file, None)
             };
-            let json = output == OutputFormat::Json;
-            let quiet = quiet || output != OutputFormat::Text;
 
-            let specific_symbolic =
-                bmc || inductive || k_induction.is_some() || ic3 || portfolio || golem;
-            let specific_explicit = por
-                || symmetry
-                || fast
-                || bloom
-                || collapse
-                || tree
-                || directed
-                || incremental
-                || swarm.is_some()
-                || max_states > 0
-                || max_depth > 0
-                || memory_limit > 0
-                || max_time > 0;
-
-            let use_symbolic = symbolic || specific_symbolic;
-            let use_bfs = bfs || specific_explicit;
+            let use_symbolic = symbolic || sym_flags.has_specific_technique();
+            let use_bfs = bfs || bfs_flags.has_specific_option();
 
             if use_symbolic && use_bfs {
                 let msg = "cannot combine symbolic and explicit-state flags.\n  Use either --symbolic (with --bmc, --ic3, etc.) or --bfs (with --fast, --por, etc.), not both.";
@@ -1260,54 +1280,16 @@ fn main() {
                 exit_with_code(1);
             }
 
-            let sp = parse_spacer_profile(&spacer_profile);
-
             let inner = if use_symbolic {
                 cmd_check_symbolic(
                     &file,
                     &constant,
-                    bmc_depth,
-                    bmc,
-                    inductive,
-                    k_induction,
-                    ic3,
-                    portfolio,
-                    golem,
-                    seq_bound,
-                    sp,
-                    timeout,
+                    &sym_flags,
                     json,
-                    check_only,
+                    bfs_flags.check_only_invariants,
                 )
             } else if use_bfs {
-                cmd_check(
-                    &file,
-                    &constant,
-                    max_states,
-                    max_depth,
-                    memory_limit,
-                    max_time,
-                    !no_deadlock,
-                    !no_parallel,
-                    threads,
-                    por,
-                    symmetry,
-                    fast,
-                    bloom,
-                    bloom_bits,
-                    collapse,
-                    tree,
-                    directed,
-                    incremental,
-                    verbose,
-                    quiet,
-                    no_auto,
-                    output,
-                    swarm,
-                    profile,
-                    check_only,
-                    diff,
-                )
+                cmd_check(&file, &constant, &bfs_flags)
             } else {
                 // Auto-select: analyze spec to decide BFS vs symbolic
                 let (auto_symbolic, has_unbounded, reason) = auto_select_strategy(&file, &constant);
@@ -1315,23 +1297,22 @@ fn main() {
                     println!("Strategy: {}", reason);
                 }
                 if auto_symbolic {
+                    let auto_sym_flags = SymbolicFlags {
+                        bmc: false,
+                        inductive: false,
+                        k_induction: None,
+                        ic3: false,
+                        portfolio: false,
+                        golem: false,
+                        ..sym_flags
+                    };
                     let sym_result = cmd_check_symbolic(
                         &file,
                         &constant,
-                        bmc_depth,
-                        false,
-                        false,
-                        None,
-                        false,
-                        false,
-                        false,
-                        seq_bound,
-                        sp,
-                        timeout,
+                        &auto_sym_flags,
                         json,
-                        check_only.clone(),
+                        bfs_flags.check_only_invariants.clone(),
                     );
-                    // Fallback: if symbolic fails, try BFS (unless unbounded)
                     if sym_result.is_err() {
                         if has_unbounded {
                             if !quiet {
@@ -1347,67 +1328,13 @@ fn main() {
                                     "Symbolic checking failed. Falling back to BFS exploration..."
                                 );
                             }
-                            cmd_check(
-                                &file,
-                                &constant,
-                                max_states,
-                                max_depth,
-                                memory_limit,
-                                max_time,
-                                !no_deadlock,
-                                !no_parallel,
-                                threads,
-                                por,
-                                symmetry,
-                                fast,
-                                bloom,
-                                bloom_bits,
-                                collapse,
-                                tree,
-                                directed,
-                                incremental,
-                                verbose,
-                                quiet,
-                                no_auto,
-                                output,
-                                swarm,
-                                profile,
-                                check_only,
-                                diff,
-                            )
+                            cmd_check(&file, &constant, &bfs_flags)
                         }
                     } else {
                         sym_result
                     }
                 } else {
-                    cmd_check(
-                        &file,
-                        &constant,
-                        max_states,
-                        max_depth,
-                        memory_limit,
-                        max_time,
-                        !no_deadlock,
-                        !no_parallel,
-                        threads,
-                        por,
-                        symmetry,
-                        fast,
-                        bloom,
-                        bloom_bits,
-                        collapse,
-                        tree,
-                        directed,
-                        incremental,
-                        verbose,
-                        quiet,
-                        no_auto,
-                        output,
-                        swarm,
-                        profile,
-                        check_only,
-                        diff,
-                    )
+                    cmd_check(&file, &constant, &bfs_flags)
                 }
             };
             // In non-text mode, emit errors as JSON instead of miette
@@ -1454,14 +1381,7 @@ fn main() {
 }
 
 fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
-    let filename = file.display().to_string();
-    let source = Arc::new(read_file(file)?);
-
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
-    specl_types::check_module(&module)
-        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-    let spec = compile(&module)?;
+    let (module, spec, _source) = compile_spec(file)?;
     let consts = parse_constants(constants, &spec)?;
 
     let profile = analyze(&spec);
@@ -1669,7 +1589,11 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
             }
         }
     }
-    println!("Suggested: specl check {} {}", filename, flags.join(" "));
+    println!(
+        "Suggested: specl check {} {}",
+        file.display(),
+        flags.join(" ")
+    );
 
     println!();
     Ok(())
@@ -1769,46 +1693,12 @@ fn auto_select_strategy(file: &PathBuf, constants: &[String]) -> (bool, bool, St
 }
 
 /// Check a `.ts.json` transition system file: deserialize, lower, then dispatch
-/// to BFS or symbolic backend with full flag support.
-#[allow(clippy::too_many_arguments)]
+/// to BFS or symbolic backend.
 fn cmd_check_ts(
     file: &PathBuf,
     constants: &[String],
-    bfs: bool,
-    symbolic: bool,
-    max_states: usize,
-    max_depth: usize,
-    memory_limit_mb: usize,
-    max_time_secs: u64,
-    check_deadlock: bool,
-    parallel: bool,
-    num_threads: usize,
-    use_por: bool,
-    use_symmetry: bool,
-    fast_check: bool,
-    bloom: bool,
-    bloom_bits: u32,
-    collapse: bool,
-    tree: bool,
-    directed: bool,
-    _verbose: bool,
-    quiet: bool,
-    no_auto: bool,
-    output_format: OutputFormat,
-    profile: bool,
-    check_only_invariants: Vec<String>,
-    diff_traces: bool,
-    bmc: bool,
-    bmc_depth: usize,
-    inductive: bool,
-    k_induction: Option<usize>,
-    ic3: bool,
-    portfolio: bool,
-    golem: bool,
-    seq_bound: usize,
-    spacer_profile: &str,
-    timeout: u64,
-    swarm: Option<usize>,
+    sym_flags: &SymbolicFlags,
+    bfs_flags: &BfsFlags,
 ) -> CliResult<()> {
     let content = read_file(file)?;
 
@@ -1823,10 +1713,9 @@ fn cmd_check_ts(
 
     info!("lowering to IR...");
     let spec = specl_ir::from_ts::lower(&ts)?;
-
     let consts = parse_constants(constants, &spec)?;
 
-    if !quiet {
+    if !bfs_flags.quiet {
         println!(
             "Transition system: {} ({} vars, {} actions, {} invariants)",
             ts.name,
@@ -1836,26 +1725,13 @@ fn cmd_check_ts(
         );
     }
 
-    // Determine strategy: symbolic vs BFS vs auto
-    let specific_symbolic = bmc || inductive || k_induction.is_some() || ic3 || portfolio || golem;
-    let specific_explicit = use_por
-        || use_symmetry
-        || fast_check
-        || bloom
-        || collapse
-        || tree
-        || directed
-        || max_states > 0
-        || max_depth > 0
-        || memory_limit_mb > 0
-        || max_time_secs > 0;
-
-    let want_symbolic = symbolic || specific_symbolic;
-    let want_bfs = bfs || specific_explicit;
+    let want_symbolic = sym_flags.has_specific_technique();
+    let want_bfs = bfs_flags.has_specific_option();
+    let json = bfs_flags.output_format != OutputFormat::Text;
 
     if want_symbolic && want_bfs {
         let msg = "cannot combine symbolic and explicit-state flags.\n  Use either --symbolic (with --bmc, --ic3, etc.) or --bfs (with --fast, --por, etc.), not both.";
-        if output_format != OutputFormat::Text {
+        if json {
             let out = JsonOutput::new("error", 0.0).with_error(msg.into());
             println!("{}", serde_json::to_string(&out).unwrap());
         } else {
@@ -1865,647 +1741,133 @@ fn cmd_check_ts(
     }
 
     if want_symbolic {
-        cmd_check_ts_symbolic(
+        return run_symbolic_check_with_spec(
             spec,
             consts,
-            bmc_depth,
-            bmc,
-            inductive,
-            k_induction,
-            ic3,
-            portfolio,
-            golem,
-            seq_bound,
-            spacer_profile,
-            timeout,
-            output_format != OutputFormat::Text,
-            quiet,
-            check_only_invariants,
-        )
-    } else if want_bfs {
-        cmd_check_ts_bfs(
-            spec,
-            consts,
-            max_states,
-            max_depth,
-            memory_limit_mb,
-            max_time_secs,
-            check_deadlock,
-            parallel,
-            num_threads,
-            use_por,
-            use_symmetry,
-            fast_check,
-            bloom,
-            bloom_bits,
-            collapse,
-            tree,
-            directed,
-            quiet,
-            no_auto,
-            output_format,
-            profile,
-            check_only_invariants,
-            diff_traces,
-            swarm,
-        )
-    } else {
-        // Auto-select strategy
-        let (auto_symbolic, has_unbounded, reason) = auto_select_strategy_from_spec(&spec);
-        if !quiet {
-            println!("Strategy: {reason}");
-        }
-        if auto_symbolic {
-            let sym_result = cmd_check_ts_symbolic(
-                spec.clone(),
-                consts.clone(),
-                bmc_depth,
-                false,
-                false,
-                None,
-                false,
-                false,
-                false,
-                seq_bound,
-                spacer_profile,
-                timeout,
-                output_format != OutputFormat::Text,
-                quiet,
-                check_only_invariants.clone(),
-            );
-            if sym_result.is_err() {
-                if has_unbounded {
-                    if !quiet {
-                        eprintln!();
-                        eprintln!("Symbolic checking failed and BFS is not possible (unbounded types like Nat/Int).");
-                        eprintln!(
-                            "Try constraining types with range bounds, or fix the symbolic error."
-                        );
-                    }
-                    sym_result
-                } else {
-                    if !quiet {
-                        eprintln!();
-                        eprintln!("Symbolic checking failed. Falling back to BFS exploration...");
-                    }
-                    cmd_check_ts_bfs(
-                        spec,
-                        consts,
-                        max_states,
-                        max_depth,
-                        memory_limit_mb,
-                        max_time_secs,
-                        check_deadlock,
-                        parallel,
-                        num_threads,
-                        use_por,
-                        use_symmetry,
-                        fast_check,
-                        bloom,
-                        bloom_bits,
-                        collapse,
-                        tree,
-                        directed,
-                        quiet,
-                        no_auto,
-                        output_format,
-                        profile,
-                        check_only_invariants,
-                        diff_traces,
-                        swarm,
-                    )
-                }
-            } else {
-                sym_result
-            }
-        } else {
-            cmd_check_ts_bfs(
-                spec,
-                consts,
-                max_states,
-                max_depth,
-                memory_limit_mb,
-                max_time_secs,
-                check_deadlock,
-                parallel,
-                num_threads,
-                use_por,
-                use_symmetry,
-                fast_check,
-                bloom,
-                bloom_bits,
-                collapse,
-                tree,
-                directed,
-                quiet,
-                no_auto,
-                output_format,
-                profile,
-                check_only_invariants,
-                diff_traces,
-                swarm,
-            )
-        }
+            sym_flags,
+            json,
+            bfs_flags.quiet,
+            bfs_flags.check_only_invariants.clone(),
+        );
     }
+    if want_bfs {
+        return run_bfs_check(spec, consts, bfs_flags, None);
+    }
+
+    // Auto-select strategy
+    let (auto_symbolic, has_unbounded, reason) = auto_select_strategy_from_spec(&spec);
+    if !bfs_flags.quiet {
+        println!("Strategy: {reason}");
+    }
+
+    if !auto_symbolic {
+        return run_bfs_check(spec, consts, bfs_flags, None);
+    }
+
+    let auto_sym_flags = SymbolicFlags {
+        bmc: false,
+        inductive: false,
+        k_induction: None,
+        ic3: false,
+        portfolio: false,
+        golem: false,
+        bmc_depth: sym_flags.bmc_depth,
+        seq_bound: sym_flags.seq_bound,
+        spacer_profile: sym_flags.spacer_profile.clone(),
+        timeout: sym_flags.timeout,
+    };
+    let sym_result = run_symbolic_check_with_spec(
+        spec.clone(),
+        consts.clone(),
+        &auto_sym_flags,
+        json,
+        bfs_flags.quiet,
+        bfs_flags.check_only_invariants.clone(),
+    );
+
+    if sym_result.is_ok() {
+        return sym_result;
+    }
+
+    if has_unbounded {
+        if !bfs_flags.quiet {
+            eprintln!();
+            eprintln!(
+                "Symbolic checking failed and BFS is not possible (unbounded types like Nat/Int)."
+            );
+            eprintln!("Try constraining types with range bounds, or fix the symbolic error.");
+        }
+        return sym_result;
+    }
+
+    if !bfs_flags.quiet {
+        eprintln!();
+        eprintln!("Symbolic checking failed. Falling back to BFS exploration...");
+    }
+    run_bfs_check(spec, consts, bfs_flags, None)
 }
 
 /// Symbolic checking path for `.ts.json` files.
-#[allow(clippy::too_many_arguments)]
-fn cmd_check_ts_symbolic(
+fn run_symbolic_check_with_spec(
     mut spec: specl_ir::CompiledSpec,
     consts: Vec<Value>,
-    bmc_depth: usize,
-    bmc: bool,
-    inductive: bool,
-    k_induction: Option<usize>,
-    ic3: bool,
-    portfolio: bool,
-    golem: bool,
-    seq_bound: usize,
-    spacer_profile: &str,
-    timeout: u64,
+    sym_flags: &SymbolicFlags,
     json: bool,
     quiet: bool,
     check_only: Vec<String>,
 ) -> CliResult<()> {
     filter_invariants(&mut spec, &check_only)?;
 
-    let sp = parse_spacer_profile(spacer_profile);
-
-    let config = SymbolicConfig {
-        mode: if portfolio {
-            SymbolicMode::Portfolio
-        } else if golem {
-            SymbolicMode::Golem
-        } else if ic3 {
-            SymbolicMode::Ic3
-        } else if let Some(k) = k_induction {
-            SymbolicMode::KInduction(k)
-        } else if inductive {
-            SymbolicMode::Inductive
-        } else if bmc {
-            SymbolicMode::Bmc
-        } else {
-            SymbolicMode::Smart
-        },
-        depth: bmc_depth,
-        seq_bound,
-        spacer_profile: sp,
-        timeout_ms: if timeout == 0 {
-            None
-        } else {
-            Some(timeout * 1000)
-        },
-    };
-
-    let has_seq_vars = spec
-        .vars
-        .iter()
-        .any(|v| matches!(&v.ty, specl_types::Type::Seq(..)));
-    if has_seq_vars && !json && !quiet {
-        eprintln!(
-            "Note: Seq[T] variables bounded to length {}. Increase --seq-bound if sequences may be longer.",
-            seq_bound
-        );
-    }
+    let config = sym_flags.build_config();
+    warn_seq_vars(&spec, sym_flags.seq_bound, json || quiet);
 
     run_symbolic_check(
         &spec,
         &consts,
         &config,
         json,
-        inductive,
-        ic3,
-        k_induction,
-        bmc_depth,
+        sym_flags.inductive,
+        sym_flags.ic3,
+        sym_flags.k_induction,
+        sym_flags.bmc_depth,
     )
 }
 
-/// BFS checking path for `.ts.json` files.
-#[allow(clippy::too_many_arguments)]
-fn cmd_check_ts_bfs(
-    spec: specl_ir::CompiledSpec,
-    consts: Vec<Value>,
-    max_states: usize,
-    max_depth: usize,
-    memory_limit_mb: usize,
-    max_time_secs: u64,
-    check_deadlock: bool,
-    parallel: bool,
-    num_threads: usize,
-    use_por: bool,
-    use_symmetry: bool,
-    fast_check: bool,
-    bloom: bool,
-    bloom_bits: u32,
-    collapse: bool,
-    tree: bool,
-    directed: bool,
-    quiet: bool,
-    no_auto: bool,
-    output_format: OutputFormat,
-    profile: bool,
-    check_only_invariants: Vec<String>,
-    diff_traces: bool,
-    swarm: Option<usize>,
-) -> CliResult<()> {
-    let json = output_format != OutputFormat::Text;
-    let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
-    let action_names: Vec<String> = spec.actions.iter().map(|a| a.name.clone()).collect();
+/// BFS check from a .specl file.
+fn cmd_check(file: &PathBuf, constants: &[String], flags: &BfsFlags) -> CliResult<()> {
+    let (module, spec, source) = compile_spec(file)?;
 
-    // Spec analysis and auto-enable
-    let spec_profile = analyze(&spec);
-    if !quiet {
-        print_profile(&spec_profile, use_por, use_symmetry);
-    }
-
-    let user_has_explicit_storage = fast_check || bloom || collapse || tree || directed;
-    let resolved = auto_enable_features(
-        &spec_profile,
-        &spec,
-        use_por,
-        use_symmetry,
-        fast_check,
-        collapse,
-        user_has_explicit_storage,
-        no_auto,
-        quiet,
-    );
-    let actual_por = resolved.por;
-    let actual_symmetry = resolved.symmetry;
-    let actual_fast = resolved.fast;
-    let actual_collapse = resolved.collapse;
-
-    validate_storage_modes(
-        actual_fast,
-        bloom,
-        actual_collapse,
-        tree,
-        directed,
-        output_format,
-    );
-
-    // Swarm verification
-    if let Some(n) = swarm {
-        return cmd_check_swarm(
-            spec,
-            consts,
-            &var_names,
-            n,
-            check_deadlock,
-            max_states,
-            max_depth,
-            memory_limit_mb,
-            actual_por,
-            actual_symmetry,
-            output_format,
-            diff_traces,
-        );
-    }
-
-    let mut parallel = parallel;
-    if profile && parallel {
-        if !quiet {
-            eprintln!("Note: --profile requires sequential mode, disabling parallel exploration");
-        }
-        parallel = false;
-    }
-
-    if bloom && !quiet {
-        eprintln!("Warning: --bloom is probabilistic and may miss bugs.");
-    }
-
-    // Progress spinner
-    let progress = Arc::new(ProgressCounters::new());
-    let start = Instant::now();
-    let spinner = create_spinner(&progress, start, quiet);
-
-    let config = CheckConfig {
-        check_deadlock,
-        max_states,
-        max_depth,
-        memory_limit_mb,
-        parallel,
-        num_threads,
-        use_por: actual_por,
-        use_symmetry: actual_symmetry,
-        fast_check: actual_fast,
-        progress: Some(progress.clone()),
-        action_shuffle_seed: None,
-        profile,
-        bloom,
-        bloom_bits,
-        directed,
-        max_time_secs,
-        check_only_invariants,
-        collapse: actual_collapse,
-        tree,
-    };
-
-    let mut explorer = Explorer::new(spec, consts, config);
-    let result = explorer.check()?;
-
-    let elapsed = start.elapsed();
-    if let Some(ref pb) = spinner {
-        pb.finish_and_clear();
-    }
-
-    let secs = elapsed.as_secs_f64();
-    let explored_states = explorer.store().len();
-    let observed_max_depth = progress.depth.load(std::sync::atomic::Ordering::Relaxed);
-
-    if output_format == OutputFormat::Dot {
-        let store = explorer.store();
-        if !store.has_full_tracking() {
-            eprintln!(
-                "Error: --output dot requires full state tracking.\n  Remove --fast or --bloom to enable full tracking."
-            );
-            exit_with_code(1);
-        }
-        let max_dot_states = 10_000;
-        if store.len() > max_dot_states {
-            eprintln!(
-                "Error: state graph has {} states, but DOT output is limited to {}.\n  Reduce constant values (e.g., -c N=2) to produce a smaller graph.",
-                store.len(),
-                max_dot_states
-            );
-            exit_with_code(1);
-        }
-        let violation_fp = match &result {
-            CheckOutcome::InvariantViolation { trace, .. } | CheckOutcome::Deadlock { trace } => {
-                trace.last().map(|(s, _)| s.fingerprint())
-            }
-            _ => None,
-        };
-        println!(
-            "{}",
-            store_to_dot(store, &var_names, &action_names, violation_fp.as_ref())
-        );
-        match result {
-            CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
-                exit_with_code(1)
-            }
-            CheckOutcome::StateLimitReached { .. }
-            | CheckOutcome::MemoryLimitReached { .. }
-            | CheckOutcome::TimeLimitReached { .. } => exit_with_code(2),
-            _ => {}
-        }
-    } else if output_format == OutputFormat::Itf || output_format == OutputFormat::Mermaid {
-        match result {
-            CheckOutcome::InvariantViolation { invariant, trace } => {
-                if output_format == OutputFormat::Mermaid {
-                    println!(
-                        "{}",
-                        trace_to_mermaid(
-                            &trace,
-                            &var_names,
-                            "invariant_violation",
-                            Some(&invariant)
-                        )
-                    );
-                } else {
-                    let itf =
-                        trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
-                    println!("{}", serde_json::to_string_pretty(&itf).unwrap());
-                }
-                exit_with_code(1);
-            }
-            CheckOutcome::Deadlock { trace } => {
-                if output_format == OutputFormat::Mermaid {
-                    println!("{}", trace_to_mermaid(&trace, &var_names, "deadlock", None));
-                } else {
-                    let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
-                    println!("{}", serde_json::to_string_pretty(&itf).unwrap());
-                }
-                exit_with_code(1);
-            }
-            CheckOutcome::Ok {
-                states_explored, ..
-            } => {
-                eprintln!(
-                    "Result: OK ({} states, no trace to export)",
-                    states_explored
-                );
-            }
-            _ => {
-                eprintln!("Result: limit reached, no trace to export");
-                exit_with_code(2);
-            }
-        }
-    } else if json {
-        let out =
-            match result {
-                CheckOutcome::Ok {
-                    states_explored,
-                    max_depth,
-                } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
-                CheckOutcome::InvariantViolation { invariant, trace } => {
-                    JsonOutput::new("invariant_violation", secs)
-                        .with_states(explored_states, observed_max_depth)
-                        .with_invariant(invariant)
-                        .with_trace(trace_to_json(&trace, &var_names))
-                }
-                CheckOutcome::Deadlock { trace } => JsonOutput::new("deadlock", secs)
-                    .with_states(explored_states, observed_max_depth)
-                    .with_trace(trace_to_json(&trace, &var_names)),
-                CheckOutcome::StateLimitReached {
-                    states_explored,
-                    max_depth,
-                } => JsonOutput::new("state_limit_reached", secs)
-                    .with_states(states_explored, max_depth),
-                CheckOutcome::MemoryLimitReached {
-                    states_explored,
-                    max_depth,
-                    memory_mb,
-                } => JsonOutput::new("memory_limit_reached", secs)
-                    .with_states(states_explored, max_depth)
-                    .with_memory(memory_mb),
-                CheckOutcome::TimeLimitReached {
-                    states_explored,
-                    max_depth,
-                } => JsonOutput::new("time_limit_reached", secs)
-                    .with_states(states_explored, max_depth),
-            };
-        println!("{}", serde_json::to_string(&out).unwrap());
-        let exit_code = match out.result {
-            "ok" => 0,
-            "invariant_violation" | "deadlock" => 1,
-            _ => 2,
-        };
-        if exit_code != 0 {
-            exit_with_code(exit_code);
-        }
-    } else {
-        let exit_code = match result {
-            CheckOutcome::Ok {
-                states_explored,
-                max_depth,
-            } => {
-                println!();
-                println!("Result: OK");
-                println!(
-                    "  States explored: {}",
-                    format_large_number(states_explored as u128)
-                );
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.1}s", secs);
-                if secs > 0.001 {
-                    println!(
-                        "  Throughput: {} states/s",
-                        format_large_number((states_explored as f64 / secs) as u128)
-                    );
-                }
-                let mut opts = Vec::new();
-                if actual_por {
-                    opts.push("POR");
-                }
-                if actual_symmetry {
-                    opts.push("symmetry");
-                }
-                if bloom {
-                    opts.push("bloom");
-                } else if actual_fast {
-                    opts.push("fast");
-                }
-                if actual_collapse {
-                    opts.push("collapse");
-                }
-                if directed {
-                    opts.push("directed");
-                }
-                if !opts.is_empty() {
-                    println!("  Optimizations: {}", opts.join(", "));
-                }
-                0
-            }
-            CheckOutcome::InvariantViolation { invariant, trace } => {
-                println!();
-                println!("Result: INVARIANT VIOLATION");
-                println!("  Invariant: {}", invariant);
-                print_text_trace(&trace, &var_names, diff_traces);
-                1
-            }
-            CheckOutcome::Deadlock { trace } => {
-                println!();
-                println!("Result: DEADLOCK");
-                print_text_trace(&trace, &var_names, diff_traces);
-                1
-            }
-            CheckOutcome::StateLimitReached {
-                states_explored,
-                max_depth,
-            } => {
-                println!();
-                println!("Result: STATE LIMIT REACHED");
-                println!("  States explored: {}", states_explored);
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.2}s", secs);
-                2
-            }
-            CheckOutcome::MemoryLimitReached {
-                states_explored,
-                max_depth,
-                memory_mb,
-            } => {
-                println!();
-                println!("Result: MEMORY LIMIT REACHED");
-                println!("  Memory usage: {} MB", memory_mb);
-                println!("  States explored: {}", states_explored);
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.2}s", secs);
-                2
-            }
-            CheckOutcome::TimeLimitReached {
-                states_explored,
-                max_depth,
-            } => {
-                println!();
-                println!("Result: TIME LIMIT REACHED");
-                println!("  States explored: {}", states_explored);
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.2}s", secs);
-                2
-            }
-        };
-        if exit_code != 0 {
-            print_check_profile(&explorer);
-            exit_with_code(exit_code);
-        }
-    }
-
-    print_check_profile(&explorer);
-
-    Ok(())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn cmd_check(
-    file: &PathBuf,
-    constants: &[String],
-    max_states: usize,
-    max_depth: usize,
-    memory_limit_mb: usize,
-    max_time_secs: u64,
-    check_deadlock: bool,
-    parallel: bool,
-    num_threads: usize,
-    use_por: bool,
-    use_symmetry: bool,
-    fast_check: bool,
-    bloom: bool,
-    bloom_bits: u32,
-    collapse: bool,
-    tree: bool,
-    directed: bool,
-    incremental: bool,
-    _verbose: bool,
-    quiet: bool,
-    no_auto: bool,
-    output_format: OutputFormat,
-    swarm: Option<usize>,
-    profile: bool,
-    check_only_invariants: Vec<String>,
-    diff_traces: bool,
-) -> CliResult<()> {
-    let json = output_format != OutputFormat::Text;
-    let filename = file.display().to_string();
-    let source = Arc::new(read_file(file)?);
-
-    info!("parsing...");
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
-
-    if !quiet {
+    if !flags.quiet {
         warn_unsupported_features(&module);
     }
 
-    info!("type checking...");
-    specl_types::check_module(&module)
-        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-
-    info!("compiling...");
-    let spec = compile(&module)?;
-
-    // Parse constants
     let consts = parse_constants(constants, &spec)?;
+    run_bfs_check(spec, consts, flags, Some((&source, file)))
+}
 
-    // Extract variable and action names for trace formatting
+/// Shared BFS check execution: analysis, auto-enable, config, explore, render.
+/// Used by both `cmd_check` (from .specl files) and `cmd_check_ts_bfs` (from .ts.json files).
+fn run_bfs_check(
+    spec: specl_ir::CompiledSpec,
+    consts: Vec<Value>,
+    flags: &BfsFlags,
+    source: Option<(&Arc<String>, &PathBuf)>,
+) -> CliResult<()> {
     let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
     let action_names: Vec<String> = spec.actions.iter().map(|a| a.name.clone()).collect();
 
-    // Spec analysis, recommendations, and auto-enable
     let spec_profile = analyze(&spec);
-    if !quiet {
-        print_profile(&spec_profile, use_por, use_symmetry);
+    if !flags.quiet {
+        print_profile(&spec_profile, flags.use_por, flags.use_symmetry);
     }
 
-    // Warn about unbounded types (BFS may still work if runtime values are bounded by init/actions)
+    // Warn about unbounded types
     let unbounded_warnings: Vec<_> = spec_profile
         .warnings
         .iter()
         .filter(|w| matches!(w, specl_ir::analyze::Warning::UnboundedType { .. }))
         .collect();
-    if !unbounded_warnings.is_empty() && !quiet {
+    if !unbounded_warnings.is_empty() && !flags.quiet {
         eprintln!("Note: spec has types the checker considers unbounded (Dict[Int, ...]).");
         eprintln!(
             "  BFS proceeds because runtime values are bounded by init and action parameters."
@@ -2513,17 +1875,16 @@ fn cmd_check(
         eprintln!("  If checking hangs, try --symbolic for symbolic checking instead.");
     }
 
-    let user_has_explicit_storage = fast_check || bloom || collapse || tree || directed;
     let resolved = auto_enable_features(
         &spec_profile,
         &spec,
-        use_por,
-        use_symmetry,
-        fast_check,
-        collapse,
-        user_has_explicit_storage,
-        no_auto,
-        quiet,
+        flags.use_por,
+        flags.use_symmetry,
+        flags.fast_check,
+        flags.collapse,
+        flags.user_has_explicit_storage(),
+        flags.no_auto,
+        flags.quiet,
     );
     let actual_por = resolved.por;
     let actual_symmetry = resolved.symmetry;
@@ -2532,89 +1893,101 @@ fn cmd_check(
 
     validate_storage_modes(
         actual_fast,
-        bloom,
+        flags.bloom,
         actual_collapse,
-        tree,
-        directed,
-        output_format,
+        flags.tree,
+        flags.directed,
+        flags.output_format,
     );
 
-    let mut parallel = parallel;
-    if profile && parallel {
-        if !quiet {
-            eprintln!("Note: --profile requires sequential mode, disabling parallel exploration");
-        }
-        parallel = false;
-    }
-
-    if directed && parallel && !quiet {
-        eprintln!("Note: --directed uses priority BFS which is sequential");
-    }
-
-    if bloom && !quiet {
-        eprintln!("Warning: --bloom is probabilistic and may miss bugs. For exhaustive verification use --fast or default mode.");
-    }
-
-    // Swarm verification: run N independent instances with shuffled action orders
-    if let Some(n) = swarm {
+    // Swarm verification
+    if let Some(n) = flags.swarm {
         return cmd_check_swarm(
             spec,
             consts,
             &var_names,
             n,
-            check_deadlock,
-            max_states,
-            max_depth,
-            memory_limit_mb,
+            flags.check_deadlock,
+            flags.max_states,
+            flags.max_depth,
+            flags.memory_limit_mb,
             actual_por,
             actual_symmetry,
-            output_format,
-            diff_traces,
+            flags.output_format,
+            flags.diff_traces,
         );
+    }
+
+    let mut parallel = flags.parallel;
+    if flags.profile && parallel {
+        if !flags.quiet {
+            eprintln!("Note: --profile requires sequential mode, disabling parallel exploration");
+        }
+        parallel = false;
+    }
+
+    if flags.directed && parallel && !flags.quiet {
+        eprintln!("Note: --directed uses priority BFS which is sequential");
+    }
+
+    if flags.bloom && !flags.quiet {
+        eprintln!("Warning: --bloom is probabilistic and may miss bugs. For exhaustive verification use --fast or default mode.");
     }
 
     let progress = Arc::new(ProgressCounters::new());
     let start = Instant::now();
-    let spinner = create_spinner(&progress, start, quiet);
+    let spinner = create_spinner(&progress, start, flags.quiet);
 
     let config = CheckConfig {
-        check_deadlock,
-        max_states,
-        max_depth,
-        memory_limit_mb,
+        check_deadlock: flags.check_deadlock,
+        max_states: flags.max_states,
+        max_depth: flags.max_depth,
+        memory_limit_mb: flags.memory_limit_mb,
         parallel,
-        num_threads,
+        num_threads: flags.num_threads,
         use_por: actual_por,
         use_symmetry: actual_symmetry,
         fast_check: actual_fast,
         progress: Some(progress.clone()),
         action_shuffle_seed: None,
-        profile,
-        bloom,
-        bloom_bits,
-        directed,
-        max_time_secs,
-        check_only_invariants,
+        profile: flags.profile,
+        bloom: flags.bloom,
+        bloom_bits: flags.bloom_bits,
+        directed: flags.directed,
+        max_time_secs: flags.max_time_secs,
+        check_only_invariants: flags.check_only_invariants.clone(),
         collapse: actual_collapse,
-        tree,
+        tree: flags.tree,
     };
 
-    // Incremental cache: compute spec hash and load cached fingerprints
-    let (cache_hash, cached_fps) = if incremental {
-        let const_pairs = parse_constants_as_pairs(constants);
-        let hash = specl_mc::cache::spec_hash(&source, &const_pairs);
-        let fps = specl_mc::cache::load_fingerprints(file.as_path(), hash);
-        if let Some(ref fps) = fps {
-            if !quiet {
-                println!(
-                    "Incremental: loaded {} cached states",
-                    format_large_number(fps.len() as u128)
-                );
+    // Incremental cache
+    let (cache_hash, cached_fps) = match (flags.incremental, &source) {
+        (true, Some((src, file))) => {
+            let const_pairs = spec
+                .consts
+                .iter()
+                .zip(consts.iter())
+                .filter_map(|(c, v)| {
+                    if let VK::Int(n) = v.kind() {
+                        Some((c.name.clone(), n))
+                    } else {
+                        None
+                    }
+                })
+                .collect::<Vec<_>>();
+            let hash = specl_mc::cache::spec_hash(src, &const_pairs);
+            let fps = specl_mc::cache::load_fingerprints(file.as_path(), hash);
+            if let Some(ref fps) = fps {
+                if !flags.quiet {
+                    println!(
+                        "Incremental: loaded {} cached states",
+                        format_large_number(fps.len() as u128)
+                    );
+                }
             }
+            (Some(hash), fps)
         }
-        (Some(hash), fps)
-    } else {
-        (None, None)
+        _ => (None, None),
     };
 
     let mut explorer = Explorer::new(spec, consts, config);
@@ -2626,10 +1999,10 @@ fn cmd_check(
     let result = explorer.check()?;
 
     // Save fingerprints for incremental re-use
-    if let Some(hash) = cache_hash {
+    if let (Some(hash), Some((_, file))) = (cache_hash, source) {
         let fps = explorer.store().seen_fingerprints();
         if let Err(e) = specl_mc::cache::save_fingerprints(file.as_path(), hash, &fps) {
-            if !quiet {
+            if !flags.quiet {
                 eprintln!("Warning: could not save incremental cache: {e}");
             }
         }
@@ -2637,7 +2010,6 @@ fn cmd_check(
     }
 
     let elapsed = start.elapsed();
-
     if let Some(ref pb) = spinner {
         pb.finish_and_clear();
     }
@@ -2646,261 +2018,30 @@ fn cmd_check(
     let explored_states = explorer.store().len();
     let observed_max_depth = progress.depth.load(std::sync::atomic::Ordering::Relaxed);
 
-    if output_format == OutputFormat::Dot {
-        // DOT state graph output (BFS exploration tree)
-        let store = explorer.store();
-        if !store.has_full_tracking() {
-            eprintln!(
-                "Error: --output dot requires full state tracking.\n  Remove --fast or --bloom to enable full tracking."
-            );
-            exit_with_code(1);
-        }
-        let max_dot_states = 10_000;
-        let n_states = store.len();
-        if n_states > max_dot_states {
-            eprintln!(
-                "Error: state graph has {} states, but DOT output is limited to {}.\n  Reduce constant values (e.g., -c N=2) to produce a smaller graph.",
-                n_states, max_dot_states
-            );
-            exit_with_code(1);
-        }
+    let exit_code = render_bfs_result(BfsResultContext {
+        result,
+        secs,
+        explored_states,
+        observed_max_depth,
+        var_names: &var_names,
+        action_names: &action_names,
+        output_format: flags.output_format,
+        diff_traces: flags.diff_traces,
+        actual_por,
+        actual_symmetry,
+        actual_fast,
+        actual_collapse,
+        bloom: flags.bloom,
+        directed: flags.directed,
+        explorer: &explorer,
+    });
 
-        // Determine violation fingerprint (if any) for highlighting
-        let violation_fp = match &result {
-            CheckOutcome::InvariantViolation { trace, .. } | CheckOutcome::Deadlock { trace } => {
-                trace.last().map(|(s, _)| s.fingerprint())
-            }
-            _ => None,
-        };
-
-        println!(
-            "{}",
-            store_to_dot(store, &var_names, &action_names, violation_fp.as_ref())
-        );
-
-        match result {
-            CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => {
-                exit_with_code(1);
-            }
-            CheckOutcome::StateLimitReached { .. }
-            | CheckOutcome::MemoryLimitReached { .. }
-            | CheckOutcome::TimeLimitReached { .. } => {
-                exit_with_code(2);
-            }
-            _ => {}
-        }
-    } else if output_format == OutputFormat::Itf || output_format == OutputFormat::Mermaid {
-        // Structured trace output (ITF or Mermaid)
-        match result {
-            CheckOutcome::InvariantViolation { invariant, trace } => {
-                if output_format == OutputFormat::Mermaid {
-                    println!(
-                        "{}",
-                        trace_to_mermaid(
-                            &trace,
-                            &var_names,
-                            "invariant_violation",
-                            Some(&invariant)
-                        )
-                    );
-                } else {
-                    let itf =
-                        trace_to_itf(&trace, &var_names, "invariant_violation", Some(&invariant));
-                    println!("{}", serde_json::to_string_pretty(&itf).unwrap());
-                }
-                exit_with_code(1);
-            }
-            CheckOutcome::Deadlock { trace } => {
-                if output_format == OutputFormat::Mermaid {
-                    println!("{}", trace_to_mermaid(&trace, &var_names, "deadlock", None));
-                } else {
-                    let itf = trace_to_itf(&trace, &var_names, "deadlock", None);
-                    println!("{}", serde_json::to_string_pretty(&itf).unwrap());
-                }
-                exit_with_code(1);
-            }
-            CheckOutcome::Ok {
-                states_explored, ..
-            } => {
-                eprintln!(
-                    "Result: OK ({} states, no trace to export)",
-                    states_explored
-                );
-            }
-            CheckOutcome::StateLimitReached {
-                states_explored, ..
-            } => {
-                eprintln!(
-                    "Result: STATE LIMIT REACHED ({} states, no trace)",
-                    states_explored
-                );
-                exit_with_code(2);
-            }
-            CheckOutcome::MemoryLimitReached {
-                states_explored, ..
-            } => {
-                eprintln!(
-                    "Result: MEMORY LIMIT REACHED ({} states, no trace)",
-                    states_explored
-                );
-                exit_with_code(2);
-            }
-            CheckOutcome::TimeLimitReached {
-                states_explored, ..
-            } => {
-                eprintln!(
-                    "Result: TIME LIMIT REACHED ({} states, no trace)",
-                    states_explored
-                );
-                exit_with_code(2);
-            }
-        }
-    } else if json {
-        let out =
-            match result {
-                CheckOutcome::Ok {
-                    states_explored,
-                    max_depth,
-                } => JsonOutput::new("ok", secs).with_states(states_explored, max_depth),
-                CheckOutcome::InvariantViolation { invariant, trace } => {
-                    JsonOutput::new("invariant_violation", secs)
-                        .with_states(explored_states, observed_max_depth)
-                        .with_invariant(invariant)
-                        .with_trace(trace_to_json(&trace, &var_names))
-                }
-                CheckOutcome::Deadlock { trace } => JsonOutput::new("deadlock", secs)
-                    .with_states(explored_states, observed_max_depth)
-                    .with_trace(trace_to_json(&trace, &var_names)),
-                CheckOutcome::StateLimitReached {
-                    states_explored,
-                    max_depth,
-                } => JsonOutput::new("state_limit_reached", secs)
-                    .with_states(states_explored, max_depth),
-                CheckOutcome::MemoryLimitReached {
-                    states_explored,
-                    max_depth,
-                    memory_mb,
-                } => JsonOutput::new("memory_limit_reached", secs)
-                    .with_states(states_explored, max_depth)
-                    .with_memory(memory_mb),
-                CheckOutcome::TimeLimitReached {
-                    states_explored,
-                    max_depth,
-                } => JsonOutput::new("time_limit_reached", secs)
-                    .with_states(states_explored, max_depth),
-            };
-        println!("{}", serde_json::to_string(&out).unwrap());
-        let exit_code = match out.result {
-            "ok" => 0,
-            "invariant_violation" | "deadlock" => 1,
-            _ => 2,
-        };
-        if exit_code != 0 {
-            exit_with_code(exit_code);
-        }
-    } else {
-        let exit_code = match result {
-            CheckOutcome::Ok {
-                states_explored,
-                max_depth,
-            } => {
-                println!();
-                println!("Result: OK");
-                println!(
-                    "  States explored: {}",
-                    format_large_number(states_explored as u128)
-                );
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.1}s", secs);
-                if secs > 0.001 {
-                    println!(
-                        "  Throughput: {} states/s",
-                        format_large_number((states_explored as f64 / secs) as u128)
-                    );
-                }
-                let mut opts = Vec::new();
-                if actual_por {
-                    opts.push("POR");
-                }
-                if actual_symmetry {
-                    opts.push("symmetry");
-                }
-                if bloom {
-                    opts.push("bloom");
-                } else if actual_fast {
-                    opts.push("fast");
-                }
-                if actual_collapse {
-                    opts.push("collapse");
-                }
-                if directed {
-                    opts.push("directed");
-                }
-                if !opts.is_empty() {
-                    println!("  Optimizations: {}", opts.join(", "));
-                }
-                0
-            }
-            CheckOutcome::InvariantViolation { invariant, trace } => {
-                println!();
-                println!("Result: INVARIANT VIOLATION");
-                println!("  Invariant: {}", invariant);
-                print_text_trace(&trace, &var_names, diff_traces);
-                1
-            }
-            CheckOutcome::Deadlock { trace } => {
-                println!();
-                println!("Result: DEADLOCK");
-                print_text_trace(&trace, &var_names, diff_traces);
-                1
-            }
-            CheckOutcome::StateLimitReached {
-                states_explored,
-                max_depth,
-            } => {
-                println!();
-                println!("Result: STATE LIMIT REACHED");
-                println!("  States explored: {}", states_explored);
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.2}s", secs);
-                println!("  No violations found within this limit. Increase with --max-states <N> or use 0 for unlimited.");
-                2
-            }
-            CheckOutcome::MemoryLimitReached {
-                states_explored,
-                max_depth,
-                memory_mb,
-            } => {
-                println!();
-                println!("Result: MEMORY LIMIT REACHED");
-                println!("  Memory usage: {} MB", memory_mb);
-                println!("  States explored: {}", states_explored);
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.2}s", secs);
-                println!("  Try --fast (fingerprint-only, 10x less memory) or reduce constants.");
-                2
-            }
-            CheckOutcome::TimeLimitReached {
-                states_explored,
-                max_depth,
-            } => {
-                println!();
-                println!("Result: TIME LIMIT REACHED");
-                println!("  States explored: {}", states_explored);
-                println!("  Max depth: {}", max_depth);
-                println!("  Time: {:.2}s", secs);
-                println!("  Increase with --max-time <N> (seconds) or use 0 for unlimited.");
-                2
-            }
-        };
-        if exit_code != 0 {
-            print_check_profile(&explorer);
-            exit_with_code(exit_code);
-        }
+    if exit_code != 0 {
+        print_check_profile(&explorer);
+        exit_with_code(exit_code);
     }
 
     print_check_profile(&explorer);
-
     Ok(())
 }
 
@@ -3108,93 +2249,35 @@ fn cmd_check_swarm(
     Ok(())
 }
 
-#[allow(clippy::too_many_arguments)]
+/// Symbolic check from a .specl file.
 fn cmd_check_symbolic(
     file: &PathBuf,
     constants: &[String],
-    bmc_depth: usize,
-    bmc: bool,
-    inductive: bool,
-    k_induction: Option<usize>,
-    ic3: bool,
-    portfolio: bool,
-    golem: bool,
-    seq_bound: usize,
-    spacer_profile: SpacerProfile,
-    timeout: u64,
+    sym_flags: &SymbolicFlags,
     json: bool,
     check_only: Vec<String>,
 ) -> CliResult<()> {
-    let filename = file.display().to_string();
-    let source = Arc::new(read_file(file)?);
-
-    info!("parsing...");
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
+    let (module, mut spec, _source) = compile_spec(file)?;
 
     if !json {
         warn_unsupported_features(&module);
     }
 
-    info!("type checking...");
-    specl_types::check_module(&module)
-        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-
-    info!("compiling...");
-    let spec = compile(&module)?;
-
     let consts = parse_constants(constants, &spec)?;
-
-    let mut spec = spec;
     filter_invariants(&mut spec, &check_only)?;
 
-    let config = SymbolicConfig {
-        mode: if portfolio {
-            SymbolicMode::Portfolio
-        } else if golem {
-            SymbolicMode::Golem
-        } else if ic3 {
-            SymbolicMode::Ic3
-        } else if let Some(k) = k_induction {
-            SymbolicMode::KInduction(k)
-        } else if inductive {
-            SymbolicMode::Inductive
-        } else if bmc {
-            SymbolicMode::Bmc
-        } else {
-            SymbolicMode::Smart
-        },
-        depth: bmc_depth,
-        seq_bound,
-        spacer_profile,
-        timeout_ms: if timeout == 0 {
-            None
-        } else {
-            Some(timeout * 1000)
-        },
-    };
-
-    // Check for Seq variables and warn about seq-bound (#28)
-    let has_seq_vars = spec
-        .vars
-        .iter()
-        .any(|v| matches!(&v.ty, specl_types::Type::Seq(..)));
-    if has_seq_vars && !json {
-        eprintln!(
-            "Note: Seq[T] variables bounded to length {}. Increase --seq-bound if sequences may be longer.",
-            seq_bound
-        );
-    }
+    let config = sym_flags.build_config();
+    warn_seq_vars(&spec, sym_flags.seq_bound, json);
 
     run_symbolic_check(
         &spec,
         &consts,
         &config,
         json,
-        inductive,
-        ic3,
-        k_induction,
-        bmc_depth,
+        sym_flags.inductive,
+        sym_flags.ic3,
+        sym_flags.k_induction,
+        sym_flags.bmc_depth,
     )
 }
 
@@ -3206,14 +2289,7 @@ fn cmd_simulate(
     output: OutputFormat,
 ) -> CliResult<()> {
     let json = output == OutputFormat::Json;
-    let filename = file.display().to_string();
-    let source = Arc::new(read_file(file)?);
-
-    let module =
-        parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
-    specl_types::check_module(&module)
-        .map_err(|e| CliError::from_type_error(e, source.clone(), &filename))?;
-    let spec = compile(&module)?;
+    let (_module, spec, _source) = compile_spec(file)?;
     let consts = parse_constants(constants, &spec)?;
 
     let config = CheckConfig {
@@ -3607,25 +2683,6 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
     Ok(values)
 }
 
-/// Parse constant strings into (name, value) pairs for cache hashing.
-fn parse_constants_as_pairs(constants: &[String]) -> Vec<(String, i64)> {
-    constants
-        .iter()
-        .filter_map(|c| {
-            let parts: Vec<&str> = c.splitn(2, '=').collect();
-            if parts.len() == 2 {
-                parts[1]
-                    .trim()
-                    .parse::<i64>()
-                    .ok()
-                    .map(|v| (parts[0].trim().to_string(), v))
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 fn split_top_level_csv(s: &str) -> CliResult<Vec<&str>> {
     let mut parts = Vec::new();
     let mut start = 0usize;
@@ -3972,6 +3029,295 @@ fn format_state_with_names(state: &State, var_names: &[String]) -> String {
         .join(", ")
 }
 
+/// Context needed to render BFS check results across all output formats.
+struct BfsResultContext<'a> {
+    result: CheckOutcome,
+    secs: f64,
+    explored_states: usize,
+    observed_max_depth: usize,
+    var_names: &'a [String],
+    action_names: &'a [String],
+    output_format: OutputFormat,
+    diff_traces: bool,
+    actual_por: bool,
+    actual_symmetry: bool,
+    actual_fast: bool,
+    actual_collapse: bool,
+    bloom: bool,
+    directed: bool,
+    explorer: &'a Explorer,
+}
+
+/// Render a BFS check result in the specified output format. Returns the exit code.
+fn render_bfs_result(ctx: BfsResultContext<'_>) -> i32 {
+    if ctx.output_format == OutputFormat::Dot {
+        return render_dot_output(ctx);
+    }
+    if ctx.output_format == OutputFormat::Itf || ctx.output_format == OutputFormat::Mermaid {
+        return render_trace_format_output(ctx);
+    }
+    let json = ctx.output_format == OutputFormat::Json;
+    if json {
+        return render_json_output(ctx);
+    }
+    render_text_output(ctx)
+}
+
+fn render_dot_output(ctx: BfsResultContext<'_>) -> i32 {
+    let store = ctx.explorer.store();
+    if !store.has_full_tracking() {
+        eprintln!(
+            "Error: --output dot requires full state tracking.\n  Remove --fast or --bloom to enable full tracking."
+        );
+        exit_with_code(1);
+    }
+    let max_dot_states = 10_000;
+    if store.len() > max_dot_states {
+        eprintln!(
+            "Error: state graph has {} states, but DOT output is limited to {}.\n  Reduce constant values (e.g., -c N=2) to produce a smaller graph.",
+            store.len(),
+            max_dot_states
+        );
+        exit_with_code(1);
+    }
+    let violation_fp = match &ctx.result {
+        CheckOutcome::InvariantViolation { trace, .. } | CheckOutcome::Deadlock { trace } => {
+            trace.last().map(|(s, _)| s.fingerprint())
+        }
+        _ => None,
+    };
+    println!(
+        "{}",
+        store_to_dot(
+            store,
+            ctx.var_names,
+            ctx.action_names,
+            violation_fp.as_ref()
+        )
+    );
+    match ctx.result {
+        CheckOutcome::InvariantViolation { .. } | CheckOutcome::Deadlock { .. } => 1,
+        CheckOutcome::StateLimitReached { .. }
+        | CheckOutcome::MemoryLimitReached { .. }
+        | CheckOutcome::TimeLimitReached { .. } => 2,
+        _ => 0,
+    }
+}
+
+fn render_trace_format_output(ctx: BfsResultContext<'_>) -> i32 {
+    match ctx.result {
+        CheckOutcome::InvariantViolation { invariant, trace } => {
+            if ctx.output_format == OutputFormat::Mermaid {
+                println!(
+                    "{}",
+                    trace_to_mermaid(
+                        &trace,
+                        ctx.var_names,
+                        "invariant_violation",
+                        Some(&invariant)
+                    )
+                );
+            } else {
+                let itf = trace_to_itf(
+                    &trace,
+                    ctx.var_names,
+                    "invariant_violation",
+                    Some(&invariant),
+                );
+                println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+            }
+            1
+        }
+        CheckOutcome::Deadlock { trace } => {
+            if ctx.output_format == OutputFormat::Mermaid {
+                println!(
+                    "{}",
+                    trace_to_mermaid(&trace, ctx.var_names, "deadlock", None)
+                );
+            } else {
+                let itf = trace_to_itf(&trace, ctx.var_names, "deadlock", None);
+                println!("{}", serde_json::to_string_pretty(&itf).unwrap());
+            }
+            1
+        }
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => {
+            eprintln!(
+                "Result: OK ({} states, no trace to export)",
+                states_explored
+            );
+            0
+        }
+        CheckOutcome::StateLimitReached {
+            states_explored, ..
+        } => {
+            eprintln!(
+                "Result: STATE LIMIT REACHED ({} states, no trace)",
+                states_explored
+            );
+            2
+        }
+        CheckOutcome::MemoryLimitReached {
+            states_explored, ..
+        } => {
+            eprintln!(
+                "Result: MEMORY LIMIT REACHED ({} states, no trace)",
+                states_explored
+            );
+            2
+        }
+        CheckOutcome::TimeLimitReached {
+            states_explored, ..
+        } => {
+            eprintln!(
+                "Result: TIME LIMIT REACHED ({} states, no trace)",
+                states_explored
+            );
+            2
+        }
+    }
+}
+
+fn render_json_output(ctx: BfsResultContext<'_>) -> i32 {
+    let out =
+        match ctx.result {
+            CheckOutcome::Ok {
+                states_explored,
+                max_depth,
+            } => JsonOutput::new("ok", ctx.secs).with_states(states_explored, max_depth),
+            CheckOutcome::InvariantViolation { invariant, trace } => {
+                JsonOutput::new("invariant_violation", ctx.secs)
+                    .with_states(ctx.explored_states, ctx.observed_max_depth)
+                    .with_invariant(invariant)
+                    .with_trace(trace_to_json(&trace, ctx.var_names))
+            }
+            CheckOutcome::Deadlock { trace } => JsonOutput::new("deadlock", ctx.secs)
+                .with_states(ctx.explored_states, ctx.observed_max_depth)
+                .with_trace(trace_to_json(&trace, ctx.var_names)),
+            CheckOutcome::StateLimitReached {
+                states_explored,
+                max_depth,
+            } => JsonOutput::new("state_limit_reached", ctx.secs)
+                .with_states(states_explored, max_depth),
+            CheckOutcome::MemoryLimitReached {
+                states_explored,
+                max_depth,
+                memory_mb,
+            } => JsonOutput::new("memory_limit_reached", ctx.secs)
+                .with_states(states_explored, max_depth)
+                .with_memory(memory_mb),
+            CheckOutcome::TimeLimitReached {
+                states_explored,
+                max_depth,
+            } => JsonOutput::new("time_limit_reached", ctx.secs)
+                .with_states(states_explored, max_depth),
+        };
+    println!("{}", serde_json::to_string(&out).unwrap());
+    match out.result {
+        "ok" => 0,
+        "invariant_violation" | "deadlock" => 1,
+        _ => 2,
+    }
+}
+
+fn render_text_output(ctx: BfsResultContext<'_>) -> i32 {
+    match ctx.result {
+        CheckOutcome::Ok {
+            states_explored,
+            max_depth,
+        } => {
+            println!();
+            println!("Result: OK");
+            println!(
+                "  States explored: {}",
+                format_large_number(states_explored as u128)
+            );
+            println!("  Max depth: {}", max_depth);
+            println!("  Time: {:.1}s", ctx.secs);
+            if ctx.secs > 0.001 {
+                println!(
+                    "  Throughput: {} states/s",
+                    format_large_number((states_explored as f64 / ctx.secs) as u128)
+                );
+            }
+            let mut opts = Vec::new();
+            if ctx.actual_por {
+                opts.push("POR");
+            }
+            if ctx.actual_symmetry {
+                opts.push("symmetry");
+            }
+            if ctx.bloom {
+                opts.push("bloom");
+            } else if ctx.actual_fast {
+                opts.push("fast");
+            }
+            if ctx.actual_collapse {
+                opts.push("collapse");
+            }
+            if ctx.directed {
+                opts.push("directed");
+            }
+            if !opts.is_empty() {
+                println!("  Optimizations: {}", opts.join(", "));
+            }
+            0
+        }
+        CheckOutcome::InvariantViolation { invariant, trace } => {
+            println!();
+            println!("Result: INVARIANT VIOLATION");
+            println!("  Invariant: {}", invariant);
+            print_text_trace(&trace, ctx.var_names, ctx.diff_traces);
+            1
+        }
+        CheckOutcome::Deadlock { trace } => {
+            println!();
+            println!("Result: DEADLOCK");
+            print_text_trace(&trace, ctx.var_names, ctx.diff_traces);
+            1
+        }
+        CheckOutcome::StateLimitReached {
+            states_explored,
+            max_depth,
+        } => {
+            println!();
+            println!("Result: STATE LIMIT REACHED");
+            println!("  States explored: {}", states_explored);
+            println!("  Max depth: {}", max_depth);
+            println!("  Time: {:.2}s", ctx.secs);
+            println!("  No violations found within this limit. Increase with --max-states <N> or use 0 for unlimited.");
+            2
+        }
+        CheckOutcome::MemoryLimitReached {
+            states_explored,
+            max_depth,
+            memory_mb,
+        } => {
+            println!();
+            println!("Result: MEMORY LIMIT REACHED");
+            println!("  Memory usage: {} MB", memory_mb);
+            println!("  States explored: {}", states_explored);
+            println!("  Max depth: {}", max_depth);
+            println!("  Time: {:.2}s", ctx.secs);
+            println!("  Try --fast (fingerprint-only, 10x less memory) or reduce constants.");
+            2
+        }
+        CheckOutcome::TimeLimitReached {
+            states_explored,
+            max_depth,
+        } => {
+            println!();
+            println!("Result: TIME LIMIT REACHED");
+            println!("  States explored: {}", states_explored);
+            println!("  Max depth: {}", max_depth);
+            println!("  Time: {:.2}s", ctx.secs);
+            println!("  Increase with --max-time <N> (seconds) or use 0 for unlimited.");
+            2
+        }
+    }
+}
+
 /// Print a text trace to stdout.
 /// In diff mode, only shows variables that changed from the previous step.
 fn print_text_trace(trace: &[(State, Option<String>)], var_names: &[String], diff: bool) {
@@ -4293,6 +3639,112 @@ fn parse_action_params(name: &str) -> (String, Vec<i64>) {
         (action_name, params)
     } else {
         (name.to_string(), vec![])
+    }
+}
+
+/// Bundled symbolic checking flags to avoid passing many individual parameters.
+struct SymbolicFlags {
+    bmc: bool,
+    bmc_depth: usize,
+    inductive: bool,
+    k_induction: Option<usize>,
+    ic3: bool,
+    portfolio: bool,
+    golem: bool,
+    seq_bound: usize,
+    spacer_profile: SpacerProfile,
+    timeout: u64,
+}
+
+impl SymbolicFlags {
+    fn resolve_mode(&self) -> SymbolicMode {
+        if self.portfolio {
+            SymbolicMode::Portfolio
+        } else if self.golem {
+            SymbolicMode::Golem
+        } else if self.ic3 {
+            SymbolicMode::Ic3
+        } else if let Some(k) = self.k_induction {
+            SymbolicMode::KInduction(k)
+        } else if self.inductive {
+            SymbolicMode::Inductive
+        } else if self.bmc {
+            SymbolicMode::Bmc
+        } else {
+            SymbolicMode::Smart
+        }
+    }
+
+    fn build_config(&self) -> SymbolicConfig {
+        SymbolicConfig {
+            mode: self.resolve_mode(),
+            depth: self.bmc_depth,
+            seq_bound: self.seq_bound,
+            spacer_profile: self.spacer_profile.clone(),
+            timeout_ms: if self.timeout == 0 {
+                None
+            } else {
+                Some(self.timeout * 1000)
+            },
+        }
+    }
+
+    fn has_specific_technique(&self) -> bool {
+        self.bmc
+            || self.inductive
+            || self.k_induction.is_some()
+            || self.ic3
+            || self.portfolio
+            || self.golem
+    }
+}
+
+/// Bundled BFS checking flags to avoid passing many individual parameters.
+struct BfsFlags {
+    max_states: usize,
+    max_depth: usize,
+    memory_limit_mb: usize,
+    max_time_secs: u64,
+    check_deadlock: bool,
+    parallel: bool,
+    num_threads: usize,
+    use_por: bool,
+    use_symmetry: bool,
+    fast_check: bool,
+    bloom: bool,
+    bloom_bits: u32,
+    collapse: bool,
+    tree: bool,
+    directed: bool,
+    incremental: bool,
+    quiet: bool,
+    no_auto: bool,
+    output_format: OutputFormat,
+    profile: bool,
+    check_only_invariants: Vec<String>,
+    diff_traces: bool,
+    swarm: Option<usize>,
+}
+
+impl BfsFlags {
+    fn has_specific_option(&self) -> bool {
+        self.use_por
+            || self.use_symmetry
+            || self.fast_check
+            || self.bloom
+            || self.collapse
+            || self.tree
+            || self.directed
+            || self.incremental
+            || self.swarm.is_some()
+            || self.max_states > 0
+            || self.max_depth > 0
+            || self.memory_limit_mb > 0
+            || self.max_time_secs > 0
+    }
+
+    fn user_has_explicit_storage(&self) -> bool {
+        self.fast_check || self.bloom || self.collapse || self.tree || self.directed
     }
 }
 
