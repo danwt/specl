@@ -72,72 +72,104 @@ fn benchmarks(c: &mut Criterion) {
         ..Default::default()
     };
 
-    // Small specs: fast iteration, regression detection
+    // --- Small specs: fast iteration, regression detection ---
+
+    // Counters: Dict[0..N, 0..M] with Inc/Dec/Transfer (~1K states at N=2 M=5)
     bench_check(
         c,
-        "counters_N2_MAX5",
-        "benchmark/10-counters/counters.specl",
-        &[("N", 2), ("MAX", 5)],
+        "counters_N2_M5",
+        "benchmark/counters.specl",
+        &[("N", 2), ("M", 5)],
         no_parallel.clone(),
     );
 
+    // Token ring: mutual exclusion on a ring (~253 states at N=4)
     bench_check(
         c,
-        "ewd840_N4",
-        "benchmark/04-ewd840/ewd840.specl",
+        "token_ring_N4",
+        "benchmark/token-ring.specl",
         &[("N", 4)],
         no_parallel.clone(),
     );
 
+    // Two-phase commit: coordinator crash scenario (~500 states at N=2)
     bench_check(
         c,
         "tpc_N2",
-        "benchmark/03-tpc/tpc.specl",
+        "other/tpc.specl",
         &[("N", 2)],
         no_parallel.clone(),
     );
 
+    // Dining philosophers: fixed 3 philosophers, no constants
     bench_check(
         c,
-        "dining_N3",
-        "benchmark/07-dining-philosophers/dining-philosophers.specl",
+        "dining_3",
+        "other/dining-philosophers-benchmark.specl",
         &[],
         no_parallel.clone(),
     );
 
-    // Fast-check mode
+    // Cache coherence: MESI protocol (~76 states at N=5)
     bench_check(
         c,
-        "counters_N2_MAX5_fast",
-        "benchmark/10-counters/counters.specl",
-        &[("N", 2), ("MAX", 5)],
+        "cache_coherence_N5",
+        "benchmark/cache-coherence.specl",
+        &[("N", 5)],
+        no_parallel.clone(),
+    );
+
+    // --- Storage mode variants ---
+
+    // Fast-check mode (fingerprint-only, ~10x less memory)
+    bench_check(
+        c,
+        "counters_N2_M5_fast",
+        "benchmark/counters.specl",
+        &[("N", 2), ("M", 5)],
         fast_check,
     );
 
-    // Parallel mode
+    // Parallel mode (multi-threaded exploration)
     bench_check(
         c,
-        "counters_N3_MAX5_parallel",
-        "benchmark/10-counters/counters.specl",
-        &[("N", 3), ("MAX", 5)],
+        "counters_N3_M5_parallel",
+        "benchmark/counters.specl",
+        &[("N", 3), ("M", 5)],
         default.clone(),
     );
 
-    // Dict-heavy (medium size, ~10K-100K states)
+    // --- Dict-heavy / medium size specs ---
+
+    // Paxos: consensus with ballots (~316K states at N=2 MaxBallot=3 V=2)
     bench_check(
         c,
         "paxos_small",
-        "benchmark/02-paxos/paxos.specl",
+        "showcase/paxos.specl",
         &[("N", 2), ("MaxBallot", 1), ("V", 1)],
         no_parallel.clone(),
     );
 
+    // PBFT: Byzantine fault tolerance (~2.6K states at N=3 F=1 MaxVal=1)
     bench_check(
         c,
         "pbft_small",
-        "benchmark/08-pbft/pbft.specl",
-        &[("N", 3), ("F", 1), ("MaxView", 0), ("MaxSeq", 0), ("V", 1)],
-        no_parallel,
+        "other/pbft.specl",
+        &[("N", 3), ("F", 1), ("MaxVal", 1)],
+        no_parallel.clone(),
+    );
+
+    // Leader election: ring-based LCR (large state space at N=4)
+    bench_check(
+        c,
+        "leader_election_N4",
+        "benchmark/leader-election.specl",
+        &[("N", 4)],
+        CheckConfig {
+            check_deadlock: false,
+            parallel: false,
+            ..Default::default()
+        },
     );
 }
 
