@@ -10,6 +10,7 @@ description = "Expression evaluator for Specl"
 [dependencies]
 specl-ir.workspace = true
 num-bigint.workspace = true
+smallvec.workspace = true
 thiserror.workspace = true
 
 [features]
