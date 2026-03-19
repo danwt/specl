@@ -234,19 +234,6 @@ pub enum TypeExpr {
     Range(Box<Expr>, Box<Expr>, Span),
 }
 
-impl TypeExpr {
-    pub fn span(&self) -> Span {
-        match self {
-            TypeExpr::Named(id) => id.span,
-            TypeExpr::Set(_, span) => *span,
-            TypeExpr::Seq(_, span) => *span,
-            TypeExpr::Dict(_, _, span) => *span,
-            TypeExpr::Option(_, span) => *span,
-            TypeExpr::Range(_, _, span) => *span,
-        }
-    }
-}
-
 /// An expression.
 #[derive(Debug, Clone)]
 pub struct Expr {

@@ -147,11 +147,6 @@ impl TypeEnv {
         self.state_vars.get(name)
     }
 
-    /// Get all state variable names.
-    pub fn state_var_names(&self) -> impl Iterator<Item = &str> {
-        self.state_vars.keys().map(|s| s.as_str())
-    }
-
     // === Actions ===
 
     /// Define an action.

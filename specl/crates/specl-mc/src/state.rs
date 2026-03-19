@@ -306,21 +306,10 @@ impl State {
         }
     }
 
-    /// Create an empty state with the given number of variables.
-    pub fn empty(num_vars: usize) -> Self {
-        let vars = vec![Value::none(); num_vars];
-        Self::new(vars)
-    }
-
     /// Get the cached fingerprint.
     #[inline]
     pub fn fingerprint(&self) -> Fingerprint {
         self.fp
-    }
-
-    /// Get the number of variables.
-    pub fn num_vars(&self) -> usize {
-        self.vars.len()
     }
 
     /// Get the cached hash for a specific variable.

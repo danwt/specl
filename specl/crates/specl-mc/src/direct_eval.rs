@@ -7,7 +7,7 @@
 //! like `x == 0 and y == fn(i in S) => 0`. We can extract these assignments
 //! and evaluate them directly.
 
-use specl_eval::bytecode::{vm_eval, vm_eval_reuse, Bytecode, VmBufs};
+use specl_eval::bytecode::{vm_eval_reuse, Bytecode, VmBufs};
 use specl_eval::{eval, eval_bool, EvalContext, EvalError, Value};
 use specl_ir::{BinOp, CompiledAction, CompiledExpr, CompiledSpec};
 use tracing::debug;
@@ -277,57 +277,6 @@ fn extract_effect_from_expr(
 
         // Other expressions
         _ => false,
-    }
-}
-
-/// Apply effects using bytecode-compiled assignments (guard already checked).
-/// Uses cached var_hashes from the parent state to avoid rehashing old values.
-/// Uses var_hashes_buf as a reusable buffer to avoid per-firing allocation.
-#[allow(clippy::too_many_arguments)]
-pub fn apply_effects_bytecode(
-    state: &State,
-    params: &[Value],
-    consts: &[Value],
-    compiled_assignments: &[(usize, Bytecode)],
-    needs_reverify: bool,
-    next_vars_buf: &mut Vec<Value>,
-    effect: &CompiledExpr,
-    var_hashes_buf: &mut Vec<u64>,
-) -> Result<Option<State>, EvalError> {
-    next_vars_buf.clear();
-    next_vars_buf.extend_from_slice(&state.vars);
-    var_hashes_buf.clear();
-    var_hashes_buf.extend_from_slice(&state.var_hashes);
-    let mut fp = state.fingerprint().as_u64();
-
-    for (var_idx, bc) in compiled_assignments {
-        let value = vm_eval(bc, &state.vars, next_vars_buf, consts, params)?;
-        let old_hash = var_hashes_buf[*var_idx];
-        let new_hash = hash_var(*var_idx, &value);
-        fp ^= old_hash ^ new_hash;
-        var_hashes_buf[*var_idx] = new_hash;
-        next_vars_buf[*var_idx] = value;
-    }
-
-    let fp = crate::state::Fingerprint::from_u64(fp);
-    if needs_reverify {
-        let mut ctx = EvalContext::new(&state.vars, next_vars_buf, consts, params);
-        let result = eval(effect, &mut ctx)?;
-        if result.as_bool() == Some(true) {
-            Ok(Some(State::with_fingerprint_and_hashes(
-                std::mem::take(next_vars_buf),
-                fp,
-                var_hashes_buf,
-            )))
-        } else {
-            Ok(None)
-        }
-    } else {
-        Ok(Some(State::with_fingerprint_and_hashes(
-            std::mem::take(next_vars_buf),
-            fp,
-            var_hashes_buf,
-        )))
     }
 }
 

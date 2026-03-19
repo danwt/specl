@@ -40,12 +40,6 @@ pub enum SymbolicError {
     #[error("encoding error: {0}")]
     Encoding(String),
 
-    #[error("Z3 error: {0}")]
-    Z3(String),
-
-    #[error("constant '{name}' not provided")]
-    MissingConstant { name: String },
-
     #[error("internal error: {0}")]
     Internal(String),
 }

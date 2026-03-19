@@ -260,12 +260,6 @@ impl Value {
     pub fn is_none(&self) -> bool {
         self.tag() == TAG_NONE
     }
-
-    /// True for TAG_FN or TAG_INTMAP (both represent dict/function values).
-    #[inline]
-    pub fn is_fn_like(&self) -> bool {
-        self.is_fn() || self.is_intmap() || self.is_intmap2()
-    }
 }
 
 // === kind() — the primary pattern-matching method ===
@@ -336,10 +330,6 @@ impl Value {
         Value::seq(Vec::new())
     }
 
-    pub fn empty_fn() -> Self {
-        Value::func(Arc::new(Vec::new()))
-    }
-
     pub fn range(lo: i64, hi: i64) -> Self {
         Value::set(Arc::new((lo..=hi).map(Value::int).collect()))
     }
@@ -349,20 +339,6 @@ impl Value {
         v.sort();
         v.dedup();
         Value::set(Arc::new(v))
-    }
-
-    pub fn fn_from_iter(iter: impl IntoIterator<Item = (Value, Value)>) -> Self {
-        let mut v: Vec<(Value, Value)> = iter.into_iter().collect();
-        v.sort_by(|a, b| a.0.cmp(&b.0));
-        v.dedup_by(|a, b| {
-            if a.0 == b.0 {
-                std::mem::swap(&mut a.1, &mut b.1);
-                true
-            } else {
-                false
-            }
-        });
-        Value::func(Arc::new(v))
     }
 
     pub fn set_insert(set: &mut Vec<Value>, val: Value) -> bool {
@@ -390,10 +366,6 @@ impl Value {
             Ok(idx) => func[idx].1 = value,
             Err(pos) => func.insert(pos, (key, value)),
         }
-    }
-
-    pub fn is_truthy(&self) -> bool {
-        !matches!(self.tag(), TAG_BOOL_FALSE)
     }
 
     pub fn as_bool(&self) -> Option<bool> {

@@ -226,17 +226,6 @@ impl StateStore {
         }
     }
 
-    /// Create a state store with pre-allocated capacity.
-    pub fn with_capacity(capacity: usize) -> Self {
-        Self {
-            states: DashMap::with_capacity_and_hasher(capacity, FingerprintBuildHasher),
-            backend: StorageBackend::Full,
-            collisions: AtomicUsize::new(0),
-            count: AtomicUsize::new(0),
-            view_mode: false,
-        }
-    }
-
     /// Enable view mode (suppress collision warnings for VIEW abstraction).
     pub fn set_view_mode(&mut self, enabled: bool) {
         self.view_mode = enabled;
@@ -464,24 +453,6 @@ impl StateStore {
     #[inline]
     pub fn is_bloom(&self) -> bool {
         matches!(self.backend, StorageBackend::Bloom(_))
-    }
-
-    /// Get bloom filter false positive rate estimate (None if not in bloom mode).
-    pub fn bloom_fp_rate(&self) -> Option<f64> {
-        if let StorageBackend::Bloom(ref bloom) = self.backend {
-            Some(bloom.estimated_fp_rate())
-        } else {
-            None
-        }
-    }
-
-    /// Get bloom filter memory usage in bytes (None if not in bloom mode).
-    pub fn bloom_memory_bytes(&self) -> Option<usize> {
-        if let StorageBackend::Bloom(ref bloom) = self.backend {
-            Some(bloom.memory_bytes())
-        } else {
-            None
-        }
     }
 
     /// Get the number of hash collisions detected.

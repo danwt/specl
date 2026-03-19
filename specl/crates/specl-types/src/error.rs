@@ -23,9 +23,6 @@ pub enum TypeError {
     #[error("undefined action: {name}")]
     UndefinedAction { name: String, span: Span },
 
-    #[error("duplicate definition: {name}")]
-    DuplicateDefinition { name: String, span: Span },
-
     #[error("invalid field access: type {ty} has no field {field}")]
     InvalidField { ty: Type, field: String, span: Span },
 
@@ -34,9 +31,6 @@ pub enum TypeError {
 
     #[error("cannot iterate over type {ty}")]
     NotIterable { ty: Type, span: Span },
-
-    #[error("cannot call non-function type {ty}")]
-    NotCallable { ty: Type, span: Span },
 
     #[error("wrong number of arguments: expected {expected}, found {found}")]
     ArityMismatch {
@@ -59,9 +53,6 @@ pub enum TypeError {
 
     #[error("operands must be numeric, found {found}")]
     ExpectedNumeric { found: Type, span: Span },
-
-    #[error("operands must be of the same type")]
-    TypesNotEqual { left: Type, right: Type, span: Span },
 }
 
 impl TypeError {
@@ -72,18 +63,15 @@ impl TypeError {
             | TypeError::UndefinedVariable { span, .. }
             | TypeError::UndefinedType { span, .. }
             | TypeError::UndefinedAction { span, .. }
-            | TypeError::DuplicateDefinition { span, .. }
             | TypeError::InvalidField { span, .. }
             | TypeError::NotIndexable { span, .. }
             | TypeError::NotIterable { span, .. }
-            | TypeError::NotCallable { span, .. }
             | TypeError::ArityMismatch { span, .. }
             | TypeError::InvalidPrime { span }
             | TypeError::UnificationFailure { span, .. }
             | TypeError::OccursCheck { span }
             | TypeError::ExpectedBool { span, .. }
-            | TypeError::ExpectedNumeric { span, .. }
-            | TypeError::TypesNotEqual { span, .. } => *span,
+            | TypeError::ExpectedNumeric { span, .. } => *span,
         }
     }
 }

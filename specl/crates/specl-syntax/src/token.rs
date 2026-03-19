@@ -560,11 +560,6 @@ impl Token {
     pub fn is_eof(&self) -> bool {
         matches!(self.kind, TokenKind::Eof)
     }
-
-    /// Check if this is an error token.
-    pub fn is_error(&self) -> bool {
-        matches!(self.kind, TokenKind::Error(_))
-    }
 }
 
 #[cfg(test)]

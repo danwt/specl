@@ -38,11 +38,6 @@ impl Type {
         matches!(self, Type::Nat | Type::Int | Type::Range(_, _))
     }
 
-    /// Check if this is a collection type (Set, Seq, or Fn).
-    pub fn is_collection(&self) -> bool {
-        matches!(self, Type::Set(_) | Type::Seq(_) | Type::Fn(_, _))
-    }
-
     /// Check if this type contains any type variables.
     pub fn has_vars(&self) -> bool {
         match self {
@@ -90,13 +85,6 @@ impl fmt::Display for Type {
 /// A type variable for type inference.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TypeVar(pub u32);
-
-impl TypeVar {
-    /// Create a fresh type variable from an ID.
-    pub fn new(id: u32) -> Self {
-        Self(id)
-    }
-}
 
 /// A type substitution mapping type variables to types.
 #[derive(Debug, Clone, Default)]
