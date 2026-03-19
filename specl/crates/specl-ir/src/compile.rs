@@ -189,13 +189,10 @@ impl Compiler {
         // Actions A and B are independent if:
         // writes(A) ∩ (reads(B) ∪ writes(B)) = ∅ AND writes(B) ∩ (reads(A) ∪ writes(A)) = ∅
         let n = actions.len();
-        let mut independent = vec![vec![false; n]; n];
+        let mut independent = ir::BoolMatrix::new(n);
         for i in 0..n {
             for j in 0..n {
-                if i == j {
-                    // An action is not independent with itself
-                    independent[i][j] = false;
-                } else {
+                if i != j {
                     let writes_a = &actions[i].changes;
                     let reads_a = &actions[i].reads;
                     let writes_b = &actions[j].changes;
@@ -211,7 +208,7 @@ impl Compiler {
                         .iter()
                         .any(|w| reads_a.contains(w) || writes_a.contains(w));
 
-                    independent[i][j] = !a_interferes_b && !b_interferes_a;
+                    independent.set(i, j, !a_interferes_b && !b_interferes_a);
                 }
             }
         }
@@ -223,15 +220,15 @@ impl Compiler {
         // A pair (i,j) is refinable if they are template-dependent but all shared
         // variables are accessed via keyed Dict ops on both sides.
         let refinable_pairs = {
-            let mut rp = vec![vec![false; n]; n];
+            let mut rp = ir::BoolMatrix::new(n);
             for i in 0..n {
                 // Include diagonal (i == j): different instances of the same
                 // action template can be independent if they access disjoint keys.
                 for j in i..n {
-                    if !independent[i][j] {
+                    if !independent.get(i, j) {
                         let refinable = ir::check_refinable(&actions[i], &actions[j]);
-                        rp[i][j] = refinable;
-                        rp[j][i] = refinable;
+                        rp.set(i, j, refinable);
+                        rp.set(j, i, refinable);
                     }
                 }
             }
@@ -1175,6 +1172,6 @@ action Transfer(from: 0..N, to: 0..N) {
         assert!(read_keys.contains(&KeySource::Param(1)));
 
         // Self-pair should be refinable (keyed access on both sides)
-        assert!(spec.refinable_pairs[0][0]);
+        assert!(spec.refinable_pairs.get(0, 0));
     }
 }

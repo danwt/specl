@@ -198,20 +198,17 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
     }
 
     // Independence ratio
-    let n = spec.independent.len();
+    let n = spec.independent.n();
     let independence_ratio = if n > 1 {
         let total_pairs = n * (n - 1);
-        let independent_pairs: usize = spec
-            .independent
-            .iter()
-            .enumerate()
-            .flat_map(|(i, row)| {
-                row.iter()
-                    .enumerate()
-                    .filter(move |(j, _)| i != *j)
-                    .filter(|(_, &v)| v)
-            })
-            .count();
+        let mut independent_pairs = 0usize;
+        for i in 0..n {
+            for j in 0..n {
+                if i != j && spec.independent.get(i, j) {
+                    independent_pairs += 1;
+                }
+            }
+        }
         independent_pairs as f64 / total_pairs as f64
     } else {
         0.0
@@ -223,10 +220,7 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
         spec.symmetry_groups.iter().map(|g| g.domain_size).collect();
 
     // Refinable pairs
-    let has_refinable_pairs = spec
-        .refinable_pairs
-        .iter()
-        .any(|row| row.iter().any(|&v| v));
+    let has_refinable_pairs = spec.refinable_pairs.any();
 
     // Recommendations
     let mut recommendations = Vec::new();

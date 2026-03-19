@@ -1127,7 +1127,7 @@ impl Explorer {
             .map(|a| {
                 let mut mask = 0u64;
                 for b in 0..n_actions.min(64) {
-                    if spec.independent[a][b] {
+                    if spec.independent.get(a, b) {
                         mask |= 1u64 << b;
                     }
                 }
@@ -1161,12 +1161,9 @@ impl Explorer {
         };
 
         // Precompute instance-level POR flags from refinable_pairs
-        let has_refinable_pairs = spec
-            .refinable_pairs
-            .iter()
-            .any(|row| row.iter().any(|&v| v));
+        let has_refinable_pairs = spec.refinable_pairs.any();
         let action_has_refinable: Vec<bool> = (0..n_actions)
-            .map(|i| spec.refinable_pairs[i].iter().any(|&v| v))
+            .map(|i| spec.refinable_pairs.row_any(i))
             .collect();
         if has_refinable_pairs {
             let count = action_has_refinable.iter().filter(|&&v| v).count();
@@ -3807,7 +3804,7 @@ impl Explorer {
             self.action_has_refinable[a]
                 && enabled_templates
                     .iter()
-                    .any(|&b| self.spec.refinable_pairs[a][b])
+                    .any(|&b| self.spec.refinable_pairs.get(a, b))
         });
         if !any_refinable {
             return Ok(AmpleResult::Templates);
@@ -3856,7 +3853,7 @@ impl Explorer {
                         // Check instance-level independence
                         let independent = if params_a.is_empty() || params_b.is_empty() {
                             // Non-refinable action represented as group: use template-level
-                            self.spec.independent[act_a][*act_b]
+                            self.spec.independent.get(act_a, *act_b)
                         } else {
                             self.instances_independent(act_a, params_a, *act_b, params_b)
                         };
@@ -3925,11 +3922,11 @@ impl Explorer {
         params_b: &[Value],
     ) -> bool {
         // Template-level independent => always independent
-        if self.spec.independent[act_a][act_b] {
+        if self.spec.independent.get(act_a, act_b) {
             return true;
         }
         // Not a refinable pair => must be dependent
-        if !self.spec.refinable_pairs[act_a][act_b] {
+        if !self.spec.refinable_pairs.get(act_a, act_b) {
             return false;
         }
 
@@ -4879,11 +4876,11 @@ action IncY() {
         // IncX and IncY should be independent since they don't share variables
         println!("Independent matrix: {:?}", spec.independent);
         assert!(
-            spec.independent[0][1],
+            spec.independent.get(0, 1),
             "IncX and IncY should be independent"
         );
         assert!(
-            spec.independent[1][0],
+            spec.independent.get(1, 0),
             "IncY and IncX should be independent"
         );
     }
@@ -4988,8 +4985,14 @@ action IncY() {
         println!("Independent matrix: {:?}", spec.independent);
 
         // Verify they are dependent
-        assert!(!spec.independent[0][1], "IncX and IncY should be dependent");
-        assert!(!spec.independent[1][0], "IncY and IncX should be dependent");
+        assert!(
+            !spec.independent.get(0, 1),
+            "IncX and IncY should be dependent"
+        );
+        assert!(
+            !spec.independent.get(1, 0),
+            "IncY and IncX should be dependent"
+        );
 
         // With dependent actions, POR should still find all reachable states
         // but may reduce transitions explored
@@ -5572,12 +5575,12 @@ action Transfer(from: 0..N, to: 0..N) {
 
         // Transfer(0,0) is template-dependent with Transfer(0,0)
         assert!(
-            !spec.independent[0][0],
+            !spec.independent.get(0, 0),
             "Transfer-Transfer is template-dependent"
         );
         // But it's refinable (keyed Dict access)
         assert!(
-            spec.refinable_pairs[0][0],
+            spec.refinable_pairs.get(0, 0),
             "Transfer-Transfer should be refinable"
         );
     }
@@ -5714,10 +5717,7 @@ action IncY() {
         let spec = compile(&module).unwrap();
 
         // No refinable pairs (no Dict-keyed actions)
-        let has_refinable = spec
-            .refinable_pairs
-            .iter()
-            .any(|row| row.iter().any(|&v| v));
+        let has_refinable = spec.refinable_pairs.any();
         assert!(!has_refinable, "no refinable pairs for non-Dict spec");
 
         // POR should still work (stubborn sets reduce independent actions)
@@ -5773,17 +5773,17 @@ action Transfer(from: 0..2, to: 0..2) {
         // IncX-Transfer: IncX writes x, Transfer writes balance.
         // They touch different variables, so they're template-independent.
         assert!(
-            spec.independent[0][1],
+            spec.independent.get(0, 1),
             "IncX and Transfer are template-independent"
         );
         // Transfer-Transfer: same as before, should be refinable
         assert!(
-            spec.refinable_pairs[1][1],
+            spec.refinable_pairs.get(1, 1),
             "Transfer-Transfer should be refinable"
         );
         // IncX-IncX: writes unkeyed x, not refinable (but also self-dependent)
         assert!(
-            !spec.refinable_pairs[0][0],
+            !spec.refinable_pairs.get(0, 0),
             "IncX-IncX should not be refinable"
         );
 

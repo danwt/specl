@@ -7,8 +7,8 @@
 //! Specl-specific concepts (PrimedVar, Unchanged, implicit frame).
 
 use crate::ir::{
-    self, BinOp, CompiledAction, CompiledExpr, CompiledInvariant, CompiledSpec, ConstDecl,
-    KeySource, SymmetryGroup, UnaryOp, VarDecl,
+    self, BinOp, BoolMatrix, CompiledAction, CompiledExpr, CompiledInvariant, CompiledSpec,
+    ConstDecl, KeySource, SymmetryGroup, UnaryOp, VarDecl,
 };
 use specl_ts::{TransitionSystem, TsAction, TsBinOp, TsExpr, TsType, TsUnaryOp};
 use specl_types::Type;
@@ -533,8 +533,8 @@ fn lower_unaryop(op: TsUnaryOp) -> UnaryOp {
     }
 }
 
-fn compute_independence_matrix(actions: &[CompiledAction], n: usize) -> Vec<Vec<bool>> {
-    let mut independent = vec![vec![false; n]; n];
+fn compute_independence_matrix(actions: &[CompiledAction], n: usize) -> BoolMatrix {
+    let mut independent = BoolMatrix::new(n);
     for i in 0..n {
         for j in 0..n {
             if i != j {
@@ -550,7 +550,7 @@ fn compute_independence_matrix(actions: &[CompiledAction], n: usize) -> Vec<Vec<
                     .iter()
                     .any(|w| reads_a.contains(w) || writes_a.contains(w));
 
-                independent[i][j] = !a_interferes_b && !b_interferes_a;
+                independent.set(i, j, !a_interferes_b && !b_interferes_a);
             }
         }
     }
@@ -581,16 +581,16 @@ fn detect_symmetry_groups(vars: &[VarDecl]) -> Vec<SymmetryGroup> {
 
 fn compute_refinable_pairs(
     actions: &[CompiledAction],
-    independent: &[Vec<bool>],
+    independent: &BoolMatrix,
     n: usize,
-) -> Vec<Vec<bool>> {
-    let mut rp = vec![vec![false; n]; n];
+) -> BoolMatrix {
+    let mut rp = BoolMatrix::new(n);
     for i in 0..n {
         for j in i..n {
-            if !independent[i][j] {
+            if !independent.get(i, j) {
                 let refinable = ir::check_refinable(&actions[i], &actions[j]);
-                rp[i][j] = refinable;
-                rp[j][i] = refinable;
+                rp.set(i, j, refinable);
+                rp.set(j, i, refinable);
             }
         }
     }
@@ -843,7 +843,7 @@ mod tests {
         assert_eq!(spec.invariants.len(), 1);
         assert_eq!(spec.invariants[0].name, "Bounded");
         // Only one var, one action → 1x1 independence matrix, all false (self)
-        assert_eq!(spec.independent, vec![vec![false]]);
+        assert_eq!(spec.independent, BoolMatrix::new(1));
     }
 
     #[test]
@@ -982,7 +982,7 @@ mod tests {
 
         let spec = lower(&ts).unwrap();
         // IncX reads/writes x only, IncY reads/writes y only → independent
-        assert!(spec.independent[0][1]);
-        assert!(spec.independent[1][0]);
+        assert!(spec.independent.get(0, 1));
+        assert!(spec.independent.get(1, 0));
     }
 }

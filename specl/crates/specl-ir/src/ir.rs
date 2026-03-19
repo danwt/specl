@@ -3,6 +3,45 @@
 use specl_syntax::TypeExpr;
 use specl_types::Type;
 
+/// Flat boolean matrix with row-major layout for cache-friendly access.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoolMatrix {
+    data: Vec<bool>,
+    n: usize,
+}
+
+impl BoolMatrix {
+    pub fn new(n: usize) -> Self {
+        Self {
+            data: vec![false; n * n],
+            n,
+        }
+    }
+
+    pub fn get(&self, i: usize, j: usize) -> bool {
+        self.data[i * self.n + j]
+    }
+
+    pub fn set(&mut self, i: usize, j: usize, val: bool) {
+        self.data[i * self.n + j] = val;
+    }
+
+    pub fn n(&self) -> usize {
+        self.n
+    }
+
+    /// Returns true if any element in the matrix is true.
+    pub fn any(&self) -> bool {
+        self.data.iter().any(|&v| v)
+    }
+
+    /// Returns true if any element in the given row is true.
+    pub fn row_any(&self, i: usize) -> bool {
+        let start = i * self.n;
+        self.data[start..start + self.n].iter().any(|&v| v)
+    }
+}
+
 /// A compiled Specl specification.
 #[derive(Debug, Clone)]
 pub struct CompiledSpec {
@@ -18,12 +57,12 @@ pub struct CompiledSpec {
     pub invariants: Vec<CompiledInvariant>,
     /// Auxiliary invariants (assumed as hypotheses, not checked).
     pub auxiliary_invariants: Vec<CompiledInvariant>,
-    /// Independence matrix for POR: independent[i][j] = true if actions i and j are independent.
-    pub independent: Vec<Vec<bool>>,
-    /// Refinable pairs for instance-level POR: refinable_pairs[i][j] = true iff templates i,j
+    /// Independence matrix for POR: independent.get(i, j) = true if actions i and j are independent.
+    pub independent: BoolMatrix,
+    /// Refinable pairs for instance-level POR: refinable_pairs.get(i, j) = true iff templates i,j
     /// are template-dependent but all shared variables are accessed via keyed Dict ops on both
     /// sides, so instance-level key disjointness could make them independent.
-    pub refinable_pairs: Vec<Vec<bool>>,
+    pub refinable_pairs: BoolMatrix,
     /// Symmetry groups for symmetry reduction.
     pub symmetry_groups: Vec<SymmetryGroup>,
     /// View variable indices for state abstraction. When set, only these

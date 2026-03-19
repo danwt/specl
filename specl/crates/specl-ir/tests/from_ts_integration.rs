@@ -179,8 +179,8 @@ fn two_independent_counters() {
     let spec = lower(&ts).unwrap();
 
     // IncX and IncY should be independent (different read/write sets)
-    assert!(spec.independent[0][1]);
-    assert!(spec.independent[1][0]);
+    assert!(spec.independent.get(0, 1));
+    assert!(spec.independent.get(1, 0));
 
     // Check passes with POR enabled
     let consts = vec![Value::int(2)];
