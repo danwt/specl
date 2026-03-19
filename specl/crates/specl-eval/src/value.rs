@@ -649,6 +649,12 @@ impl Drop for Value {
 
 // === PartialEq / Eq ===
 
+/// Returns true if the tag represents a dict-like type (IntMap, Fn, or IntMap2).
+#[inline(always)]
+const fn is_fn_like(t: u8) -> bool {
+    t == TAG_INTMAP || t == TAG_FN || t == TAG_INTMAP2
+}
+
 impl PartialEq for Value {
     #[inline]
     fn eq(&self, other: &Self) -> bool {
@@ -670,8 +676,7 @@ impl PartialEq for Value {
             return self.as_int().unwrap() == other.as_int().unwrap();
         }
         // IntMap/IntMap2/Fn cross-comparison (same logical dict, different storage)
-        let fn_like = |t: u8| t == TAG_INTMAP || t == TAG_FN || t == TAG_INTMAP2;
-        if fn_like(t1) && fn_like(t2) {
+        if is_fn_like(t1) && is_fn_like(t2) {
             return match (self.kind(), other.kind()) {
                 (VK::IntMap(a), VK::IntMap(b)) => a == b,
                 (VK::Fn(a), VK::Fn(b)) => a == b,
@@ -709,17 +714,23 @@ impl PartialEq for Value {
         if t1 != t2 {
             return false;
         }
-        // Same tag, different bits — compare inner data
+        // Same tag, different bits — compare inner data.
+        // Use direct pointer access to avoid redundant tag checks in as_*() methods.
         match t1 {
             TAG_INT | TAG_BOOL_FALSE | TAG_BOOL_TRUE | TAG_NONE => false,
-            TAG_STRING => self.as_string() == other.as_string(),
-            TAG_SET => self.as_set() == other.as_set(),
-            TAG_SEQ => self.as_seq() == other.as_seq(),
-            TAG_FN => self.as_fn() == other.as_fn(),
-            TAG_INTMAP => self.as_intmap() == other.as_intmap(),
-            TAG_TUPLE => {
+            TAG_STRING => {
+                let a = unsafe { &*(self.ptr() as *const String) };
+                let b = unsafe { &*(other.ptr() as *const String) };
+                a == b
+            }
+            TAG_SET | TAG_SEQ | TAG_INTMAP | TAG_TUPLE => {
                 let a = unsafe { &*(self.ptr() as *const Vec<Value>) };
                 let b = unsafe { &*(other.ptr() as *const Vec<Value>) };
+                a == b
+            }
+            TAG_FN => {
+                let a = unsafe { &*(self.ptr() as *const Vec<(Value, Value)>) };
+                let b = unsafe { &*(other.ptr() as *const Vec<(Value, Value)>) };
                 a == b
             }
             TAG_SOME => {
@@ -738,6 +749,7 @@ impl Eq for Value {}
 
 impl Value {
     /// Ordering discriminant matching the original enum layout.
+    #[inline(always)]
     fn ord_discriminant(&self) -> u8 {
         match self.tag() {
             TAG_BOOL_FALSE | TAG_BOOL_TRUE => 0,
@@ -755,6 +767,7 @@ impl Value {
 }
 
 impl PartialOrd for Value {
+    #[inline]
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
@@ -785,21 +798,84 @@ impl Ord for Value {
             other => return other,
         }
 
+        // Same discriminant — dispatch once on tag, use direct pointer access
+        // to avoid double kind() dispatch overhead.
+        match t1 {
+            TAG_BOOL_FALSE | TAG_BOOL_TRUE => {
+                // tag encodes the bool value directly
+                let a = t1 == TAG_BOOL_TRUE;
+                let b = other.tag() == TAG_BOOL_TRUE;
+                a.cmp(&b)
+            }
+            TAG_INT | TAG_BIGINT => {
+                // Both are ints (possibly BigInt)
+                let a = if t1 == TAG_INT {
+                    self.as_i56()
+                } else {
+                    self.bigint_val()
+                };
+                let b = if t2 == TAG_INT {
+                    other.as_i56()
+                } else {
+                    other.bigint_val()
+                };
+                a.cmp(&b)
+            }
+            TAG_STRING => {
+                let a = unsafe { &*(self.ptr() as *const String) };
+                let b = unsafe { &*(other.ptr() as *const String) };
+                a.cmp(b)
+            }
+            TAG_SET => {
+                let a = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                let b = unsafe { &*(other.ptr() as *const Vec<Value>) };
+                a.as_slice().cmp(b.as_slice())
+            }
+            TAG_SEQ => {
+                let a = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                let b = unsafe { &*(other.ptr() as *const Vec<Value>) };
+                a.as_slice().cmp(b.as_slice())
+            }
+            TAG_FN | TAG_INTMAP | TAG_INTMAP2 => {
+                // Dict-like types: need cross-type comparison
+                self.cmp_fn_like(other)
+            }
+            TAG_TUPLE => {
+                let a = unsafe { &*(self.ptr() as *const Vec<Value>) };
+                let b = unsafe { &*(other.ptr() as *const Vec<Value>) };
+                a.as_slice().cmp(b.as_slice())
+            }
+            TAG_NONE => Ordering::Equal,
+            TAG_SOME => {
+                let a = unsafe { &*(self.ptr() as *const Value) };
+                let b = unsafe { &*(other.ptr() as *const Value) };
+                a.cmp(b)
+            }
+            _ => unreachable!("invalid Value tag in cmp"),
+        }
+    }
+}
+
+impl Value {
+    /// Compare two fn-like values (Fn, IntMap, IntMap2) that share the same
+    /// ord_discriminant. Extracted to keep the main `cmp` body lean.
+    #[inline(never)]
+    fn cmp_fn_like(&self, other: &Self) -> std::cmp::Ordering {
+        use std::cmp::Ordering;
         match (self.kind(), other.kind()) {
-            (VK::Bool(a), VK::Bool(b)) => a.cmp(&b),
-            (VK::Int(a), VK::Int(b)) => a.cmp(&b),
-            (VK::String(a), VK::String(b)) => a.cmp(b),
-            (VK::Set(a), VK::Set(b)) => a.cmp(b),
-            (VK::Seq(a), VK::Seq(b)) => a.cmp(b),
             (VK::Fn(a), VK::Fn(b)) => a.cmp(b),
             (VK::IntMap(a), VK::IntMap(b)) => a.cmp(b),
             (VK::IntMap(arr), VK::Fn(pairs)) => {
-                // Cross-compare: IntMap as virtual (key, value) pairs
+                // Cross-compare: IntMap as virtual (key, value) pairs.
+                // Avoid creating temporary Value::int() — compare i64 directly.
                 for (i, v) in arr.iter().enumerate() {
                     if i >= pairs.len() {
                         return Ordering::Greater;
                     }
-                    let key_cmp = Value::int(i as i64).cmp(&pairs[i].0);
+                    let key_cmp = match pairs[i].0.as_int() {
+                        Some(k) => (i as i64).cmp(&k),
+                        None => Value::int(i as i64).cmp(&pairs[i].0),
+                    };
                     if key_cmp != Ordering::Equal {
                         return key_cmp;
                     }
@@ -811,12 +887,14 @@ impl Ord for Value {
                 arr.len().cmp(&pairs.len())
             }
             (VK::Fn(pairs), VK::IntMap(arr)) => {
-                // Reverse of above
                 for (i, (k, v)) in pairs.iter().enumerate() {
                     if i >= arr.len() {
                         return Ordering::Greater;
                     }
-                    let key_cmp = k.cmp(&Value::int(i as i64));
+                    let key_cmp = match k.as_int() {
+                        Some(ki) => ki.cmp(&(i as i64)),
+                        None => k.cmp(&Value::int(i as i64)),
+                    };
                     if key_cmp != Ordering::Equal {
                         return key_cmp;
                     }
@@ -833,7 +911,6 @@ impl Ord for Value {
             },
             // IntMap2 vs IntMap/Fn: materialize IntMap2 rows for comparison
             (VK::IntMap2(..), _) | (_, VK::IntMap2(..)) => {
-                // Fallback: convert both to canonical Fn representation and compare
                 let to_fn = |v: &Value| -> Vec<(Value, Value)> {
                     match v.kind() {
                         VK::IntMap(arr) => Value::intmap_to_fn_vec(arr),
@@ -855,51 +932,26 @@ impl Ord for Value {
                 };
                 to_fn(self).cmp(&to_fn(other))
             }
-            (VK::Tuple(a), VK::Tuple(b)) => a.cmp(b),
-            (VK::None, VK::None) => Ordering::Equal,
-            (VK::Some(a), VK::Some(b)) => a.cmp(b),
-            _ => unreachable!("discriminants should match"),
+            _ => unreachable!("fn-like discriminants should match"),
         }
     }
 }
 
 // === Hash ===
 
-/// Hash a slice of Values that are known to all be Int, skipping discriminant per element.
+/// Hash each element of a Value slice, using the inline-int fast path per element
+/// (avoids the kind() dispatch overhead for the most common element type).
 #[inline]
-fn hash_int_elements<H: Hasher>(values: &[Value], state: &mut H) {
+fn hash_elements<H: Hasher>(values: &[Value], state: &mut H) {
     for v in values {
-        if let VK::Int(n) = v.kind() {
-            n.hash(state);
+        let tag = v.tag();
+        if tag == TAG_INT {
+            1u8.hash(state);
+            v.as_i56().hash(state);
         } else {
             v.hash(state);
         }
     }
-}
-
-/// Hash key-value pairs where keys are known to all be Int, skipping discriminant per element.
-#[inline]
-fn hash_int_keyed_pairs<H: Hasher>(pairs: &[(Value, Value)], state: &mut H) {
-    for (k, v) in pairs {
-        if let VK::Int(n) = k.kind() {
-            n.hash(state);
-        } else {
-            k.hash(state);
-        }
-        v.hash(state);
-    }
-}
-
-/// Check if all Values in a slice are Int.
-#[inline]
-fn all_int(values: &[Value]) -> bool {
-    values.iter().all(|v| v.is_int())
-}
-
-/// Check if all keys in a slice of pairs are Int.
-#[inline]
-fn all_int_keys(pairs: &[(Value, Value)]) -> bool {
-    pairs.iter().all(|(k, _)| k.is_int())
 }
 
 impl Hash for Value {
@@ -907,20 +959,37 @@ impl Hash for Value {
     fn hash<H: Hasher>(&self, state: &mut H) {
         // Fast path: inline Int (most common type in protocol specs).
         // Avoids kind() dispatch overhead.
-        if self.tag() == TAG_INT {
+        let tag = self.tag();
+        if tag == TAG_INT {
             1u8.hash(state);
             self.as_i56().hash(state);
             return;
         }
-        match self.kind() {
-            VK::Bool(b) => {
+        // Fast path: other inline types (no heap access needed)
+        match tag {
+            TAG_BOOL_FALSE => {
                 0u8.hash(state);
-                b.hash(state);
+                false.hash(state);
+                return;
             }
-            VK::Int(n) => {
+            TAG_BOOL_TRUE => {
+                0u8.hash(state);
+                true.hash(state);
+                return;
+            }
+            TAG_BIGINT => {
                 1u8.hash(state);
-                n.hash(state);
+                self.bigint_val().hash(state);
+                return;
             }
+            TAG_NONE => {
+                8u8.hash(state);
+                return;
+            }
+            _ => {}
+        }
+        // Heap types — use kind() for the remaining cases
+        match self.kind() {
             VK::String(s) => {
                 2u8.hash(state);
                 s.hash(state);
@@ -928,33 +997,29 @@ impl Hash for Value {
             VK::Set(s) => {
                 3u8.hash(state);
                 s.len().hash(state);
-                if all_int(s) {
-                    hash_int_elements(s, state);
-                } else {
-                    for v in s {
-                        v.hash(state);
-                    }
-                }
+                hash_elements(s, state);
             }
             VK::Seq(s) => {
                 4u8.hash(state);
                 s.len().hash(state);
-                if all_int(s) {
-                    hash_int_elements(s, state);
-                } else {
-                    for v in s {
-                        v.hash(state);
-                    }
-                }
+                hash_elements(s, state);
             }
             VK::Fn(f) => {
                 5u8.hash(state);
                 f.len().hash(state);
-                if all_int_keys(f) {
-                    hash_int_keyed_pairs(f, state);
-                } else {
-                    for (k, v) in f {
+                for (k, v) in f {
+                    // Fast path for int keys (the common case)
+                    if k.tag() == TAG_INT {
+                        1u8.hash(state);
+                        k.as_i56().hash(state);
+                    } else {
                         k.hash(state);
+                    }
+                    // Fast path for int values
+                    if v.tag() == TAG_INT {
+                        1u8.hash(state);
+                        v.as_i56().hash(state);
+                    } else {
                         v.hash(state);
                     }
                 }
@@ -964,10 +1029,18 @@ impl Hash for Value {
                 // identical logical content produce the same hash.
                 5u8.hash(state);
                 arr.len().hash(state);
-                // Match hash_int_keyed_pairs: hash raw i64 key (no discriminant)
                 for (i, v) in arr.iter().enumerate() {
+                    // Keys are implicit sequential ints — hash without discriminant
+                    // to match the Fn int-key fast path above (1u8 + raw i64).
+                    1u8.hash(state);
                     (i as i64).hash(state);
-                    v.hash(state);
+                    // Fast path for int values
+                    if v.tag() == TAG_INT {
+                        1u8.hash(state);
+                        v.as_i56().hash(state);
+                    } else {
+                        v.hash(state);
+                    }
                 }
             }
             VK::IntMap2(inner_size, data) => {
@@ -976,35 +1049,36 @@ impl Hash for Value {
                 5u8.hash(state);
                 outer_size.hash(state);
                 for i in 0..outer_size {
+                    1u8.hash(state);
                     (i as i64).hash(state);
                     // Inner IntMap hash: discriminant 5, inner_size length, then elements
                     5u8.hash(state);
                     (inner_size as usize).hash(state);
                     let base = i * inner_size as usize;
                     for j in 0..inner_size as usize {
+                        1u8.hash(state);
                         (j as i64).hash(state);
-                        data[base + j].hash(state);
+                        let v = &data[base + j];
+                        if v.tag() == TAG_INT {
+                            1u8.hash(state);
+                            v.as_i56().hash(state);
+                        } else {
+                            v.hash(state);
+                        }
                     }
                 }
             }
             VK::Tuple(t) => {
                 7u8.hash(state);
                 t.len().hash(state);
-                if all_int(t) {
-                    hash_int_elements(t, state);
-                } else {
-                    for v in t {
-                        v.hash(state);
-                    }
-                }
-            }
-            VK::None => {
-                8u8.hash(state);
+                hash_elements(t, state);
             }
             VK::Some(v) => {
                 9u8.hash(state);
                 v.hash(state);
             }
+            // Inline types already handled above
+            _ => unreachable!("inline types handled above"),
         }
     }
 }
