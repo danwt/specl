@@ -1,0 +1,21 @@
+module SetComprehensionFilter
+
+// Edge case: set comprehension with filter and complement operation.
+// The Expand action replaces s with its complement relative to 0..N.
+// The sets alternate between {3, 4, 5} and {0, 1, 2}.
+//
+// Use: -c N=5
+
+const N: 0..10
+
+var s: Set[0..N]
+
+init {
+    s = {i in 0..N if i > 2};
+}
+
+action Expand() {
+    s = {i in 0..N if not(i in s)};
+}
+
+invariant NonEmpty { len(s) > 0 }

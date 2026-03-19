@@ -1,0 +1,19 @@
+module LargeConstant
+
+// Edge case: test with a large constant value producing a wide state space.
+// When N is large, x increments from 0 to N creating N+1 reachable states.
+//
+// Use: -c N=500
+
+const N: 1..1000
+
+var x: 0..N
+
+init { x = 0; }
+
+action Inc() {
+    require x < N;
+    x = x + 1;
+}
+
+invariant Bound { x <= N }

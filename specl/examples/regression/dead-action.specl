@@ -1,0 +1,18 @@
+module DeadAction
+
+// Edge case: an action whose guard is always false (unreachable action).
+// The checker should explore the full state space without issues.
+// Since the only action is dead, the spec deadlocks after init.
+//
+// Use: No constants needed
+
+var x: 0..2
+
+init { x = 0; }
+
+action DeadAction() {
+    require x > 100;
+    x = 1;
+}
+
+invariant Trivial { x >= 0 }

@@ -1,0 +1,14 @@
+module SingleState
+
+// Edge case: spec with exactly one reachable state.
+// The noop action always returns to the same state.
+//
+// Use: No constants needed
+
+var x: Bool
+
+init { x = true; }
+
+action Noop() { x = true; }
+
+invariant Always { x }

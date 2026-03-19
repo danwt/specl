@@ -1,0 +1,23 @@
+module NestedDict
+
+// Edge case: 2-level nested Dict access and update.
+// Tests that nested dict comprehension, lookup, and merge work correctly.
+//
+// Use: -c N=2
+
+const N: 0..3
+
+var grid: Dict[0..N, Dict[0..N, 0..5]]
+
+init {
+    grid = {i: {j: 0 for j in 0..N} for i in 0..N};
+}
+
+action Bump(i: 0..N, j: 0..N) {
+    require grid[i][j] < 5;
+    grid = grid | {i: grid[i] | {j: grid[i][j] + 1}};
+}
+
+invariant Pos {
+    all i in 0..N: all j in 0..N: grid[i][j] >= 0
+}

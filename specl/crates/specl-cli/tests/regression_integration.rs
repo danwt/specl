@@ -503,3 +503,282 @@ fn bounds_check_seq_index_in_eval() {
         "expected IndexOutOfBounds, got: {err:?}"
     );
 }
+
+// ─── Edge case: dead action (guard always false) ───
+
+#[test]
+fn dead_action_single_state_explored() {
+    let source = r#"
+module DeadAction
+var x: 0..2
+init { x = 0; }
+action DeadAction() {
+    require x > 100;
+    x = 1;
+}
+invariant Trivial { x >= 0 }
+"#;
+    let outcome = check_spec(source, &[]).expect("should check");
+    match &outcome {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => {
+            assert_eq!(
+                *states_explored, 1,
+                "dead action should yield only the init state"
+            );
+        }
+        other => panic!("expected Ok with 1 state, got: {other:?}"),
+    }
+}
+
+#[test]
+fn dead_action_no_deadlock_when_disabled() {
+    // With check_deadlock=false, a spec whose only action is dead should still pass.
+    let source = r#"
+module DeadAction
+var x: 0..2
+init { x = 0; }
+action DeadAction() {
+    require x > 100;
+    x = 1;
+}
+invariant Trivial { x >= 0 }
+"#;
+    let module = parse(source).unwrap();
+    specl_types::check_module(&module).unwrap();
+    let spec = compile(&module).unwrap();
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        ..Default::default()
+    };
+    let mut explorer = Explorer::new(spec, vec![], config);
+    let outcome = explorer.check().expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::Ok { .. }),
+        "expected Ok, got: {outcome:?}"
+    );
+}
+
+#[test]
+fn dead_action_deadlock_when_enabled() {
+    // With check_deadlock=true, a spec whose only action is dead should report deadlock.
+    let source = r#"
+module DeadAction
+var x: 0..2
+init { x = 0; }
+action DeadAction() {
+    require x > 100;
+    x = 1;
+}
+invariant Trivial { x >= 0 }
+"#;
+    let module = parse(source).unwrap();
+    specl_types::check_module(&module).unwrap();
+    let spec = compile(&module).unwrap();
+    let config = CheckConfig {
+        check_deadlock: true,
+        max_states: 10_000,
+        max_depth: 100,
+        ..Default::default()
+    };
+    let mut explorer = Explorer::new(spec, vec![], config);
+    let outcome = explorer.check().expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::Deadlock { .. }),
+        "expected Deadlock, got: {outcome:?}"
+    );
+}
+
+// ─── Edge case: single reachable state ───
+
+#[test]
+fn single_state_noop_action() {
+    let source = r#"
+module SingleState
+var x: Bool
+init { x = true; }
+action Noop() { x = true; }
+invariant Always { x }
+"#;
+    let outcome = check_spec(source, &[]).expect("should check");
+    match &outcome {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => {
+            assert_eq!(
+                *states_explored, 1,
+                "noop should yield exactly 1 reachable state"
+            );
+        }
+        other => panic!("expected Ok with 1 state, got: {other:?}"),
+    }
+}
+
+// ─── Edge case: large constant values ───
+
+#[test]
+fn large_constant_linear_state_space() {
+    let source = r#"
+module LargeConstant
+const N: 1..1000
+var x: 0..N
+init { x = 0; }
+action Inc() {
+    require x < N;
+    x = x + 1;
+}
+invariant Bound { x <= N }
+"#;
+    let outcome = check_spec(source, &[("N", 100)]).expect("should check");
+    match &outcome {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => {
+            assert_eq!(
+                *states_explored, 101,
+                "N=100 should produce exactly 101 states (0..100)"
+            );
+        }
+        other => panic!("expected Ok with 101 states, got: {other:?}"),
+    }
+}
+
+#[test]
+fn large_constant_invariant_holds() {
+    let source = r#"
+module LargeConstant
+const N: 1..1000
+var x: 0..N
+init { x = 0; }
+action Inc() {
+    require x < N;
+    x = x + 1;
+}
+invariant Bound { x <= N }
+"#;
+    let outcome = check_spec(source, &[("N", 500)]).expect("should check");
+    assert!(
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
+        "expected Ok or StateLimitReached, got: {outcome:?}"
+    );
+}
+
+// ─── Edge case: nested dict access and update ───
+
+#[test]
+fn nested_dict_model_check() {
+    let source = r#"
+module NestedDict
+const N: 0..3
+var grid: Dict[0..N, Dict[0..N, 0..5]]
+init {
+    grid = {i: {j: 0 for j in 0..N} for i in 0..N};
+}
+action Bump(i: 0..N, j: 0..N) {
+    require grid[i][j] < 5;
+    grid = grid | {i: grid[i] | {j: grid[i][j] + 1}};
+}
+invariant Pos {
+    all i in 0..N: all j in 0..N: grid[i][j] >= 0
+}
+"#;
+    let outcome = check_spec(source, &[("N", 1)]).expect("should check");
+    assert!(
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
+        "expected Ok or StateLimitReached, got: {outcome:?}"
+    );
+}
+
+#[test]
+fn nested_dict_state_count() {
+    // With N=1 we have a 2x2 grid each cell in 0..5, giving 6^4 = 1296 states.
+    let source = r#"
+module NestedDict
+const N: 0..3
+var grid: Dict[0..N, Dict[0..N, 0..5]]
+init {
+    grid = {i: {j: 0 for j in 0..N} for i in 0..N};
+}
+action Bump(i: 0..N, j: 0..N) {
+    require grid[i][j] < 5;
+    grid = grid | {i: grid[i] | {j: grid[i][j] + 1}};
+}
+invariant Pos {
+    all i in 0..N: all j in 0..N: grid[i][j] >= 0
+}
+"#;
+    let outcome = check_spec(source, &[("N", 1)]).expect("should check");
+    match &outcome {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => {
+            assert_eq!(
+                *states_explored, 1296,
+                "2x2 grid with 0..5 should yield 6^4 = 1296 states"
+            );
+        }
+        other => panic!("expected Ok with 1296 states, got: {other:?}"),
+    }
+}
+
+// ─── Edge case: set comprehension with filter ───
+
+#[test]
+fn set_comprehension_filter_complement() {
+    // s starts as {3,4,5}, Expand sets s to complement {0,1,2}, then back to {3,4,5}.
+    // Two reachable states.
+    let source = r#"
+module SetComprehensionFilter
+const N: 0..10
+var s: Set[0..N]
+init {
+    s = {i in 0..N if i > 2};
+}
+action Expand() {
+    s = {i in 0..N if not(i in s)};
+}
+invariant NonEmpty { len(s) > 0 }
+"#;
+    let outcome = check_spec(source, &[("N", 5)]).expect("should check");
+    match &outcome {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => {
+            assert_eq!(
+                *states_explored, 2,
+                "complement toggle should yield exactly 2 states"
+            );
+        }
+        other => panic!("expected Ok with 2 states, got: {other:?}"),
+    }
+}
+
+#[test]
+fn set_comprehension_filter_invariant_holds() {
+    let source = r#"
+module SetComprehensionFilter
+const N: 0..10
+var s: Set[0..N]
+init {
+    s = {i in 0..N if i > 2};
+}
+action Expand() {
+    s = {i in 0..N if not(i in s)};
+}
+invariant NonEmpty { len(s) > 0 }
+"#;
+    let outcome = check_spec(source, &[("N", 5)]).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::Ok { .. }),
+        "NonEmpty invariant should hold, got: {outcome:?}"
+    );
+}
