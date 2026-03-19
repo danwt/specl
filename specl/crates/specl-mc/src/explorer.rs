@@ -4473,7 +4473,6 @@ impl Explorer {
             action,
             params,
             &self.consts,
-            self.spec.vars.len(),
             &mut buf,
             &mut var_hashes_buf,
         ) {
