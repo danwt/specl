@@ -6,9 +6,10 @@
 |-----------|-------------|
 | `showcase/` | 10 curated examples covering all language features — the first place to look |
 | `other/` | 100+ additional specs — protocols, puzzles, stress tests, semaphore problems |
+| `benchmark/` | Large-state-space benchmark specs for performance testing |
 | `regression/` | Bug-report regression specs — one `.specl` per GitHub issue |
 
-The sibling `benchmarks/` directory contains TLC comparison scripts (`.tla`, `.cfg`, `.sh`) for performance benchmarking against TLC — it has no `.specl` files.
+The sibling `benchmarks/` directory (at the `specl/` workspace root) contains TLC comparison scripts (`.tla`, `.cfg`, `.sh`) for performance benchmarking against TLC.
 
 ## Showcase
 
@@ -22,15 +23,15 @@ The showcase is a small, carefully chosen set of examples that together:
 
 | Spec | Domain | Lines | What it demonstrates |
 |------|--------|-------|----------------------|
-| [Peterson](showcase/peterson.specl) | Mutual exclusion | 70 | Dict, Bool, range types, parameterized actions, guards, invariants |
-| [Dining Philosophers](showcase/dining-philosophers.specl) | Concurrency | 43 | Modular arithmetic `%`, multi-key dict update |
-| [Two-Phase Commit](showcase/two-phase-commit.specl) | Transactions | 96 | `const`, `all`/`any` quantifiers, `implies` |
-| [G-Counter](showcase/g-counter.specl) | CRDTs | 78 | Nested dicts, `let` bindings, `func`, dict comprehension with conditional |
-| [MESI](showcase/mesi.specl) | Cache coherence | 146 | Full dict comprehension with `if/then/else`, hardware domain |
-| [Paxos](showcase/paxos.specl) | Consensus | 95 | `powerset`, set comprehensions, complex nested quantifiers |
-| [Redlock](showcase/redlock.specl) | Distributed locking | 153 | `Set`, `union`, intentional invariant violation (Kleppmann attack) |
-| [Raft](showcase/raft.specl) | Consensus (complex) | 386 | `Seq`, `Set[Seq[Int]]`, `++`, slicing, `head`/`tail`/`len`, `union`/`diff`, message passing |
-| **[Features](showcase/features.specl)** | **Language reference** | **191** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, `view`, `auxiliary invariant`, nondeterministic init, nondeterministic action parameters** |
+| [Peterson](showcase/peterson.specl) | Mutual exclusion | 69 | Dict, Bool, range types, parameterized actions, guards, invariants |
+| [Dining Philosophers](showcase/dining-philosophers.specl) | Concurrency | 42 | Modular arithmetic `%`, multi-key dict update |
+| [Two-Phase Commit](showcase/two-phase-commit.specl) | Transactions | 95 | `const`, `all`/`any` quantifiers, `implies` |
+| [G-Counter](showcase/g-counter.specl) | CRDTs | 77 | Nested dicts, `let` bindings, `func`, dict comprehension with conditional |
+| [MESI](showcase/mesi.specl) | Cache coherence | 145 | Full dict comprehension with `if/then/else`, hardware domain |
+| [Paxos](showcase/paxos.specl) | Consensus | 97 | `powerset`, set comprehensions, complex nested quantifiers |
+| [Redlock](showcase/redlock.specl) | Distributed locking | 152 | `Set`, `union`, intentional invariant violation (Kleppmann attack) |
+| [Raft](showcase/raft.specl) | Consensus (complex) | 373 | `Seq`, `Set[Seq[Int]]`, `++`, slicing, `head`/`tail`/`len`, `union`/`diff`, message passing |
+| **[Features](showcase/features.specl)** | **Language reference** | **196** | **Every construct: all types, set/dict/seq ops, `let`, `fix`, `powerset`, `union_all`, `keys`/`values`, `iff`, `implies`, `view`, `auxiliary invariant`, nondeterministic init, nondeterministic action parameters** |
 
 ### Verification Results
 

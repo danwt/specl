@@ -68,6 +68,7 @@ See [`examples/`](specl/examples/) for the full catalogue (100+ specs) and verif
 - **Spec analysis** — `specl info spec.specl -c N=3` (state space breakdown, time/memory estimates, optimization tips)
 - **Watch mode** — `specl watch spec.specl -c N=3`
 - **TLA+ translator** — `specl translate spec.tla -o spec.specl` (or `specl check spec.tla` to auto-translate and check)
+- **Simulator** — `specl simulate spec.specl -c N=3` (random trace exploration, `--seed` for reproducibility)
 
 ## Claude Code Integration
 
