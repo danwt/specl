@@ -1486,7 +1486,11 @@ fn vm_eval_inner(
                 stack.push(params[i].clone());
             }
             Op::Local(idx) => {
-                let stack_idx = locals.len() - 1 - *idx as usize;
+                let i = *idx as usize;
+                let stack_idx = locals
+                    .len()
+                    .checked_sub(1 + i)
+                    .ok_or_else(|| EvalError::Internal(format!("local index {i} out of range")))?;
                 stack.push(locals[stack_idx].clone());
             }
 
@@ -1494,17 +1498,17 @@ fn vm_eval_inner(
             Op::Add => {
                 let b = pop_int(stack)?;
                 let a = pop_int(stack)?;
-                stack.push(Value::int(a + b));
+                stack.push(Value::int(a.checked_add(b).ok_or(EvalError::Overflow)?));
             }
             Op::Sub => {
                 let b = pop_int(stack)?;
                 let a = pop_int(stack)?;
-                stack.push(Value::int(a - b));
+                stack.push(Value::int(a.checked_sub(b).ok_or(EvalError::Overflow)?));
             }
             Op::Mul => {
                 let b = pop_int(stack)?;
                 let a = pop_int(stack)?;
-                stack.push(Value::int(a * b));
+                stack.push(Value::int(a.checked_mul(b).ok_or(EvalError::Overflow)?));
             }
             Op::Div => {
                 let b = pop_int(stack)?;
@@ -1512,7 +1516,7 @@ fn vm_eval_inner(
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
-                stack.push(Value::int(a / b));
+                stack.push(Value::int(a.checked_div(b).ok_or(EvalError::Overflow)?));
             }
             Op::Mod => {
                 let b = pop_int(stack)?;
@@ -1520,7 +1524,7 @@ fn vm_eval_inner(
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
-                stack.push(Value::int(a % b));
+                stack.push(Value::int(a.checked_rem(b).ok_or(EvalError::Overflow)?));
             }
             Op::Neg => {
                 let a = pop_int(stack)?;
@@ -2225,9 +2229,15 @@ fn vm_eval_inner(
                 let update_inner =
                     |inner_val: Value, k3: Value, value: Value| -> Result<Value, EvalError> {
                         if inner_val.is_intmap() {
-                            let k3_int = expect_int(&k3)? as usize;
+                            let k3_int = expect_int(&k3)?;
                             let mut inner_arc = inner_val.into_intmap_arc();
-                            Arc::make_mut(&mut inner_arc)[k3_int] = value;
+                            if k3_int < 0 || (k3_int as usize) >= inner_arc.len() {
+                                return Err(EvalError::IndexOutOfBounds {
+                                    index: k3_int,
+                                    length: inner_arc.len(),
+                                });
+                            }
+                            Arc::make_mut(&mut inner_arc)[k3_int as usize] = value;
                             Ok(Value::from_intmap_arc(inner_arc))
                         } else if inner_val.is_fn() {
                             let mut inner_arc = inner_val.into_fn_arc();
@@ -2245,11 +2255,18 @@ fn vm_eval_inner(
                                   value: Value|
                  -> Result<Value, EvalError> {
                     if mid_val.is_intmap() {
-                        let k2_int = expect_int(&k2)? as usize;
+                        let k2_int = expect_int(&k2)?;
                         let mut mid_arc = mid_val.into_intmap_arc();
                         let mid = Arc::make_mut(&mut mid_arc);
-                        let inner_val = std::mem::replace(&mut mid[k2_int], Value::none());
-                        mid[k2_int] = update_inner(inner_val, k3, value)?;
+                        if k2_int < 0 || (k2_int as usize) >= mid.len() {
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: k2_int,
+                                length: mid.len(),
+                            });
+                        }
+                        let k2_idx = k2_int as usize;
+                        let inner_val = std::mem::replace(&mut mid[k2_idx], Value::none());
+                        mid[k2_idx] = update_inner(inner_val, k3, value)?;
                         Ok(Value::from_intmap_arc(mid_arc))
                     } else if mid_val.is_fn() {
                         let mut mid_arc = mid_val.into_fn_arc();
@@ -2266,11 +2283,18 @@ fn vm_eval_inner(
                 };
 
                 if dict.is_intmap() {
-                    let k1_int = expect_int(&k1)? as usize;
+                    let k1_int = expect_int(&k1)?;
                     let mut outer_arc = dict.into_intmap_arc();
                     let outer = Arc::make_mut(&mut outer_arc);
-                    let mid_val = std::mem::replace(&mut outer[k1_int], Value::none());
-                    outer[k1_int] = update_mid(mid_val, k2, k3, value)?;
+                    if k1_int < 0 || (k1_int as usize) >= outer.len() {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k1_int,
+                            length: outer.len(),
+                        });
+                    }
+                    let k1_idx = k1_int as usize;
+                    let mid_val = std::mem::replace(&mut outer[k1_idx], Value::none());
+                    outer[k1_idx] = update_mid(mid_val, k2, k3, value)?;
                     stack.push(Value::from_intmap_arc(outer_arc));
                 } else if dict.is_fn() {
                     let mut outer_arc = dict.into_fn_arc();

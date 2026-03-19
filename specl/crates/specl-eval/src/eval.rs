@@ -21,6 +21,9 @@ pub enum EvalError {
     #[error("division by zero")]
     DivisionByZero,
 
+    #[error("integer overflow")]
+    Overflow,
+
     #[error("no satisfying value for fix")]
     FixFailed,
 
@@ -895,16 +898,22 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
         },
 
         CompiledExpr::Binary { op, left, right } => match op {
-            BinOp::Add => Ok(eval_int(left, ctx)? + eval_int(right, ctx)?),
-            BinOp::Sub => Ok(eval_int(left, ctx)? - eval_int(right, ctx)?),
-            BinOp::Mul => Ok(eval_int(left, ctx)? * eval_int(right, ctx)?),
+            BinOp::Add => eval_int(left, ctx)?
+                .checked_add(eval_int(right, ctx)?)
+                .ok_or(EvalError::Overflow),
+            BinOp::Sub => eval_int(left, ctx)?
+                .checked_sub(eval_int(right, ctx)?)
+                .ok_or(EvalError::Overflow),
+            BinOp::Mul => eval_int(left, ctx)?
+                .checked_mul(eval_int(right, ctx)?)
+                .ok_or(EvalError::Overflow),
             BinOp::Div => {
                 let a = eval_int(left, ctx)?;
                 let b = eval_int(right, ctx)?;
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
-                Ok(a / b)
+                a.checked_div(b).ok_or(EvalError::Overflow)
             }
             BinOp::Mod => {
                 let a = eval_int(left, ctx)?;
@@ -912,7 +921,7 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                 if b == 0 {
                     return Err(EvalError::DivisionByZero);
                 }
-                Ok(a % b)
+                a.checked_rem(b).ok_or(EvalError::Overflow)
             }
             _ => expect_int(&eval(expr, ctx)?),
         },
