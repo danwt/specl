@@ -1,0 +1,17 @@
+module Overflow
+
+// Regression: integer overflow in arithmetic must produce a clean error,
+// not a panic or silent wrap-around.
+//
+// x starts at 100000 and the action squares it. After two squarings:
+//   100000^2 = 10^10 (fits in i64)
+//   (10^10)^2 = 10^20 (exceeds i64::MAX ~= 9.2 * 10^18)
+// The checker should report EvalError::Overflow, not crash.
+
+var x: 0..100000
+
+init { x = 100000; }
+
+action Square() { x = x * x; }
+
+invariant NoOverflow { x >= 0 }

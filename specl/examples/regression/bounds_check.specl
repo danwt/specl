@@ -1,0 +1,21 @@
+module BoundsCheck
+
+// Regression: accessing a Dict key that does not exist must produce a clean
+// error (EvalError::KeyNotFound), not a panic.
+//
+// The spec builds a Dict over 0..2 then attempts to look up key 3, which is
+// outside the domain.
+
+var d: Dict[0..2, 0..5]
+var result: 0..5
+
+init {
+    d = {k: k for k in 0..2};
+    result = 0;
+}
+
+action LookupOutOfBounds() {
+    result = d[3];
+}
+
+invariant ResultValid { result >= 0 }
