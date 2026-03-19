@@ -365,7 +365,9 @@ impl<'a> EncoderCtx<'a> {
             BinOp::Eq => self.encode_eq(left, right),
             BinOp::Ne => {
                 let eq = self.encode_eq(left, right)?;
-                let eq_bool = eq.as_bool().unwrap();
+                let eq_bool = eq.as_bool().ok_or_else(|| {
+                    SymbolicError::Encoding("!= comparison: equality did not produce Bool".into())
+                })?;
                 Ok(Dynamic::from_ast(&eq_bool.not()))
             }
             BinOp::Lt => {
@@ -859,10 +861,15 @@ impl<'a> EncoderCtx<'a> {
             VarKind::ExplodedSet { .. } => {
                 let one = Int::from_i64(1);
                 let zero = Int::from_i64(0);
-                let terms: Vec<Int> = vars
-                    .iter()
-                    .map(|v| v.as_bool().unwrap().ite(&one, &zero))
-                    .collect();
+                let mut terms = Vec::with_capacity(vars.len());
+                for v in vars {
+                    let b = v.as_bool().ok_or_else(|| {
+                        SymbolicError::Encoding(
+                            "set length: expected Bool Z3 variable for set element".into(),
+                        )
+                    })?;
+                    terms.push(b.ite(&one, &zero));
+                }
                 Ok(Dynamic::from_ast(&Int::add(&terms)))
             }
             VarKind::ExplodedDict { key_lo, key_hi, .. } => {
@@ -967,10 +974,15 @@ impl<'a> EncoderCtx<'a> {
                             let z3_vars = &self.step_vars[step][*idx];
                             let one = Int::from_i64(1);
                             let zero = Int::from_i64(0);
-                            let terms: Vec<Int> = z3_vars
-                                .iter()
-                                .map(|v| v.as_bool().unwrap().ite(&one, &zero))
-                                .collect();
+                            let mut terms = Vec::with_capacity(z3_vars.len());
+                            for v in z3_vars {
+                                let b = v.as_bool().ok_or_else(|| {
+                                    SymbolicError::Encoding(
+                                        "set len: expected Bool Z3 variable".into(),
+                                    )
+                                })?;
+                                terms.push(b.ite(&one, &zero));
+                            }
                             Ok(Dynamic::from_ast(&Int::add(&terms)))
                         }
                         VarKind::ExplodedSeq { .. } => {
@@ -1078,7 +1090,11 @@ impl<'a> EncoderCtx<'a> {
                     if let Some(concrete_elem) = self.try_concrete_int(elem) {
                         let offset = (concrete_elem - lo) as usize;
                         let result = if offset < z3_vars.len() {
-                            z3_vars[offset].as_bool().unwrap()
+                            z3_vars[offset].as_bool().ok_or_else(|| {
+                                SymbolicError::Encoding(
+                                    "set membership: expected Bool for set element".into(),
+                                )
+                            })?
                         } else {
                             Bool::from_bool(false)
                         };
@@ -1087,7 +1103,11 @@ impl<'a> EncoderCtx<'a> {
                     } else {
                         let elem_z3 = self.encode_int(elem)?;
                         let result = Self::build_ite_chain(&elem_z3, z3_vars, lo)?;
-                        let result_bool = result.as_bool().unwrap();
+                        let result_bool = result.as_bool().ok_or_else(|| {
+                            SymbolicError::Encoding(
+                                "set membership: ITE chain did not produce Bool".into(),
+                            )
+                        })?;
                         let final_val = if negate {
                             result_bool.not()
                         } else {
@@ -1328,7 +1348,11 @@ impl<'a> EncoderCtx<'a> {
                     if let Some(concrete_elem) = self.try_concrete_int(elem) {
                         let offset = (concrete_elem - lo) as usize;
                         let result = if offset < set_vars.len() {
-                            set_vars[offset].as_bool().unwrap()
+                            set_vars[offset].as_bool().ok_or_else(|| {
+                                SymbolicError::Encoding(
+                                    "nested set membership: expected Bool".into(),
+                                )
+                            })?
                         } else {
                             Bool::from_bool(false)
                         };
@@ -1337,7 +1361,11 @@ impl<'a> EncoderCtx<'a> {
                     } else {
                         let elem_z3 = self.encode_int(elem)?;
                         let result = Self::build_ite_chain(&elem_z3, set_vars, lo)?;
-                        let result_bool = result.as_bool().unwrap();
+                        let result_bool = result.as_bool().ok_or_else(|| {
+                            SymbolicError::Encoding(
+                                "nested set membership: ITE chain did not produce Bool".into(),
+                            )
+                        })?;
                         let final_val = if negate {
                             result_bool.not()
                         } else {
@@ -1370,7 +1398,12 @@ impl<'a> EncoderCtx<'a> {
                             let z3_vars: Vec<Dynamic> =
                                 flags.iter().map(|b| Dynamic::from_ast(b)).collect();
                             let result = Self::build_ite_chain(&elem_z3, &z3_vars, lo)?;
-                            let result_bool = result.as_bool().unwrap();
+                            let result_bool = result.as_bool().ok_or_else(|| {
+                                SymbolicError::Encoding(
+                                    "set expression membership: ITE chain did not produce Bool"
+                                        .into(),
+                                )
+                            })?;
                             let final_val = if negate {
                                 result_bool.not()
                             } else {
@@ -1673,8 +1706,12 @@ impl<'a> EncoderCtx<'a> {
 
         let mut conjuncts = Vec::new();
         // len equality
-        let l_len = l_vars[0].as_int().unwrap();
-        let r_len = r_vars[0].as_int().unwrap();
+        let l_len = l_vars[0].as_int().ok_or_else(|| {
+            SymbolicError::Encoding("seq equality: left seq len is not Int".into())
+        })?;
+        let r_len = r_vars[0].as_int().ok_or_else(|| {
+            SymbolicError::Encoding("seq equality: right seq len is not Int".into())
+        })?;
         conjuncts.push(l_len.eq(&r_len));
         // element equality (for all positions up to max_len)
         for i in 0..max_len {
@@ -1750,7 +1787,16 @@ impl<'a> EncoderCtx<'a> {
                     _ => self.next_step,
                 };
                 let z3_vars = &self.step_vars[step][*idx];
-                Ok(z3_vars.iter().map(|v| v.as_bool().unwrap()).collect())
+                z3_vars
+                    .iter()
+                    .map(|v| {
+                        v.as_bool().ok_or_else(|| {
+                            SymbolicError::Encoding(
+                                "encode_as_set: expected Bool Z3 variable for set element".into(),
+                            )
+                        })
+                    })
+                    .collect::<SymbolicResult<Vec<_>>>()
             }
             CompiledExpr::SetLit(elements) => {
                 let mut flags = vec![Bool::from_bool(false); count];
@@ -2074,13 +2120,13 @@ pub fn assert_range_constraints(
 fn assert_var_range(solver: &Solver, kind: &VarKind, z3_vars: &[Dynamic]) {
     match kind {
         VarKind::Int { lo, hi } => {
-            if let Some(lo) = lo {
-                let z3_lo = Int::from_i64(*lo);
-                solver.assert(z3_vars[0].as_int().unwrap().ge(&z3_lo));
-            }
-            if let Some(hi) = hi {
-                let z3_hi = Int::from_i64(*hi);
-                solver.assert(z3_vars[0].as_int().unwrap().le(&z3_hi));
+            if let Some(int_var) = z3_vars.first().and_then(|v| v.as_int()) {
+                if let Some(lo) = lo {
+                    solver.assert(int_var.ge(Int::from_i64(*lo)));
+                }
+                if let Some(hi) = hi {
+                    solver.assert(int_var.le(Int::from_i64(*hi)));
+                }
             }
         }
         VarKind::ExplodedDict {
@@ -2097,9 +2143,10 @@ fn assert_var_range(solver: &Solver, kind: &VarKind, z3_vars: &[Dynamic]) {
         }
         VarKind::ExplodedSeq { max_len, elem_kind } => {
             // len bounded: 0 <= len <= max_len
-            let len_var = z3_vars[0].as_int().unwrap();
-            solver.assert(len_var.ge(Int::from_i64(0)));
-            solver.assert(len_var.le(Int::from_i64(*max_len as i64)));
+            if let Some(len_var) = z3_vars.first().and_then(|v| v.as_int()) {
+                solver.assert(len_var.ge(Int::from_i64(0)));
+                solver.assert(len_var.le(Int::from_i64(*max_len as i64)));
+            }
             // Element range constraints
             let elem_stride = elem_kind.z3_var_count();
             for i in 0..*max_len {

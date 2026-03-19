@@ -292,10 +292,17 @@ pub fn check_ic3(
                     reason = reason,
                     "IC3 returned unknown"
                 );
+                let timeout_hint = if timeout_ms.is_some() {
+                    " Consider increasing --timeout or"
+                } else {
+                    " Consider setting --timeout or"
+                };
                 return Ok(SymbolicOutcome::Unknown {
                     reason: format!(
-                        "IC3 returned unknown for invariant '{}': {}",
-                        inv.name, reason
+                        "IC3/Spacer returned unknown for invariant '{}': {}.{} \
+                         using --bfs for explicit-state exploration, or trying \
+                         a different --spacer-profile.",
+                        inv.name, reason, timeout_hint
                     ),
                 });
             }

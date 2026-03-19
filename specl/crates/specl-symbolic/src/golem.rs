@@ -139,9 +139,9 @@ fn run_golem_with_timeout(
                     if std::time::Instant::now() >= deadline {
                         let _ = child.kill();
                         let _ = child.wait();
-                        return Err(crate::SymbolicError::Internal(format!(
-                            "Golem timed out after {}ms for invariant '{}'",
-                            ms, inv_name
+                        return Err(crate::SymbolicError::Z3(format!(
+                            "Golem timed out after {ms}ms for invariant '{inv_name}'. \
+                             Consider increasing --timeout or using --bfs instead."
                         )));
                     }
                     std::thread::sleep(std::time::Duration::from_millis(100));

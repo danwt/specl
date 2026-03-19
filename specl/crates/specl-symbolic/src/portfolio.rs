@@ -232,7 +232,6 @@ pub fn check_portfolio(
     let overall_timeout = timeout_ms.unwrap_or(300_000); // 5 min default
     let deadline = std::time::Instant::now() + Duration::from_millis(overall_timeout);
 
-    let mut first_ok = None;
     let mut reasons = Vec::new();
     let mut received = 0;
 
@@ -250,14 +249,8 @@ pub fn check_portfolio(
             }
             Ok(StrategyResult::Done(outcome @ SymbolicOutcome::Ok { .. })) => {
                 done.store(true, Ordering::Relaxed);
-                if first_ok.is_none() {
-                    first_ok = Some(outcome);
-                }
-                // Found a proof — return immediately (other strategies are hinted to stop)
-                if let Some(ok) = first_ok {
-                    info!("portfolio: property proven");
-                    return Ok(ok);
-                }
+                info!("portfolio: property proven");
+                return Ok(outcome);
             }
             Ok(StrategyResult::Done(SymbolicOutcome::Unknown { reason })) => {
                 reasons.push(reason);
@@ -274,11 +267,6 @@ pub fn check_portfolio(
             }
         }
         received += 1;
-    }
-
-    if let Some(ok) = first_ok {
-        info!("portfolio: property proven");
-        return Ok(ok);
     }
 
     Ok(SymbolicOutcome::Unknown {

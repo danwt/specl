@@ -112,7 +112,7 @@ fn check_base_case(
             match solver.check() {
                 SatResult::Sat => {
                     info!(invariant = inv.name, depth, "base case violation found");
-                    let model = solver.get_model().expect("SAT result must have model");
+                    let model = crate::get_model_or_err(&solver)?;
                     let trace = extract_trace(&model, layout, &all_step_vars, spec, consts, depth);
                     return Ok(Some(SymbolicOutcome::InvariantViolation {
                         invariant: inv.name.clone(),
@@ -123,9 +123,10 @@ fn check_base_case(
                 SatResult::Unknown => {
                     solver.pop(1);
                     return Ok(Some(SymbolicOutcome::Unknown {
-                        reason: format!(
-                            "Z3 returned unknown at base depth {} for invariant '{}'",
-                            depth, inv.name
+                        reason: crate::unknown_reason(
+                            &format!("k-induction base case at depth {depth}"),
+                            &inv.name,
+                            timeout_ms,
                         ),
                     }));
                 }
@@ -227,7 +228,7 @@ fn check_inductive_step_with_cti(
             match solver.check() {
                 SatResult::Sat => {
                     info!(invariant = inv.name, k, cti_iter, "extracting CTI");
-                    let model = solver.get_model().expect("SAT result must have model");
+                    let model = crate::get_model_or_err(&solver)?;
 
                     // Extract state at step k-1 (last assumption step)
                     let equalities =
@@ -288,9 +289,10 @@ fn check_inductive_step_with_cti(
                     solver.pop(1);
                     return Ok(KInductionResult {
                         outcome: SymbolicOutcome::Unknown {
-                            reason: format!(
-                                "Z3 returned unknown for k-induction step for invariant '{}'",
-                                inv.name
+                            reason: crate::unknown_reason(
+                                &format!("k-induction step (k={k})"),
+                                &inv.name,
+                                timeout_ms,
                             ),
                         },
                         cti_lemmas,

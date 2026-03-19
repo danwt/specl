@@ -229,8 +229,9 @@ fn encode_init_assignment(
             };
             let flags = enc.encode_as_set(rhs, *lo, *hi)?;
             for (i, flag) in flags.iter().enumerate() {
-                let vb = z3_vars[i].as_bool().unwrap();
-                solver.assert(vb.eq(flag));
+                if let Some(vb) = z3_vars[i].as_bool() {
+                    solver.assert(vb.eq(flag));
+                }
             }
             Ok(())
         }
@@ -250,7 +251,9 @@ fn encode_init_assignment(
             match rhs {
                 CompiledExpr::SeqLit(elems) => {
                     // len = elems.len()
-                    let len_var = z3_vars[0].as_int().unwrap();
+                    let len_var = z3_vars[0].as_int().ok_or_else(|| {
+                        SymbolicError::Encoding("seq init: len var is not Int".into())
+                    })?;
                     solver.assert(len_var.eq(Int::from_i64(elems.len() as i64)));
                     // assign each element
                     let elem_stride = elem_kind.z3_var_count();
@@ -289,7 +292,9 @@ fn encode_init_assignment(
                 set_locals: Vec::new(),
                 whole_var_locals: Vec::new(),
             };
-            let present_var = z3_vars[0].as_bool().unwrap();
+            let present_var = z3_vars[0].as_bool().ok_or_else(|| {
+                SymbolicError::Encoding("option init: present flag is not Bool".into())
+            })?;
             let inner_stride = inner_kind.z3_var_count();
             let inner_vars = &z3_vars[1..1 + inner_stride];
             // Check if rhs is None (Bool(false) used as sentinel) or Some(value)
@@ -388,7 +393,9 @@ fn encode_init_compound_body(
     match value_kind {
         VarKind::ExplodedSeq { max_len, .. } => {
             if let CompiledExpr::SeqLit(elems) = body {
-                let len_var = slot_vars[0].as_int().unwrap();
+                let len_var = slot_vars[0].as_int().ok_or_else(|| {
+                    SymbolicError::Encoding("compound init seq: len var is not Int".into())
+                })?;
                 solver.assert(len_var.eq(Int::from_i64(elems.len() as i64)));
                 for (ei, elem_expr) in elems.iter().enumerate() {
                     if ei >= *max_len {
@@ -454,8 +461,9 @@ fn encode_init_compound_body(
         VarKind::ExplodedSet { lo, hi } => {
             let flags = enc.encode_as_set(body, *lo, *hi)?;
             for (i, flag) in flags.iter().enumerate() {
-                let vb = slot_vars[i].as_bool().unwrap();
-                solver.assert(vb.eq(flag));
+                if let Some(vb) = slot_vars[i].as_bool() {
+                    solver.assert(vb.eq(flag));
+                }
             }
             Ok(())
         }
@@ -858,8 +866,9 @@ fn encode_primed_assignment(
             let flags = enc.encode_as_set(rhs, lo, hi)?;
             let mut conjuncts = Vec::new();
             for (i, flag) in flags.iter().enumerate() {
-                let nb = next_vars[i].as_bool().unwrap();
-                conjuncts.push(nb.eq(flag));
+                if let Some(nb) = next_vars[i].as_bool() {
+                    conjuncts.push(nb.eq(flag));
+                }
             }
             Ok(Bool::and(&conjuncts))
         }
@@ -870,7 +879,9 @@ fn encode_primed_assignment(
             match rhs {
                 CompiledExpr::SeqLit(elems) => {
                     let mut conjuncts = Vec::new();
-                    let next_len = next_vars[0].as_int().unwrap();
+                    let next_len = next_vars[0].as_int().ok_or_else(|| {
+                        SymbolicError::Encoding("seq effect SeqLit: next len is not Int".into())
+                    })?;
                     conjuncts.push(next_len.eq(Int::from_i64(elems.len() as i64)));
                     for (i, elem_expr) in elems.iter().enumerate() {
                         if i >= *max_len {
@@ -908,8 +919,12 @@ fn encode_primed_assignment(
                 // SeqTail: shift left, len - 1
                 CompiledExpr::SeqTail(_) => {
                     let mut conjuncts = Vec::new();
-                    let curr_len = curr_vars[0].as_int().unwrap();
-                    let next_len = next_vars[0].as_int().unwrap();
+                    let curr_len = curr_vars[0].as_int().ok_or_else(|| {
+                        SymbolicError::Encoding("seq effect SeqTail: curr len is not Int".into())
+                    })?;
+                    let next_len = next_vars[0].as_int().ok_or_else(|| {
+                        SymbolicError::Encoding("seq effect SeqTail: next len is not Int".into())
+                    })?;
                     conjuncts.push(next_len.eq(Int::sub(&[&curr_len, &Int::from_i64(1)])));
                     for i in 0..max_len.saturating_sub(1) {
                         let next_offset = 1 + i * elem_stride;
@@ -938,8 +953,12 @@ fn encode_primed_assignment(
                 } => match right.as_ref() {
                     CompiledExpr::SeqLit(elems) if elems.len() == 1 => {
                         let mut conjuncts = Vec::new();
-                        let curr_len = curr_vars[0].as_int().unwrap();
-                        let next_len = next_vars[0].as_int().unwrap();
+                        let curr_len = curr_vars[0].as_int().ok_or_else(|| {
+                            SymbolicError::Encoding("seq effect Concat: curr len is not Int".into())
+                        })?;
+                        let next_len = next_vars[0].as_int().ok_or_else(|| {
+                            SymbolicError::Encoding("seq effect Concat: next len is not Int".into())
+                        })?;
                         conjuncts.push(next_len.eq(Int::add(&[&curr_len, &Int::from_i64(1)])));
                         let appended = enc.encode(&elems[0])?;
                         for j in 0..*max_len {
@@ -952,7 +971,10 @@ fn encode_primed_assignment(
                                     curr_vars[offset + s].as_int(),
                                 ) {
                                     let new_val = if s == 0 {
-                                        appended.as_int().unwrap()
+                                        match appended.as_int() {
+                                            Some(v) => v,
+                                            None => ci.clone(),
+                                        }
                                     } else {
                                         ci.clone()
                                     };
@@ -962,7 +984,10 @@ fn encode_primed_assignment(
                                     curr_vars[offset + s].as_bool(),
                                 ) {
                                     let new_val = if s == 0 {
-                                        appended.as_bool().unwrap()
+                                        match appended.as_bool() {
+                                            Some(v) => v,
+                                            None => cb.clone(),
+                                        }
                                     } else {
                                         cb.clone()
                                     };
@@ -981,7 +1006,9 @@ fn encode_primed_assignment(
                     let mut conjuncts = Vec::new();
                     let lo_z3 = enc.encode_int(lo)?;
                     let hi_z3 = enc.encode_int(hi)?;
-                    let next_len = next_vars[0].as_int().unwrap();
+                    let next_len = next_vars[0].as_int().ok_or_else(|| {
+                        SymbolicError::Encoding("seq effect Slice: next len is not Int".into())
+                    })?;
                     conjuncts.push(next_len.eq(Int::sub(&[&hi_z3, &lo_z3])));
                     for i in 0..*max_len {
                         let next_offset = 1 + i * elem_stride;
@@ -990,20 +1017,28 @@ fn encode_primed_assignment(
                         // ITE chain over source elements
                         for s in 0..elem_stride {
                             if let Some(ni) = next_vars[next_offset + s].as_int() {
-                                let mut val = curr_vars[1 + s].as_int().unwrap().clone(); // default: elem 0
+                                let Some(mut val) = curr_vars[1 + s].as_int() else {
+                                    continue;
+                                };
                                 for j in (0..*max_len).rev() {
                                     let src_offset = 1 + j * elem_stride;
                                     let cond = src_idx.eq(Int::from_i64(j as i64));
-                                    let cv = curr_vars[src_offset + s].as_int().unwrap();
+                                    let Some(cv) = curr_vars[src_offset + s].as_int() else {
+                                        continue;
+                                    };
                                     val = cond.ite(&cv, &val);
                                 }
                                 conjuncts.push(ni.eq(&val));
                             } else if let Some(nb) = next_vars[next_offset + s].as_bool() {
-                                let mut val = curr_vars[1 + s].as_bool().unwrap().clone();
+                                let Some(mut val) = curr_vars[1 + s].as_bool() else {
+                                    continue;
+                                };
                                 for j in (0..*max_len).rev() {
                                     let src_offset = 1 + j * elem_stride;
                                     let cond = src_idx.eq(Int::from_i64(j as i64));
-                                    let cv = curr_vars[src_offset + s].as_bool().unwrap();
+                                    let Some(cv) = curr_vars[src_offset + s].as_bool() else {
+                                        continue;
+                                    };
                                     val = cond.ite(&cv, &val);
                                 }
                                 conjuncts.push(nb.eq(&val));
@@ -1020,7 +1055,9 @@ fn encode_primed_assignment(
         }
         VarKind::ExplodedOption { inner_kind } => {
             let curr_vars = &step_vars[step][var_idx];
-            let next_present = next_vars[0].as_bool().unwrap();
+            let next_present = next_vars[0].as_bool().ok_or_else(|| {
+                SymbolicError::Encoding("option effect: next present flag is not Bool".into())
+            })?;
             let inner_stride = inner_kind.z3_var_count();
             let inner_next = &next_vars[1..1 + inner_stride];
             let inner_curr = &curr_vars[1..1 + inner_stride];
@@ -1252,7 +1289,9 @@ fn encode_compound_update_for_slot(
     match value_kind {
         VarKind::ExplodedSeq { max_len, .. } => {
             let max_len = *max_len;
-            let curr_len = slot_curr[0].as_int().unwrap();
+            let curr_len = slot_curr[0].as_int().ok_or_else(|| {
+                SymbolicError::Encoding("compound seq update: len var is not Int".into())
+            })?;
             match val_expr {
                 CompiledExpr::Binary {
                     op: BinOp::Concat,
@@ -1422,7 +1461,12 @@ fn encode_compound_update_for_slot(
                     let new_flags = enc.encode_as_set(right, *lo, *hi)?;
                     let mut result = Vec::new();
                     for (i, new_flag) in new_flags.iter().enumerate() {
-                        let curr_flag = slot_curr[i].as_bool().unwrap();
+                        let curr_flag = slot_curr[i].as_bool().ok_or_else(|| {
+                            SymbolicError::Encoding(
+                                "set union in compound update: expected Bool for set element"
+                                    .into(),
+                            )
+                        })?;
                         result.push(Dynamic::from_ast(&Bool::or(&[curr_flag, new_flag.clone()])));
                     }
                     Ok(result)

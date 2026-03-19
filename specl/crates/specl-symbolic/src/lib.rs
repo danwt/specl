@@ -31,6 +31,28 @@ pub(crate) fn apply_solver_timeout(solver: &Solver, timeout_ms: Option<u64>) {
     }
 }
 
+/// Extract model from solver after SAT result, with proper error handling.
+pub(crate) fn get_model_or_err(solver: &Solver) -> SymbolicResult<z3::Model> {
+    solver.get_model().ok_or_else(|| {
+        SymbolicError::Z3(
+            "solver returned SAT but no model is available (possible Z3 internal error)".into(),
+        )
+    })
+}
+
+/// Build an actionable Unknown reason from a Z3 "unknown" result.
+pub(crate) fn unknown_reason(context: &str, invariant: &str, timeout_ms: Option<u64>) -> String {
+    let timeout_hint = if timeout_ms.is_some() {
+        " Consider increasing --timeout or"
+    } else {
+        " Consider setting --timeout or"
+    };
+    format!(
+        "Z3 returned unknown for {context} on invariant '{invariant}'.{timeout_hint} \
+         using --bfs for explicit-state exploration instead."
+    )
+}
+
 /// Symbolic checking error.
 #[derive(Debug, Error)]
 pub enum SymbolicError {
@@ -39,6 +61,9 @@ pub enum SymbolicError {
 
     #[error("encoding error: {0}")]
     Encoding(String),
+
+    #[error("Z3 solver error: {0}")]
+    Z3(String),
 
     #[error("internal error: {0}")]
     Internal(String),

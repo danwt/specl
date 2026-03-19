@@ -93,7 +93,7 @@ pub fn check_inductive(
         match solver.check() {
             SatResult::Sat => {
                 info!(invariant = inv.name, "invariant is NOT inductive");
-                let model = solver.get_model().expect("SAT result must have model");
+                let model = crate::get_model_or_err(&solver)?;
                 let trace = extract_trace(&model, &layout, &all_step_vars, spec, consts, 1);
                 return Ok(SymbolicOutcome::InvariantViolation {
                     invariant: inv.name.clone(),
@@ -106,7 +106,7 @@ pub fn check_inductive(
             SatResult::Unknown => {
                 solver.pop(1);
                 return Ok(SymbolicOutcome::Unknown {
-                    reason: format!("Z3 returned unknown for invariant '{}'", inv.name),
+                    reason: crate::unknown_reason("inductive check", &inv.name, timeout_ms),
                 });
             }
         }
