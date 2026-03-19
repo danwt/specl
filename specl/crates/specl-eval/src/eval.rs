@@ -33,6 +33,9 @@ pub enum EvalError {
     #[error("undefined constant at index {0}")]
     UndefinedConstant(usize),
 
+    #[error("resource exhausted: {0}")]
+    ResourceExhausted(String),
+
     #[error("internal error: {0}")]
     Internal(String),
 }
@@ -692,6 +695,11 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             let val = eval(expr, ctx)?;
             let input_set = expect_set(&val)?;
             let n = input_set.len();
+            if n >= 64 {
+                return Err(EvalError::ResourceExhausted(
+                    "powerset of set with 64+ elements".into(),
+                ));
+            }
             let mut result = Vec::new();
             for mask in 0..(1usize << n) {
                 let mut subset = Vec::new();
@@ -1039,6 +1047,11 @@ fn quantify_over_powerset_bool(
 ) -> EvalResult<bool> {
     let base = eval_set_domain(domain_expr, ctx)?;
     let n = base.len();
+    if n >= 64 {
+        return Err(EvalError::ResourceExhausted(
+            "powerset of set with 64+ elements".into(),
+        ));
+    }
     let mut subset_buf = Vec::with_capacity(n);
     for mask in 0..(1usize << n) {
         subset_buf.clear();

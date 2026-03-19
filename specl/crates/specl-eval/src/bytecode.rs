@@ -2662,6 +2662,11 @@ fn vm_eval_inner(
                 let base = normalize_domain(base)?;
                 let set = base.as_set().unwrap();
                 let n = set.len();
+                if n >= 64 {
+                    return Err(EvalError::ResourceExhausted(
+                        "powerset of set with 64+ elements".into(),
+                    ));
+                }
                 // Powerset always has at least 1 element (empty set at mask=0)
                 let subset = Value::empty_set();
                 locals.push(subset);
@@ -2712,6 +2717,11 @@ fn vm_eval_inner(
                 let base = normalize_domain(base)?;
                 let set = base.as_set().unwrap();
                 let n = set.len();
+                if n >= 64 {
+                    return Err(EvalError::ResourceExhausted(
+                        "powerset of set with 64+ elements".into(),
+                    ));
+                }
                 let subset = Value::empty_set();
                 locals.push(subset);
                 loops.push(LoopState {
