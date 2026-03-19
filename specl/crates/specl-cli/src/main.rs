@@ -131,7 +131,7 @@ struct JsonTraceStep {
 /// CLI error with source context for pretty printing.
 #[derive(Debug, Error, Diagnostic)]
 pub enum CliError {
-    #[error("failed to read file: {message}")]
+    #[error("{message}")]
     IoError { message: String },
 
     #[error("parse error: {message}")]
@@ -170,9 +170,27 @@ pub enum CliError {
 impl From<std::io::Error> for CliError {
     fn from(e: std::io::Error) -> Self {
         CliError::IoError {
-            message: e.to_string(),
+            message: format!("IO error: {}", e),
         }
     }
+}
+
+/// Read a file with a clear error message that includes the path and actionable guidance.
+fn read_file(path: &PathBuf) -> CliResult<String> {
+    fs::read_to_string(path).map_err(|e| {
+        let msg = match e.kind() {
+            std::io::ErrorKind::NotFound => format!(
+                "file not found: {}\n  Check the path and ensure the file exists.",
+                path.display()
+            ),
+            std::io::ErrorKind::PermissionDenied => format!(
+                "permission denied reading: {}\n  Check file permissions.",
+                path.display()
+            ),
+            _ => format!("could not read '{}': {}", path.display(), e),
+        };
+        CliError::IoError { message: msg }
+    })
 }
 
 impl From<specl_ir::CompileError> for CliError {
@@ -1232,13 +1250,12 @@ fn main() {
             let use_bfs = bfs || specific_explicit;
 
             if use_symbolic && use_bfs {
+                let msg = "cannot combine symbolic and explicit-state flags.\n  Use either --symbolic (with --bmc, --ic3, etc.) or --bfs (with --fast, --por, etc.), not both.";
                 if output != OutputFormat::Text {
-                    let out = JsonOutput::new("error", 0.0).with_error(
-                        "cannot combine --symbolic/--bfs flags or their sub-options".into(),
-                    );
+                    let out = JsonOutput::new("error", 0.0).with_error(msg.into());
                     println!("{}", serde_json::to_string(&out).unwrap());
                 } else {
-                    eprintln!("Error: cannot combine --symbolic/--bfs flags or their sub-options");
+                    eprintln!("Error: {}", msg);
                 }
                 exit_with_code(1);
             }
@@ -1438,7 +1455,7 @@ fn main() {
 
 fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file)?);
+    let source = Arc::new(read_file(file)?);
 
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
@@ -1660,7 +1677,7 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
 
 /// Translate a TLA+ file to a temporary .specl file for checking.
 fn translate_tla_to_temp(file: &PathBuf, quiet: bool) -> CliResult<(PathBuf, TempFileGuard)> {
-    let source = fs::read_to_string(file)?;
+    let source = read_file(file)?;
     let specl_source = specl_tla::translate(&source).map_err(|e| CliError::TranslateError {
         message: format!("auto-translating {}: {}", file.display(), e),
     })?;
@@ -1793,12 +1810,15 @@ fn cmd_check_ts(
     timeout: u64,
     swarm: Option<usize>,
 ) -> CliResult<()> {
-    let content = fs::read_to_string(file)?;
+    let content = read_file(file)?;
 
     info!("deserializing transition system...");
     let ts: specl_ts::TransitionSystem =
         serde_json::from_str(&content).map_err(|e| CliError::Other {
-            message: format!("failed to parse .ts.json: {e}"),
+            message: format!(
+                "invalid .ts.json file '{}': {}\n  Ensure the file contains a valid Specl transition system JSON.",
+                file.display(), e
+            ),
         })?;
 
     info!("lowering to IR...");
@@ -1834,7 +1854,7 @@ fn cmd_check_ts(
     let want_bfs = bfs || specific_explicit;
 
     if want_symbolic && want_bfs {
-        let msg = "cannot combine --symbolic/--bfs flags or their sub-options";
+        let msg = "cannot combine symbolic and explicit-state flags.\n  Use either --symbolic (with --bmc, --ic3, etc.) or --bfs (with --fast, --por, etc.), not both.";
         if output_format != OutputFormat::Text {
             let out = JsonOutput::new("error", 0.0).with_error(msg.into());
             println!("{}", serde_json::to_string(&out).unwrap());
@@ -2198,14 +2218,14 @@ fn cmd_check_ts_bfs(
         let store = explorer.store();
         if !store.has_full_tracking() {
             eprintln!(
-                "Error: --output dot requires full tracking (incompatible with --fast and --bloom)"
+                "Error: --output dot requires full state tracking.\n  Remove --fast or --bloom to enable full tracking."
             );
             exit_with_code(1);
         }
         let max_dot_states = 10_000;
         if store.len() > max_dot_states {
             eprintln!(
-                "Error: state graph has {} states (max {} for DOT output).",
+                "Error: state graph has {} states, but DOT output is limited to {}.\n  Reduce constant values (e.g., -c N=2) to produce a smaller graph.",
                 store.len(),
                 max_dot_states
             );
@@ -2449,7 +2469,7 @@ fn cmd_check(
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file)?);
+    let source = Arc::new(read_file(file)?);
 
     info!("parsing...");
     let module =
@@ -2490,7 +2510,7 @@ fn cmd_check(
         eprintln!(
             "  BFS proceeds because runtime values are bounded by init and action parameters."
         );
-        eprintln!("  If checking hangs, use --bmc for symbolic checking instead.");
+        eprintln!("  If checking hangs, try --symbolic for symbolic checking instead.");
     }
 
     let user_has_explicit_storage = fast_check || bloom || collapse || tree || directed;
@@ -2610,7 +2630,7 @@ fn cmd_check(
         let fps = explorer.store().seen_fingerprints();
         if let Err(e) = specl_mc::cache::save_fingerprints(file.as_path(), hash, &fps) {
             if !quiet {
-                eprintln!("Warning: failed to save incremental cache: {e}");
+                eprintln!("Warning: could not save incremental cache: {e}");
             }
         }
         specl_mc::cache::cleanup_old_caches(file.as_path(), hash);
@@ -2631,7 +2651,7 @@ fn cmd_check(
         let store = explorer.store();
         if !store.has_full_tracking() {
             eprintln!(
-                "Error: --output dot requires full tracking (incompatible with --fast and --bloom)"
+                "Error: --output dot requires full state tracking.\n  Remove --fast or --bloom to enable full tracking."
             );
             exit_with_code(1);
         }
@@ -2639,7 +2659,7 @@ fn cmd_check(
         let n_states = store.len();
         if n_states > max_dot_states {
             eprintln!(
-                "Error: state graph has {} states (max {} for DOT output). Use smaller constants.",
+                "Error: state graph has {} states, but DOT output is limited to {}.\n  Reduce constant values (e.g., -c N=2) to produce a smaller graph.",
                 n_states, max_dot_states
             );
             exit_with_code(1);
@@ -3043,7 +3063,7 @@ fn cmd_check_swarm(
                         }
                         OutputFormat::Dot => {
                             // DOT output not meaningful for swarm (no full store)
-                            eprintln!("Error: --output dot is not supported with --swarm");
+                            eprintln!("Error: --output dot is not supported with --swarm.\n  Use --output dot without --swarm to generate a state graph.");
                             exit_with_code(1);
                         }
                         OutputFormat::Text => {
@@ -3106,7 +3126,7 @@ fn cmd_check_symbolic(
     check_only: Vec<String>,
 ) -> CliResult<()> {
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file)?);
+    let source = Arc::new(read_file(file)?);
 
     info!("parsing...");
     let module =
@@ -3187,7 +3207,7 @@ fn cmd_simulate(
 ) -> CliResult<()> {
     let json = output == OutputFormat::Json;
     let filename = file.display().to_string();
-    let source = Arc::new(fs::read_to_string(file)?);
+    let source = Arc::new(read_file(file)?);
 
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
@@ -3426,7 +3446,8 @@ fn run_symbolic_check(
                 println!();
                 println!("Result: UNKNOWN");
                 println!("  Reason: {}", reason);
-                println!("  hint: try --bfs for explicit-state checking, or increase --timeout");
+                println!("  The solver could not determine whether invariants hold.");
+                println!("  Try: --bfs for explicit-state checking, --ic3 for a stronger proof technique, or increase --timeout");
                 exit_with_code(2);
             }
         }
@@ -3442,10 +3463,23 @@ fn parse_spacer_profile(s: &str) -> SpacerProfile {
         "mbp" | "mbp-aggressive" => SpacerProfile::MbpAggressive,
         "pdr" | "pdr-flexible" => SpacerProfile::PdrFlexible,
         s if s.starts_with("seed:") => {
-            let seed = s[5..].parse::<u32>().unwrap_or(42);
+            let seed = s[5..].parse::<u32>().unwrap_or_else(|_| {
+                eprintln!(
+                    "Warning: invalid seed value '{}', using default seed 42. Expected an integer.",
+                    &s[5..]
+                );
+                42
+            });
             SpacerProfile::Seeded(seed)
         }
-        _ => SpacerProfile::Default,
+        "default" => SpacerProfile::Default,
+        _ => {
+            eprintln!(
+                "Warning: unknown spacer profile '{}', using 'default'. Valid: default, fast, thorough, mbp, pdr, seed:<N>",
+                s
+            );
+            SpacerProfile::Default
+        }
     }
 }
 
@@ -3460,8 +3494,9 @@ fn filter_invariants(spec: &mut specl_ir::CompiledSpec, check_only: &[String]) -
             if !inv_names.contains(&name.as_str()) {
                 return Err(CliError::CheckError {
                     message: format!(
-                        "unknown invariant '{}' in --check-only (available: {:?})",
-                        name, inv_names
+                        "unknown invariant '{}' in --check-only\n  Available invariants: {}",
+                        name,
+                        inv_names.join(", ")
                     ),
                 });
             }
@@ -3515,7 +3550,7 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
         if parts.len() != 2 {
             return Err(CliError::Other {
                 message: format!(
-                    "invalid constant format '{}', expected NAME=VALUE",
+                    "invalid constant format '{}'\n  Expected NAME=VALUE, e.g.: -c N=3",
                     constant
                 ),
             });
@@ -3529,8 +3564,23 @@ fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliRe
             spec.consts
                 .iter()
                 .find(|c| c.name == name)
-                .ok_or_else(|| CliError::Other {
-                    message: format!("unknown constant '{}'", name),
+                .ok_or_else(|| {
+                    let available: Vec<&str> =
+                        spec.consts.iter().map(|c| c.name.as_str()).collect();
+                    CliError::Other {
+                        message: if available.is_empty() {
+                            format!(
+                                "unknown constant '{}': this spec has no constants",
+                                name
+                            )
+                        } else {
+                            format!(
+                                "unknown constant '{}' (available: {})",
+                                name,
+                                available.join(", ")
+                            )
+                        },
+                    }
                 })?;
 
         // Parse the value
@@ -3629,14 +3679,14 @@ fn split_top_level_csv(s: &str) -> CliResult<Vec<&str>> {
 
         if brace_depth < 0 || bracket_depth < 0 || paren_depth < 0 {
             return Err(CliError::Other {
-                message: format!("cannot parse value '{}'", s),
+                message: format!("unbalanced brackets in value '{}': extra closing delimiter", s),
             });
         }
     }
 
     if in_string || brace_depth != 0 || bracket_depth != 0 || paren_depth != 0 {
         return Err(CliError::Other {
-            message: format!("cannot parse value '{}'", s),
+            message: format!("unbalanced delimiters in value '{}': unclosed bracket, brace, paren, or string", s),
         });
     }
 
@@ -3711,7 +3761,10 @@ fn parse_value(s: &str) -> CliResult<Value> {
     }
 
     Err(CliError::Other {
-        message: format!("cannot parse value '{}'", s),
+        message: format!(
+            "cannot parse constant value '{}'\n  Accepted formats: integer (42), boolean (true/false), string (\"hello\"),\n  set ({{1, 2, 3}}), sequence ([1, 2, 3]), or identifier (Follower)",
+            s
+        ),
     })
 }
 
@@ -4416,7 +4469,7 @@ fn create_spinner(
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         pb.enable_steady_tick(Duration::from_millis(100));
-        pb.set_message("starting...");
+        pb.set_message("exploring initial states...");
         let p = progress.clone();
         let pb2 = pb.clone();
         std::thread::spawn(move || loop {
@@ -4434,11 +4487,12 @@ fn create_spinner(
                 0.0
             };
             pb2.set_message(format!(
-                "{} found | {} checked | depth {} | {} states/s",
+                "{} distinct states | {} transitions | depth {} | {}/s | {:.0}s",
                 format_large_number(states as u128),
                 format_large_number(checked as u128),
                 depth,
                 format_large_number(rate as u128),
+                elapsed,
             ));
             if pb2.is_finished() {
                 break;
@@ -4580,7 +4634,7 @@ fn cmd_fmt(
     let filename = file.display().to_string();
     let start = Instant::now();
 
-    let source = Arc::new(fs::read_to_string(file)?);
+    let source = Arc::new(read_file(file)?);
 
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
@@ -4679,13 +4733,17 @@ fn cmd_watch(
             }
         })
         .map_err(|e| CliError::Other {
-            message: format!("failed to create file watcher: {}", e),
+            message: format!("could not create file watcher: {}", e),
         })?;
 
     watcher
         .watch(file, RecursiveMode::NonRecursive)
         .map_err(|e| CliError::Other {
-            message: format!("failed to watch file: {}", e),
+            message: format!(
+                "could not watch '{}': {}\n  Check the file exists and is accessible.",
+                file.display(),
+                e
+            ),
         })?;
 
     // Run initial check
@@ -4724,7 +4782,7 @@ fn run_check_iteration(
     let source = match fs::read_to_string(file) {
         Ok(s) => Arc::new(s),
         Err(e) => {
-            eprintln!("Error: failed to read file: {}", e);
+            eprintln!("Error: could not read '{}': {}", file.display(), e);
             return;
         }
     };
@@ -4750,7 +4808,7 @@ fn run_check_iteration(
     let spec = match compile(&module) {
         Ok(s) => s,
         Err(e) => {
-            eprintln!("Error: compile failed: {}", e);
+            eprintln!("Error: compile error: {}", e);
             return;
         }
     };
@@ -4789,7 +4847,7 @@ fn run_check_iteration(
                 .tick_chars("⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"),
         );
         pb.enable_steady_tick(Duration::from_millis(100));
-        pb.set_message("starting...");
+        pb.set_message("exploring initial states...");
         let p = progress.clone();
         let pb2 = pb.clone();
         let start2 = start;
@@ -4808,11 +4866,12 @@ fn run_check_iteration(
                 0.0
             };
             pb2.set_message(format!(
-                "{} found | {} checked | depth {} | {} states/s",
+                "{} distinct states | {} transitions | depth {} | {}/s | {:.0}s",
                 format_large_number(states as u128),
                 format_large_number(checked as u128),
                 depth,
                 format_large_number(rate as u128),
+                elapsed,
             ));
             if pb2.is_finished() {
                 break;
@@ -4939,10 +4998,13 @@ fn format_memory(mb: f64) -> String {
 }
 
 fn cmd_translate(file: &PathBuf, output: Option<&PathBuf>) -> CliResult<()> {
-    let source = fs::read_to_string(file)?;
+    let source = read_file(file)?;
 
     let specl_source = specl_tla::translate(&source).map_err(|e| CliError::TranslateError {
-        message: e.to_string(),
+        message: format!(
+            "{}\n  The TLA+ input may use constructs not yet supported by the translator.\n  Try simplifying the spec or translating manually.",
+            e
+        ),
     })?;
 
     if let Some(output_path) = output {
