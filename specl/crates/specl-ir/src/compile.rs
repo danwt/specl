@@ -191,25 +191,22 @@ impl Compiler {
         let n = actions.len();
         let mut independent = ir::BoolMatrix::new(n);
         for i in 0..n {
-            for j in 0..n {
-                if i != j {
-                    let writes_a = &actions[i].changes;
-                    let reads_a = &actions[i].reads;
-                    let writes_b = &actions[j].changes;
-                    let reads_b = &actions[j].reads;
+            for j in (i + 1)..n {
+                let writes_a = &actions[i].changes;
+                let reads_a = &actions[i].reads;
+                let writes_b = &actions[j].changes;
+                let reads_b = &actions[j].reads;
 
-                    // Check writes(A) ∩ (reads(B) ∪ writes(B)) = ∅
-                    let a_interferes_b = writes_a
-                        .iter()
-                        .any(|w| reads_b.contains(w) || writes_b.contains(w));
+                let a_interferes_b = writes_a
+                    .iter()
+                    .any(|w| reads_b.contains(w) || writes_b.contains(w));
+                let b_interferes_a = writes_b
+                    .iter()
+                    .any(|w| reads_a.contains(w) || writes_a.contains(w));
 
-                    // Check writes(B) ∩ (reads(A) ∪ writes(A)) = ∅
-                    let b_interferes_a = writes_b
-                        .iter()
-                        .any(|w| reads_a.contains(w) || writes_a.contains(w));
-
-                    independent.set(i, j, !a_interferes_b && !b_interferes_a);
-                }
+                let is_independent = !a_interferes_b && !b_interferes_a;
+                independent.set(i, j, is_independent);
+                independent.set(j, i, is_independent);
             }
         }
 
@@ -253,21 +250,22 @@ impl Compiler {
         // Set up parameters
         self.params = decl.params.iter().map(|p| p.name.name.clone()).collect();
 
+        let action_sig = self.env.lookup_action(&decl.name.name).cloned();
         let param_types: Vec<(String, Type)> = decl
             .params
             .iter()
             .map(|p| {
-                let ty = self
-                    .env
-                    .resolve_type(&self.env.lookup_action(&decl.name.name).map_or(
-                        specl_types::Type::Error,
-                        |sig| {
+                let ty = self.env.resolve_type(
+                    &action_sig
+                        .as_ref()
+                        .and_then(|sig| {
                             sig.params
                                 .iter()
                                 .find(|(n, _)| n == &p.name.name)
-                                .map_or(specl_types::Type::Error, |(_, t)| t.clone())
-                        },
-                    ));
+                                .map(|(_, t)| t.clone())
+                        })
+                        .unwrap_or(specl_types::Type::Error),
+                );
                 (p.name.name.clone(), ty)
             })
             .collect();
@@ -295,27 +293,8 @@ impl Compiler {
             CompiledExpr::Bool(true)
         };
 
-        // Collect changed variables from the effect and check for duplicates
-        let mut raw_changes = effect.collect_var_changes();
-        {
-            let mut seen = std::collections::HashSet::new();
-            for &idx in &raw_changes {
-                if !seen.insert(idx) {
-                    let var_name = self
-                        .var_indices
-                        .iter()
-                        .find(|(_, &i)| i == idx)
-                        .map_or_else(|| format!("var_{}", idx), |(n, _)| n.clone());
-                    return Err(CompileError::DuplicateAssignment {
-                        var: var_name,
-                        action: decl.name.name.clone(),
-                    });
-                }
-            }
-        }
-        raw_changes.sort();
-        raw_changes.dedup();
-        let changes = raw_changes;
+        // Collect changed variables from the effect (returned sorted and deduped)
+        let changes = effect.collect_var_changes();
 
         // Collect read variables from guard and effect (for POR)
         let mut reads = guard.collect_var_reads();
@@ -847,7 +826,7 @@ impl Compiler {
     /// `parent_is_index` tracks whether the current Var is inside an Index base.
     fn collect_read_keys_impl(
         expr: &CompiledExpr,
-        info: &mut std::collections::HashMap<usize, (Vec<KeySource>, bool)>,
+        info: &mut HashMap<usize, (Vec<KeySource>, bool)>,
     ) {
         match expr {
             // Key pattern: var[key] — keyed read
@@ -1012,8 +991,7 @@ impl Compiler {
         let mut result = effect;
 
         for &var_idx in self.var_indices.values() {
-            if !changes.contains(&var_idx) {
-                // Add: var' == var
+            if changes.binary_search(&var_idx).is_err() {
                 let unchanged = CompiledExpr::Unchanged(var_idx);
                 result = CompiledExpr::Binary {
                     op: IrBinOp::And,

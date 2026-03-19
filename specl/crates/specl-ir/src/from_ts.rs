@@ -327,13 +327,19 @@ fn lower_action(action: &TsAction, num_vars: usize) -> CompiledAction {
     changes.sort();
     changes.dedup();
 
-    // Build effect: conjunction of (PrimedVar(idx) == value) for each assignment
+    // Lower assignment values once and build effect
+    let lowered_values: Vec<CompiledExpr> = action
+        .assignments
+        .iter()
+        .map(|a| lower_expr(&a.value))
+        .collect();
+
     let mut effect = CompiledExpr::Bool(true);
-    for assignment in &action.assignments {
+    for (assignment, lowered_value) in action.assignments.iter().zip(lowered_values.iter()) {
         let eq = CompiledExpr::Binary {
             op: BinOp::Eq,
             left: Box::new(CompiledExpr::PrimedVar(assignment.var_idx)),
-            right: Box::new(lower_expr(&assignment.value)),
+            right: Box::new(lowered_value.clone()),
         };
         effect = CompiledExpr::Binary {
             op: BinOp::And,
@@ -344,7 +350,7 @@ fn lower_action(action: &TsAction, num_vars: usize) -> CompiledAction {
 
     // Add implicit frame: Unchanged for all vars NOT assigned
     for var_idx in 0..num_vars {
-        if !changes.contains(&var_idx) {
+        if changes.binary_search(&var_idx).is_err() {
             effect = CompiledExpr::Binary {
                 op: BinOp::And,
                 left: Box::new(effect),
@@ -353,11 +359,10 @@ fn lower_action(action: &TsAction, num_vars: usize) -> CompiledAction {
         }
     }
 
-    // Collect reads from guard and assignment values
+    // Collect reads from guard and already-lowered assignment values
     let mut reads = guard.collect_var_reads();
-    for assignment in &action.assignments {
-        let lowered = lower_expr(&assignment.value);
-        reads.extend(lowered.collect_var_reads());
+    for lowered_value in &lowered_values {
+        reads.extend(lowered_value.collect_var_reads());
     }
     reads.sort();
     reads.dedup();
@@ -536,22 +541,22 @@ fn lower_unaryop(op: TsUnaryOp) -> UnaryOp {
 fn compute_independence_matrix(actions: &[CompiledAction], n: usize) -> BoolMatrix {
     let mut independent = BoolMatrix::new(n);
     for i in 0..n {
-        for j in 0..n {
-            if i != j {
-                let writes_a = &actions[i].changes;
-                let reads_a = &actions[i].reads;
-                let writes_b = &actions[j].changes;
-                let reads_b = &actions[j].reads;
+        for j in (i + 1)..n {
+            let writes_a = &actions[i].changes;
+            let reads_a = &actions[i].reads;
+            let writes_b = &actions[j].changes;
+            let reads_b = &actions[j].reads;
 
-                let a_interferes_b = writes_a
-                    .iter()
-                    .any(|w| reads_b.contains(w) || writes_b.contains(w));
-                let b_interferes_a = writes_b
-                    .iter()
-                    .any(|w| reads_a.contains(w) || writes_a.contains(w));
+            let a_interferes_b = writes_a
+                .iter()
+                .any(|w| reads_b.contains(w) || writes_b.contains(w));
+            let b_interferes_a = writes_b
+                .iter()
+                .any(|w| reads_a.contains(w) || writes_a.contains(w));
 
-                independent.set(i, j, !a_interferes_b && !b_interferes_a);
-            }
+            let is_independent = !a_interferes_b && !b_interferes_a;
+            independent.set(i, j, is_independent);
+            independent.set(j, i, is_independent);
         }
     }
     independent
