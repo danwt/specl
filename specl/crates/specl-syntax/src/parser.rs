@@ -1764,4 +1764,36 @@ invariant Bounded {
             _ => panic!("expected let"),
         }
     }
+
+    #[test]
+    fn test_parse_error_missing_module() {
+        let result = parse("var x: Nat");
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(err.contains("module"), "error should mention 'module': {err}");
+    }
+
+    #[test]
+    fn test_parse_error_unclosed_brace() {
+        let result = parse("module Test\ninit { x == 0");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_error_missing_action_body() {
+        let result = parse("module Test\naction Foo()");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_error_invalid_type() {
+        let result = parse("module Test\nvar x:");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_parse_error_empty_module_name() {
+        let result = parse("module");
+        assert!(result.is_err());
+    }
 }
