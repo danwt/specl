@@ -1,6 +1,6 @@
 //! Regression tests for specific parser and type-checker bugs.
 
-use specl_eval::Value;
+use specl_eval::{EvalError, Value};
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer};
 use specl_syntax::parse;
@@ -323,4 +323,31 @@ invariant LetInQuantifier {
 }
 "#;
     parse_and_typecheck(source).expect("let...in inside quantifier body should work");
+}
+
+// ─── Overflow detection ───
+
+#[test]
+fn overflow_detected_in_eval() {
+    // Verify that checked arithmetic produces EvalError::Overflow.
+    use specl_eval::{eval, EvalContext};
+    use specl_ir::{BinOp, CompiledExpr};
+
+    let big = CompiledExpr::Int(i64::MAX);
+    let one = CompiledExpr::Int(1);
+    let overflow_expr = CompiledExpr::Binary {
+        op: BinOp::Add,
+        left: Box::new(big),
+        right: Box::new(one),
+    };
+    let ctx_vars: Vec<Value> = vec![];
+    let ctx_consts: Vec<Value> = vec![];
+    let ctx_params: Vec<Value> = vec![];
+    let mut ctx = EvalContext::new(&ctx_vars, &ctx_vars, &ctx_consts, &ctx_params);
+    let result = eval(&overflow_expr, &mut ctx);
+    assert!(result.is_err(), "i64::MAX + 1 should produce overflow");
+    assert!(
+        matches!(result.unwrap_err(), EvalError::Overflow),
+        "expected EvalError::Overflow"
+    );
 }

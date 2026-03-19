@@ -1770,7 +1770,10 @@ invariant Bounded {
         let result = parse("var x: Nat");
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
-        assert!(err.contains("module"), "error should mention 'module': {err}");
+        assert!(
+            err.contains("module"),
+            "error should mention 'module': {err}"
+        );
     }
 
     #[test]
