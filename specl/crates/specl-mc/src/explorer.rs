@@ -2220,7 +2220,7 @@ impl Explorer {
     fn invariant_heuristic(&self, state: &State) -> u32 {
         let mut passing = 0u32;
         let mut bufs = VmBufs::new();
-        for (inv_idx, _inv) in self.spec.invariants.iter().enumerate() {
+        for inv_idx in 0..self.spec.invariants.len() {
             let result = vm_eval_bool_reuse(
                 &self.compiled_invariants[inv_idx],
                 &state.vars,
@@ -3357,62 +3357,34 @@ impl Explorer {
             // AmpleResult::Templates falls through to standard path below
         }
 
-        // Standard path: determine which action templates to explore
-        if self.config.use_por {
+        // Standard path: select action set, then apply once
+        let pc_dispatched;
+        let stubborn_set;
+        let actions: &[usize] = if self.config.use_por {
             let enabled = self.get_enabled_actions(state)?;
-            let actions_to_explore = self.compute_stubborn_set(&enabled);
-            self.apply_template_actions(
-                state,
-                &actions_to_explore,
-                buf,
-                next_vars_buf,
-                sleep_set,
-                guard_bufs,
-                effect_bufs,
-                var_hashes_buf,
-                op_caches,
-                params_buf,
-            )
-        } else if let Some(ref pc_actions) = self.get_pc_dispatched_actions(state) {
-            self.apply_template_actions(
-                state,
-                pc_actions,
-                buf,
-                next_vars_buf,
-                sleep_set,
-                guard_bufs,
-                effect_bufs,
-                var_hashes_buf,
-                op_caches,
-                params_buf,
-            )
+            stubborn_set = self.compute_stubborn_set(&enabled);
+            &stubborn_set
+        } else if let Some(dispatched) = self.get_pc_dispatched_actions(state) {
+            pc_dispatched = dispatched;
+            &pc_dispatched
         } else if let Some(ref relevant) = self.relevant_actions {
-            self.apply_template_actions(
-                state,
-                relevant,
-                buf,
-                next_vars_buf,
-                sleep_set,
-                guard_bufs,
-                effect_bufs,
-                var_hashes_buf,
-                op_caches,
-                params_buf,
-            )
+            relevant
         } else {
-            self.apply_template_actions(
-                state,
-                &self.default_action_order,
-                buf,
-                next_vars_buf,
-                sleep_set,
-                guard_bufs,
-                effect_bufs,
-                var_hashes_buf,
-                op_caches,
-                params_buf,
-            )
-        }
+            &self.default_action_order
+        };
+
+        self.apply_template_actions(
+            state,
+            actions,
+            buf,
+            next_vars_buf,
+            sleep_set,
+            guard_bufs,
+            effect_bufs,
+            var_hashes_buf,
+            op_caches,
+            params_buf,
+        )
     }
 
     /// Apply a set of action templates to a state, using the operation cache and
@@ -3468,8 +3440,8 @@ impl Explorer {
         let mut enabled = Vec::with_capacity(self.spec.actions.len());
         let mut guard_bufs = VmBufs::new();
 
-        for (idx, action) in self.spec.actions.iter().enumerate() {
-            if self.is_action_enabled(state, action, idx, &mut guard_bufs)? {
+        for idx in 0..self.spec.actions.len() {
+            if self.is_action_enabled(state, idx, &mut guard_bufs)? {
                 enabled.push(idx);
             }
         }
@@ -3481,7 +3453,6 @@ impl Explorer {
     fn is_action_enabled(
         &self,
         state: &State,
-        _action: &CompiledAction,
         action_idx: usize,
         guard_bufs: &mut VmBufs,
     ) -> CheckResult<bool> {
@@ -4579,8 +4550,8 @@ impl Explorer {
     /// Check if any action is enabled in a state.
     fn any_action_enabled(&self, state: &State) -> CheckResult<bool> {
         let mut guard_bufs = VmBufs::new();
-        for (action_idx, action) in self.spec.actions.iter().enumerate() {
-            if self.is_action_enabled(state, action, action_idx, &mut guard_bufs)? {
+        for action_idx in 0..self.spec.actions.len() {
+            if self.is_action_enabled(state, action_idx, &mut guard_bufs)? {
                 return Ok(true);
             }
         }
