@@ -336,6 +336,22 @@ impl Parser {
         self.expect(TokenKind::Let)?;
         let var = self.parse_ident()?;
         self.expect(TokenKind::Assign)?;
+
+        // Same ambiguity detection as parse_let (see comment there)
+        let value_is_bare_ident = matches!(self.peek_kind(), TokenKind::Ident(_))
+            && self.peek_ahead_kind(1) == TokenKind::In;
+        if value_is_bare_ident && self.has_free_in_at_depth_zero_from(self.pos + 2) {
+            let span = self.current_span();
+            return Err(ParseError::InvalidSyntax {
+                message: "ambiguous `in` in let-binding: `let x = a in S in ...` \
+                          — the parser cannot tell whether `in` is membership or the \
+                          let-body separator. Wrap the membership test in parentheses: \
+                          `let x = (a in S) in ...`"
+                    .to_string(),
+                span,
+            });
+        }
+
         let value = self.parse_expr_no_in()?;
 
         if self.check(TokenKind::In) {
@@ -1221,6 +1237,26 @@ impl Parser {
         self.expect(TokenKind::Let)?;
         let var = self.parse_ident()?;
         self.expect(TokenKind::Assign)?;
+
+        // Detect ambiguous `in` in the value position. If the value looks like
+        // a bare identifier followed by `in`, and there is a "free" `in` further
+        // ahead (one not claimed by a let/all/any/fix keyword), the user likely
+        // wrote `let x = a in S in body` intending `(a in S)` as the value.
+        // Without this check, the parser silently mis-parses: value=a, body=S in body.
+        let value_is_bare_ident = matches!(self.peek_kind(), TokenKind::Ident(_))
+            && self.peek_ahead_kind(1) == TokenKind::In;
+        if value_is_bare_ident && self.has_free_in_at_depth_zero_from(self.pos + 2) {
+            let span = self.current_span();
+            return Err(ParseError::InvalidSyntax {
+                message: "ambiguous `in` in let-binding: `let x = a in S in ...` \
+                          — the parser cannot tell whether `in` is membership or the \
+                          let-body separator. Wrap the membership test in parentheses: \
+                          `let x = (a in S) in ...`"
+                    .to_string(),
+                span,
+            });
+        }
+
         // Use parse_expr_no_in so `in` is not consumed as binary operator
         let value = self.parse_expr_no_in()?;
         self.expect(TokenKind::In)?;
@@ -1357,6 +1393,56 @@ impl Parser {
                 span: self.current_span(),
             })
         }
+    }
+
+    /// Check whether there is a "free" `in` token at nesting depth 0 starting
+    /// from a given absolute token index. A "free" `in` is one not paired with
+    /// a `let`, `all`, `any`, or `fix` keyword. Stops at EOF, unmatched closing
+    /// delimiters, or declaration-level keywords.
+    fn has_free_in_at_depth_zero_from(&self, start: usize) -> bool {
+        let mut depth: usize = 0;
+        let mut pending_keyword_ins: usize = 0;
+        let mut i = start;
+        while i < self.tokens.len() {
+            match &self.tokens[i].kind {
+                TokenKind::LParen | TokenKind::LBrace | TokenKind::LBracket => depth += 1,
+                TokenKind::RParen | TokenKind::RBrace | TokenKind::RBracket => {
+                    if depth == 0 {
+                        break;
+                    }
+                    depth -= 1;
+                }
+                TokenKind::Let | TokenKind::All | TokenKind::Any | TokenKind::Fix
+                    if depth == 0 =>
+                {
+                    pending_keyword_ins += 1;
+                }
+                TokenKind::In if depth == 0 => {
+                    if pending_keyword_ins > 0 {
+                        pending_keyword_ins -= 1;
+                    } else {
+                        return true;
+                    }
+                }
+                TokenKind::Eof | TokenKind::Semicolon => break,
+                TokenKind::Var
+                | TokenKind::Const
+                | TokenKind::Init
+                | TokenKind::Action
+                | TokenKind::Invariant
+                | TokenKind::Property
+                | TokenKind::Fairness
+                | TokenKind::Func
+                | TokenKind::Type
+                | TokenKind::View
+                | TokenKind::Use
+                | TokenKind::Module
+                | TokenKind::Auxiliary => break,
+                _ => {}
+            }
+            i += 1;
+        }
+        false
     }
 }
 
@@ -1609,5 +1695,75 @@ invariant Bounded {
         let module = parse(source).unwrap();
         assert_eq!(module.name.name, "Counter");
         assert_eq!(module.decls.len(), 5);
+    }
+
+    #[test]
+    fn test_parse_let_with_parenthesized_in() {
+        // Parenthesized membership in let-value should work
+        let expr = parse_expr_str("let present = (k in s) in present or true");
+        match &expr.kind {
+            ExprKind::Let { var, value, .. } => {
+                assert_eq!(var.name, "present");
+                match &value.kind {
+                    ExprKind::Paren(inner) => match &inner.kind {
+                        ExprKind::Binary { op, .. } => assert_eq!(*op, BinOp::In),
+                        _ => panic!("expected binary in"),
+                    },
+                    _ => panic!("expected paren"),
+                }
+            }
+            _ => panic!("expected let"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_bare_ident_value_ok() {
+        // let x = y in body (single `in`) should still work
+        let expr = parse_expr_str("let x = y in x + 1");
+        match &expr.kind {
+            ExprKind::Let { var, value, .. } => {
+                assert_eq!(var.name, "x");
+                match &value.kind {
+                    ExprKind::Ident(name) => assert_eq!(name, "y"),
+                    _ => panic!("expected ident"),
+                }
+            }
+            _ => panic!("expected let"),
+        }
+    }
+
+    #[test]
+    fn test_parse_let_ambiguous_in_rejected() {
+        // let x = k in s in body should be rejected with a helpful error
+        let source = "module Test\ninit { let x = k in s in x }";
+        let result = parse(source);
+        assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("ambiguous"),
+            "error should mention ambiguity: {err}"
+        );
+        assert!(
+            err.contains("parentheses"),
+            "error should suggest parentheses: {err}"
+        );
+    }
+
+    #[test]
+    fn test_parse_let_chained_ok() {
+        // Chained let..in should work: nested `let` keywords claim `in`
+        let expr = parse_expr_str("let a = x in let b = a + 1 in b");
+        match &expr.kind {
+            ExprKind::Let { var, body, .. } => {
+                assert_eq!(var.name, "a");
+                match &body.kind {
+                    ExprKind::Let { var: inner_var, .. } => {
+                        assert_eq!(inner_var.name, "b");
+                    }
+                    _ => panic!("expected nested let"),
+                }
+            }
+            _ => panic!("expected let"),
+        }
     }
 }
