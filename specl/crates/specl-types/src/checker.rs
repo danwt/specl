@@ -1246,4 +1246,118 @@ init { d == {x: 0 for x in 0..2} }
 "#;
         assert!(check(source).is_ok());
     }
+
+    #[test]
+    fn test_not_indexable() {
+        let source = r#"
+module Test
+var x: Bool
+init { x[0] == true }
+"#;
+        let result = check(source);
+        assert!(matches!(result, Err(TypeError::NotIndexable { .. })));
+    }
+
+    #[test]
+    fn test_not_iterable() {
+        let source = r#"
+module Test
+var x: Nat
+init { all y in x: y > 0 }
+"#;
+        let result = check(source);
+        assert!(matches!(result, Err(TypeError::NotIterable { .. })));
+    }
+
+    #[test]
+    fn test_expected_bool_in_require() {
+        let source = r#"
+module Test
+var x: Nat
+action Bad() {
+    require 42
+    x = x
+}
+"#;
+        let result = check(source);
+        assert!(matches!(result, Err(TypeError::ExpectedBool { .. })));
+    }
+
+    #[test]
+    fn test_expected_bool_in_invariant() {
+        let source = r#"
+module Test
+var x: Nat
+init { x == 0 }
+invariant Bad { x + 1 }
+"#;
+        let result = check(source);
+        assert!(matches!(result, Err(TypeError::ExpectedBool { .. })));
+    }
+
+    #[test]
+    fn test_arithmetic_type_mismatch() {
+        let source = r#"
+module Test
+var x: Bool
+init { x + 1 == 1 }
+"#;
+        let result = check(source);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_comparison_type_mismatch() {
+        let source = r#"
+module Test
+var x: Nat
+var y: Bool
+init { x == y }
+"#;
+        let result = check(source);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_set_in_type_mismatch() {
+        let source = r#"
+module Test
+var s: Set[Nat]
+init { true in s }
+"#;
+        let result = check(source);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_dict_update_key_type() {
+        let source = r#"
+module Test
+var d: Dict[Nat, Bool]
+init { d == d | {true: false} }
+"#;
+        let result = check(source);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_if_condition_not_bool() {
+        let source = r#"
+module Test
+var x: Nat
+init { x == (if 42 then 1 else 2) }
+"#;
+        let result = check(source);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_let_in_type_check() {
+        let source = r#"
+module Test
+var x: Nat
+init { let y = 1 in x == y }
+"#;
+        assert!(check(source).is_ok());
+    }
 }
