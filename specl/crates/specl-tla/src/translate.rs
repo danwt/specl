@@ -3975,4 +3975,94 @@ ASSUME TRUE
         let result = translate(input).unwrap();
         assert!(result.contains("func Partitions("));
     }
+
+    #[test]
+    fn test_empty_file_returns_error() {
+        let result = translate("");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_extends_only_module() {
+        let input = r#"---- MODULE ExtOnly ----
+EXTENDS Naturals, Sequences
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("module ExtOnly"));
+    }
+
+    #[test]
+    fn test_nested_choose() {
+        let input = r#"---- MODULE ChooseTest ----
+VARIABLE x
+Init == x = CHOOSE a \in {1, 2}: a > 0
+Next == x' = CHOOSE b \in {1, 2, 3}: b > x
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("fix"));
+    }
+
+    #[test]
+    fn test_except_single_update_translates() {
+        let input = r#"---- MODULE ExceptTest ----
+VARIABLE f
+Init == f = [x \in {1, 2} |-> 0]
+Update == f' = [f EXCEPT ![1] = 42]
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("action Update"));
+    }
+
+    #[test]
+    fn test_except_with_at_reference() {
+        let input = r#"---- MODULE ExceptAtTest ----
+VARIABLE f
+Init == f = [x \in {1, 2} |-> 0]
+Incr == f' = [f EXCEPT ![1] = @ + 1]
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("action Incr"));
+    }
+
+    #[test]
+    fn test_except_nested_path() {
+        let input = r#"---- MODULE ExceptNested ----
+VARIABLE f
+Init == f = [x \in {1, 2} |-> [y \in {3, 4} |-> 0]]
+Update == f' = [f EXCEPT ![1][3] = 99]
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("action Update"));
+    }
+
+    #[test]
+    fn test_case_without_other() {
+        let input = r#"---- MODULE CaseTest ----
+VARIABLE x
+Init == x = 0
+Decide ==
+    /\ x' = CASE x = 0 -> 1 [] x = 1 -> 2
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("if"));
+    }
+
+    #[test]
+    fn test_case_with_other() {
+        let input = r#"---- MODULE CaseOther ----
+VARIABLE x
+Init == x = 0
+Decide ==
+    /\ x' = CASE x = 0 -> 1 [] OTHER -> 0
+====
+"#;
+        let result = translate(input).unwrap();
+        assert!(result.contains("if"));
+    }
 }

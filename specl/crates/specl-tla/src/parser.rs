@@ -8,22 +8,52 @@ use thiserror::Error;
 /// Parse error.
 #[derive(Debug, Error)]
 pub enum ParseError {
-    #[error("unexpected token: expected {expected}, found {found} at position {position}")]
+    #[error("unexpected token at line {line}, column {col}: expected {expected}, found {found}")]
     UnexpectedToken {
         expected: String,
         found: String,
         position: usize,
+        line: usize,
+        col: usize,
     },
     #[error("unexpected end of file")]
     UnexpectedEof,
-    #[error("invalid syntax: {message} at position {position}")]
-    InvalidSyntax { message: String, position: usize },
+    #[error("invalid syntax at line {line}, column {col}: {message}")]
+    InvalidSyntax {
+        message: String,
+        position: usize,
+        line: usize,
+        col: usize,
+    },
+    #[error("empty or missing module: no ---- MODULE header found")]
+    EmptyModule,
+}
+
+/// Compute 1-based line and column from a byte offset in the source.
+fn offset_to_line_col(source: &str, offset: usize) -> (usize, usize) {
+    let offset = offset.min(source.len());
+    let mut line = 1;
+    let mut col = 1;
+    for (i, c) in source.char_indices() {
+        if i >= offset {
+            break;
+        }
+        if c == '\n' {
+            line += 1;
+            col = 1;
+        } else {
+            col += 1;
+        }
+    }
+    (line, col)
 }
 
 /// TLA+ parser.
 pub struct Parser {
     tokens: Vec<Token>,
     position: usize,
+    /// Original source text, retained for error reporting (line/column).
+    source: String,
     /// When inside a bullet list, this is set to the bullet marker type to stop at.
     /// This allows nested expression parsing (like quantifier bodies) to respect bullet boundaries.
     bullet_stop_kind: Option<TokenKind>,
@@ -36,7 +66,32 @@ impl Parser {
         Self {
             tokens,
             position: 0,
+            source: source.to_string(),
             bullet_stop_kind: None,
+        }
+    }
+
+    /// Build an `UnexpectedToken` error with line/column computed from the source.
+    fn error_unexpected(&self, expected: &str) -> ParseError {
+        let pos = self.current_span().start;
+        let (line, col) = offset_to_line_col(&self.source, pos);
+        ParseError::UnexpectedToken {
+            expected: expected.to_string(),
+            found: format!("{}", self.current().kind),
+            position: pos,
+            line,
+            col,
+        }
+    }
+
+    /// Build an `InvalidSyntax` error with line/column computed from the source.
+    fn error_syntax(&self, message: &str, pos: usize) -> ParseError {
+        let (line, col) = offset_to_line_col(&self.source, pos);
+        ParseError::InvalidSyntax {
+            message: message.to_string(),
+            position: pos,
+            line,
+            col,
         }
     }
 
@@ -49,6 +104,11 @@ impl Parser {
                 break;
             }
             self.advance();
+        }
+
+        // Empty file or no module header found
+        if self.is_at_end() {
+            return Err(ParseError::EmptyModule);
         }
 
         let start = self.current_span().start;
@@ -69,11 +129,7 @@ impl Parser {
                 module_name
             }
             _ => {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "identifier".to_string(),
-                    found: format!("{:?}", self.current().kind),
-                    position: self.current_span().start,
-                });
+                return Err(self.error_unexpected("module name"));
             }
         };
         self.expect(TokenKind::ModuleStart)?; // closing ----
@@ -1020,11 +1076,7 @@ impl Parser {
             return Ok(TlaExpr::new(TlaExprKind::Ident(ident.name), ident.span));
         }
 
-        Err(ParseError::UnexpectedToken {
-            expected: "expression".to_string(),
-            found: format!("{:?}", self.current().kind),
-            position: start,
-        })
+        Err(self.error_unexpected("expression"))
     }
 
     fn parse_quantifier(&mut self, is_forall: bool) -> Result<TlaExpr, ParseError> {
@@ -1374,10 +1426,10 @@ impl Parser {
                 }
             }
             // If we get here, it's a parse error - colon in unexpected position
-            return Err(ParseError::InvalidSyntax {
-                message: "expected set binding after colon".to_string(),
-                position: self.current_span().start,
-            });
+            return Err(self.error_syntax(
+                "expected set binding after colon",
+                self.current_span().start,
+            ));
         }
 
         // Regular set enumeration
@@ -1561,10 +1613,7 @@ impl Parser {
             }
         }
 
-        Err(ParseError::InvalidSyntax {
-            message: "unexpected bracket expression".to_string(),
-            position: start,
-        })
+        Err(self.error_syntax("unexpected bracket expression", start))
     }
 
     fn parse_except_updates(&mut self) -> Result<Vec<TlaExceptUpdate>, ParseError> {
@@ -1781,11 +1830,7 @@ impl Parser {
             self.advance();
             Ok(())
         } else {
-            Err(ParseError::UnexpectedToken {
-                expected: format!("{}", kind),
-                found: format!("{:?}", self.current().kind),
-                position: self.current_span().start,
-            })
+            Err(self.error_unexpected(&format!("{}", kind)))
         }
     }
 
@@ -1796,11 +1841,7 @@ impl Parser {
             self.advance();
             Ok(TlaIdent::new(name, span))
         } else {
-            Err(ParseError::UnexpectedToken {
-                expected: "identifier".to_string(),
-                found: format!("{:?}", self.current().kind),
-                position: self.current_span().start,
-            })
+            Err(self.error_unexpected("identifier"))
         }
     }
 
@@ -1833,7 +1874,13 @@ impl Parser {
 /// A balanced tree has depth O(log N) ≈ 10 for 867 nodes, keeping all
 /// recursive passes well within stack limits without any iterative changes.
 fn build_balanced_binary(mut exprs: Vec<TlaExpr>, op: TlaBinOp, span_start: usize) -> TlaExpr {
-    assert!(!exprs.is_empty());
+    debug_assert!(
+        !exprs.is_empty(),
+        "build_balanced_binary called with empty list"
+    );
+    if exprs.is_empty() {
+        return TlaExpr::new(TlaExprKind::Bool(true), Span::new(span_start, span_start));
+    }
     if exprs.len() == 1 {
         return exprs.remove(0);
     }
@@ -2032,5 +2079,150 @@ Stutter == UNCHANGED <<x, y>>
                 panic!("Expected unchanged");
             }
         }
+    }
+
+    #[test]
+    fn test_empty_file() {
+        let result = parse("");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ParseError::EmptyModule));
+    }
+
+    #[test]
+    fn test_whitespace_only_file() {
+        let result = parse("   \n\n\t  ");
+        assert!(result.is_err());
+        assert!(matches!(result.unwrap_err(), ParseError::EmptyModule));
+    }
+
+    #[test]
+    fn test_extends_only() {
+        let input = r#"---- MODULE ExtOnly ----
+EXTENDS Naturals, Sequences
+====
+"#;
+        let module = parse(input).unwrap();
+        assert_eq!(module.name, "ExtOnly");
+        assert_eq!(module.extends, vec!["Naturals", "Sequences"]);
+        assert!(module.declarations.is_empty());
+    }
+
+    #[test]
+    fn test_deeply_nested_choose() {
+        let input = r#"---- MODULE Test ----
+VARIABLE x
+Init == x = CHOOSE a \in {1, 2, 3}: CHOOSE b \in {4, 5}: a + b > 5
+====
+"#;
+        let module = parse(input).unwrap();
+        assert_eq!(module.declarations.len(), 2); // VARIABLE + Init
+        if let TlaDecl::Operator { body, .. } = &module.declarations[1] {
+            if let TlaExprKind::Binary {
+                op: TlaBinOp::Eq,
+                right,
+                ..
+            } = &body.kind
+            {
+                assert!(matches!(right.kind, TlaExprKind::Choose { .. }));
+            }
+        }
+    }
+
+    #[test]
+    fn test_except_single_key() {
+        let input = r#"---- MODULE Test ----
+VARIABLE f
+Update == f' = [f EXCEPT ![1] = 42]
+====
+"#;
+        let module = parse(input).unwrap();
+        assert_eq!(module.declarations.len(), 2);
+    }
+
+    #[test]
+    fn test_except_nested_keys() {
+        let input = r#"---- MODULE Test ----
+VARIABLE f
+Update == f' = [f EXCEPT ![1][2] = 42]
+====
+"#;
+        let module = parse(input).unwrap();
+        assert_eq!(module.declarations.len(), 2);
+        if let TlaDecl::Operator { body, .. } = &module.declarations[1] {
+            if let TlaExprKind::Binary { right, .. } = &body.kind {
+                if let TlaExprKind::Except { updates, .. } = &right.kind {
+                    assert_eq!(updates.len(), 1);
+                    assert_eq!(updates[0].path.len(), 2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_except_with_at() {
+        let input = r#"---- MODULE Test ----
+VARIABLE f
+Update == f' = [f EXCEPT ![1] = @ + 1]
+====
+"#;
+        let module = parse(input).unwrap();
+        assert_eq!(module.declarations.len(), 2);
+    }
+
+    #[test]
+    fn test_except_multiple_updates() {
+        let input = r#"---- MODULE Test ----
+VARIABLE f
+Update == f' = [f EXCEPT ![1] = 10, ![2] = 20]
+====
+"#;
+        let module = parse(input).unwrap();
+        if let TlaDecl::Operator { body, .. } = &module.declarations[1] {
+            if let TlaExprKind::Binary { right, .. } = &body.kind {
+                if let TlaExprKind::Except { updates, .. } = &right.kind {
+                    assert_eq!(updates.len(), 2);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_except_dot_field() {
+        let input = r#"---- MODULE Test ----
+VARIABLE r
+Update == r' = [r EXCEPT !.name = "new"]
+====
+"#;
+        let module = parse(input).unwrap();
+        assert_eq!(module.declarations.len(), 2);
+    }
+
+    #[test]
+    fn test_case_expression() {
+        let input = r#"---- MODULE Test ----
+F(x) == CASE x = 1 -> "a"
+          [] x = 2 -> "b"
+          [] OTHER -> "c"
+====
+"#;
+        let module = parse(input).unwrap();
+        if let TlaDecl::Operator { body, .. } = &module.declarations[0] {
+            if let TlaExprKind::Case { arms, other } = &body.kind {
+                assert_eq!(arms.len(), 2);
+                assert!(other.is_some());
+            } else {
+                panic!("Expected CASE expression");
+            }
+        }
+    }
+
+    #[test]
+    fn test_error_has_line_col() {
+        // Missing closing ==== causes a parse error with line/col info
+        let input = "---- MODULE Test ----\nVARIABLE x\nInit == [\n";
+        let err = parse(input).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(msg.contains("line"), "error should mention line: {}", msg);
+        assert!(msg.contains("col"), "error should mention column: {}", msg);
     }
 }
