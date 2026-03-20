@@ -254,10 +254,11 @@ impl PrettyPrinter {
         for constraint in &decl.constraints {
             self.write_indent();
             match constraint.kind {
-                FairnessKind::Weak => self.write("weak_fair "),
-                FairnessKind::Strong => self.write("strong_fair "),
+                FairnessKind::Weak => self.write("weak_fair("),
+                FairnessKind::Strong => self.write("strong_fair("),
             }
-            self.writeln(&constraint.action.name);
+            self.write(&constraint.action.name);
+            self.writeln(")");
         }
         self.indent -= 1;
         self.writeln("}");
@@ -310,7 +311,16 @@ impl PrettyPrinter {
             }
             ExprKind::String(s) => {
                 self.write("\"");
-                self.write(s);
+                for c in s.chars() {
+                    match c {
+                        '\\' => self.write("\\\\"),
+                        '"' => self.write("\\\""),
+                        '\n' => self.write("\\n"),
+                        '\t' => self.write("\\t"),
+                        '\r' => self.write("\\r"),
+                        _ => self.output.push(c),
+                    }
+                }
                 self.write("\"");
             }
             ExprKind::Ident(name) => {
@@ -606,6 +616,16 @@ mod tests {
     use super::*;
     use crate::parser::parse;
 
+    /// Parse source, pretty-print, re-parse, pretty-print again. Both outputs must match.
+    fn assert_roundtrip(source: &str) {
+        let m1 =
+            parse(source).unwrap_or_else(|e| panic!("first parse failed: {e}\nsource:\n{source}"));
+        let p1 = pretty_print(&m1);
+        let m2 = parse(&p1).unwrap_or_else(|e| panic!("second parse failed: {e}\npretty:\n{p1}"));
+        let p2 = pretty_print(&m2);
+        assert_eq!(p1, p2, "roundtrip mismatch:\nfirst:\n{p1}\nsecond:\n{p2}");
+    }
+
     #[test]
     fn test_pretty_print_simple() {
         let source = "module Test\nvar x: Nat\ninit { x == 0 }";
@@ -640,5 +660,371 @@ action Foo(a: Nat, b: Bool) {
             assert!(output.contains("+"));
             assert!(output.contains("*"));
         }
+    }
+
+    #[test]
+    fn test_roundtrip_empty_set_literal() {
+        assert_roundtrip("module T\ninit { x = {} }");
+    }
+
+    #[test]
+    fn test_roundtrip_empty_seq_literal() {
+        assert_roundtrip("module T\ninit { x = [] }");
+    }
+
+    #[test]
+    fn test_roundtrip_empty_dict_literal() {
+        assert_roundtrip("module T\ninit { x = {:} }");
+    }
+
+    #[test]
+    fn test_roundtrip_set_literal() {
+        assert_roundtrip("module T\ninit { x = {1, 2, 3} }");
+    }
+
+    #[test]
+    fn test_roundtrip_seq_literal() {
+        assert_roundtrip("module T\ninit { x = [1, 2, 3] }");
+    }
+
+    #[test]
+    fn test_roundtrip_dict_literal() {
+        assert_roundtrip("module T\ninit { x = {0: 1, 1: 2} }");
+    }
+
+    #[test]
+    fn test_roundtrip_set_comprehension() {
+        assert_roundtrip("module T\ninit { x = {y + 1 for y in 0..3} }");
+    }
+
+    #[test]
+    fn test_roundtrip_set_comprehension_with_filter() {
+        assert_roundtrip("module T\ninit { x = {y in 0..5 if y > 2} }");
+    }
+
+    #[test]
+    fn test_roundtrip_dict_comprehension() {
+        assert_roundtrip("module T\ninit { x = {k: 0 for k in 0..3} }");
+    }
+
+    #[test]
+    fn test_roundtrip_quantifiers() {
+        assert_roundtrip(
+            "module T\nvar x: Set[0..3]\ninvariant Inv { all k in 0..3: k in x implies k >= 0 }",
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_exists_quantifier() {
+        assert_roundtrip("module T\nvar x: Set[0..3]\ninvariant Inv { any k in 0..3: k in x }");
+    }
+
+    #[test]
+    fn test_roundtrip_nested_quantifiers() {
+        assert_roundtrip(
+            "module T\nvar x: 0..3\ninvariant Inv { all a in 0..3: all b in 0..3: a + b >= 0 }",
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_let_in() {
+        assert_roundtrip("module T\ninvariant Inv { let x = 1 in x + 2 }");
+    }
+
+    #[test]
+    fn test_roundtrip_nested_let_in() {
+        assert_roundtrip("module T\ninvariant Inv { let x = 1 in let y = 2 in x + y }");
+    }
+
+    #[test]
+    fn test_roundtrip_if_then_else() {
+        assert_roundtrip("module T\ninit { x = if true then 1 else 2 }");
+    }
+
+    #[test]
+    fn test_roundtrip_fix() {
+        assert_roundtrip("module T\ninvariant Inv { (fix w in 0..3 : w > 1) >= 0 }");
+    }
+
+    #[test]
+    fn test_roundtrip_unary_not() {
+        assert_roundtrip("module T\ninvariant Inv { not false }");
+    }
+
+    #[test]
+    fn test_roundtrip_unary_neg() {
+        assert_roundtrip("module T\ninit { x = -1 }");
+    }
+
+    #[test]
+    fn test_roundtrip_index() {
+        assert_roundtrip("module T\ninit { x = d[0] }");
+    }
+
+    #[test]
+    fn test_roundtrip_slice() {
+        assert_roundtrip("module T\ninit { x = s[0..2] }");
+    }
+
+    #[test]
+    fn test_roundtrip_field_access() {
+        assert_roundtrip("module T\ninit { x = r.field }");
+    }
+
+    #[test]
+    fn test_roundtrip_func_call() {
+        assert_roundtrip("module T\nfunc F(a, b) { a + b }\ninit { x = F(1, 2) }");
+    }
+
+    #[test]
+    fn test_roundtrip_range_expr() {
+        assert_roundtrip("module T\ninvariant Inv { all k in 0..5: k >= 0 }");
+    }
+
+    #[test]
+    fn test_roundtrip_paren() {
+        assert_roundtrip("module T\ninit { x = (1 + 2) * 3 }");
+    }
+
+    #[test]
+    fn test_roundtrip_temporal_always() {
+        assert_roundtrip("module T\nproperty P { always true }");
+    }
+
+    #[test]
+    fn test_roundtrip_temporal_eventually() {
+        assert_roundtrip("module T\nproperty P { eventually true }");
+    }
+
+    #[test]
+    fn test_roundtrip_temporal_leads_to() {
+        assert_roundtrip("module T\nproperty P { true leads_to false }");
+    }
+
+    #[test]
+    fn test_roundtrip_string_escaping() {
+        let source = r#"module T
+init { x = "hello \"world\"\n\t\\" }"#;
+        let m1 = parse(source).unwrap();
+        let p1 = pretty_print(&m1);
+        assert!(
+            p1.contains(r#""hello \"world\"\n\t\\""#),
+            "expected escaped string in output, got: {p1}"
+        );
+        assert_roundtrip(source);
+    }
+
+    #[test]
+    fn test_roundtrip_string_simple() {
+        assert_roundtrip(
+            r#"module T
+init { x = "hello" }"#,
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_fairness() {
+        assert_roundtrip(
+            "module T\nvar x: 0..1\naction A() { x = x }\nfairness {\n    weak_fair(A)\n}",
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_fairness_strong() {
+        assert_roundtrip(
+            "module T\nvar x: 0..1\naction A() { x = x }\nfairness {\n    strong_fair(A)\n}",
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_view_decl() {
+        assert_roundtrip("module T\nvar x: Nat\nvar y: Nat\nview { x, y }");
+    }
+
+    #[test]
+    fn test_roundtrip_use_decl() {
+        assert_roundtrip("module T\nuse Other");
+    }
+
+    #[test]
+    fn test_roundtrip_const_scalar() {
+        assert_roundtrip("module T\nconst N: 5");
+    }
+
+    #[test]
+    fn test_roundtrip_const_type() {
+        assert_roundtrip("module T\nconst N: Nat");
+    }
+
+    #[test]
+    fn test_roundtrip_const_range() {
+        assert_roundtrip("module T\nconst N: 0..10");
+    }
+
+    #[test]
+    fn test_roundtrip_const_with_default() {
+        assert_roundtrip("module T\nconst N: Nat = 5");
+    }
+
+    #[test]
+    fn test_roundtrip_type_decl() {
+        assert_roundtrip("module T\ntype AccountId = 0..10");
+    }
+
+    #[test]
+    fn test_roundtrip_type_set() {
+        assert_roundtrip("module T\nvar x: Set[Nat]");
+    }
+
+    #[test]
+    fn test_roundtrip_type_seq() {
+        assert_roundtrip("module T\nvar x: Seq[Bool]");
+    }
+
+    #[test]
+    fn test_roundtrip_type_dict() {
+        assert_roundtrip("module T\nvar x: Dict[Nat, Bool]");
+    }
+
+    #[test]
+    fn test_roundtrip_type_option() {
+        assert_roundtrip("module T\nvar x: Option[Nat]");
+    }
+
+    #[test]
+    fn test_roundtrip_auxiliary_invariant() {
+        assert_roundtrip("module T\nauxiliary invariant Helper { true }");
+    }
+
+    #[test]
+    fn test_roundtrip_property() {
+        assert_roundtrip("module T\nproperty Liveness { always eventually true }");
+    }
+
+    #[test]
+    fn test_roundtrip_changes() {
+        assert_roundtrip("module T\nvar x: 0..1\naction A() { changes(x) }");
+    }
+
+    #[test]
+    fn test_roundtrip_enabled() {
+        assert_roundtrip(
+            "module T\nvar x: 0..1\naction A() { x = x }\ninvariant Inv { enabled(A) }",
+        );
+    }
+
+    #[test]
+    fn test_roundtrip_builtins() {
+        assert_roundtrip("module T\nvar s: Seq[Nat]\ninvariant Inv { len(s) >= 0 }");
+        assert_roundtrip(
+            "module T\nvar s: Seq[Nat]\ninvariant Inv { len(s) > 0 implies head(s) >= 0 }",
+        );
+        assert_roundtrip("module T\nvar d: Dict[Nat, Nat]\ninvariant Inv { len(keys(d)) >= 0 }");
+        assert_roundtrip(
+            "module T\nvar d: Dict[Nat, Nat]\ninvariant Inv { all v in values(d): v >= 0 }",
+        );
+        assert_roundtrip(
+            "module T\nvar s: Set[Set[Nat]]\ninvariant Inv { len(union_all(s)) >= 0 }",
+        );
+        assert_roundtrip("module T\nvar s: Set[Nat]\ninvariant Inv { s in powerset(0..5) }");
+    }
+
+    #[test]
+    fn test_roundtrip_binary_operators() {
+        assert_roundtrip("module T\ninvariant Inv { true and false }");
+        assert_roundtrip("module T\ninvariant Inv { true or false }");
+        assert_roundtrip("module T\ninvariant Inv { true implies false }");
+        assert_roundtrip("module T\ninvariant Inv { true iff false }");
+        assert_roundtrip("module T\ninvariant Inv { 1 == 1 }");
+        assert_roundtrip("module T\ninvariant Inv { 1 != 2 }");
+        assert_roundtrip("module T\ninvariant Inv { 1 < 2 }");
+        assert_roundtrip("module T\ninvariant Inv { 1 <= 2 }");
+        assert_roundtrip("module T\ninvariant Inv { 2 > 1 }");
+        assert_roundtrip("module T\ninvariant Inv { 2 >= 1 }");
+        assert_roundtrip("module T\ninvariant Inv { 1 + 2 }");
+        assert_roundtrip("module T\ninvariant Inv { 3 - 1 }");
+        assert_roundtrip("module T\ninvariant Inv { 2 * 3 }");
+        assert_roundtrip("module T\ninvariant Inv { 6 / 2 }");
+        assert_roundtrip("module T\ninvariant Inv { 7 % 3 }");
+    }
+
+    #[test]
+    fn test_roundtrip_set_operators() {
+        assert_roundtrip("module T\nvar s: Set[0..3]\ninvariant Inv { 1 in s }");
+        assert_roundtrip("module T\nvar s: Set[0..3]\ninvariant Inv { 1 not in s }");
+        assert_roundtrip("module T\nvar s: Set[0..3]\ninvariant Inv { s union {1} == s }");
+        assert_roundtrip("module T\nvar s: Set[0..3]\ninvariant Inv { s intersect {} == {} }");
+        assert_roundtrip("module T\nvar s: Set[0..3]\ninvariant Inv { s diff {1} subset_of s }");
+    }
+
+    #[test]
+    fn test_roundtrip_seq_concat() {
+        assert_roundtrip("module T\ninit { x = [1] ++ [2] }");
+    }
+
+    #[test]
+    fn test_roundtrip_action_with_let_stmt() {
+        assert_roundtrip("module T\nvar x: 0..5\naction A() { let y = x; x = y + 1; }");
+    }
+
+    #[test]
+    fn test_roundtrip_multi_statement_action() {
+        assert_roundtrip("module T\nvar x: 0..5\nvar y: 0..5\naction A() { x = 1; y = 2; }");
+    }
+
+    #[test]
+    fn test_roundtrip_multi_binding_quantifier() {
+        assert_roundtrip("module T\ninvariant Inv { all a in 0..3, b in 0..3: a + b >= 0 }");
+    }
+
+    #[test]
+    fn test_roundtrip_fn_lit() {
+        assert_roundtrip("module T\ninit { x = {k: 0 for k in 0..3} }");
+    }
+
+    #[test]
+    fn test_roundtrip_comprehensive_features() {
+        let source = r#"module Features
+var queue: Seq[0..3]
+var busy: Set[0..1]
+var done: Dict[0..1, 0..3]
+var next_id: 0..3
+var paused: Bool
+view { queue, busy, done, next_id, paused }
+func Max(a, b) {
+    if a > b then a else b
+}
+init {
+    queue = [];
+    busy = {};
+    done = {w: 0 for w in 0..1};
+    next_id = 0;
+}
+action Enqueue() {
+    require not paused;
+    require next_id < 3;
+    require len(queue) < 3;
+    queue = queue ++ [next_id];
+    next_id = next_id + 1;
+}
+action Claim(w: 0..1) {
+    require len(queue) > 0;
+    require not (w in busy);
+    let task = head(queue);
+    queue = tail(queue);
+    busy = busy union {w};
+    done = done | {w: done[w]};
+}
+invariant ScoresValid {
+    all w in 0..1: done[w] >= 0 implies done[w] <= 3
+}
+auxiliary invariant Helper {
+    next_id >= 0
+}
+property Liveness {
+    always eventually true
+}
+"#;
+        assert_roundtrip(source);
     }
 }
