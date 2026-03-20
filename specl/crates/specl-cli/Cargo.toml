@@ -38,3 +38,7 @@ specl-ir.workspace = true
 specl-ts.workspace = true
 specl-eval.workspace = true
 specl-mc.workspace = true
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+serde_json.workspace = true

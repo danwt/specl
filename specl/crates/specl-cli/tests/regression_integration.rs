@@ -3,7 +3,7 @@
 use specl_eval::{EvalError, Value};
 use specl_ir::compile;
 use specl_mc::{CheckConfig, CheckOutcome, Explorer};
-use specl_syntax::parse;
+use specl_syntax::{parse, pretty_print};
 
 /// Helper: parse + typecheck a specl source string, returning the error message on failure.
 fn parse_and_typecheck(source: &str) -> Result<(), String> {
@@ -14,6 +14,24 @@ fn parse_and_typecheck(source: &str) -> Result<(), String> {
 
 /// Helper: parse + typecheck + model-check a specl source with constants.
 fn check_spec(source: &str, constants: &[(&str, i64)]) -> Result<CheckOutcome, String> {
+    check_spec_with_config(
+        source,
+        constants,
+        CheckConfig {
+            check_deadlock: false,
+            max_states: 10_000,
+            max_depth: 100,
+            ..Default::default()
+        },
+    )
+}
+
+/// Helper: parse + typecheck + model-check with custom config.
+fn check_spec_with_config(
+    source: &str,
+    constants: &[(&str, i64)],
+    config: CheckConfig,
+) -> Result<CheckOutcome, String> {
     let module = parse(source).map_err(|e| format!("parse: {e}"))?;
     specl_types::check_module(&module).map_err(|e| format!("typecheck: {e}"))?;
     let spec = compile(&module).map_err(|e| format!("compile: {e}"))?;
@@ -27,12 +45,6 @@ fn check_spec(source: &str, constants: &[(&str, i64)]) -> Result<CheckOutcome, S
         }
     }
 
-    let config = CheckConfig {
-        check_deadlock: false,
-        max_states: 10_000,
-        max_depth: 100,
-        ..Default::default()
-    };
     let mut explorer = Explorer::new(spec, const_values, config);
     explorer.check().map_err(|e| format!("check: {e}"))
 }
@@ -780,5 +792,580 @@ invariant NonEmpty { len(s) > 0 }
     assert!(
         matches!(outcome, CheckOutcome::Ok { .. }),
         "NonEmpty invariant should hold, got: {outcome:?}"
+    );
+}
+
+// ─── Partial order reduction ───
+
+const MUTEX_SOURCE: &str = r#"
+module Mutex
+const P: 0..3
+var state: Dict[0..P, 0..2]
+var turn: 0..P
+init {
+    state = {p: 0 for p in 0..P};
+    turn = 0;
+}
+action Want(p: 0..P) {
+    require state[p] == 0;
+    state = state | { p: 1 };
+}
+action Enter(p: 0..P) {
+    require state[p] == 1;
+    require turn == p;
+    require all q in 0..P: q == p or state[q] != 2;
+    state = state | { p: 2 };
+}
+action Exit(p: 0..P) {
+    require state[p] == 2;
+    state = state | { p: 0 };
+    turn = (p + 1) % (P + 1);
+}
+invariant MutualExclusion {
+    len({ p in 0..P if state[p] == 2 }) <= 1
+}
+"#;
+
+#[test]
+fn por_preserves_invariant() {
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_por: true,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config).expect("should check");
+    assert!(
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
+        "POR should preserve invariant, got: {outcome:?}"
+    );
+}
+
+#[test]
+fn por_reduces_state_count() {
+    let config_no_por = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_por: false,
+        parallel: false,
+        ..Default::default()
+    };
+    let config_por = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_por: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome_no_por =
+        check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config_no_por).expect("should check");
+    let outcome_por =
+        check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config_por).expect("should check");
+
+    let states_no_por = match &outcome_no_por {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    let states_por = match &outcome_por {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    assert!(
+        states_por <= states_no_por,
+        "POR should explore fewer or equal states: por={states_por}, no_por={states_no_por}"
+    );
+}
+
+// ─── Symmetry reduction ───
+
+#[test]
+fn symmetry_preserves_invariant() {
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_symmetry: true,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config).expect("should check");
+    assert!(
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
+        "symmetry should preserve invariant, got: {outcome:?}"
+    );
+}
+
+#[test]
+fn symmetry_reduces_state_count() {
+    let config_no_sym = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_symmetry: false,
+        parallel: false,
+        ..Default::default()
+    };
+    let config_sym = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_symmetry: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome_no_sym =
+        check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config_no_sym).expect("should check");
+    let outcome_sym =
+        check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config_sym).expect("should check");
+
+    let states_no_sym = match &outcome_no_sym {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    let states_sym = match &outcome_sym {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    assert!(
+        states_sym <= states_no_sym,
+        "symmetry should explore fewer or equal states: sym={states_sym}, no_sym={states_no_sym}"
+    );
+}
+
+// ─── Fast check mode ───
+
+#[test]
+fn fast_check_finds_same_state_count() {
+    let source = r#"
+module Counter
+const N: 0..5
+var x: 0..N
+init { x = 0; }
+action Inc() { require x < N; x = x + 1; }
+invariant Bounded { x >= 0 and x <= N }
+"#;
+    let config_normal = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        parallel: false,
+        ..Default::default()
+    };
+    let config_fast = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        fast_check: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome_normal =
+        check_spec_with_config(source, &[("N", 3)], config_normal).expect("should check");
+    let outcome_fast =
+        check_spec_with_config(source, &[("N", 3)], config_fast).expect("should check");
+
+    let states_normal = match &outcome_normal {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    let states_fast = match &outcome_fast {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    assert_eq!(
+        states_normal, states_fast,
+        "fast check should explore the same number of states"
+    );
+}
+
+#[test]
+fn fast_check_detects_violation() {
+    let source = r#"
+module BadCounter
+var x: 0..5
+init { x = 0; }
+action Inc() { x = x + 1; require x <= 5; }
+invariant Small { x <= 2 }
+"#;
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        fast_check: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(source, &[], config).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::InvariantViolation { .. }),
+        "fast check should detect violation, got: {outcome:?}"
+    );
+}
+
+// ─── Collapse compression ───
+
+#[test]
+fn collapse_preserves_state_count() {
+    let source = r#"
+module Counter
+const N: 0..5
+var x: 0..N
+init { x = 0; }
+action Inc() { require x < N; x = x + 1; }
+invariant Bounded { x >= 0 and x <= N }
+"#;
+    let config_normal = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        parallel: false,
+        ..Default::default()
+    };
+    let config_collapse = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        collapse: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome_normal =
+        check_spec_with_config(source, &[("N", 3)], config_normal).expect("should check");
+    let outcome_collapse =
+        check_spec_with_config(source, &[("N", 3)], config_collapse).expect("should check");
+
+    let states_normal = match &outcome_normal {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    let states_collapse = match &outcome_collapse {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    assert_eq!(
+        states_normal, states_collapse,
+        "collapse should explore the same number of states"
+    );
+}
+
+#[test]
+fn collapse_detects_violation() {
+    let source = r#"
+module BadCounter
+var x: 0..5
+init { x = 0; }
+action Inc() { x = x + 1; require x <= 5; }
+invariant Small { x <= 2 }
+"#;
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        collapse: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(source, &[], config).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::InvariantViolation { .. }),
+        "collapse should detect violation, got: {outcome:?}"
+    );
+}
+
+// ─── Tree compression ───
+
+#[test]
+fn tree_preserves_state_count() {
+    let source = r#"
+module Counter
+const N: 0..5
+var x: 0..N
+init { x = 0; }
+action Inc() { require x < N; x = x + 1; }
+invariant Bounded { x >= 0 and x <= N }
+"#;
+    let config_normal = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        parallel: false,
+        ..Default::default()
+    };
+    let config_tree = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        tree: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome_normal =
+        check_spec_with_config(source, &[("N", 3)], config_normal).expect("should check");
+    let outcome_tree =
+        check_spec_with_config(source, &[("N", 3)], config_tree).expect("should check");
+
+    let states_normal = match &outcome_normal {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    let states_tree = match &outcome_tree {
+        CheckOutcome::Ok {
+            states_explored, ..
+        } => *states_explored,
+        other => panic!("expected Ok, got: {other:?}"),
+    };
+    assert_eq!(
+        states_normal, states_tree,
+        "tree should explore the same number of states"
+    );
+}
+
+#[test]
+fn tree_detects_violation() {
+    let source = r#"
+module BadCounter
+var x: 0..5
+init { x = 0; }
+action Inc() { x = x + 1; require x <= 5; }
+invariant Small { x <= 2 }
+"#;
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        tree: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(source, &[], config).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::InvariantViolation { .. }),
+        "tree should detect violation, got: {outcome:?}"
+    );
+}
+
+// ─── Directed checking ───
+
+#[test]
+fn directed_finds_violation() {
+    let source = r#"
+module BadCounter
+var x: 0..5
+init { x = 0; }
+action Inc() { x = x + 1; require x <= 5; }
+invariant Small { x <= 2 }
+"#;
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        directed: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(source, &[], config).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::InvariantViolation { .. }),
+        "directed should detect violation, got: {outcome:?}"
+    );
+}
+
+#[test]
+fn directed_preserves_ok() {
+    let source = r#"
+module Counter
+const N: 0..5
+var x: 0..N
+init { x = 0; }
+action Inc() { require x < N; x = x + 1; }
+invariant Bounded { x >= 0 and x <= N }
+"#;
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        directed: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(source, &[("N", 3)], config).expect("should check");
+    assert!(
+        matches!(outcome, CheckOutcome::Ok { .. }),
+        "directed should pass ok spec, got: {outcome:?}"
+    );
+}
+
+// ─── Simulate ───
+
+#[test]
+fn simulate_counter() {
+    let source = r#"
+module Counter
+const N: 0..5
+var x: 0..N
+init { x = 0; }
+action Inc() { require x < N; x = x + 1; }
+invariant Bounded { x >= 0 and x <= N }
+"#;
+    let module = parse(source).expect("parse");
+    specl_types::check_module(&module).expect("typecheck");
+    let spec = compile(&module).expect("compile");
+
+    let mut const_values = vec![Value::none(); spec.consts.len()];
+    for c in &spec.consts {
+        if c.name == "N" {
+            const_values[c.index] = Value::int(3);
+        }
+    }
+
+    let config = CheckConfig {
+        check_deadlock: false,
+        ..Default::default()
+    };
+    let mut explorer = Explorer::new(spec, const_values, config);
+    let result = explorer.simulate(20, 42).expect("simulate should succeed");
+    assert!(
+        matches!(
+            result,
+            specl_mc::SimulateOutcome::Ok { .. } | specl_mc::SimulateOutcome::Deadlock { .. }
+        ),
+        "simulate should not violate invariant, got: {result:?}"
+    );
+}
+
+// ─── Format roundtrip ───
+
+#[test]
+fn format_preserves_semantics() {
+    let source = r#"
+module FormatTest
+var x: 0..3
+init { x = 0; }
+action Inc() { require x < 3; x = x + 1; }
+invariant Bound { x <= 3 }
+"#;
+    let module = parse(source).expect("parse");
+    let formatted = pretty_print(&module);
+    let module2 = parse(&formatted).expect("re-parse");
+    specl_types::check_module(&module2).expect("typecheck formatted");
+    let spec = compile(&module2).expect("compile formatted");
+
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 1000,
+        max_depth: 50,
+        parallel: false,
+        ..Default::default()
+    };
+    let mut explorer = Explorer::new(spec, vec![], config);
+    let outcome = explorer.check().expect("check formatted");
+    assert!(
+        matches!(outcome, CheckOutcome::Ok { .. }),
+        "formatted spec should pass, got: {outcome:?}"
+    );
+}
+
+// ─── Info / analyze ───
+
+#[test]
+fn analyze_counter_spec() {
+    let source = r#"
+module Counter
+const N: 0..5
+var x: 0..N
+init { x = 0; }
+action Inc() { require x < N; x = x + 1; }
+invariant Bounded { x >= 0 and x <= N }
+"#;
+    let module = parse(source).expect("parse");
+    specl_types::check_module(&module).expect("typecheck");
+    let spec = compile(&module).expect("compile");
+    let profile = specl_ir::analyze::analyze(&spec);
+    assert_eq!(profile.num_vars, 1);
+    assert_eq!(profile.num_actions, 1);
+    assert_eq!(profile.num_invariants, 1);
+}
+
+// ─── POR + Symmetry combined ───
+
+#[test]
+fn por_and_symmetry_combined_preserves_invariant() {
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        use_por: true,
+        use_symmetry: true,
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome = check_spec_with_config(MUTEX_SOURCE, &[("P", 2)], config).expect("should check");
+    assert!(
+        matches!(
+            outcome,
+            CheckOutcome::Ok { .. } | CheckOutcome::StateLimitReached { .. }
+        ),
+        "POR+symmetry should preserve invariant, got: {outcome:?}"
+    );
+}
+
+// ─── check_only_invariants ───
+
+#[test]
+fn check_only_invariant_filter() {
+    let source = r#"
+module Multi
+var x: 0..3
+init { x = 0; }
+action Inc() { require x < 3; x = x + 1; }
+invariant AlwaysTrue { x >= 0 }
+invariant WillFail { x <= 1 }
+"#;
+    // Without filter: should fail on WillFail
+    let outcome_all = check_spec(source, &[]).expect("should check");
+    assert!(
+        matches!(outcome_all, CheckOutcome::InvariantViolation { .. }),
+        "expected violation without filter, got: {outcome_all:?}"
+    );
+
+    // With filter: only check AlwaysTrue, which passes
+    let config = CheckConfig {
+        check_deadlock: false,
+        max_states: 10_000,
+        max_depth: 100,
+        check_only_invariants: vec!["AlwaysTrue".to_string()],
+        parallel: false,
+        ..Default::default()
+    };
+    let outcome_filtered = check_spec_with_config(source, &[], config).expect("should check");
+    assert!(
+        matches!(outcome_filtered, CheckOutcome::Ok { .. }),
+        "filtered check should pass, got: {outcome_filtered:?}"
     );
 }
