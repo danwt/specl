@@ -1448,14 +1448,14 @@ fn cmd_info(file: &PathBuf, constants: &[String]) -> CliResult<()> {
     // Action details with hottest action identification
     println!();
     println!("Action Analysis:");
-    let total_combos: u64 = profile
+    let total_combos: u128 = profile
         .action_param_counts
         .iter()
         .filter_map(|(_, c)| *c)
-        .sum();
+        .fold(0u128, |acc, c| acc.saturating_add(c));
     for (name, combos) in &profile.action_param_counts {
         let combo_str = match combos {
-            Some(c) => format_large_number(*c as u128),
+            Some(c) => format_large_number(*c),
             None => "unbounded".to_string(),
         };
         let pct_str = match (combos, total_combos) {

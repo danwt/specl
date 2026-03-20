@@ -4,6 +4,10 @@ use crate::CompiledSpec;
 use specl_types::Type;
 use std::fmt;
 
+/// Sentinel: values at or above this are treated as "effectively unbounded".
+/// This avoids nonsensical estimates when saturating_mul produces u128::MAX.
+const SATURATED_THRESHOLD: u128 = u128::MAX / 2;
+
 /// Profile of a compiled spec for strategy selection and user guidance.
 #[derive(Debug)]
 pub struct SpecProfile {
@@ -17,7 +21,7 @@ pub struct SpecProfile {
     /// Per-variable nesting depth (name, depth). Only includes depth >= 2.
     pub var_nesting_depths: Vec<(String, usize)>,
     /// Per-action: (name, parameter combination count). None if unbounded.
-    pub action_param_counts: Vec<(String, Option<u64>)>,
+    pub action_param_counts: Vec<(String, Option<u128>)>,
     /// Fraction of action pairs that are template-independent (0.0-1.0).
     pub independence_ratio: f64,
     /// Whether any symmetry groups were detected.
@@ -35,7 +39,7 @@ pub struct SpecProfile {
 #[derive(Debug)]
 pub enum Warning {
     UnboundedType { var: String, ty: String },
-    LargeParamSpace { action: String, combos: u64 },
+    LargeParamSpace { action: String, combos: u128 },
     ExponentialVar { var: String, reason: String },
 }
 
@@ -67,7 +71,7 @@ impl fmt::Display for Warning {
                     f,
                     "Action '{}' has {} parameter combinations",
                     action,
-                    format_number(*combos as u128)
+                    format_number(*combos)
                 )
             }
             Warning::ExponentialVar { var, reason } => {
@@ -166,17 +170,24 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
         }
     }
 
+    // Treat saturated values as effectively unbounded
+    if let Some(bound) = state_space_bound {
+        if bound >= SATURATED_THRESHOLD {
+            state_space_bound = None;
+        }
+    }
+
     // Per-action parameter combination counts
-    let action_param_counts: Vec<(String, Option<u64>)> = spec
+    let action_param_counts: Vec<(String, Option<u128>)> = spec
         .actions
         .iter()
         .map(|action| {
-            let mut combos: Option<u64> = Some(1);
+            let mut combos: Option<u128> = Some(1);
             for (_, ty) in &action.params {
                 match type_domain_size(ty) {
                     Some(size) => {
                         if let Some(ref mut c) = combos {
-                            *c = c.saturating_mul(size as u64);
+                            *c = c.saturating_mul(size);
                         }
                     }
                     None => combos = None,
@@ -277,13 +288,9 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
         }
     }
 
-    // Storage mode recommendation
+    // Storage mode recommendation (only --collapse; --fast is covered by EnableFast)
     let storage_recommendation = match state_space_bound {
-        Some(b) if b > 50_000_000 => Some(format!(
-            "--fast: estimated {} states — fingerprint-only uses 10x less memory",
-            format_number(b)
-        )),
-        Some(b) if b > 5_000_000 => Some(format!(
+        Some(b) if b > 5_000_000 && b <= 50_000_000 => Some(format!(
             "--collapse: estimated {} states — compressed storage saves ~3x memory while keeping traces",
             format_number(b)
         )),
@@ -314,7 +321,9 @@ fn type_domain_size(ty: &Type) -> Option<u128> {
         Type::Bool => Some(2),
         Type::Range(lo, hi) => {
             if hi >= lo {
-                Some((hi - lo + 1) as u128)
+                // Use i128 arithmetic to avoid i64 overflow for extreme ranges
+                // (e.g., Range(i64::MIN, i64::MAX) has 2^64 values)
+                Some((*hi as i128 - *lo as i128 + 1) as u128)
             } else {
                 Some(0)
             }
@@ -366,7 +375,9 @@ fn factorial(n: u64) -> u64 {
 }
 
 fn format_number(n: u128) -> String {
-    if n >= 1_000_000_000_000 {
+    if n >= SATURATED_THRESHOLD {
+        "huge (effectively unbounded)".to_string()
+    } else if n >= 1_000_000_000_000 {
         format!("{:.1}T", n as f64 / 1e12)
     } else if n >= 1_000_000_000 {
         format!("{:.1}B", n as f64 / 1e9)
@@ -447,5 +458,107 @@ mod tests {
             .recommendations
             .iter()
             .any(|r| matches!(r, Recommendation::EnableSymmetry { .. })));
+    }
+
+    #[test]
+    fn test_type_domain_size_bool() {
+        assert_eq!(type_domain_size(&Type::Bool), Some(2));
+    }
+
+    #[test]
+    fn test_type_domain_size_range_basic() {
+        assert_eq!(type_domain_size(&Type::Range(0, 10)), Some(11));
+        assert_eq!(type_domain_size(&Type::Range(-5, 5)), Some(11));
+        assert_eq!(type_domain_size(&Type::Range(0, 0)), Some(1));
+        assert_eq!(type_domain_size(&Type::Range(5, 3)), Some(0));
+    }
+
+    #[test]
+    fn test_type_domain_size_range_extreme() {
+        // Previously this would overflow i64 subtraction
+        let size = type_domain_size(&Type::Range(i64::MIN, i64::MAX));
+        assert_eq!(size, Some(1u128 << 64));
+    }
+
+    #[test]
+    fn test_type_domain_size_set() {
+        // Set[Bool] = 2^2 = 4 subsets
+        assert_eq!(type_domain_size(&Type::Set(Box::new(Type::Bool))), Some(4));
+        // Set[0..2] = 2^3 = 8
+        assert_eq!(
+            type_domain_size(&Type::Set(Box::new(Type::Range(0, 2)))),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn test_type_domain_size_fn() {
+        // Dict[Bool, Bool] = 2^2 = 4
+        assert_eq!(
+            type_domain_size(&Type::Fn(Box::new(Type::Bool), Box::new(Type::Bool))),
+            Some(4)
+        );
+        // Dict[0..2, Bool] = 2^3 = 8
+        assert_eq!(
+            type_domain_size(&Type::Fn(Box::new(Type::Range(0, 2)), Box::new(Type::Bool))),
+            Some(8)
+        );
+    }
+
+    #[test]
+    fn test_type_domain_size_option() {
+        // Option[Bool] = 2 + 1 = 3
+        assert_eq!(
+            type_domain_size(&Type::Option(Box::new(Type::Bool))),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn test_type_domain_size_seq() {
+        // Seq[Bool] with default max length 4: sum(2^k for k=0..4) = 1+2+4+8+16 = 31
+        assert_eq!(type_domain_size(&Type::Seq(Box::new(Type::Bool))), Some(31));
+    }
+
+    #[test]
+    fn test_type_domain_size_unbounded() {
+        assert_eq!(type_domain_size(&Type::Nat), None);
+        assert_eq!(type_domain_size(&Type::Int), None);
+        assert_eq!(type_domain_size(&Type::String), None);
+    }
+
+    #[test]
+    fn test_type_domain_size_large_set_saturates() {
+        // Set[0..100] has elem_size=101 > 30, should saturate to u128::MAX
+        let size = type_domain_size(&Type::Set(Box::new(Type::Range(0, 100))));
+        assert_eq!(size, Some(u128::MAX));
+    }
+
+    #[test]
+    fn test_saturated_state_space_becomes_none() {
+        // A spec with a very large Set type should have state_space_bound = None
+        // because the saturated value exceeds SATURATED_THRESHOLD
+        let spec = compile_spec(
+            "module Test\nvar x: Set[0..100]\ninit { x = {} }\naction Add() { x = x }\ninvariant Safe { true }"
+        );
+        let profile = analyze(&spec);
+        assert!(
+            profile.state_space_bound.is_none(),
+            "saturated state space bound should be treated as None"
+        );
+    }
+
+    #[test]
+    fn test_format_number_basic() {
+        assert_eq!(format_number(42), "42");
+        assert_eq!(format_number(1_500), "1.5K");
+        assert_eq!(format_number(2_500_000), "2.5M");
+        assert_eq!(format_number(3_000_000_000), "3.0B");
+        assert_eq!(format_number(5_000_000_000_000), "5.0T");
+    }
+
+    #[test]
+    fn test_format_number_saturated() {
+        assert_eq!(format_number(u128::MAX), "huge (effectively unbounded)");
     }
 }
