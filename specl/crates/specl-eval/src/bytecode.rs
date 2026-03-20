@@ -2526,21 +2526,39 @@ fn vm_eval_inner(
             // === Forall over set ===
             Op::ForallSetInit(end_pc) => {
                 let domain = pop_value(stack)?;
-                let domain = normalize_domain(domain)?;
-                let set = domain.as_set().unwrap();
-                if set.is_empty() {
-                    stack.push(Value::bool(true));
-                    pc = *end_pc as usize;
-                    continue;
+                // Fast path: IntMap/IntMap2 domains have keys 0..len, iterate
+                // as a range without materializing a set of Value::int(i).
+                if let Some(len) = intmap_domain_len(&domain) {
+                    if len == 0 {
+                        stack.push(Value::bool(true));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    locals.push(Value::int(0));
+                    loops.push(LoopState {
+                        hi: len as i64,
+                        counter: 0,
+                        fn_buf: Vec::new(),
+                        set_buf: Vec::new(),
+                        domain_val: None,
+                    });
+                } else {
+                    let domain = normalize_domain(domain)?;
+                    let set = domain.as_set().unwrap();
+                    if set.is_empty() {
+                        stack.push(Value::bool(true));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    locals.push(set[0].clone());
+                    loops.push(LoopState {
+                        hi: 0,
+                        counter: 0,
+                        fn_buf: Vec::new(),
+                        set_buf: Vec::new(),
+                        domain_val: Some(domain),
+                    });
                 }
-                locals.push(set[0].clone());
-                loops.push(LoopState {
-                    hi: 0,
-                    counter: 0,
-                    fn_buf: Vec::new(),
-                    set_buf: Vec::new(),
-                    domain_val: Some(domain),
-                });
             }
             Op::ForallSetStep { body_pc, end_pc } => {
                 let body_result = pop_bool(stack)?;
@@ -2553,6 +2571,20 @@ fn vm_eval_inner(
                 }
                 let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.counter += 1;
+                if loop_state.domain_val.is_none() {
+                    // IntMap range fast path: iterate 0..hi
+                    if loop_state.counter >= loop_state.hi {
+                        locals.pop();
+                        loops.pop();
+                        stack.push(Value::bool(true));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    *locals.last_mut().ok_or_else(locals_underflow)? =
+                        Value::int(loop_state.counter);
+                    pc = *body_pc as usize;
+                    continue;
+                }
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
                     locals.pop();
@@ -2570,21 +2602,38 @@ fn vm_eval_inner(
             // === Exists over set ===
             Op::ExistsSetInit(end_pc) => {
                 let domain = pop_value(stack)?;
-                let domain = normalize_domain(domain)?;
-                let set = domain.as_set().unwrap();
-                if set.is_empty() {
-                    stack.push(Value::bool(false));
-                    pc = *end_pc as usize;
-                    continue;
+                // Fast path: IntMap/IntMap2 domains have keys 0..len
+                if let Some(len) = intmap_domain_len(&domain) {
+                    if len == 0 {
+                        stack.push(Value::bool(false));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    locals.push(Value::int(0));
+                    loops.push(LoopState {
+                        hi: len as i64,
+                        counter: 0,
+                        fn_buf: Vec::new(),
+                        set_buf: Vec::new(),
+                        domain_val: None,
+                    });
+                } else {
+                    let domain = normalize_domain(domain)?;
+                    let set = domain.as_set().unwrap();
+                    if set.is_empty() {
+                        stack.push(Value::bool(false));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    locals.push(set[0].clone());
+                    loops.push(LoopState {
+                        hi: 0,
+                        counter: 0,
+                        fn_buf: Vec::new(),
+                        set_buf: Vec::new(),
+                        domain_val: Some(domain),
+                    });
                 }
-                locals.push(set[0].clone());
-                loops.push(LoopState {
-                    hi: 0,
-                    counter: 0,
-                    fn_buf: Vec::new(),
-                    set_buf: Vec::new(),
-                    domain_val: Some(domain),
-                });
             }
             Op::ExistsSetStep { body_pc, end_pc } => {
                 let body_result = pop_bool(stack)?;
@@ -2597,6 +2646,20 @@ fn vm_eval_inner(
                 }
                 let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.counter += 1;
+                if loop_state.domain_val.is_none() {
+                    // IntMap range fast path
+                    if loop_state.counter >= loop_state.hi {
+                        locals.pop();
+                        loops.pop();
+                        stack.push(Value::bool(false));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    *locals.last_mut().ok_or_else(locals_underflow)? =
+                        Value::int(loop_state.counter);
+                    pc = *body_pc as usize;
+                    continue;
+                }
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
                     locals.pop();
@@ -2614,28 +2677,62 @@ fn vm_eval_inner(
             // === SetComprehension over set ===
             Op::SetCompSetInit(end_pc) => {
                 let domain = pop_value(stack)?;
-                let domain = normalize_domain(domain)?;
-                let set = domain.as_set().unwrap();
-                if set.is_empty() {
-                    stack.push(Value::empty_set());
-                    pc = *end_pc as usize;
-                    continue;
+                // Fast path: IntMap/IntMap2 domains have keys 0..len
+                if let Some(len) = intmap_domain_len(&domain) {
+                    if len == 0 {
+                        stack.push(Value::empty_set());
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    locals.push(Value::int(0));
+                    loops.push(LoopState {
+                        hi: len as i64,
+                        counter: 0,
+                        fn_buf: Vec::new(),
+                        set_buf: Vec::with_capacity(len),
+                        domain_val: None,
+                    });
+                } else {
+                    let domain = normalize_domain(domain)?;
+                    let set = domain.as_set().unwrap();
+                    if set.is_empty() {
+                        stack.push(Value::empty_set());
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    locals.push(set[0].clone());
+                    let cap = set.len();
+                    loops.push(LoopState {
+                        hi: 0,
+                        counter: 0,
+                        fn_buf: Vec::new(),
+                        set_buf: Vec::with_capacity(cap),
+                        domain_val: Some(domain),
+                    });
                 }
-                locals.push(set[0].clone());
-                let cap = set.len();
-                loops.push(LoopState {
-                    hi: 0,
-                    counter: 0,
-                    fn_buf: Vec::new(),
-                    set_buf: Vec::with_capacity(cap),
-                    domain_val: Some(domain),
-                });
             }
             Op::SetCompSetStep { body_pc, end_pc } => {
                 let element = pop_value(stack)?;
                 let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.set_buf.push(element);
                 loop_state.counter += 1;
+                if loop_state.domain_val.is_none() {
+                    // IntMap range fast path
+                    if loop_state.counter >= loop_state.hi {
+                        let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                        locals.pop();
+                        loops.pop();
+                        set_buf.sort();
+                        set_buf.dedup();
+                        stack.push(Value::set(Arc::new(set_buf)));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    *locals.last_mut().ok_or_else(locals_underflow)? =
+                        Value::int(loop_state.counter);
+                    pc = *body_pc as usize;
+                    continue;
+                }
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
                     let mut set_buf = std::mem::take(&mut loop_state.set_buf);
@@ -2655,6 +2752,23 @@ fn vm_eval_inner(
             Op::SetCompSetAdvance { body_pc, end_pc } => {
                 let loop_state = loops.last_mut().ok_or_else(loop_underflow)?;
                 loop_state.counter += 1;
+                if loop_state.domain_val.is_none() {
+                    // IntMap range fast path
+                    if loop_state.counter >= loop_state.hi {
+                        let mut set_buf = std::mem::take(&mut loop_state.set_buf);
+                        locals.pop();
+                        loops.pop();
+                        set_buf.sort();
+                        set_buf.dedup();
+                        stack.push(Value::set(Arc::new(set_buf)));
+                        pc = *end_pc as usize;
+                        continue;
+                    }
+                    *locals.last_mut().ok_or_else(locals_underflow)? =
+                        Value::int(loop_state.counter);
+                    pc = *body_pc as usize;
+                    continue;
+                }
                 let set = loop_state.domain_val.as_ref().unwrap().as_set().unwrap();
                 if loop_state.counter as usize >= set.len() {
                     let mut set_buf = std::mem::take(&mut loop_state.set_buf);
@@ -3153,7 +3267,17 @@ fn intmap2_get(data: &[Value], inner_size: u32, k1: i64, k2: i64) -> EvalResult<
 
 /// Normalize a domain value to a Set for iteration.
 /// Handles Set (passthrough), Fn/Dict (extract keys), and IntMap (0..len indices).
+/// If the domain is an IntMap or IntMap2, return its length so we can iterate
+/// 0..len directly without materializing a set of key Values.
 #[inline]
+fn intmap_domain_len(domain: &Value) -> Option<usize> {
+    match domain.kind() {
+        VK::IntMap(arr) => Some(arr.len()),
+        VK::IntMap2(inner_size, data) => Some(intmap2_outer_len(inner_size, data.len())),
+        _ => None,
+    }
+}
+
 fn normalize_domain(domain: Value) -> EvalResult<Value> {
     match domain.kind() {
         VK::Set(_) => Ok(domain),
