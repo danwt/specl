@@ -222,10 +222,19 @@ fn compute_var_hashes_and_fingerprint(
 ) -> (Vec<u64>, Fingerprint) {
     let mut hashes = Vec::with_capacity(vars.len());
     let mut fp: u64 = 0;
-    for (i, var) in vars.iter().enumerate() {
-        let h = hash_var(i, var);
-        hashes.push(h);
-        if view_mask.is_none_or(|m| m[i]) {
+    // Split to avoid per-element branch on view_mask in the common (no mask) path
+    if let Some(mask) = view_mask {
+        for (i, var) in vars.iter().enumerate() {
+            let h = hash_var(i, var);
+            hashes.push(h);
+            if mask[i] {
+                fp ^= h;
+            }
+        }
+    } else {
+        for (i, var) in vars.iter().enumerate() {
+            let h = hash_var(i, var);
+            hashes.push(h);
             fp ^= h;
         }
     }
@@ -301,7 +310,7 @@ impl State {
             .collect();
         Self {
             vars: Arc::from(vars),
-            var_hashes: Arc::from(hashes.as_slice()),
+            var_hashes: Arc::from(hashes),
             fp,
         }
     }
