@@ -686,7 +686,6 @@ impl Compiler {
         effect: &CompiledExpr,
         changes: &[usize],
     ) -> Vec<(usize, Option<Vec<KeySource>>)> {
-        use std::collections::HashMap;
         let mut result: HashMap<usize, Option<Vec<KeySource>>> = HashMap::new();
 
         // Decompose effect into conjuncts and find PrimedVar(v) == rhs assignments
@@ -797,7 +796,6 @@ impl Compiler {
         effect: &CompiledExpr,
         reads: &[usize],
     ) -> Vec<(usize, Option<Vec<KeySource>>)> {
-        use std::collections::HashMap;
         // Track: var_idx -> (keys_seen, has_unkeyed_access)
         let mut info: HashMap<usize, (Vec<KeySource>, bool)> = HashMap::new();
 
@@ -1008,8 +1006,6 @@ impl Compiler {
     /// A symmetry group contains variables with Fn[0..N, T] type where they share
     /// the same domain size N.
     fn detect_symmetry_groups(vars: &[IrVarDecl]) -> Vec<SymmetryGroup> {
-        use std::collections::HashMap;
-
         // Map domain_size -> list of variable indices with Fn[0..domain_size, T] type
         let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
 
@@ -1023,10 +1019,8 @@ impl Compiler {
             }
         }
 
-        // Only create symmetry groups for domains with at least one variable
         groups
             .into_iter()
-            .filter(|(_, vars)| !vars.is_empty())
             .map(|(domain_size, variables)| SymmetryGroup {
                 domain_size,
                 variables,
