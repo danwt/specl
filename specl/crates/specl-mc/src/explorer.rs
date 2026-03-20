@@ -105,7 +105,7 @@ pub enum SimulateOutcome {
 
 /// BFS queue entry: (fingerprint, state, depth, change_mask, sleep_set).
 /// sleep_set is a bitmask of action indices to skip (sleep set POR enhancement).
-type QueueEntry = (Fingerprint, State, usize, u64, u64);
+type QueueEntry = (Fingerprint, State, u32, u64, u64);
 
 /// Result from parallel state processing.
 enum ParallelResult {
@@ -118,7 +118,7 @@ enum ParallelResult {
     /// New states inserted into store by worker.
     NewStates {
         new_entries: Vec<QueueEntry>,
-        max_depth: usize,
+        max_depth: u32,
     },
 }
 
@@ -1473,7 +1473,7 @@ impl Explorer {
             for &var_idx in &group.variables {
                 let var = &spec.vars[var_idx];
                 if let Type::Fn(_, v) = &var.ty {
-                    if **v == sym_range {
+                    if type_contains_range(v, &sym_range) {
                         sym_var_value_overlaps.insert(var_idx);
                     }
                 }
@@ -1989,7 +1989,7 @@ impl Explorer {
 
         if self.config.parallel {
             let mut queue: VecDeque<QueueEntry> = VecDeque::new();
-            let mut max_depth = 0;
+            let mut max_depth: u32 = 0;
 
             for state in initial_states {
                 let canonical = self.maybe_canonicalize(state);
@@ -2003,7 +2003,7 @@ impl Explorer {
         } else {
             // Sequential: carry state through queue to avoid store.get() cloning
             let mut queue: VecDeque<QueueEntry> = VecDeque::new();
-            let mut max_depth = 0;
+            let mut max_depth: u32 = 0;
 
             for state in initial_states {
                 let canonical = self.maybe_canonicalize(state);
@@ -2038,7 +2038,7 @@ impl Explorer {
             score: u32,
             fp: Fingerprint,
             state: State,
-            depth: usize,
+            depth: u32,
         }
         impl PartialEq for PQEntry {
             fn eq(&self, other: &Self) -> bool {
@@ -2058,7 +2058,7 @@ impl Explorer {
         }
 
         let mut queue: BinaryHeap<PQEntry> = BinaryHeap::new();
-        let mut max_depth = 0usize;
+        let mut max_depth: u32 = 0;
         let mut next_vars_buf = Vec::new();
         let mut guard_bufs = VmBufs::new();
         let mut effect_bufs = VmBufs::new();
@@ -2099,12 +2099,12 @@ impl Explorer {
             if depth > max_depth {
                 max_depth = depth;
                 if let Some(ref p) = self.config.progress {
-                    p.depth.store(max_depth, Ordering::Relaxed);
+                    p.depth.store(max_depth as usize, Ordering::Relaxed);
                 }
             }
 
             // Check depth limit
-            if self.config.max_depth > 0 && depth >= self.config.max_depth {
+            if self.config.max_depth > 0 && depth as usize >= self.config.max_depth {
                 continue;
             }
 
@@ -2112,7 +2112,7 @@ impl Explorer {
             if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
                 return Ok(CheckOutcome::StateLimitReached {
                     states_explored: self.store.len(),
-                    max_depth,
+                    max_depth: max_depth as usize,
                 });
             }
 
@@ -2122,7 +2122,7 @@ impl Explorer {
                     if mem_mb >= self.config.memory_limit_mb {
                         return Ok(CheckOutcome::MemoryLimitReached {
                             states_explored: self.store.len(),
-                            max_depth,
+                            max_depth: max_depth as usize,
                             memory_mb: mem_mb,
                         });
                     }
@@ -2136,7 +2136,7 @@ impl Explorer {
             {
                 return Ok(CheckOutcome::TimeLimitReached {
                     states_explored: self.store.len(),
-                    max_depth,
+                    max_depth: max_depth as usize,
                 });
             }
 
@@ -2186,7 +2186,7 @@ impl Explorer {
                     Some(fp),
                     Some(action_idx),
                     Some(pvals),
-                    depth + 1,
+                    (depth + 1) as usize,
                 ) {
                     if let Some(ref p) = self.config.progress {
                         p.states.store(self.store.len(), Ordering::Relaxed);
@@ -2205,7 +2205,7 @@ impl Explorer {
 
         Ok(CheckOutcome::Ok {
             states_explored: self.store.len(),
-            max_depth,
+            max_depth: max_depth as usize,
         })
     }
 
@@ -2422,7 +2422,7 @@ impl Explorer {
     fn check_sequential(
         &mut self,
         queue: &mut VecDeque<QueueEntry>,
-        max_depth: &mut usize,
+        max_depth: &mut u32,
     ) -> CheckResult<CheckOutcome> {
         let mut hit_state_limit = false;
         let mut hit_memory_limit = false;
@@ -2464,7 +2464,7 @@ impl Explorer {
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
-            if self.config.max_depth > 0 && depth >= self.config.max_depth {
+            if self.config.max_depth > 0 && depth as usize >= self.config.max_depth {
                 continue;
             }
 
@@ -2604,7 +2604,7 @@ impl Explorer {
                         Some(fp),
                         Some(action_idx),
                         Some(pvals),
-                        depth + 1,
+                        (depth + 1) as usize,
                     )
                 };
                 if is_new {
@@ -2631,7 +2631,7 @@ impl Explorer {
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
                 p.states.store(self.store.len(), Ordering::Relaxed);
-                p.depth.store(*max_depth, Ordering::Relaxed);
+                p.depth.store(*max_depth as usize, Ordering::Relaxed);
                 p.queue_len.store(queue.len(), Ordering::Relaxed);
             }
         }
@@ -2656,23 +2656,23 @@ impl Explorer {
         if hit_memory_limit {
             Ok(CheckOutcome::MemoryLimitReached {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
                 memory_mb: memory_at_limit,
             })
         } else if hit_time_limit {
             Ok(CheckOutcome::TimeLimitReached {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
             })
         } else if hit_state_limit {
             Ok(CheckOutcome::StateLimitReached {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
             })
         } else {
             Ok(CheckOutcome::Ok {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
             })
         }
     }
@@ -2681,7 +2681,7 @@ impl Explorer {
     fn check_parallel(
         &self,
         queue: &mut VecDeque<QueueEntry>,
-        max_depth: &mut usize,
+        max_depth: &mut u32,
     ) -> CheckResult<CheckOutcome> {
         // Flags to stop early
         let found_violation = AtomicBool::new(false);
@@ -2762,7 +2762,7 @@ impl Explorer {
                     }
 
                     // Check depth limit
-                    if self.config.max_depth > 0 && depth >= self.config.max_depth {
+                    if self.config.max_depth > 0 && depth as usize >= self.config.max_depth {
                         return Some(Ok(ParallelResult::DepthLimited));
                     }
 
@@ -2837,7 +2837,7 @@ impl Explorer {
 
                             // Insert successors into store
                             let mut new_entries = Vec::new();
-                            let mut batch_max_depth = 0;
+                            let mut batch_max_depth: u32 = 0;
                             let fp_only_par = !self.store.has_full_tracking();
                             for (next_state, action_idx, pvals) in successors {
                                 let canonical = self.maybe_canonicalize(next_state);
@@ -2851,14 +2851,14 @@ impl Explorer {
                                         Some(*fp),
                                         Some(action_idx),
                                         Some(pvals),
-                                        depth + 1,
+                                        (depth + 1) as usize,
                                     )
                                 };
                                 if is_new {
                                     batch_max_depth = batch_max_depth.max(depth + 1);
                                     if let Some(ref p) = self.config.progress {
                                         p.states.store(self.store.len(), Ordering::Relaxed);
-                                        p.depth.fetch_max(depth + 1, Ordering::Relaxed);
+                                        p.depth.fetch_max((depth + 1) as usize, Ordering::Relaxed);
                                     }
                                     new_entries.push((
                                         next_fp,
@@ -2906,14 +2906,15 @@ impl Explorer {
                                             Some(*fp),
                                             Some(action_idx),
                                             Some(pvals),
-                                            depth + 1,
+                                            (depth + 1) as usize,
                                         )
                                     };
                                     if is_new {
                                         batch_max_depth = batch_max_depth.max(depth + 1);
                                         if let Some(ref p) = self.config.progress {
                                             p.states.store(self.store.len(), Ordering::Relaxed);
-                                            p.depth.fetch_max(depth + 1, Ordering::Relaxed);
+                                            p.depth
+                                                .fetch_max((depth + 1) as usize, Ordering::Relaxed);
                                         }
                                         new_entries.push((
                                             next_fp,
@@ -2964,7 +2965,7 @@ impl Explorer {
                     } => {
                         *max_depth = (*max_depth).max(d);
                         if let Some(ref p) = self.config.progress {
-                            p.depth.store(*max_depth, Ordering::Relaxed);
+                            p.depth.store(*max_depth as usize, Ordering::Relaxed);
                         }
                         queue.extend(new_entries);
                     }
@@ -2977,7 +2978,7 @@ impl Explorer {
             // Update progress counters (lock-free, near-zero overhead)
             if let Some(ref p) = self.config.progress {
                 p.states.store(self.store.len(), Ordering::Relaxed);
-                p.depth.store(*max_depth, Ordering::Relaxed);
+                p.depth.store(*max_depth as usize, Ordering::Relaxed);
                 p.queue_len.store(queue.len(), Ordering::Relaxed);
             }
         }
@@ -2991,23 +2992,23 @@ impl Explorer {
         if hit_memory_limit {
             Ok(CheckOutcome::MemoryLimitReached {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
                 memory_mb: memory_at_limit,
             })
         } else if hit_time_limit {
             Ok(CheckOutcome::TimeLimitReached {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
             })
         } else if hit_state_limit {
             Ok(CheckOutcome::StateLimitReached {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
             })
         } else {
             Ok(CheckOutcome::Ok {
                 states_explored: self.store.len(),
-                max_depth: *max_depth,
+                max_depth: *max_depth as usize,
             })
         }
     }
