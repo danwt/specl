@@ -65,11 +65,34 @@ fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Document state stored by the server.
+#[allow(dead_code)]
 struct Document {
     /// Document content as a rope for efficient edits.
     content: Rope,
     /// Document version.
     version: i32,
+    /// Precomputed byte offsets of line starts for span-to-position conversion.
+    /// Used via `Document::compute_line_starts` for fresh source strings;
+    /// the stored field is available for direct access when the Document is in scope.
+    line_starts: Vec<usize>,
+}
+
+impl Document {
+    fn new(text: &str, version: i32) -> Self {
+        let content = Rope::from_str(text);
+        let line_starts = Self::compute_line_starts(text);
+        Self {
+            content,
+            version,
+            line_starts,
+        }
+    }
+
+    fn compute_line_starts(source: &str) -> Vec<usize> {
+        std::iter::once(0)
+            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+            .collect()
+    }
 }
 
 /// The Specl language server.
@@ -246,10 +269,17 @@ impl SpeclLanguageServer {
 
     /// Convert a Span to an LSP Range using source text for accurate end position.
     /// Handles multi-line spans correctly by computing end line/column from byte offsets.
+    #[cfg(test)]
     fn span_to_range_in(span: Span, source: &str) -> Range {
+        let line_starts = Document::compute_line_starts(source);
+        Self::span_to_range_with(span, &line_starts)
+    }
+
+    /// Convert a Span to an LSP Range using precomputed line_starts for efficiency.
+    fn span_to_range_with(span: Span, line_starts: &[usize]) -> Range {
         let start_line = span.line.saturating_sub(1);
         let start_char = span.column.saturating_sub(1);
-        let (end_line, end_char) = Self::byte_offset_to_position(source, span.end);
+        let (end_line, end_char) = Self::byte_offset_to_position_with(line_starts, span.end);
         Range {
             start: Position {
                 line: start_line,
@@ -560,6 +590,7 @@ impl SpeclLanguageServer {
             None => return vec![],
         };
 
+        let line_starts = Document::compute_line_starts(source);
         let mut symbols = Vec::new();
 
         for decl in &module.decls {
@@ -647,7 +678,7 @@ impl SpeclLanguageServer {
                 kind,
                 tags: None,
                 deprecated: None,
-                range: Self::span_to_range_in(span, source),
+                range: Self::span_to_range_with(span, &line_starts),
                 selection_range: Self::span_to_range(name_span),
                 children: None,
             });
@@ -1131,23 +1162,14 @@ impl SpeclLanguageServer {
             None => return vec![],
         };
 
-        // Pre-compute line start offsets for byte-to-line conversion
-        let line_starts: Vec<usize> = std::iter::once(0)
-            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
-
-        let byte_to_line = |byte_offset: usize| -> u32 {
-            match line_starts.binary_search(&byte_offset) {
-                Ok(i) => i as u32,
-                Err(i) => i.saturating_sub(1) as u32,
-            }
-        };
+        let line_starts = Document::compute_line_starts(source);
 
         let mut ranges = Vec::new();
         for decl in &module.decls {
             let span = decl.span();
             let start_line = span.line.saturating_sub(1);
-            let end_line = byte_to_line(span.end.saturating_sub(1));
+            let (end_line, _) =
+                Self::byte_offset_to_position_with(&line_starts, span.end.saturating_sub(1));
             if end_line > start_line {
                 ranges.push(FoldingRange {
                     start_line,
@@ -1216,6 +1238,8 @@ impl SpeclLanguageServer {
             }
         };
 
+        let line_starts = Document::compute_line_starts(source);
+
         positions
             .iter()
             .map(|pos| {
@@ -1227,8 +1251,11 @@ impl SpeclLanguageServer {
                 for decl in &module.decls {
                     let span = decl.span();
                     if line >= span.line {
-                        let end_line =
-                            Self::byte_offset_to_line(source, span.end.saturating_sub(1));
+                        let (end_line_0, _) = Self::byte_offset_to_position_with(
+                            &line_starts,
+                            span.end.saturating_sub(1),
+                        );
+                        let end_line = end_line_0 + 1; // convert 0-indexed to 1-indexed
                         if line <= end_line + 1 || (line == span.line && col >= span.column) {
                             best_decl = Some(decl);
                         }
@@ -1236,7 +1263,7 @@ impl SpeclLanguageServer {
                 }
 
                 if let Some(decl) = best_decl {
-                    let decl_range = Self::span_to_range_in(decl.span(), source);
+                    let decl_range = Self::span_to_range_with(decl.span(), &line_starts);
                     // Full file as outermost range
                     let file_range = Range {
                         start: Position {
@@ -1269,16 +1296,15 @@ impl SpeclLanguageServer {
             .collect()
     }
 
-    fn byte_offset_to_line(source: &str, byte_offset: usize) -> u32 {
-        let (line, _) = Self::byte_offset_to_position(source, byte_offset);
-        line + 1 // byte_offset_to_position returns 0-indexed, this returns 1-indexed
+    /// Convert a byte offset to an LSP Position (0-indexed line and character).
+    #[cfg(test)]
+    fn byte_offset_to_position(source: &str, byte_offset: usize) -> (u32, u32) {
+        let line_starts = Document::compute_line_starts(source);
+        Self::byte_offset_to_position_with(&line_starts, byte_offset)
     }
 
-    /// Convert a byte offset to an LSP Position (0-indexed line and character).
-    fn byte_offset_to_position(source: &str, byte_offset: usize) -> (u32, u32) {
-        let line_starts: Vec<usize> = std::iter::once(0)
-            .chain(source.match_indices('\n').map(|(i, _)| i + 1))
-            .collect();
+    /// Convert a byte offset to an LSP Position using precomputed line_starts.
+    fn byte_offset_to_position_with(line_starts: &[usize], byte_offset: usize) -> (u32, u32) {
         let line_idx = match line_starts.binary_search(&byte_offset) {
             Ok(i) => i,
             Err(i) => i.saturating_sub(1),
@@ -1449,6 +1475,8 @@ impl SpeclLanguageServer {
                 None => continue,
             };
 
+            let line_starts = Document::compute_line_starts(&content);
+
             for decl in &module.decls {
                 let (name, kind, span) = match decl {
                     Decl::Var(d) => (d.name.name.clone(), SymbolKind::VARIABLE, d.span),
@@ -1478,7 +1506,7 @@ impl SpeclLanguageServer {
                     deprecated: None,
                     location: Location {
                         uri: uri.clone(),
-                        range: Self::span_to_range_in(span, &content),
+                        range: Self::span_to_range_with(span, &line_starts),
                     },
                     container_name: None,
                 });
@@ -1659,7 +1687,11 @@ impl SpeclLanguageServer {
     }
 
     /// Build a CallHierarchyItem for an action or func declaration.
-    fn make_call_hierarchy_item(decl: &Decl, source: &str, uri: &Url) -> Option<CallHierarchyItem> {
+    fn make_call_hierarchy_item(
+        decl: &Decl,
+        line_starts: &[usize],
+        uri: &Url,
+    ) -> Option<CallHierarchyItem> {
         let (name, kind, detail, span, name_span) = match decl {
             Decl::Action(d) => {
                 let params = format_action_params(&d.params);
@@ -1695,7 +1727,7 @@ impl SpeclLanguageServer {
             tags: None,
             detail,
             uri: uri.clone(),
-            range: Self::span_to_range_in(span, source),
+            range: Self::span_to_range_with(span, line_starts),
             selection_range: Self::span_to_range(name_span),
             data: Some(serde_json::Value::String(name)),
         })
@@ -1759,6 +1791,7 @@ impl SpeclLanguageServer {
             None => return vec![],
         };
 
+        let line_starts = Document::compute_line_starts(source);
         let mut items = Vec::new();
         for decl in &module.decls {
             let name = match decl {
@@ -1767,7 +1800,7 @@ impl SpeclLanguageServer {
                 _ => continue,
             };
             if name == &word {
-                if let Some(item) = Self::make_call_hierarchy_item(decl, source, uri) {
+                if let Some(item) = Self::make_call_hierarchy_item(decl, &line_starts, uri) {
                     items.push(item);
                 }
             }
@@ -1788,6 +1821,7 @@ impl SpeclLanguageServer {
             None => return vec![],
         };
 
+        let line_starts = Document::compute_line_starts(source);
         let mut result = Vec::new();
 
         for decl in &module.decls {
@@ -1799,7 +1833,7 @@ impl SpeclLanguageServer {
                 .collect();
 
             if !matching_ranges.is_empty() {
-                if let Some(item) = Self::make_call_hierarchy_item(decl, source, uri) {
+                if let Some(item) = Self::make_call_hierarchy_item(decl, &line_starts, uri) {
                     result.push(CallHierarchyIncomingCall {
                         from: item,
                         from_ranges: matching_ranges,
@@ -1854,6 +1888,7 @@ impl SpeclLanguageServer {
                 .push(Self::span_to_range(*span));
         }
 
+        let line_starts = Document::compute_line_starts(source);
         let mut result = Vec::new();
         for (callee_name, from_ranges) in grouped {
             // Find the decl for this callee
@@ -1862,7 +1897,7 @@ impl SpeclLanguageServer {
                 Decl::Func(fd) => fd.name.name == callee_name,
                 _ => false,
             }) {
-                if let Some(item) = Self::make_call_hierarchy_item(callee_decl, source, uri) {
+                if let Some(item) = Self::make_call_hierarchy_item(callee_decl, &line_starts, uri) {
                     result.push(CallHierarchyOutgoingCall {
                         to: item,
                         from_ranges,
@@ -2014,11 +2049,12 @@ impl LanguageServer for SpeclLanguageServer {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         debug!("document opened: {}", params.text_document.uri);
         let uri = params.text_document.uri;
-        let content = Rope::from_str(&params.text_document.text);
         let version = params.text_document.version;
 
-        self.documents
-            .insert(uri.clone(), Document { content, version });
+        self.documents.insert(
+            uri.clone(),
+            Document::new(&params.text_document.text, version),
+        );
         self.analyze_document(&uri).await;
     }
 
@@ -2028,9 +2064,8 @@ impl LanguageServer for SpeclLanguageServer {
         let version = params.text_document.version;
 
         if let Some(change) = params.content_changes.into_iter().next_back() {
-            let content = Rope::from_str(&change.text);
             self.documents
-                .insert(uri.clone(), Document { content, version });
+                .insert(uri.clone(), Document::new(&change.text, version));
             self.analyze_document(&uri).await;
         }
     }
@@ -3219,13 +3254,9 @@ action A() { x = y }
         let server = service.inner();
         let uri = Url::parse("file:///test.specl").unwrap();
         // Store the document so range_formatting can access it
-        server.documents.insert(
-            uri.clone(),
-            Document {
-                content: Rope::from_str(SAMPLE_SPEC),
-                version: 1,
-            },
-        );
+        server
+            .documents
+            .insert(uri.clone(), Document::new(SAMPLE_SPEC, 1));
         // Format only lines 6-8 (init block area)
         let params = DocumentRangeFormattingParams {
             text_document: TextDocumentIdentifier { uri },
