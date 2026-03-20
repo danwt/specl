@@ -217,6 +217,7 @@ fn extract_state(
                 format!("{{{}}}", members.join(", "))
             }
             VarKind::ExplodedSeq { max_len, elem_kind } => {
+                let elem_stride = elem_kind.z3_var_count();
                 let len = model
                     .eval(&z3_vars[0], true)
                     .and_then(|v| v.as_int())
@@ -225,18 +226,29 @@ fn extract_state(
                 let len = len.min(*max_len);
                 let mut elems = Vec::new();
                 for i in 0..len {
-                    let val = model
-                        .eval(&z3_vars[1 + i], true)
-                        .and_then(|v| {
-                            v.as_int()
-                                .and_then(|i| i.as_i64())
-                                .map(|n| format_int_value(n, elem_kind, &layout.string_table))
-                                .or_else(|| {
-                                    v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
-                                })
-                        })
-                        .unwrap_or_else(|| "?".to_string());
-                    elems.push(val);
+                    let offset = 1 + i * elem_stride;
+                    if elem_stride == 1 {
+                        let val = model
+                            .eval(&z3_vars[offset], true)
+                            .and_then(|v| {
+                                v.as_int()
+                                    .and_then(|i| i.as_i64())
+                                    .map(|n| format_int_value(n, elem_kind, &layout.string_table))
+                                    .or_else(|| {
+                                        v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
+                                    })
+                            })
+                            .unwrap_or_else(|| "?".to_string());
+                        elems.push(val);
+                    } else {
+                        let elem_vars = &z3_vars[offset..offset + elem_stride];
+                        elems.push(format_compound_value(
+                            model,
+                            elem_kind,
+                            elem_vars,
+                            &layout.string_table,
+                        ));
+                    }
                 }
                 format!("[{}]", elems.join(", "))
             }
@@ -289,6 +301,7 @@ fn format_compound_value(
 ) -> String {
     match kind {
         VarKind::ExplodedSeq { max_len, elem_kind } => {
+            let elem_stride = elem_kind.z3_var_count();
             let len = model
                 .eval(&vars[0], true)
                 .and_then(|v| v.as_int())
@@ -297,18 +310,29 @@ fn format_compound_value(
             let len = len.min(*max_len);
             let mut elems = Vec::new();
             for i in 0..len {
-                let val = model
-                    .eval(&vars[1 + i], true)
-                    .and_then(|v| {
-                        v.as_int()
-                            .and_then(|i| i.as_i64())
-                            .map(|n| format_int_value(n, elem_kind, string_table))
-                            .or_else(|| {
-                                v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
-                            })
-                    })
-                    .unwrap_or_else(|| "?".to_string());
-                elems.push(val);
+                let offset = 1 + i * elem_stride;
+                if elem_stride == 1 {
+                    let val = model
+                        .eval(&vars[offset], true)
+                        .and_then(|v| {
+                            v.as_int()
+                                .and_then(|i| i.as_i64())
+                                .map(|n| format_int_value(n, elem_kind, string_table))
+                                .or_else(|| {
+                                    v.as_bool().and_then(|b| b.as_bool()).map(|b| b.to_string())
+                                })
+                        })
+                        .unwrap_or_else(|| "?".to_string());
+                    elems.push(val);
+                } else {
+                    let elem_vars = &vars[offset..offset + elem_stride];
+                    elems.push(format_compound_value(
+                        model,
+                        elem_kind,
+                        elem_vars,
+                        string_table,
+                    ));
+                }
             }
             format!("[{}]", elems.join(", "))
         }
