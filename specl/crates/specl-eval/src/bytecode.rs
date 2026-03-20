@@ -277,6 +277,15 @@ pub enum Op {
     Halt,
 }
 
+const _: () = assert!(
+    std::mem::size_of::<Value>() == 8,
+    "Value must be 8 bytes (NaN-boxed)"
+);
+const _: () = assert!(
+    std::mem::size_of::<Op>() <= 16,
+    "Op enum grew beyond 16 bytes"
+);
+
 /// Loop state for range-based quantifiers and set iteration.
 struct LoopState {
     hi: i64,
