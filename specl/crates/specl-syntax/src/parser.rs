@@ -74,7 +74,7 @@ impl Parser {
 
     /// Parse a declaration.
     fn parse_decl(&mut self) -> ParseResult<Decl> {
-        match self.peek_kind() {
+        match &self.peek().kind {
             TokenKind::Use => self.parse_use_decl().map(Decl::Use),
             TokenKind::Const => self.parse_const_decl().map(Decl::Const),
             TokenKind::Var => self.parse_var_decl().map(Decl::Var),
@@ -92,7 +92,7 @@ impl Parser {
             TokenKind::View => self.parse_view_decl().map(Decl::View),
             _ => Err(ParseError::UnexpectedToken {
                 expected: "declaration".to_string(),
-                found: self.peek_kind().to_string(),
+                found: self.peek().kind.to_string(),
                 span: self.current_span(),
             }),
         }
@@ -128,22 +128,22 @@ impl Parser {
         };
 
         // Optional default value: const N: Int = 5
-        let default_value =
-            if matches!(value, ConstValue::Type(_)) && self.peek_kind() == TokenKind::Assign {
+        let default_value = if matches!(value, ConstValue::Type(_)) && self.check(TokenKind::Assign)
+        {
+            self.advance();
+            if let TokenKind::Integer(n) = self.peek_kind() {
                 self.advance();
-                if let TokenKind::Integer(n) = self.peek_kind() {
-                    self.advance();
-                    Some(n)
-                } else {
-                    return Err(ParseError::UnexpectedToken {
-                        expected: "integer literal".to_string(),
-                        found: format!("{:?}", self.peek_kind()),
-                        span: self.current_span(),
-                    });
-                }
+                Some(n)
             } else {
-                None
-            };
+                return Err(ParseError::UnexpectedToken {
+                    expected: "integer literal".to_string(),
+                    found: self.peek().kind.to_string(),
+                    span: self.current_span(),
+                });
+            }
+        } else {
+            None
+        };
 
         let span = start.merge(self.prev_span());
         Ok(ConstDecl {
@@ -497,7 +497,7 @@ impl Parser {
         let start = self.current_span();
 
         // Check for built-in parameterized types
-        match self.peek_kind() {
+        match &self.peek().kind {
             TokenKind::Set => {
                 self.advance();
                 self.expect(TokenKind::LBracket)?;
@@ -658,7 +658,7 @@ impl Parser {
     }
 
     fn peek_binop(&self, allow_in_op: bool) -> Option<BinOp> {
-        match self.peek_kind() {
+        match &self.peek().kind {
             TokenKind::And => Some(BinOp::And),
             TokenKind::Or => Some(BinOp::Or),
             TokenKind::Implies => Some(BinOp::Implies),
@@ -1360,11 +1360,11 @@ impl Parser {
     }
 
     fn is_at_end(&self) -> bool {
-        matches!(self.peek_kind(), TokenKind::Eof)
+        matches!(self.peek().kind, TokenKind::Eof)
     }
 
     fn check(&self, kind: TokenKind) -> bool {
-        std::mem::discriminant(&self.peek_kind()) == std::mem::discriminant(&kind)
+        std::mem::discriminant(&self.peek().kind) == std::mem::discriminant(&kind)
     }
 
     fn match_token(&mut self, kind: TokenKind) -> bool {
@@ -1389,7 +1389,7 @@ impl Parser {
         } else {
             Err(ParseError::UnexpectedToken {
                 expected: kind.to_string(),
-                found: self.peek_kind().to_string(),
+                found: self.peek().kind.to_string(),
                 span: self.current_span(),
             })
         }
