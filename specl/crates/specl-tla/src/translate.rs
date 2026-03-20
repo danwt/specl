@@ -2842,18 +2842,38 @@ impl Translator {
                 // Translate standard library operators
                 match name.as_str() {
                     "Head" => {
+                        if args.is_empty() {
+                            return Err(TranslateError::Translation {
+                                message: "Head requires 1 argument".to_string(),
+                            });
+                        }
                         let arg = self.translate_expr(&args[0], in_action)?;
                         specl::ExprKind::SeqHead(Box::new(arg))
                     }
                     "Tail" => {
+                        if args.is_empty() {
+                            return Err(TranslateError::Translation {
+                                message: "Tail requires 1 argument".to_string(),
+                            });
+                        }
                         let arg = self.translate_expr(&args[0], in_action)?;
                         specl::ExprKind::SeqTail(Box::new(arg))
                     }
                     "Len" | "Cardinality" => {
+                        if args.is_empty() {
+                            return Err(TranslateError::Translation {
+                                message: format!("{name} requires 1 argument"),
+                            });
+                        }
                         let arg = self.translate_expr(&args[0], in_action)?;
                         specl::ExprKind::Len(Box::new(arg))
                     }
                     "Append" => {
+                        if args.len() < 2 {
+                            return Err(TranslateError::Translation {
+                                message: format!("Append requires 2 arguments, got {}", args.len()),
+                            });
+                        }
                         let seq = self.translate_expr(&args[0], in_action)?;
                         let elem = self.translate_expr(&args[1], in_action)?;
                         // s ++ [e]
@@ -2867,6 +2887,11 @@ impl Translator {
                         }
                     }
                     "SubSeq" => {
+                        if args.len() < 3 {
+                            return Err(TranslateError::Translation {
+                                message: format!("SubSeq requires 3 arguments, got {}", args.len()),
+                            });
+                        }
                         // SubSeq(s, m, n) -> s[m..n] (slice)
                         let seq = self.translate_expr(&args[0], in_action)?;
                         let lo = self.translate_expr(&args[1], in_action)?;
@@ -2878,9 +2903,15 @@ impl Translator {
                         }
                     }
                     "IsPrefix" => {
-                        // IsPrefix(a, b) means a is a prefix of b
-                        // Translate to: len(a) <= len(b) and forall i in 0..(len(a)-1): a[i] == b[i]
-                        // For now, just emit a call - it can be defined in Specl prelude
+                        if args.len() < 2 {
+                            return Err(TranslateError::Translation {
+                                message: format!(
+                                    "IsPrefix requires 2 arguments, got {}",
+                                    args.len()
+                                ),
+                            });
+                        }
+                        // Emit a call - it can be defined in Specl prelude
                         let a = self.translate_expr(&args[0], in_action)?;
                         let b = self.translate_expr(&args[1], in_action)?;
                         specl::ExprKind::Call {
@@ -2892,6 +2923,11 @@ impl Translator {
                         }
                     }
                     "Seq" => {
+                        if args.is_empty() {
+                            return Err(TranslateError::Translation {
+                                message: "Seq requires 1 argument".to_string(),
+                            });
+                        }
                         // Seq(S) is the set of all sequences over S
                         // For model checking, we'll use a finite approximation
                         // Just pass through as a call for now
@@ -2905,11 +2941,21 @@ impl Translator {
                         }
                     }
                     "Range" => {
+                        if args.is_empty() {
+                            return Err(TranslateError::Translation {
+                                message: "Range requires 1 argument".to_string(),
+                            });
+                        }
                         // Range(f) is like DOMAIN
                         let arg = self.translate_expr(&args[0], in_action)?;
                         specl::ExprKind::Values(Box::new(arg))
                     }
                     "DOMAIN" => {
+                        if args.is_empty() {
+                            return Err(TranslateError::Translation {
+                                message: "DOMAIN requires 1 argument".to_string(),
+                            });
+                        }
                         let arg = self.translate_expr(&args[0], in_action)?;
                         specl::ExprKind::Keys(Box::new(arg))
                     }
@@ -3906,7 +3952,6 @@ Next == Increment
         assert!(result.contains("module Counter"));
         assert!(result.contains("var count: Int"));
         assert!(result.contains("init {"));
-        // Note: The translator does not currently emit action declarations for TLA+ operators
     }
 
     #[test]
@@ -3927,7 +3972,6 @@ Next == Increment
         let result = translate(input).unwrap();
         assert!(result.contains("const Max:"));
         assert!(result.contains("var x: Int"));
-        // Note: The translator does not currently emit action declarations for TLA+ operators
     }
 
     #[test]

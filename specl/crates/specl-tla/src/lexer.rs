@@ -4,7 +4,6 @@ use crate::token::{Span, Token, TokenKind};
 
 /// TLA+ lexer.
 pub struct Lexer<'a> {
-    _source: &'a str,
     chars: std::iter::Peekable<std::str::CharIndices<'a>>,
     position: usize,
 }
@@ -13,7 +12,6 @@ impl<'a> Lexer<'a> {
     /// Create a new lexer for the given source.
     pub fn new(source: &'a str) -> Self {
         Self {
-            _source: source,
             chars: source.char_indices().peekable(),
             position: 0,
         }
