@@ -1,0 +1,21 @@
+module Issue82SymmetryNestedValues
+
+// Regression: symmetry with Dict[0..N, Set[0..N]] must not produce false violations.
+// Issue #82: canonicalization permutes dict keys but not set element values,
+// corrupting key-value relationships when value type contains the symmetric range.
+
+const N: 1..4
+
+var graph: Dict[0..N, Set[0..N]]
+
+init {
+    graph = {i: {i} for i in 0..N};
+}
+
+action AddEdge(i: 0..N, j: 0..N) {
+    graph = graph | {i: graph[i] union {j}};
+}
+
+invariant SelfInGraph {
+    all i in 0..N: i in graph[i]
+}
