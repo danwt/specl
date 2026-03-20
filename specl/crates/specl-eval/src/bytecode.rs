@@ -1679,7 +1679,7 @@ fn vm_eval_inner(
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let idx = expect_int(key)?;
-                        stack.push(Value::bool(*intmap_get(arr, idx)? == Value::int(*k)));
+                        stack.push(Value::bool(intmap_get(arr, idx)?.as_int() == Some(*k)));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
@@ -1694,16 +1694,17 @@ fn vm_eval_inner(
                 // Dict lookup + bool compare: vars[a][params[b]] == v without cloning.
                 let key = &params[*param_idx as usize];
                 let base = &vars[*var_idx as usize];
-                let expected = Value::bool(*bool_val);
                 match base.kind() {
                     VK::IntMap(arr) => {
                         let idx = expect_int(key)?;
-                        stack.push(Value::bool(*intmap_get(arr, idx)? == expected));
+                        stack.push(Value::bool(
+                            intmap_get(arr, idx)?.as_bool() == Some(*bool_val),
+                        ));
                     }
                     VK::Fn(map) => {
                         let val = Value::fn_get(map, key)
                             .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
-                        stack.push(Value::bool(*val == expected));
+                        stack.push(Value::bool(val.as_bool() == Some(*bool_val)));
                     }
                     _ => return Err(type_mismatch("Fn or IntMap", base)),
                 }
@@ -1714,13 +1715,12 @@ fn vm_eval_inner(
                 let key1 = &params[*param1_idx as usize];
                 let key2 = &params[*param2_idx as usize];
                 let outer = &vars[*var_idx as usize];
-                let expected = Value::bool(*bool_val);
                 match outer.kind() {
                     VK::IntMap2(inner_size, data) => {
                         let k1 = expect_int(key1)?;
                         let k2 = expect_int(key2)?;
                         stack.push(Value::bool(
-                            *intmap2_get(data, inner_size, k1, k2)? == expected,
+                            intmap2_get(data, inner_size, k1, k2)?.as_bool() == Some(*bool_val),
                         ));
                     }
                     _ => {
@@ -1736,12 +1736,14 @@ fn vm_eval_inner(
                         match inner_ref.kind() {
                             VK::IntMap(arr) => {
                                 let k = expect_int(key2)?;
-                                stack.push(Value::bool(*intmap_get(arr, k)? == expected));
+                                stack.push(Value::bool(
+                                    intmap_get(arr, k)?.as_bool() == Some(*bool_val),
+                                ));
                             }
                             VK::Fn(inner_map) => {
                                 let val = Value::fn_get(inner_map, key2)
                                     .ok_or_else(|| EvalError::KeyNotFound(key2.to_string()))?;
-                                stack.push(Value::bool(*val == expected));
+                                stack.push(Value::bool(val.as_bool() == Some(*bool_val)));
                             }
                             _ => return Err(type_mismatch("Fn or IntMap", inner_ref)),
                         }
@@ -2973,9 +2975,10 @@ fn vm_eval_inner(
                     );
                 }
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
-                ctx.locals = locals.clone();
-                let result = eval(expr, &mut ctx)?;
-                stack.push(result);
+                ctx.locals = std::mem::take(locals);
+                let result = eval(expr, &mut ctx);
+                *locals = ctx.locals;
+                stack.push(result?);
             }
             Op::FallbackBool(idx) => {
                 let expr = &fallbacks[*idx as usize];
@@ -2986,9 +2989,10 @@ fn vm_eval_inner(
                     std::mem::discriminant(expr)
                 );
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
-                ctx.locals = locals.clone();
-                let result = eval_bool(expr, &mut ctx)?;
-                stack.push(Value::bool(result));
+                ctx.locals = std::mem::take(locals);
+                let result = eval_bool(expr, &mut ctx);
+                *locals = ctx.locals;
+                stack.push(Value::bool(result?));
             }
             Op::FallbackInt(idx) => {
                 let expr = &fallbacks[*idx as usize];
@@ -2999,9 +3003,10 @@ fn vm_eval_inner(
                     std::mem::discriminant(expr)
                 );
                 let mut ctx = EvalContext::new(vars, next_vars, consts, params);
-                ctx.locals = locals.clone();
-                let result = eval_int(expr, &mut ctx)?;
-                stack.push(Value::int(result));
+                ctx.locals = std::mem::take(locals);
+                let result = eval_int(expr, &mut ctx);
+                *locals = ctx.locals;
+                stack.push(Value::int(result?));
             }
 
             Op::Nop => unreachable!("Nop should be removed by peephole compaction"),
