@@ -1102,11 +1102,6 @@ action BrokenDeposit() {
         let module = parse(source).unwrap();
         let spec = compile(&module).unwrap();
 
-        println!("Actions:");
-        for action in &spec.actions {
-            println!("  {}: changes={:?}", action.name, action.changes);
-        }
-
         assert_eq!(spec.actions.len(), 1);
         assert_eq!(spec.actions[0].changes, vec![1]); // bob is at index 1
     }
