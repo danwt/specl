@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use crate::state::Fingerprint;
 
 /// Sentinel value for empty slots.
+/// Fingerprints equal to this value are remapped by `remap()` to avoid ambiguity.
 const EMPTY: u64 = u64::MAX;
 
 /// Secondary hash mix to decorrelate slot indices from raw fingerprint values.
@@ -62,10 +63,7 @@ impl AtomicFPSet {
     /// Actual slot count is ~2.67x capacity to maintain ~37.5% load factor.
     pub fn new(expected_capacity: usize) -> Self {
         let min_slots = (expected_capacity * 3).max(1024).next_power_of_two();
-        let mut slots = Vec::with_capacity(min_slots);
-        for _ in 0..min_slots {
-            slots.push(AtomicU64::new(EMPTY));
-        }
+        let slots: Vec<AtomicU64> = (0..min_slots).map(|_| AtomicU64::new(EMPTY)).collect();
         Self {
             mask: (min_slots - 1) as u64,
             slots,
@@ -73,7 +71,10 @@ impl AtomicFPSet {
         }
     }
 
-    /// Remap fingerprint to avoid collision with EMPTY sentinel.
+    /// Remap fingerprint to avoid storing the EMPTY sentinel value in slots.
+    /// Maps MAX to MAX-1; this means fingerprints MAX and MAX-1 are treated
+    /// as identical (unavoidable pigeonhole with a u64 sentinel).
+    /// The probability of two spec states hashing to these exact values is ~1/2^127.
     #[inline]
     fn remap(fp: u64) -> u64 {
         if fp == EMPTY {
@@ -99,18 +100,14 @@ impl AtomicFPSet {
     /// NOT thread-safe — must be called from a single thread with no concurrent inserts.
     pub fn grow(&mut self) {
         let new_len = self.slots.len() * 2;
-        let mut new_slots = Vec::with_capacity(new_len);
-        for _ in 0..new_len {
-            new_slots.push(AtomicU64::new(EMPTY));
-        }
+        let new_slots: Vec<AtomicU64> = (0..new_len).map(|_| AtomicU64::new(EMPTY)).collect();
         let new_mask = (new_len - 1) as u64;
 
         // Rehash all existing entries using triangular probing in new table
         for slot in &self.slots {
             let val = slot.load(Ordering::Relaxed);
             if val != EMPTY {
-                let start = (secondary_mix(val) & new_mask) as usize;
-                let mut idx = start;
+                let mut idx = (secondary_mix(val) & new_mask) as usize;
                 let mut stride: usize = 1;
                 loop {
                     let current = new_slots[idx].load(Ordering::Relaxed);
@@ -132,8 +129,7 @@ impl AtomicFPSet {
     #[inline]
     pub fn insert(&self, fp: Fingerprint) -> bool {
         let val = Self::remap(fp.as_u64());
-        let start = self.slot_index(val);
-        let mut idx = start;
+        let mut idx = self.slot_index(val);
         let mut stride: usize = 1;
 
         // Prefetch first probe location
@@ -158,6 +154,8 @@ impl AtomicFPSet {
                         if actual == val {
                             return false; // Another thread inserted same value
                         }
+                        // Slot was claimed by another thread with a different value;
+                        // PAUSE hint before advancing to next probe position.
                         std::hint::spin_loop();
                     }
                 }
@@ -176,8 +174,7 @@ impl AtomicFPSet {
     #[inline]
     pub fn contains(&self, fp: Fingerprint) -> bool {
         let val = Self::remap(fp.as_u64());
-        let start = self.slot_index(val);
-        let mut idx = start;
+        let mut idx = self.slot_index(val);
         let mut stride: usize = 1;
 
         // Prefetch first probe location

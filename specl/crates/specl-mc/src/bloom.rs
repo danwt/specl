@@ -27,10 +27,7 @@ impl BloomFilter {
     /// For 100M states at 3 hashes: 1 GiB gives ~0.004% FP rate.
     pub fn new(num_bits: usize, num_hashes: u32) -> Self {
         let num_words = num_bits.div_ceil(64);
-        let mut bits = Vec::with_capacity(num_words);
-        for _ in 0..num_words {
-            bits.push(AtomicU64::new(0));
-        }
+        let bits: Vec<AtomicU64> = (0..num_words).map(|_| AtomicU64::new(0)).collect();
         Self {
             bits,
             num_bits: num_bits as u64,

@@ -7,7 +7,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::fs;
 use std::hash::{Hash, Hasher};
-use std::io::{Read, Write};
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use tracing::{debug, info};
 
@@ -42,17 +42,18 @@ pub fn load_fingerprints(spec_path: &Path, hash: u64) -> Option<Vec<u64>> {
         return None;
     }
 
-    let mut file = match fs::File::open(&path) {
+    let file = match fs::File::open(&path) {
         Ok(f) => f,
         Err(e) => {
             debug!(error = %e, "failed to open cache file");
             return None;
         }
     };
+    let mut reader = BufReader::new(file);
 
     // Read metadata: 8 bytes spec_hash + 8 bytes count
     let mut meta_buf = [0u8; 16];
-    if file.read_exact(&mut meta_buf).is_err() {
+    if reader.read_exact(&mut meta_buf).is_err() {
         return None;
     }
     let stored_hash = u64::from_le_bytes(meta_buf[0..8].try_into().unwrap());
@@ -65,7 +66,7 @@ pub fn load_fingerprints(spec_path: &Path, hash: u64) -> Option<Vec<u64>> {
 
     // Read fingerprints: count * 8 bytes
     let mut data = vec![0u8; count as usize * 8];
-    if file.read_exact(&mut data).is_err() {
+    if reader.read_exact(&mut data).is_err() {
         return None;
     }
 
@@ -84,16 +85,18 @@ pub fn save_fingerprints(spec_path: &Path, hash: u64, fingerprints: &[u64]) -> s
     fs::create_dir_all(&dir)?;
 
     let path = fp_path(spec_path, hash);
-    let mut file = fs::File::create(&path)?;
+    let file = fs::File::create(&path)?;
+    let mut writer = BufWriter::new(file);
 
     // Write metadata
-    file.write_all(&hash.to_le_bytes())?;
-    file.write_all(&(fingerprints.len() as u64).to_le_bytes())?;
+    writer.write_all(&hash.to_le_bytes())?;
+    writer.write_all(&(fingerprints.len() as u64).to_le_bytes())?;
 
     // Write fingerprints
     for &fp in fingerprints {
-        file.write_all(&fp.to_le_bytes())?;
+        writer.write_all(&fp.to_le_bytes())?;
     }
+    writer.flush()?;
 
     info!(
         states = fingerprints.len(),
