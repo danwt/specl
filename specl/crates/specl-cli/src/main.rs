@@ -1106,9 +1106,6 @@ fn version_string() -> String {
 }
 
 fn exit_with_code(code: i32) -> ! {
-    if code != 0 {
-        eprintln!("{}", version_string());
-    }
     std::process::exit(code);
 }
 
@@ -1900,6 +1897,11 @@ fn run_bfs_check(
         flags.output_format,
     );
 
+    if flags.output_format == OutputFormat::Dot && flags.swarm.is_some() {
+        eprintln!("Error: --output dot is not supported with --swarm.\n  Use --output dot without --swarm to generate a state graph.");
+        exit_with_code(1);
+    }
+
     // Swarm verification
     if let Some(n) = flags.swarm {
         return cmd_check_swarm(
@@ -2203,19 +2205,17 @@ fn cmd_check_swarm(
                             println!("{}", serde_json::to_string(&out).unwrap());
                         }
                         OutputFormat::Dot => {
-                            // DOT output not meaningful for swarm (no full store)
-                            eprintln!("Error: --output dot is not supported with --swarm.\n  Use --output dot without --swarm to generate a state graph.");
-                            exit_with_code(1);
+                            unreachable!("dot+swarm rejected upfront");
                         }
                         OutputFormat::Text => {
                             println!();
                             println!(
-                                "Result: INVARIANT VIOLATION (swarm found in {:.1}s, trace reconstructed)",
+                                "Result: INVARIANT VIOLATION (swarm found in {:.2}s, trace reconstructed)",
                                 secs
                             );
                             println!("  Invariant: {}", invariant);
                             print_text_trace(&trace, var_names, diff_traces);
-                            println!("  Total time: {:.1}s", total_secs);
+                            println!("  Total time: {:.2}s", total_secs);
                         }
                     }
                 }
@@ -2227,7 +2227,7 @@ fn cmd_check_swarm(
                     let out = JsonOutput::new("deadlock", secs);
                     println!("{}", serde_json::to_string(&out).unwrap());
                 } else {
-                    println!("Result: DEADLOCK (found by swarm in {:.1}s)", secs);
+                    println!("Result: DEADLOCK (found by swarm in {:.2}s)", secs);
                 }
                 exit_with_code(1);
             }
@@ -2242,7 +2242,7 @@ fn cmd_check_swarm(
         } else {
             println!();
             println!("Result: OK (swarm, {} workers)", n);
-            println!("  Time: {:.1}s", secs);
+            println!("  Time: {:.2}s", secs);
         }
     }
 
@@ -2399,8 +2399,8 @@ fn cmd_simulate(
             }
         }
     }
-    if !json {
-        println!("  Time: {:.3}s", secs);
+    if output == OutputFormat::Text {
+        println!("  Time: {:.2}s", secs);
     }
 
     Ok(())
@@ -3234,7 +3234,7 @@ fn render_text_output(ctx: BfsResultContext<'_>) -> i32 {
                 format_large_number(states_explored as u128)
             );
             println!("  Max depth: {}", max_depth);
-            println!("  Time: {:.1}s", ctx.secs);
+            println!("  Time: {:.2}s", ctx.secs);
             if ctx.secs > 0.001 {
                 println!(
                     "  Throughput: {} states/s",
@@ -3283,7 +3283,10 @@ fn render_text_output(ctx: BfsResultContext<'_>) -> i32 {
         } => {
             println!();
             println!("Result: STATE LIMIT REACHED");
-            println!("  States explored: {}", states_explored);
+            println!(
+                "  States explored: {}",
+                format_large_number(states_explored as u128)
+            );
             println!("  Max depth: {}", max_depth);
             println!("  Time: {:.2}s", ctx.secs);
             println!("  No violations found within this limit. Increase with --max-states <N> or use 0 for unlimited.");
@@ -3297,7 +3300,10 @@ fn render_text_output(ctx: BfsResultContext<'_>) -> i32 {
             println!();
             println!("Result: MEMORY LIMIT REACHED");
             println!("  Memory usage: {} MB", memory_mb);
-            println!("  States explored: {}", states_explored);
+            println!(
+                "  States explored: {}",
+                format_large_number(states_explored as u128)
+            );
             println!("  Max depth: {}", max_depth);
             println!("  Time: {:.2}s", ctx.secs);
             println!("  Try --fast (fingerprint-only, 10x less memory) or reduce constants.");
@@ -3309,7 +3315,10 @@ fn render_text_output(ctx: BfsResultContext<'_>) -> i32 {
         } => {
             println!();
             println!("Result: TIME LIMIT REACHED");
-            println!("  States explored: {}", states_explored);
+            println!(
+                "  States explored: {}",
+                format_large_number(states_explored as u128)
+            );
             println!("  Max depth: {}", max_depth);
             println!("  Time: {:.2}s", ctx.secs);
             println!("  Increase with --max-time <N> (seconds) or use 0 for unlimited.");
@@ -4366,10 +4375,12 @@ fn run_check_iteration(
             println!("  States explored: {}", states_explored);
             println!("  Max depth: {}", max_depth);
             println!("  Time: {:.2}s", elapsed.as_secs_f64());
-            println!(
-                "  States/sec: {:.0}",
-                states_explored as f64 / elapsed.as_secs_f64()
-            );
+            if elapsed.as_secs_f64() > 0.001 {
+                println!(
+                    "  States/sec: {:.0}",
+                    states_explored as f64 / elapsed.as_secs_f64()
+                );
+            }
         }
         CheckOutcome::InvariantViolation { invariant, trace } => {
             println!("Result: INVARIANT VIOLATION");
