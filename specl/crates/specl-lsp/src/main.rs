@@ -65,27 +65,17 @@ fn panic_payload_to_string(payload: &Box<dyn std::any::Any + Send>) -> String {
 }
 
 /// Document state stored by the server.
-#[allow(dead_code)]
 struct Document {
     /// Document content as a rope for efficient edits.
     content: Rope,
     /// Document version.
     version: i32,
-    /// Precomputed byte offsets of line starts for span-to-position conversion.
-    /// Used via `Document::compute_line_starts` for fresh source strings;
-    /// the stored field is available for direct access when the Document is in scope.
-    line_starts: Vec<usize>,
 }
 
 impl Document {
     fn new(text: &str, version: i32) -> Self {
         let content = Rope::from_str(text);
-        let line_starts = Self::compute_line_starts(text);
-        Self {
-            content,
-            version,
-            line_starts,
-        }
+        Self { content, version }
     }
 
     fn compute_line_starts(source: &str) -> Vec<usize> {

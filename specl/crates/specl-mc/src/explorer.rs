@@ -1391,7 +1391,7 @@ impl Explorer {
     fn check_symmetry_soundness(&self) -> Vec<String> {
         let warnings = Self::find_symmetry_warnings(&self.spec);
         for w in &warnings {
-            eprintln!("Warning: {}", w);
+            info!(warning = %w, "symmetry soundness warning");
         }
         warnings
     }
