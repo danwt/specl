@@ -141,3 +141,41 @@ samply record -- target/release/specl check --fast path/to/large_spec.specl
 ```
 
 Focus on which functions dominate. The priorities above are educated guesses -- profiling may reorder them significantly.
+
+## Implementation Status (March 2026)
+
+### Completed
+
+| Item | Status | Notes |
+|------|--------|-------|
+| H1: mimalloc | DONE | Global allocator swap |
+| H2: SmallVec for pvals | DONE | `ParamValues` type uses `SmallVec` |
+| H3: Remove double contains+insert | DONE | `store.rs` uses `entry()` API |
+| H4: Arc<[Value]> | DONE | Single-allocation state vars |
+| H5: Release profile | DONE | Fat LTO, panic=abort |
+| M1: Bitmask stubborn set | DONE | `compute_stubborn_set_bitmask` for ≤64 actions |
+| M2: Fast symmetry signatures | DONE | `build_hash_signatures` uses `u64` hashes directly |
+| M3: Remove AtomicU32 execution_count | DONE | Eliminated false sharing |
+| M5: Pack QueueEntry | DONE | Depth changed from `usize` to `u32` |
+| L4: Skip empty pvals early | DONE | Early return on empty domains |
+
+### Remaining
+
+| Item | Status | Notes |
+|------|--------|-------|
+| M4: COW state effects | PARTIAL | Buffer reuse optimization done, but not full COW |
+| M6: Shrink Op enum | NOT NEEDED | Op is already 16 bytes, optimal |
+| L1: Avoid cloning params | NOT DONE | Minor impact |
+| L2: scc::HashMap over DashMap | NOT DONE | Would need benchmarking to justify |
+| L3: Software prefetch in BFS | NOT DONE | Already done in fpset; minor for BFS |
+| L5: SmallVec for domain refs | PARTIAL | SmallVec used in some paths |
+
+### Additional optimizations beyond audit scope
+
+- **Superinstruction comparisons**: `as_int`/`as_bool` instead of constructing `Value` for comparisons
+- **Fallback op locals**: move-and-restore instead of clone
+- **VmBufs reuse in POR path**: thread-local buffer reuse extended to partial-order reduction
+- **Parser TokenKind clone reduction**: reduced unnecessary cloning in lexer
+- **LSP line_starts caching**: avoid recomputation on each request
+- **Loop-invariant config hoisting**: config reads moved out of BFS hot loops
+- **Test suite profile.test opt-level=1**: faster test compilation without sacrificing correctness
