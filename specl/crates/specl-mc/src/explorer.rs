@@ -2696,6 +2696,13 @@ impl Explorer {
         let mut memory_at_limit = 0usize;
 
         while !queue.is_empty() && !found_violation.load(Ordering::Relaxed) {
+            // Check external stop flag (swarm cancellation)
+            if let Some(ref flag) = self.stop_flag {
+                if flag.load(Ordering::Relaxed) {
+                    break;
+                }
+            }
+
             // Check state limit
             if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
                 info!(states = self.store.len(), "reached state limit");
@@ -2741,6 +2748,11 @@ impl Explorer {
                 .filter_map(|(fp, state, depth, change_mask, _sleep_set)| {
                     if found_violation.load(Ordering::Relaxed) {
                         return None;
+                    }
+                    if let Some(ref flag) = self.stop_flag {
+                        if flag.load(Ordering::Relaxed) {
+                            return None;
+                        }
                     }
 
                     let depth = *depth;
