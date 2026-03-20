@@ -363,41 +363,31 @@ impl State {
 /// 3. The canonical permutation maps each element to its sorted position
 ///
 /// Complexity: O(n log n) instead of O(n!)
-/// Compute a hash-based signature for each domain element across all symmetric variables.
-/// Each element gets a single u64 hash combining its values across all vars in the group.
-fn build_hash_signatures(vars: &[Value], group: &SymmetryGroup) -> Vec<u64> {
-    (0..group.domain_size)
-        .map(|i| {
-            let mut h: u64 = 0;
-            for (vi, &var_idx) in group.variables.iter().enumerate() {
-                let val_bits = match vars[var_idx].kind() {
-                    VK::IntMap(arr) => {
-                        if i < arr.len() {
-                            arr[i].raw_bits()
-                        } else {
-                            0
-                        }
-                    }
-                    VK::Fn(map) => Value::fn_get(map, &Value::int(i as i64))
-                        .map(|v| v.raw_bits())
-                        .unwrap_or(0),
-                    _ => 0,
-                };
-                h ^= splitmix_hash(vi, val_bits);
-            }
-            h
-        })
-        .collect()
-}
-
 fn compute_canonical_permutation(vars: &[Value], group: &SymmetryGroup) -> Vec<usize> {
     let n = group.domain_size;
 
-    let mut signatures: Vec<(u64, usize)> = build_hash_signatures(vars, group)
-        .into_iter()
-        .enumerate()
-        .map(|(i, sig)| (sig, i))
-        .collect();
+    // Build (signature, original_index) pairs directly in one allocation.
+    let mut signatures: Vec<(u64, usize)> = Vec::with_capacity(n);
+    for i in 0..n {
+        let mut h: u64 = 0;
+        for (vi, &var_idx) in group.variables.iter().enumerate() {
+            let val_bits = match vars[var_idx].kind() {
+                VK::IntMap(arr) => {
+                    if i < arr.len() {
+                        arr[i].raw_bits()
+                    } else {
+                        0
+                    }
+                }
+                VK::Fn(map) => Value::fn_get(map, &Value::int(i as i64))
+                    .map(|v| v.raw_bits())
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            h ^= splitmix_hash(vi, val_bits);
+        }
+        signatures.push((h, i));
+    }
 
     signatures.sort_unstable();
 
@@ -422,14 +412,38 @@ pub fn orbit_representatives(vars: &[Value], group: &SymmetryGroup) -> Vec<usize
         return vec![];
     }
 
-    let signatures = build_hash_signatures(vars, group);
+    // Compute signatures inline and compare adjacent elements on the fly,
+    // avoiding the intermediate Vec<u64> allocation.
+    let sig = |i: usize| -> u64 {
+        let mut h: u64 = 0;
+        for (vi, &var_idx) in group.variables.iter().enumerate() {
+            let val_bits = match vars[var_idx].kind() {
+                VK::IntMap(arr) => {
+                    if i < arr.len() {
+                        arr[i].raw_bits()
+                    } else {
+                        0
+                    }
+                }
+                VK::Fn(map) => Value::fn_get(map, &Value::int(i as i64))
+                    .map(|v| v.raw_bits())
+                    .unwrap_or(0),
+                _ => 0,
+            };
+            h ^= splitmix_hash(vi, val_bits);
+        }
+        h
+    };
 
     // Since state is canonical, signatures are already sorted.
     // Pick one representative per distinct signature.
     let mut reps = vec![0];
+    let mut prev_sig = sig(0);
     for i in 1..n {
-        if signatures[i] != signatures[i - 1] {
+        let cur_sig = sig(i);
+        if cur_sig != prev_sig {
             reps.push(i);
+            prev_sig = cur_sig;
         }
     }
     reps
@@ -466,6 +480,10 @@ fn apply_permutation(vars: &mut [Value], group: &SymmetryGroup, perm: &[usize]) 
         }
     }
 }
+
+// State should be as small as possible since millions are created.
+// 2 fat pointers (Arc<[T]>) + 1 u64 = 40 bytes on 64-bit.
+const _: () = assert!(std::mem::size_of::<State>() == 40);
 
 impl fmt::Display for State {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
