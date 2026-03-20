@@ -28,19 +28,50 @@ pub enum AssignmentResult {
 /// Handles common patterns like:
 /// - `x == 0 and y == {} and z == fn(i in S) => 0`
 /// - `(x == 0) and (y == 0)`
+///
+/// Uses a multi-pass approach to handle inter-variable dependencies regardless
+/// of conjunction order: `y == x and x == 0` works the same as `x == 0 and y == x`.
 pub fn extract_init_assignments(
     init: &CompiledExpr,
     consts: &[Value],
     num_vars: usize,
 ) -> AssignmentResult {
-    let mut assignments: Vec<Option<Value>> = vec![None; num_vars];
-    let mut locals = Vec::new();
-
-    if !extract_from_expr(init, consts, &mut assignments, &mut locals) {
+    // Flatten the And-tree into leaf conjuncts.
+    let mut conjuncts = Vec::new();
+    if !flatten_init_conjuncts(init, &mut conjuncts) {
         return AssignmentResult::NeedsEnumeration;
     }
 
-    // Check all variables have assignments
+    let mut assignments: Vec<Option<Value>> = vec![None; num_vars];
+    let mut resolved = vec![false; conjuncts.len()];
+
+    // Fixpoint loop: keep resolving until no more progress.
+    loop {
+        let mut progress = false;
+        for (i, conjunct) in conjuncts.iter().enumerate() {
+            if resolved[i] {
+                continue;
+            }
+            let mut locals = Vec::new();
+            match try_resolve_conjunct(conjunct, consts, &mut assignments, &mut locals) {
+                ResolveResult::Resolved => {
+                    resolved[i] = true;
+                    progress = true;
+                }
+                ResolveResult::Deferred => {}
+                ResolveResult::Failed => return AssignmentResult::NeedsEnumeration,
+            }
+        }
+        if !progress {
+            break;
+        }
+    }
+
+    // Check that all conjuncts were resolved and all variables assigned.
+    if resolved.iter().any(|r| !*r) {
+        return AssignmentResult::NeedsEnumeration;
+    }
+
     let mut result = Vec::new();
     for (idx, value) in assignments.into_iter().enumerate() {
         match value {
@@ -55,97 +86,147 @@ pub fn extract_init_assignments(
     AssignmentResult::Direct(result)
 }
 
-/// Extract assignments from an expression recursively.
-/// Returns false if the expression can't be analyzed (needs enumeration).
-fn extract_from_expr(
+/// Result of trying to resolve a single init conjunct.
+enum ResolveResult {
+    /// Conjunct resolved (assignment extracted or constraint verified).
+    Resolved,
+    /// Conjunct can't be resolved yet (dependencies not assigned).
+    Deferred,
+    /// Conjunct is unsatisfiable or unanalyzable.
+    Failed,
+}
+
+/// Flatten an init expression's And-tree into leaf conjuncts.
+/// Returns false if any leaf is unanalyzable (not Bool, Eq, or Let).
+fn flatten_init_conjuncts<'a>(expr: &'a CompiledExpr, out: &mut Vec<&'a CompiledExpr>) -> bool {
+    match expr {
+        CompiledExpr::Bool(true) => true,
+        CompiledExpr::Bool(false) => false,
+        CompiledExpr::Binary {
+            op: BinOp::And,
+            left,
+            right,
+        } => flatten_init_conjuncts(left, out) && flatten_init_conjuncts(right, out),
+        CompiledExpr::Binary { op: BinOp::Eq, .. } | CompiledExpr::Let { .. } => {
+            out.push(expr);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Try to resolve a single init conjunct given current partial assignments.
+fn try_resolve_conjunct(
     expr: &CompiledExpr,
     consts: &[Value],
     assignments: &mut [Option<Value>],
     locals: &mut Vec<Value>,
-) -> bool {
+) -> ResolveResult {
     match expr {
-        // Boolean literal true is trivially satisfied (no new assignments)
-        CompiledExpr::Bool(true) => true,
-        CompiledExpr::Bool(false) => false,
+        CompiledExpr::Bool(true) => ResolveResult::Resolved,
+        CompiledExpr::Bool(false) => ResolveResult::Failed,
 
-        // Conjunction: extract from both sides
+        // Conjunction within a Let body: resolve both sides.
         CompiledExpr::Binary {
             op: BinOp::And,
             left,
             right,
         } => {
-            extract_from_expr(left, consts, assignments, locals)
-                && extract_from_expr(right, consts, assignments, locals)
-        }
-
-        // Let binding: evaluate value, bind as local, extract from body
-        CompiledExpr::Let { value, body } => {
-            if let Some(val) = try_eval_value(value, consts, assignments, locals) {
-                locals.push(val);
-                let result = extract_from_expr(body, consts, assignments, locals);
-                locals.pop();
-                result
-            } else {
-                false
+            let l = try_resolve_conjunct(left, consts, assignments, locals);
+            let r = try_resolve_conjunct(right, consts, assignments, locals);
+            match (l, r) {
+                (ResolveResult::Failed, _) | (_, ResolveResult::Failed) => ResolveResult::Failed,
+                (ResolveResult::Deferred, _) | (_, ResolveResult::Deferred) => {
+                    ResolveResult::Deferred
+                }
+                (ResolveResult::Resolved, ResolveResult::Resolved) => ResolveResult::Resolved,
             }
         }
 
-        // Equality: x == expr where x is a variable
-        // In init context, PrimedVar and Var are equivalent (both refer to initial state)
+        CompiledExpr::Let { value, body } => {
+            if let Some(val) = try_eval_value(value, consts, assignments, locals) {
+                locals.push(val);
+                let result = try_resolve_conjunct(body, consts, assignments, locals);
+                locals.pop();
+                result
+            } else {
+                ResolveResult::Deferred
+            }
+        }
+
         CompiledExpr::Binary {
             op: BinOp::Eq,
             left,
             right,
-        } => {
-            // Try left == right (var on left)
-            let left_idx = match left.as_ref() {
-                CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => Some(*idx),
-                _ => None,
-            };
-            if let Some(idx) = left_idx {
-                if let Some(value) = try_eval_value(right, consts, assignments, locals) {
-                    if assignments[idx].is_none() {
-                        assignments[idx] = Some(value);
-                        return true;
-                    } else {
-                        // Already assigned - check if same value
-                        return assignments[idx].as_ref() == Some(&value);
-                    }
-                }
-            }
-            // Try right == left (var on right)
-            let right_idx = match right.as_ref() {
-                CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => Some(*idx),
-                _ => None,
-            };
-            if let Some(idx) = right_idx {
-                if let Some(value) = try_eval_value(left, consts, assignments, locals) {
-                    if assignments[idx].is_none() {
-                        assignments[idx] = Some(value);
-                        return true;
-                    } else {
-                        return assignments[idx].as_ref() == Some(&value);
-                    }
-                }
-            }
-            // Can't extract assignment
-            false
-        }
+        } => try_resolve_eq(left, right, consts, assignments, locals),
 
-        // Other expressions need enumeration
-        _ => false,
+        _ => ResolveResult::Failed,
     }
+}
+
+/// Try to resolve a single equality `left == right` as a variable assignment.
+fn try_resolve_eq(
+    left: &CompiledExpr,
+    right: &CompiledExpr,
+    consts: &[Value],
+    assignments: &mut [Option<Value>],
+    locals: &[Value],
+) -> ResolveResult {
+    // Try left == right (var on left)
+    let left_idx = match left {
+        CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => Some(*idx),
+        _ => None,
+    };
+    if let Some(idx) = left_idx {
+        if let Some(value) = try_eval_value(right, consts, assignments, locals) {
+            if assignments[idx].is_none() {
+                assignments[idx] = Some(value);
+                return ResolveResult::Resolved;
+            } else {
+                return if assignments[idx].as_ref() == Some(&value) {
+                    ResolveResult::Resolved
+                } else {
+                    ResolveResult::Failed
+                };
+            }
+        }
+    }
+    // Try right == left (var on right)
+    let right_idx = match right {
+        CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => Some(*idx),
+        _ => None,
+    };
+    if let Some(idx) = right_idx {
+        if let Some(value) = try_eval_value(left, consts, assignments, locals) {
+            if assignments[idx].is_none() {
+                assignments[idx] = Some(value);
+                return ResolveResult::Resolved;
+            } else {
+                return if assignments[idx].as_ref() == Some(&value) {
+                    ResolveResult::Resolved
+                } else {
+                    ResolveResult::Failed
+                };
+            }
+        }
+    }
+    // Can't resolve yet (dependencies not assigned)
+    ResolveResult::Deferred
 }
 
 /// Try to evaluate an expression to a value using already-extracted assignments.
 /// Uses partial assignments as variable context so that init expressions like
 /// `sigs = {k: {} for k in certs}` can reference previously assigned `certs`.
+/// Returns None if the expression references any unassigned variable.
 fn try_eval_value(
     expr: &CompiledExpr,
     consts: &[Value],
     partial_assignments: &[Option<Value>],
     locals: &[Value],
 ) -> Option<Value> {
+    if refs_unassigned_var(expr, partial_assignments) {
+        return None;
+    }
     let vars: Vec<Value> = partial_assignments
         .iter()
         .map(|a| a.clone().unwrap_or(Value::none()))
@@ -155,6 +236,24 @@ fn try_eval_value(
         ctx.push_local(local.clone());
     }
     eval(expr, &mut ctx).ok()
+}
+
+/// Check if an expression references any variable that is not yet assigned.
+fn refs_unassigned_var(expr: &CompiledExpr, partial_assignments: &[Option<Value>]) -> bool {
+    match expr {
+        CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+            partial_assignments.get(*idx).is_none_or(|a| a.is_none())
+        }
+        _ => {
+            let mut found = false;
+            expr.for_each_child(|child| {
+                if !found && refs_unassigned_var(child, partial_assignments) {
+                    found = true;
+                }
+            });
+            found
+        }
+    }
 }
 
 /// Generate initial states by direct evaluation.
@@ -463,11 +562,12 @@ mod tests {
             right: Box::new(CompiledExpr::Int(0)),
         };
 
-        let mut assignments = vec![None; 1];
-        let result = extract_from_expr(&expr, &[], &mut assignments, &mut Vec::new());
-
-        assert!(result);
-        assert_eq!(assignments[0], Some(Value::int(0)));
+        match extract_init_assignments(&expr, &[], 1) {
+            AssignmentResult::Direct(assignments) => {
+                assert_eq!(assignments, vec![(0, Value::int(0))]);
+            }
+            AssignmentResult::NeedsEnumeration => panic!("expected Direct"),
+        }
     }
 
     #[test]
@@ -487,11 +587,36 @@ mod tests {
             }),
         };
 
-        let mut assignments = vec![None; 2];
-        let result = extract_from_expr(&expr, &[], &mut assignments, &mut Vec::new());
+        match extract_init_assignments(&expr, &[], 2) {
+            AssignmentResult::Direct(assignments) => {
+                assert_eq!(assignments, vec![(0, Value::int(0)), (1, Value::int(1))]);
+            }
+            AssignmentResult::NeedsEnumeration => panic!("expected Direct"),
+        }
+    }
 
-        assert!(result);
-        assert_eq!(assignments[0], Some(Value::int(0)));
-        assert_eq!(assignments[1], Some(Value::int(1)));
+    #[test]
+    fn test_extract_conjunction_order_independent() {
+        // y == x and x == 0  (dependency on x before x is assigned)
+        let expr = CompiledExpr::Binary {
+            op: BinOp::And,
+            left: Box::new(CompiledExpr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(CompiledExpr::Var(1)),
+                right: Box::new(CompiledExpr::Var(0)),
+            }),
+            right: Box::new(CompiledExpr::Binary {
+                op: BinOp::Eq,
+                left: Box::new(CompiledExpr::Var(0)),
+                right: Box::new(CompiledExpr::Int(0)),
+            }),
+        };
+
+        match extract_init_assignments(&expr, &[], 2) {
+            AssignmentResult::Direct(assignments) => {
+                assert_eq!(assignments, vec![(0, Value::int(0)), (1, Value::int(0))]);
+            }
+            AssignmentResult::NeedsEnumeration => panic!("expected Direct"),
+        }
     }
 }
