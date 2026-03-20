@@ -133,7 +133,7 @@ impl TreeTable {
     /// Create a new tree table for states with `num_vars` variables.
     pub fn new(num_vars: usize) -> Self {
         let padded_width = num_vars.next_power_of_two().max(2);
-        let num_levels = (padded_width as f64).log2() as usize;
+        let num_levels = padded_width.trailing_zeros() as usize;
         let levels = (0..num_levels).map(|_| TreeLevel::new()).collect();
         Self {
             num_vars,

@@ -571,11 +571,13 @@ impl StateStore {
                 for &fp in fingerprints {
                     fpset.insert(Fingerprint::from_u64(fp));
                 }
+                self.count.fetch_add(fingerprints.len(), Ordering::Relaxed);
             }
             StorageBackend::Bloom(bloom) => {
                 for &fp in fingerprints {
                     bloom.insert(Fingerprint::from_u64(fp));
                 }
+                self.count.fetch_add(fingerprints.len(), Ordering::Relaxed);
             }
             _ => {
                 // Full and Collapse modes can't be pre-seeded without state data.
