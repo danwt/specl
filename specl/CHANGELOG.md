@@ -4,6 +4,66 @@ All notable changes to this project will be documented in this file.
 
 ## [Unreleased]
 
+### Performance
+
+- Add VarIntDictGet superinstruction for vars[v][k] pattern
+- Hoist loop-invariant config checks out of BFS hot loops
+- Optimize state buffer population in direct_eval
+- Reduce TokenKind clones in parser hot paths
+- Cache line_starts in LSP Document and optimize span conversion
+- Optimize superinstruction comparisons and Fallback locals
+- Add compile-time size assertions for Op and Value
+- Optimize state fingerprinting allocations
+- Optimize peephole optimizer with two-pass NOP+compact
+- Optimize Value comparison hot path
+- Optimize compilation pipeline
+- Flatten POR independence matrix for cache locality
+- Cache empty_set and empty_seq with LazyLock
+- Add capacity hint to sorted_vec_intersect
+
+### Bug Fixes
+
+- Fix shift_locals for ActionCall arguments
+- Fix type checker bugs and improve error messages
+- Fix trace display for compound-element sequences in symbolic mode
+- Eliminate double-evaluation of IntMap2 Index in eval_int
+- Fix pre_seed_fingerprints count and use integer log2
+- Fix symmetry soundness bug for nested value types (issue #82)
+- Return errors for type mismatches in symbolic init encoding
+- Improve bloom/cache/fpset code quality and safety
+- Propagate stop flag to parallel BFS workers
+- Improve analysis accuracy and state space estimation
+- Improve formatter completeness and edge case handling
+- Improve TLA+ error handling and edge case robustness
+- Improve symbolic error handling and Z3 failure messages
+- Improve LSP error handling and crash resilience
+- Add bounds checking to Var/PrimedVar/Const/Local VM ops
+- Detect ambiguous `in` in let-bindings
+- Add powerset size guard for n >= 64
+- Use checked arithmetic for all integer operations
+- Prevent crashes from unchecked arithmetic and bounds
+- Improve CLI error messages and UX
+- Add bounds checks for TLA+ stdlib args
+
+### Testing
+
+- Add 40 new tests for store, state, and value edge cases
+- Add regression test for symmetry nested values (issue #82)
+- Expand proptest coverage for sequences, POR, and symmetry
+- Add edge case integration tests for CLI
+- Add regression specl files for overflow and bounds checking
+- Add error recovery tests for parser
+- Add error path tests for type checker
+- Optimize test suite to run under 1 minute (issue #83)
+
+### Refactoring
+
+- Remove dead code across 10 files
+- Remove dead filter and redundant imports in compile.rs
+- Remove dead code in direct_eval
+- Improve code structure and reduce duplication in CLI
+- Improve code quality in explorer
+
 ## [3.1.1] - 2026-03-06
 
 ### Bug Fixes

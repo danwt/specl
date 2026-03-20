@@ -64,8 +64,17 @@ pub fn load_fingerprints(spec_path: &Path, hash: u64) -> Option<Vec<u64>> {
         return None;
     }
 
+    // Sanity-check count to avoid panic/OOM from corrupted cache files.
+    let byte_len = match (count as usize).checked_mul(8) {
+        Some(n) if n <= 8 * 1024 * 1024 * 1024 => n, // cap at 8 GiB
+        _ => {
+            debug!(count, "cache file has implausible fingerprint count");
+            return None;
+        }
+    };
+
     // Read fingerprints: count * 8 bytes
-    let mut data = vec![0u8; count as usize * 8];
+    let mut data = vec![0u8; byte_len];
     if reader.read_exact(&mut data).is_err() {
         return None;
     }
