@@ -124,10 +124,7 @@ fn translate_all_tla_files() {
 
 /// TLA+ files that use features the parser doesn't support yet.
 /// These are tracked so we notice when parser improvements fix them.
-const EXPECTED_TRANSLATE_FAILURES: &[&str] = &[
-    // TLC trace spec (auto-generated, uses INSTANCE)
-    "tpc_TTrace_1770669434.tla",
-];
+const EXPECTED_TRANSLATE_FAILURES: &[&str] = &[];
 
 /// Benchmark .tla files should all parse and translate successfully,
 /// except for known failures tracked in EXPECTED_TRANSLATE_FAILURES.

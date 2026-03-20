@@ -2200,7 +2200,7 @@ impl Translator {
                 let right_expr = self.translate_except_value(right, in_action, at_replacement)?;
                 Ok(specl::Expr::new(
                     specl::ExprKind::Binary {
-                        op: translate_binop(*op),
+                        op: translate_binop(*op)?,
                         left: Box::new(left_expr),
                         right: Box::new(right_expr),
                     },
@@ -2649,7 +2649,7 @@ impl Translator {
 
                 let left_expr = self.translate_expr(left, in_action)?;
                 let right_expr = self.translate_expr(right, in_action)?;
-                let specl_op = translate_binop(*op);
+                let specl_op = translate_binop(*op)?;
 
                 // In TLA+, /\ and \/ have the SAME precedence (unlike most languages).
                 // TLA+ uses indentation (bullet point notation) to disambiguate.
@@ -3903,32 +3903,36 @@ fn escape_ident(name: &str) -> String {
     }
 }
 
-fn translate_binop(op: TlaBinOp) -> specl::BinOp {
+fn translate_binop(op: TlaBinOp) -> Result<specl::BinOp, TranslateError> {
     match op {
-        TlaBinOp::And => specl::BinOp::And,
-        TlaBinOp::Or => specl::BinOp::Or,
-        TlaBinOp::Implies => specl::BinOp::Implies,
-        TlaBinOp::Iff => specl::BinOp::Iff,
-        TlaBinOp::Eq => specl::BinOp::Eq,
-        TlaBinOp::Ne => specl::BinOp::Ne,
-        TlaBinOp::Lt => specl::BinOp::Lt,
-        TlaBinOp::Le => specl::BinOp::Le,
-        TlaBinOp::Gt => specl::BinOp::Gt,
-        TlaBinOp::Ge => specl::BinOp::Ge,
-        TlaBinOp::Add => specl::BinOp::Add,
-        TlaBinOp::Sub => specl::BinOp::Sub,
-        TlaBinOp::Mul => specl::BinOp::Mul,
-        TlaBinOp::Div => specl::BinOp::Div,
-        TlaBinOp::Mod => specl::BinOp::Mod,
-        TlaBinOp::Exp => specl::BinOp::Mul, // Approximate
-        TlaBinOp::In => specl::BinOp::In,
-        TlaBinOp::NotIn => specl::BinOp::NotIn,
-        TlaBinOp::Cup => specl::BinOp::Union,
-        TlaBinOp::Cap => specl::BinOp::Intersect,
-        TlaBinOp::SetDiff => specl::BinOp::Diff,
-        TlaBinOp::SubsetEq => specl::BinOp::SubsetOf,
-        TlaBinOp::Times => specl::BinOp::Mul, // Approximate: cartesian product
-        TlaBinOp::Concat => specl::BinOp::Concat,
+        TlaBinOp::And => Ok(specl::BinOp::And),
+        TlaBinOp::Or => Ok(specl::BinOp::Or),
+        TlaBinOp::Implies => Ok(specl::BinOp::Implies),
+        TlaBinOp::Iff => Ok(specl::BinOp::Iff),
+        TlaBinOp::Eq => Ok(specl::BinOp::Eq),
+        TlaBinOp::Ne => Ok(specl::BinOp::Ne),
+        TlaBinOp::Lt => Ok(specl::BinOp::Lt),
+        TlaBinOp::Le => Ok(specl::BinOp::Le),
+        TlaBinOp::Gt => Ok(specl::BinOp::Gt),
+        TlaBinOp::Ge => Ok(specl::BinOp::Ge),
+        TlaBinOp::Add => Ok(specl::BinOp::Add),
+        TlaBinOp::Sub => Ok(specl::BinOp::Sub),
+        TlaBinOp::Mul => Ok(specl::BinOp::Mul),
+        TlaBinOp::Div => Ok(specl::BinOp::Div),
+        TlaBinOp::Mod => Ok(specl::BinOp::Mod),
+        TlaBinOp::Exp => Err(TranslateError::Unsupported {
+            message: "exponentiation operator (^)".to_string(),
+        }),
+        TlaBinOp::In => Ok(specl::BinOp::In),
+        TlaBinOp::NotIn => Ok(specl::BinOp::NotIn),
+        TlaBinOp::Cup => Ok(specl::BinOp::Union),
+        TlaBinOp::Cap => Ok(specl::BinOp::Intersect),
+        TlaBinOp::SetDiff => Ok(specl::BinOp::Diff),
+        TlaBinOp::SubsetEq => Ok(specl::BinOp::SubsetOf),
+        TlaBinOp::Times => Err(TranslateError::Unsupported {
+            message: "cartesian product operator (\\times)".to_string(),
+        }),
+        TlaBinOp::Concat => Ok(specl::BinOp::Concat),
     }
 }
 
