@@ -280,6 +280,34 @@ fn extract_effect_from_expr(
     }
 }
 
+/// Populate next_vars_buf and var_hashes_buf from a parent state.
+/// When the buffer already has the right length (common case: previous call
+/// didn't construct a State via take_computed_state), overwrite in a single
+/// pass instead of two passes (clear + extend_from_slice).
+#[inline]
+fn populate_buf_from_state(
+    state: &State,
+    next_vars_buf: &mut Vec<Value>,
+    var_hashes_buf: &mut Vec<u64>,
+) {
+    let n = state.vars.len();
+    if next_vars_buf.len() == n {
+        // Single pass: drop old value and clone new value per element.
+        for (dst, src) in next_vars_buf.iter_mut().zip(state.vars.iter()) {
+            *dst = src.clone();
+        }
+    } else {
+        next_vars_buf.clear();
+        next_vars_buf.extend_from_slice(&state.vars);
+    }
+    if var_hashes_buf.len() == n {
+        var_hashes_buf.copy_from_slice(&state.var_hashes);
+    } else {
+        var_hashes_buf.clear();
+        var_hashes_buf.extend_from_slice(&state.var_hashes);
+    }
+}
+
 /// Compute effects and return the successor fingerprint without constructing a State.
 /// Returns Ok(Some(fp)) if the effect succeeded, Ok(None) if guard reverification failed.
 /// The computed vars remain in next_vars_buf and hashes in var_hashes_buf.
@@ -297,10 +325,11 @@ pub fn compute_effects_bytecode_reuse(
     var_hashes_buf: &mut Vec<u64>,
     view_mask: Option<&[bool]>,
 ) -> Result<Option<crate::state::Fingerprint>, EvalError> {
-    next_vars_buf.clear();
-    next_vars_buf.extend_from_slice(&state.vars);
-    var_hashes_buf.clear();
-    var_hashes_buf.extend_from_slice(&state.var_hashes);
+    // Populate buffers from parent state. When the buffer already has the right
+    // length (common case: previous call didn't construct a State), overwrite in
+    // a single pass instead of two passes (clear + extend_from_slice). This halves
+    // the iteration count and improves cache locality.
+    populate_buf_from_state(state, next_vars_buf, var_hashes_buf);
     let mut fp = state.fingerprint().as_u64();
 
     for (var_idx, bc) in compiled_assignments {
@@ -358,10 +387,7 @@ pub fn apply_action_direct_cached(
         return Ok(None);
     }
 
-    next_vars_buf.clear();
-    next_vars_buf.extend_from_slice(&state.vars);
-    var_hashes_buf.clear();
-    var_hashes_buf.extend_from_slice(&state.var_hashes);
+    populate_buf_from_state(state, next_vars_buf, var_hashes_buf);
     let mut fp = state.fingerprint().as_u64();
 
     for (var_idx, expr) in assignments {
