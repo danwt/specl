@@ -18,7 +18,7 @@ pub enum Type {
     Set(Box<Type>),
     /// Sequence type `Seq[T]`.
     Seq(Box<Type>),
-    /// Dict type `dict[K, V]` (finite map).
+    /// Dict/function type `Dict[K, V]` (finite map from K to V).
     Fn(Box<Type>, Box<Type>),
     /// Option type `Option[T]`.
     Option(Box<Type>),

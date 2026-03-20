@@ -151,6 +151,26 @@ impl TypeChecker {
                 let _body_ty = self.infer_expr(&d.body)?;
                 self.env.pop_scope();
             }
+            Decl::Fairness(d) => {
+                for constraint in &d.constraints {
+                    if self.env.lookup_action(&constraint.action.name).is_none() {
+                        return Err(TypeError::UndefinedAction {
+                            name: constraint.action.name.clone(),
+                            span: constraint.action.span,
+                        });
+                    }
+                }
+            }
+            Decl::View(d) => {
+                for var in &d.variables {
+                    if self.env.lookup_var(&var.name).is_none() {
+                        return Err(TypeError::UndefinedVariable {
+                            name: var.name.clone(),
+                            span: var.span,
+                        });
+                    }
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -615,8 +635,11 @@ impl TypeChecker {
                 Type::Bool
             }
 
-            ExprKind::Changes(_var) => {
-                // changes(v) is a boolean predicate
+            ExprKind::Changes(var) => {
+                // changes(v) requires v to be a state variable
+                if self.env.lookup_var(&var.name).is_none() {
+                    return Err(TypeError::InvalidPrime { span: expr.span });
+                }
                 Type::Bool
             }
 
@@ -682,9 +705,8 @@ impl TypeChecker {
                     // Accept Seq, Set, Fn, or type variables (for polymorphic funcs)
                     Type::Seq(_) | Type::Set(_) | Type::Fn(_, _) | Type::Var(_) => Type::Nat,
                     _ => {
-                        return Err(TypeError::TypeMismatch {
-                            expected: Type::Seq(Box::new(self.var_gen.fresh_type())),
-                            found: ty,
+                        return Err(TypeError::NotIterable {
+                            ty,
                             span: expr.span,
                         });
                     }
@@ -865,8 +887,11 @@ impl TypeChecker {
             BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod => {
                 self.expect_numeric(left_ty, left_span)?;
                 self.expect_numeric(right_ty, right_span)?;
-                // Return the more general numeric type
-                if matches!(left_ty, Type::Int) || matches!(right_ty, Type::Int) {
+                // Sub/Div/Mod can produce negative results even from Nat operands.
+                // Add/Mul preserve Nat only if both operands are Nat.
+                let may_go_negative = matches!(op, BinOp::Sub | BinOp::Div | BinOp::Mod);
+                let either_is_int = matches!(left_ty, Type::Int) || matches!(right_ty, Type::Int);
+                if may_go_negative || either_is_int {
                     Ok(Type::Int)
                 } else {
                     Ok(Type::Nat)

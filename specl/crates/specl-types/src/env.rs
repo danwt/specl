@@ -104,20 +104,29 @@ impl TypeEnv {
     /// Resolve a named type to its actual type.
     /// Returns the type itself if it's not an alias.
     pub fn resolve_type(&self, ty: &Type) -> Type {
+        let mut seen = std::collections::HashSet::new();
+        self.resolve_type_inner(ty, &mut seen)
+    }
+
+    fn resolve_type_inner(&self, ty: &Type, seen: &mut std::collections::HashSet<String>) -> Type {
         match ty {
             Type::Named(name) => {
+                if !seen.insert(name.clone()) {
+                    // Cyclic alias: stop resolving to avoid infinite recursion
+                    return ty.clone();
+                }
                 if let Some(aliased) = self.lookup_type_alias(name) {
-                    self.resolve_type(aliased)
+                    self.resolve_type_inner(aliased, seen)
                 } else {
                     ty.clone()
                 }
             }
-            Type::Set(inner) => Type::Set(Box::new(self.resolve_type(inner))),
-            Type::Seq(inner) => Type::Seq(Box::new(self.resolve_type(inner))),
-            Type::Option(inner) => Type::Option(Box::new(self.resolve_type(inner))),
+            Type::Set(inner) => Type::Set(Box::new(self.resolve_type_inner(inner, seen))),
+            Type::Seq(inner) => Type::Seq(Box::new(self.resolve_type_inner(inner, seen))),
+            Type::Option(inner) => Type::Option(Box::new(self.resolve_type_inner(inner, seen))),
             Type::Fn(k, v) => Type::Fn(
-                Box::new(self.resolve_type(k)),
-                Box::new(self.resolve_type(v)),
+                Box::new(self.resolve_type_inner(k, seen)),
+                Box::new(self.resolve_type_inner(v, seen)),
             ),
             _ => ty.clone(),
         }
