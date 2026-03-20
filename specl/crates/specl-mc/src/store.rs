@@ -327,7 +327,7 @@ impl StateStore {
                     .collect();
                 match compressed.entry(fp) {
                     Entry::Occupied(occupied) => {
-                        if occupied.get().compressed_vars != compressed_vars {
+                        if !self.view_mode && occupied.get().compressed_vars != compressed_vars {
                             let n = self.collisions.fetch_add(1, Ordering::Relaxed);
                             if n == 0 {
                                 error!(
@@ -359,7 +359,7 @@ impl StateStore {
                 let root_id = table.insert(&state.vars);
                 match compressed.entry(fp) {
                     Entry::Occupied(occupied) => {
-                        if occupied.get().root_id != root_id {
+                        if !self.view_mode && occupied.get().root_id != root_id {
                             let n = self.collisions.fetch_add(1, Ordering::Relaxed);
                             if n == 0 {
                                 error!(
@@ -588,6 +588,7 @@ impl StateStore {
     pub fn clear(&mut self, full_tracking: bool) {
         self.states.clear();
         self.collisions.store(0, Ordering::Relaxed);
+        self.count.store(0, Ordering::Relaxed);
         if full_tracking {
             self.backend = StorageBackend::Full;
         } else {
