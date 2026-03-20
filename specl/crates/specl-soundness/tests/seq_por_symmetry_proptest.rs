@@ -629,9 +629,15 @@ impl InitOrderSpec {
         let v = self.val_a;
         let m = self.max;
         let (first, second) = if self.reverse {
-            (format!("y == x and x == {v}"), format!("x == {v} and y == x"))
+            (
+                format!("y == x and x == {v}"),
+                format!("x == {v} and y == x"),
+            )
         } else {
-            (format!("x == {v} and y == x"), format!("y == x and x == {v}"))
+            (
+                format!("x == {v} and y == x"),
+                format!("y == x and x == {v}"),
+            )
         };
         // Use the first ordering
         let _ = second;
