@@ -131,6 +131,11 @@ fn encode_init_assignment(
                 solver.assert(vi.eq(&ri));
             } else if let (Some(vb), Some(rb)) = (z3_vars[0].as_bool(), rhs_z3.as_bool()) {
                 solver.assert(vb.eq(&rb));
+            } else {
+                return Err(SymbolicError::Encoding(format!(
+                    "init assignment type mismatch for '{}'",
+                    entry.name
+                )));
             }
             Ok(())
         }
@@ -170,6 +175,11 @@ fn encode_init_assignment(
                                 (z3_vars[i].as_bool(), body_z3.as_bool())
                             {
                                 solver.assert(vb.eq(&rb));
+                            } else {
+                                return Err(SymbolicError::Encoding(format!(
+                                    "init dict FnLit type mismatch for '{}' at key {}",
+                                    entry.name, k
+                                )));
                             }
                         } else {
                             let key_offset = i * stride;
@@ -204,6 +214,11 @@ fn encode_init_assignment(
                             (z3_vars[offset].as_bool(), val_z3.as_bool())
                         {
                             solver.assert(vb.eq(&rb));
+                        } else {
+                            return Err(SymbolicError::Encoding(format!(
+                                "init DictLit type mismatch for '{}' at key {}",
+                                entry.name, key_val
+                            )));
                         }
                     }
                     Ok(())
@@ -269,6 +284,11 @@ fn encode_init_assignment(
                             (z3_vars[offset].as_bool(), val.as_bool())
                         {
                             solver.assert(vb.eq(&rb));
+                        } else {
+                            return Err(SymbolicError::Encoding(format!(
+                                "init seq element type mismatch for '{}' at index {}",
+                                entry.name, i
+                            )));
                         }
                     }
                     Ok(())
@@ -317,6 +337,11 @@ fn encode_init_assignment(
                     } else if let (Some(vb), Some(rb)) = (inner_vars[0].as_bool(), val_z3.as_bool())
                     {
                         solver.assert(vb.eq(&rb));
+                    } else {
+                        return Err(SymbolicError::Encoding(format!(
+                            "init Option inner type mismatch for '{}'",
+                            entry.name
+                        )));
                     }
                     Ok(())
                 }
@@ -361,6 +386,11 @@ fn encode_init_assignment(
                             (z3_vars[offset].as_bool(), val.as_bool())
                         {
                             solver.assert(vb.eq(&rb));
+                        } else {
+                            return Err(SymbolicError::Encoding(format!(
+                                "init Tuple element type mismatch for '{}' at index {}",
+                                entry.name, i
+                            )));
                         }
                     } else {
                         let slot_vars = &z3_vars[offset..offset + stride];
@@ -409,6 +439,11 @@ fn encode_init_compound_body(
                         (slot_vars[offset].as_bool(), val.as_bool())
                     {
                         solver.assert(vb.eq(&rb));
+                    } else {
+                        return Err(SymbolicError::Encoding(format!(
+                            "compound init seq element type mismatch at index {}",
+                            ei
+                        )));
                     }
                 }
                 Ok(())
@@ -442,6 +477,12 @@ fn encode_init_compound_body(
                             (inner_vars[0].as_bool(), body_z3.as_bool())
                         {
                             solver.assert(vb.eq(&rb));
+                        } else {
+                            enc.locals.pop();
+                            return Err(SymbolicError::Encoding(format!(
+                                "compound init inner dict type mismatch at key {}",
+                                j
+                            )));
                         }
                     } else {
                         encode_init_compound_body(
@@ -473,6 +514,10 @@ fn encode_init_compound_body(
                 solver.assert(vi.eq(&ri));
             } else if let (Some(vb), Some(rb)) = (slot_vars[0].as_bool(), body_z3.as_bool()) {
                 solver.assert(vb.eq(&rb));
+            } else {
+                return Err(SymbolicError::Encoding(
+                    "compound init scalar type mismatch".into(),
+                ));
             }
             Ok(())
         }
