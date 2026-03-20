@@ -1913,10 +1913,12 @@ fn run_bfs_check(
             flags.max_states,
             flags.max_depth,
             flags.memory_limit_mb,
+            flags.max_time_secs,
             actual_por,
             actual_symmetry,
             flags.output_format,
             flags.diff_traces,
+            flags.check_only_invariants.clone(),
         );
     }
 
@@ -2057,10 +2059,12 @@ fn cmd_check_swarm(
     max_states: usize,
     max_depth: usize,
     memory_limit_mb: usize,
+    max_time_secs: u64,
     use_por: bool,
     use_symmetry: bool,
     output_format: OutputFormat,
     diff_traces: bool,
+    check_only_invariants: Vec<String>,
 ) -> CliResult<()> {
     let json = output_format != OutputFormat::Text;
     use std::sync::atomic::AtomicBool;
@@ -2074,12 +2078,14 @@ fn cmd_check_swarm(
     let start = Instant::now();
     let spec = Arc::new(spec);
     let consts = Arc::new(consts);
+    let check_only_invariants = Arc::new(check_only_invariants);
 
     let handles: Vec<_> = (0..n)
         .map(|i| {
             let spec = Arc::clone(&spec);
             let consts = Arc::clone(&consts);
             let stop = Arc::clone(&stop);
+            let check_only = Arc::clone(&check_only_invariants);
             std::thread::spawn(move || {
                 let config = CheckConfig {
                     check_deadlock,
@@ -2097,8 +2103,8 @@ fn cmd_check_swarm(
                     bloom: false,
                     bloom_bits: 30,
                     directed: false,
-                    max_time_secs: 0,
-                    check_only_invariants: Vec::new(),
+                    max_time_secs,
+                    check_only_invariants: (*check_only).clone(),
                     collapse: false,
                     tree: false,
                 };
@@ -2169,7 +2175,7 @@ fn cmd_check_swarm(
                     bloom_bits: 30,
                     directed: false,
                     max_time_secs: 0,
-                    check_only_invariants: Vec::new(),
+                    check_only_invariants: (*check_only_invariants).clone(),
                     collapse: false,
                     tree: false,
                 };
