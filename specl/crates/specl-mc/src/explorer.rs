@@ -2477,7 +2477,8 @@ impl Explorer {
         let memory_limit_mb = self.config.memory_limit_mb;
         let has_deadline = self.deadline.is_some();
         let check_deadlock = self.config.check_deadlock;
-        let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
+        let use_por = self.config.use_por;
+        let use_sleep = use_por && self.spec.actions.len() <= 64;
         let fp_only = !self.store.has_full_tracking();
 
         while let Some((fp, state, depth, change_mask, sleep_set)) = queue.pop_front() {
@@ -2614,6 +2615,8 @@ impl Explorer {
             } else {
                 None
             };
+            let had_successors = !successors.is_empty();
+            let mut had_any_new = false;
             let mut accumulated_sleep = sleep_set;
             for (next_state, action_idx, pvals) in successors.drain(..) {
                 if profiling {
@@ -2639,6 +2642,7 @@ impl Explorer {
                     )
                 };
                 if is_new {
+                    had_any_new = true;
                     *max_depth = (*max_depth).max(depth + 1);
                     queue.push_back((
                         next_fp,
@@ -2650,6 +2654,63 @@ impl Explorer {
                 }
                 if use_sleep {
                     accumulated_sleep |= 1u64 << action_idx;
+                }
+            }
+
+            // Cycle proviso (C3'): when POR is active and no successor was new,
+            // re-expand with the full action set to prevent cycles from hiding
+            // reachable states. Also handles the case where apply_action's
+            // pre-filtering removed all successors (had_successors would be false
+            // but actions are still enabled).
+            if use_por && !had_any_new {
+                let needs_reexpand = if had_successors {
+                    true
+                } else {
+                    self.any_action_enabled(&state)?
+                };
+                if needs_reexpand {
+                    successors.clear();
+                    self.apply_template_actions(
+                        &state,
+                        &self.default_action_order,
+                        &mut successors,
+                        &mut next_vars_buf,
+                        0,
+                        &mut guard_bufs,
+                        &mut effect_bufs,
+                        &mut var_hashes_buf,
+                        &mut op_caches,
+                        &mut params_buf,
+                    )?;
+                    for (next_state, action_idx, pvals) in successors.drain(..) {
+                        if profiling {
+                            prof_action_counts[action_idx] += 1;
+                        }
+                        let canonical = self.maybe_canonicalize(next_state);
+                        let next_fp = canonical.fingerprint();
+                        let is_new = if fp_only {
+                            self.store.insert_fp_only(next_fp)
+                        } else {
+                            self.store.insert_with_fp(
+                                next_fp,
+                                canonical.clone(),
+                                Some(fp),
+                                Some(action_idx),
+                                Some(pvals),
+                                (depth + 1) as usize,
+                            )
+                        };
+                        if is_new {
+                            *max_depth = (*max_depth).max(depth + 1);
+                            queue.push_back((
+                                next_fp,
+                                canonical,
+                                depth + 1,
+                                self.action_write_masks[action_idx],
+                                0,
+                            ));
+                        }
+                    }
                 }
             }
 
@@ -2902,9 +2963,23 @@ impl Explorer {
                                 }
                             }
 
-                            // Cycle proviso (C3'): if POR generated successors but none
-                            // were new, re-expand with full action set to avoid cycles.
-                            if self.config.use_por && had_successors && new_entries.is_empty() {
+                            // Cycle proviso (C3'): when POR is active and no successor
+                            // was new, re-expand with the full action set to prevent
+                            // cycles from hiding reachable states. Also handles the case
+                            // where apply_action's pre-filtering removed all successors
+                            // (had_successors false but actions still enabled).
+                            let needs_c3_reexpand =
+                                if !self.config.use_por || !new_entries.is_empty() {
+                                    false
+                                } else if had_successors {
+                                    true
+                                } else {
+                                    match self.any_action_enabled(state) {
+                                        Ok(v) => v,
+                                        Err(e) => return Some(Err(e)),
+                                    }
+                                };
+                            if needs_c3_reexpand {
                                 let (full_succ, full_result) = PAR_BUFS.with(|cell| {
                                     let b = &mut *cell.borrow_mut();
                                     b.successors.clear();
