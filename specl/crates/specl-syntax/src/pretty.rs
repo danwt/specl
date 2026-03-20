@@ -1027,4 +1027,99 @@ property Liveness {
 "#;
         assert_roundtrip(source);
     }
+
+    #[test]
+    fn test_roundtrip_double_neg() {
+        assert_roundtrip("module T\ninit { x = y - -1 }");
+    }
+
+    #[test]
+    fn test_roundtrip_nested_not() {
+        assert_roundtrip("module T\ninvariant Inv { not (true and false) }");
+    }
+
+    #[test]
+    fn test_roundtrip_not_eq() {
+        assert_roundtrip("module T\ninvariant Inv { not x == 1 }");
+    }
+
+    #[test]
+    fn test_roundtrip_chained_implies() {
+        assert_roundtrip("module T\ninvariant Inv { (a implies b) implies c }");
+    }
+
+    #[test]
+    fn test_roundtrip_nested_if() {
+        assert_roundtrip("module T\ninit { x = if true then (if false then 1 else 2) else 3 }");
+    }
+
+    #[test]
+    fn test_roundtrip_set_of_sets() {
+        assert_roundtrip("module T\nvar s: Set[Set[0..2]]");
+    }
+
+    #[test]
+    fn test_roundtrip_dict_of_dicts() {
+        assert_roundtrip("module T\nvar d: Dict[0..1, Dict[0..1, 0..1]]");
+    }
+
+    #[test]
+    fn test_roundtrip_option_of_option() {
+        assert_roundtrip("module T\nvar x: Option[Option[Nat]]");
+    }
+
+    #[test]
+    fn test_roundtrip_deeply_nested_expr() {
+        assert_roundtrip("module T\ninit { x = ((1 + 2) * (3 - 4)) / 5 }");
+    }
+
+    #[test]
+    fn test_roundtrip_empty_action_params() {
+        assert_roundtrip("module T\nvar x: 0..1\naction A() { x = 0 }");
+    }
+
+    #[test]
+    fn test_roundtrip_all_examples() {
+        let examples_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let mut failures = Vec::new();
+        let mut total = 0;
+        for dir in &["other", "showcase"] {
+            let path = examples_dir.join(dir);
+            if !path.exists() {
+                continue;
+            }
+            for entry in std::fs::read_dir(&path).unwrap() {
+                let entry = entry.unwrap();
+                let file = entry.path();
+                if file.extension().map_or(true, |e| e != "specl") {
+                    continue;
+                }
+                total += 1;
+                let source = std::fs::read_to_string(&file).unwrap();
+                let m1 = match parse(&source) {
+                    Ok(m) => m,
+                    Err(_) => continue, // skip files that don't parse
+                };
+                let p1 = pretty_print(&m1);
+                let m2 = match parse(&p1) {
+                    Ok(m) => m,
+                    Err(e) => {
+                        failures.push(format!("ROUNDTRIP PARSE FAIL {}: {e}", file.display()));
+                        continue;
+                    }
+                };
+                let p2 = pretty_print(&m2);
+                if p1 != p2 {
+                    failures.push(format!("ROUNDTRIP MISMATCH {}", file.display()));
+                }
+            }
+        }
+        if !failures.is_empty() {
+            panic!(
+                "{} roundtrip failures out of {total} files:\n{}",
+                failures.len(),
+                failures.join("\n")
+            );
+        }
+    }
 }
