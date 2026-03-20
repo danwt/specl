@@ -261,6 +261,9 @@ pub enum Op {
     VarParamDictGetIntGe(u16, u16, i64),
     /// Fused VarParamDictGet(a, b) + Int(k) + IntLt: vars[a][params[b]] < k.
     VarParamDictGetIntLt(u16, u16, i64),
+    /// Fused Var(v) + Int(k) + DictGet: vars[v][k] — direct dict/seq index on state variable.
+    /// Common in protocol specs with constant indices: log[0], msgs[1], etc.
+    VarIntDictGet(u16, i64),
 
     // === Fallback to tree-walk ===
     /// Evaluate fallback expression via tree-walk, push result.
@@ -1171,6 +1174,10 @@ fn try_fuse_3(ops: &mut [Op], i: usize, j: usize, k: usize) -> bool {
             ops[i] = Op::VarParamDictGetIntLt(*v, *p, *val);
             true
         }
+        (Op::Var(v), Op::Int(val), Op::DictGet) => {
+            ops[i] = Op::VarIntDictGet(*v, *val);
+            true
+        }
         (Op::Param(p), Op::Int(val), Op::DictGet) => {
             ops[i] = Op::ParamIntDictGet(*p, *val);
             true
@@ -1608,6 +1615,37 @@ fn vm_eval_inner(
                     None => {
                         return Err(type_mismatch("Int", &vars[*var_idx as usize]));
                     }
+                }
+            }
+            Op::VarIntDictGet(var_idx, k) => {
+                // Fused: Var(v) + Int(k) + DictGet → vars[v][k]
+                // Direct access into a state variable at a constant integer index.
+                let base = &vars[*var_idx as usize];
+                match base.kind() {
+                    VK::IntMap2(inner_size, data) => {
+                        let row = intmap2_row(data, inner_size, *k)?;
+                        stack.push(Value::intmap(Arc::new(row)));
+                    }
+                    VK::IntMap(arr) => {
+                        stack.push(intmap_get(arr, *k)?.clone());
+                    }
+                    VK::Seq(s) => {
+                        if *k < 0 || (*k as usize) >= s.len() {
+                            return Err(EvalError::IndexOutOfBounds {
+                                index: *k,
+                                length: s.len(),
+                            });
+                        }
+                        stack.push(s[*k as usize].clone());
+                    }
+                    VK::Fn(map) => {
+                        let key = Value::int(*k);
+                        let val = Value::fn_get(map, &key)
+                            .cloned()
+                            .ok_or_else(|| EvalError::KeyNotFound(key.to_string()))?;
+                        stack.push(val);
+                    }
+                    _ => return Err(type_mismatch("Fn, Seq, or IntMap", base)),
                 }
             }
             Op::VarParamDictGet(var_idx, param_idx) => {
