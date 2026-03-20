@@ -2081,47 +2081,68 @@ impl Explorer {
             }
         }
 
+        // Hoist loop-invariant config checks
+        let has_stop_flag = self.stop_flag.is_some();
+        let has_progress = self.config.progress.is_some();
+        let max_depth_limit = self.config.max_depth;
+        let max_states_limit = self.config.max_states;
+        let memory_limit_mb = self.config.memory_limit_mb;
+        let has_deadline = self.deadline.is_some();
+        let check_deadlock = self.config.check_deadlock;
+        let mut successors: Vec<(State, usize, ParamValues)> = Vec::new();
+
         while let Some(PQEntry {
             fp, state, depth, ..
         }) = queue.pop()
         {
             // Check external stop flag
-            if let Some(ref flag) = self.stop_flag {
-                if flag.load(Ordering::Relaxed) {
-                    break;
-                }
+            if has_stop_flag && self.stop_flag.as_ref().unwrap().load(Ordering::Relaxed) {
+                break;
             }
 
-            if let Some(ref p) = self.config.progress {
-                p.checked.fetch_add(1, Ordering::Relaxed);
+            if has_progress {
+                self.config
+                    .progress
+                    .as_ref()
+                    .unwrap()
+                    .checked
+                    .fetch_add(1, Ordering::Relaxed);
             }
 
             if depth > max_depth {
                 max_depth = depth;
-                if let Some(ref p) = self.config.progress {
-                    p.depth.store(max_depth as usize, Ordering::Relaxed);
+                if has_progress {
+                    self.config
+                        .progress
+                        .as_ref()
+                        .unwrap()
+                        .depth
+                        .store(max_depth as usize, Ordering::Relaxed);
                 }
             }
 
             // Check depth limit
-            if self.config.max_depth > 0 && depth as usize >= self.config.max_depth {
+            if max_depth_limit > 0 && depth as usize >= max_depth_limit {
                 continue;
             }
 
+            // Cache store length once for limit checks
+            let store_len = self.store.len();
+
             // Check state limit
-            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
+            if max_states_limit > 0 && store_len >= max_states_limit {
                 return Ok(CheckOutcome::StateLimitReached {
-                    states_explored: self.store.len(),
+                    states_explored: store_len,
                     max_depth: max_depth as usize,
                 });
             }
 
             // Check memory limit (every 1000 states)
-            if self.config.memory_limit_mb > 0 && self.store.len().is_multiple_of(1000) {
+            if memory_limit_mb > 0 && store_len.is_multiple_of(1000) {
                 if let Some(mem_mb) = current_memory_mb() {
-                    if mem_mb >= self.config.memory_limit_mb {
+                    if mem_mb >= memory_limit_mb {
                         return Ok(CheckOutcome::MemoryLimitReached {
-                            states_explored: self.store.len(),
+                            states_explored: store_len,
                             max_depth: max_depth as usize,
                             memory_mb: mem_mb,
                         });
@@ -2130,12 +2151,9 @@ impl Explorer {
             }
 
             // Check time limit
-            if self.deadline.is_some()
-                && self.store.len().is_multiple_of(1000)
-                && self.past_deadline()
-            {
+            if has_deadline && store_len.is_multiple_of(1000) && self.past_deadline() {
                 return Ok(CheckOutcome::TimeLimitReached {
-                    states_explored: self.store.len(),
+                    states_explored: store_len,
                     max_depth: max_depth as usize,
                 });
             }
@@ -2154,8 +2172,8 @@ impl Explorer {
                 }
             }
 
-            // Generate successors
-            let mut successors = Vec::new();
+            // Generate successors (reuses allocated Vec across iterations)
+            successors.clear();
             self.generate_successors(
                 &state,
                 &mut successors,
@@ -2168,7 +2186,7 @@ impl Explorer {
                 &mut params_buf,
             )?;
 
-            if successors.is_empty() && self.config.check_deadlock {
+            if successors.is_empty() && check_deadlock {
                 let any_enabled = self.any_action_enabled(&state)?;
                 if !any_enabled {
                     let trace = self.store.trace_to(&fp, &self.action_names);
@@ -2177,7 +2195,7 @@ impl Explorer {
             }
 
             // Insert successors with heuristic priority
-            for (succ, action_idx, pvals) in successors {
+            for (succ, action_idx, pvals) in successors.drain(..) {
                 let canonical = self.maybe_canonicalize(succ);
                 let succ_fp = canonical.fingerprint();
                 if self.store.insert_with_fp(
@@ -2188,7 +2206,8 @@ impl Explorer {
                     Some(pvals),
                     (depth + 1) as usize,
                 ) {
-                    if let Some(ref p) = self.config.progress {
+                    if has_progress {
+                        let p = self.config.progress.as_ref().unwrap();
                         p.states.store(self.store.len(), Ordering::Relaxed);
                         p.queue_len.store(queue.len(), Ordering::Relaxed);
                     }
@@ -2450,38 +2469,55 @@ impl Explorer {
         let mut prof_time_succ = Duration::ZERO;
         let mut prof_time_store = Duration::ZERO;
 
+        // Hoist loop-invariant config checks to avoid re-reading through &mut self each iteration
+        let has_stop_flag = self.stop_flag.is_some();
+        let has_progress = self.config.progress.is_some();
+        let max_depth_limit = self.config.max_depth;
+        let max_states_limit = self.config.max_states;
+        let memory_limit_mb = self.config.memory_limit_mb;
+        let has_deadline = self.deadline.is_some();
+        let check_deadlock = self.config.check_deadlock;
+        let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
+        let fp_only = !self.store.has_full_tracking();
+
         while let Some((fp, state, depth, change_mask, sleep_set)) = queue.pop_front() {
             // Check external stop flag (swarm cancellation)
-            if let Some(ref flag) = self.stop_flag {
-                if flag.load(Ordering::Relaxed) {
-                    break;
-                }
+            if has_stop_flag && self.stop_flag.as_ref().unwrap().load(Ordering::Relaxed) {
+                break;
             }
 
-            if let Some(ref p) = self.config.progress {
-                p.checked.fetch_add(1, Ordering::Relaxed);
+            if has_progress {
+                self.config
+                    .progress
+                    .as_ref()
+                    .unwrap()
+                    .checked
+                    .fetch_add(1, Ordering::Relaxed);
             }
             trace!(depth, fp = %fp, "exploring state");
 
             // Check depth limit
-            if self.config.max_depth > 0 && depth as usize >= self.config.max_depth {
+            if max_depth_limit > 0 && depth as usize >= max_depth_limit {
                 continue;
             }
 
+            // Cache store length once for limit checks (single atomic load instead of three)
+            let store_len = self.store.len();
+
             // Check state limit
-            if self.config.max_states > 0 && self.store.len() >= self.config.max_states {
-                info!(states = self.store.len(), "reached state limit");
+            if max_states_limit > 0 && store_len >= max_states_limit {
+                info!(states = store_len, "reached state limit");
                 hit_state_limit = true;
                 break;
             }
 
             // Check memory limit (every 1000 states to reduce overhead)
-            if self.config.memory_limit_mb > 0 && self.store.len().is_multiple_of(1000) {
+            if memory_limit_mb > 0 && store_len.is_multiple_of(1000) {
                 if let Some(mem_mb) = current_memory_mb() {
-                    if mem_mb >= self.config.memory_limit_mb {
+                    if mem_mb >= memory_limit_mb {
                         info!(
                             memory_mb = mem_mb,
-                            limit_mb = self.config.memory_limit_mb,
+                            limit_mb = memory_limit_mb,
                             "reached memory limit"
                         );
                         hit_memory_limit = true;
@@ -2492,10 +2528,7 @@ impl Explorer {
             }
 
             // Check time limit (every 1000 states to reduce overhead)
-            if self.deadline.is_some()
-                && self.store.len().is_multiple_of(1000)
-                && self.past_deadline()
-            {
+            if has_deadline && store_len.is_multiple_of(1000) && self.past_deadline() {
                 info!("reached time limit");
                 hit_time_limit = true;
                 break;
@@ -2557,7 +2590,7 @@ impl Explorer {
                 prof_time_succ += t1.elapsed();
             }
 
-            if successors.is_empty() && self.config.check_deadlock {
+            if successors.is_empty() && check_deadlock {
                 // Check if any action is enabled (ignoring sleep set — sleep doesn't cause deadlock)
                 let any_enabled = self.any_action_enabled(&state)?;
                 if !any_enabled {
@@ -2581,9 +2614,7 @@ impl Explorer {
             } else {
                 None
             };
-            let use_sleep = self.config.use_por && self.spec.actions.len() <= 64;
             let mut accumulated_sleep = sleep_set;
-            let fp_only = !self.store.has_full_tracking();
             for (next_state, action_idx, pvals) in successors.drain(..) {
                 if profiling {
                     prof_action_counts[action_idx] += 1;
@@ -2629,7 +2660,8 @@ impl Explorer {
             }
 
             // Update progress counters (lock-free, near-zero overhead)
-            if let Some(ref p) = self.config.progress {
+            if has_progress {
+                let p = self.config.progress.as_ref().unwrap();
                 p.states.store(self.store.len(), Ordering::Relaxed);
                 p.depth.store(*max_depth as usize, Ordering::Relaxed);
                 p.queue_len.store(queue.len(), Ordering::Relaxed);
