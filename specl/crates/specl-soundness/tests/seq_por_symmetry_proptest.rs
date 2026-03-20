@@ -501,6 +501,194 @@ invariant ExactlyOneToken {{
     }
 }
 
+// ─── POR dependent-variable violation spec generators ───
+
+/// Two counters with a shared "Sync" action that creates a reachable violation.
+/// The invariant `a + b <= threshold` can be violated when Sync transfers from b to a.
+/// POR must not prune the interleaving that leads to the violation.
+#[derive(Debug, Clone)]
+struct DependentViolationSpec {
+    max: u8,
+    threshold: u8,
+}
+
+impl DependentViolationSpec {
+    fn to_specl(&self) -> String {
+        let m = self.max;
+        let th = self.threshold;
+        format!(
+            r#"module DependentViolation
+
+var a: 0..{m}
+var b: 0..{m}
+
+init {{ a = 0; b = 0; }}
+
+action IncA() {{ require a < {m}; a = a + 1; }}
+action IncB() {{ require b < {m}; b = b + 1; }}
+action Transfer() {{ require b > 0; require a < {m}; a = a + 1; b = b - 1; }}
+
+invariant SumBelowThreshold {{ a + b <= {th} }}
+"#,
+        )
+    }
+}
+
+/// Shared-variable race: two actions both read and write a shared variable.
+/// This is the hardest case for POR -- both actions are dependent.
+#[derive(Debug, Clone)]
+struct SharedRaceSpec {
+    max: u8,
+    threshold: u8,
+}
+
+impl SharedRaceSpec {
+    fn to_specl(&self) -> String {
+        let m = self.max;
+        let th = self.threshold;
+        format!(
+            r#"module SharedRace
+
+var shared: 0..{m}
+var local_a: 0..{m}
+var local_b: 0..{m}
+
+init {{ shared = 0; local_a = 0; local_b = 0; }}
+
+action StepA() {{
+    require shared < {m};
+    require local_a < {m};
+    shared = shared + 1;
+    local_a = local_a + 1;
+}}
+
+action StepB() {{
+    require shared < {m};
+    require local_b < {m};
+    shared = shared + 1;
+    local_b = local_b + 1;
+}}
+
+invariant SharedBelowThreshold {{ shared <= {th} }}
+"#,
+        )
+    }
+}
+
+// ─── Symmetry relational invariant spec generators ───
+
+/// Symmetric spec with a relational invariant: no counter can exceed another by more than `gap`.
+/// Symmetry reduction must preserve this relational property between indices.
+#[derive(Debug, Clone)]
+struct SymmetricRelationalSpec {
+    n: u8,
+    max: u8,
+    gap: u8,
+}
+
+impl SymmetricRelationalSpec {
+    fn to_specl(&self) -> String {
+        let n = self.n;
+        let m = self.max;
+        let g = self.gap;
+        format!(
+            r#"module SymmetricRelational
+
+var c: Dict[0..{n}, 0..{m}]
+
+init {{ c = {{i: 0 for i in 0..{n}}}; }}
+
+action Inc(i: 0..{n}) {{
+    require c[i] < {m};
+    c = c | {{i: c[i] + 1}};
+}}
+
+invariant MaxGap {{
+    all i in 0..{n} : all j in 0..{n} :
+        c[i] <= c[j] + {g}
+}}
+"#,
+        )
+    }
+}
+
+// ─── Init order independence spec generators ───
+
+/// Spec where init has inter-variable dependencies in a specific textual order.
+/// The "reverse" version swaps the conjunct order.
+/// Both must produce the same initial state and model checking outcome.
+#[derive(Debug, Clone)]
+struct InitOrderSpec {
+    val_a: u8,
+    max: u8,
+    reverse: bool,
+}
+
+impl InitOrderSpec {
+    fn to_specl(&self) -> String {
+        let v = self.val_a;
+        let m = self.max;
+        let (first, second) = if self.reverse {
+            (format!("y == x and x == {v}"), format!("x == {v} and y == x"))
+        } else {
+            (format!("x == {v} and y == x"), format!("y == x and x == {v}"))
+        };
+        // Use the first ordering
+        let _ = second;
+        format!(
+            r#"module InitOrder
+
+var x: 0..{m}
+var y: 0..{m}
+
+init {{ {first} }}
+
+action IncX() {{ require x < {m}; x = x + 1; y = y; }}
+action IncY() {{ require y < {m}; x = x; y = y + 1; }}
+
+invariant InRange {{ x >= 0 and x <= {m} and y >= 0 and y <= {m} }}
+"#,
+        )
+    }
+}
+
+/// Three-variable chain: z depends on y, y depends on x, in various orders.
+#[derive(Debug, Clone)]
+struct InitChainSpec {
+    val: u8,
+    max: u8,
+}
+
+impl InitChainSpec {
+    fn orders() -> Vec<&'static str> {
+        vec![
+            "x == VAL and y == x and z == y",
+            "z == y and y == x and x == VAL",
+            "y == x and z == y and x == VAL",
+            "z == y and x == VAL and y == x",
+        ]
+    }
+
+    fn to_specl(&self, order: &str) -> String {
+        let m = self.max;
+        let init_expr = order.replace("VAL", &self.val.to_string());
+        format!(
+            r#"module InitChain
+
+var x: 0..{m}
+var y: 0..{m}
+var z: 0..{m}
+
+init {{ {init_expr} }}
+
+action IncX() {{ require x < {m}; x = x + 1; y = y; z = z; }}
+
+invariant AllStartEqual {{ true }}
+"#,
+        )
+    }
+}
+
 // ─── Properties ───
 
 proptest! {
@@ -791,5 +979,148 @@ proptest! {
         prop_assert!(result.is_ok(), "roundtrip: {:?}", result.err());
         let (p1, p2) = result.unwrap();
         prop_assert_eq!(p1, p2, "pretty-print not idempotent");
+    }
+
+    // ─── POR dependent-variable violation detection ───
+    // POR must find violations even when actions share variables.
+
+    #[test]
+    fn por_dependent_violation_detected(max in 2u8..=4) {
+        // threshold < 2*max guarantees a violation is reachable
+        let threshold = max;
+        let spec = DependentViolationSpec { max, threshold };
+        let src = spec.to_specl();
+        let base = base_config();
+
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let por = check_spec(&src, CheckConfig { use_por: true, ..base }).expect("por");
+
+        prop_assert!(has_violation(&baseline), "baseline should find violation");
+        prop_assert!(has_violation(&por), "POR must find violation with dependent actions");
+    }
+
+    #[test]
+    fn por_shared_race_violation_detected(max in 3u8..=5) {
+        // threshold < max guarantees shared can reach max which violates the invariant
+        let threshold = max - 1;
+        let spec = SharedRaceSpec { max, threshold };
+        let src = spec.to_specl();
+        let base = base_config();
+
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let por = check_spec(&src, CheckConfig { use_por: true, ..base }).expect("por");
+
+        prop_assert!(has_violation(&baseline), "baseline should find violation");
+        prop_assert!(has_violation(&por), "POR must find violation with shared-variable race");
+    }
+
+    #[test]
+    fn por_dependent_safe_same_outcome(max in 2u8..=4) {
+        // threshold high enough that no violation is reachable
+        let threshold = 2 * max;
+        let spec = DependentViolationSpec { max, threshold };
+        let src = spec.to_specl();
+        let base = base_config();
+
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let por = check_spec(&src, CheckConfig { use_por: true, ..base }).expect("por");
+
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&por),
+            "POR changed safety outcome for dependent safe spec");
+    }
+
+    // ─── Symmetry relational invariant violation detection ───
+    // Symmetry must preserve relational invariants between symmetric indices.
+
+    #[test]
+    fn symmetry_relational_violation_detected(n in 1u8..=2, max in 2u8..=4) {
+        // gap=0 means all counters must be equal -- violated as soon as any one increments
+        let spec = SymmetricRelationalSpec { n, max, gap: 0 };
+        let src = spec.to_specl();
+        let base = base_config();
+
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let sym = check_spec(&src, CheckConfig { use_symmetry: true, ..base }).expect("symmetry");
+
+        prop_assert!(has_violation(&baseline), "baseline should find gap=0 violation");
+        prop_assert!(has_violation(&sym), "Symmetry must find relational violation");
+    }
+
+    #[test]
+    fn symmetry_relational_safe_same_outcome(n in 1u8..=2, max in 1u8..=3) {
+        // gap >= max means the invariant is always satisfied
+        let spec = SymmetricRelationalSpec { n, max, gap: max };
+        let src = spec.to_specl();
+        let base = base_config();
+
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let sym = check_spec(&src, CheckConfig { use_symmetry: true, ..base }).expect("symmetry");
+
+        prop_assert_eq!(outcome_is_ok(&baseline), outcome_is_ok(&sym),
+            "Symmetry changed safety outcome for relational safe spec");
+    }
+
+    #[test]
+    fn por_symmetry_relational_violation_detected(n in 1u8..=2, max in 2u8..=4) {
+        let spec = SymmetricRelationalSpec { n, max, gap: 0 };
+        let src = spec.to_specl();
+        let base = base_config();
+
+        let baseline = check_spec(&src, base.clone()).expect("baseline");
+        let both = check_spec(&src, CheckConfig { use_por: true, use_symmetry: true, ..base }).expect("por+sym");
+
+        prop_assert!(has_violation(&baseline), "baseline should find gap=0 violation");
+        prop_assert!(has_violation(&both), "POR+Symmetry must find relational violation");
+    }
+
+    // ─── Init order independence ───
+    // The init fixpoint solver must produce the same result regardless of
+    // the textual order of conjuncts.
+
+    #[test]
+    fn init_order_two_vars_same_outcome(val in 0u8..=3) {
+        let max = 4u8;
+        let spec_fwd = InitOrderSpec { val_a: val, max, reverse: false };
+        let spec_rev = InitOrderSpec { val_a: val, max, reverse: true };
+        let src_fwd = spec_fwd.to_specl();
+        let src_rev = spec_rev.to_specl();
+        let base = base_config();
+
+        let out_fwd = check_spec(&src_fwd, base.clone()).expect("forward order");
+        let out_rev = check_spec(&src_rev, base.clone()).expect("reverse order");
+
+        // Both must produce Ok (no violation) and explore the same state count
+        prop_assert!(outcome_is_ok(&out_fwd), "forward order should be ok");
+        prop_assert!(outcome_is_ok(&out_rev), "reverse order should be ok");
+        prop_assert_eq!(
+            states_from_outcome(&out_fwd),
+            states_from_outcome(&out_rev),
+            "init order changed state count"
+        );
+    }
+
+    #[test]
+    fn init_chain_all_orders_agree(val in 0u8..=2) {
+        let max = 3u8;
+        let spec = InitChainSpec { val, max };
+        let base = base_config();
+        let orders = InitChainSpec::orders();
+
+        let first_src = spec.to_specl(orders[0]);
+        let first_out = check_spec(&first_src, base.clone()).expect("first order");
+        let expected_states = states_from_outcome(&first_out);
+        prop_assert!(outcome_is_ok(&first_out), "first order should be ok");
+
+        for order in &orders[1..] {
+            let src = spec.to_specl(order);
+            let out = check_spec(&src, base.clone()).expect(&format!("order: {}", order));
+            prop_assert!(outcome_is_ok(&out), "order '{}' should be ok", order);
+            prop_assert_eq!(
+                states_from_outcome(&out),
+                expected_states,
+                "init order '{}' produced different state count",
+                order
+            );
+        }
     }
 }
