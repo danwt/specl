@@ -950,9 +950,17 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
                         .as_int()
                         .ok_or_else(|| type_mismatch("Int", &arr[k as usize]))
                 }
-                VK::IntMap2(_, _) => {
-                    // IntMap2[k] returns a row (IntMap), not an Int — fall through
-                    expect_int(&eval(expr, ctx)?)
+                VK::IntMap2(inner_size, data) => {
+                    let k = expect_int(&index_val)?;
+                    let outer_len = intmap2_outer_len(inner_size, data.len());
+                    if k < 0 || (k as usize) >= outer_len {
+                        return Err(EvalError::IndexOutOfBounds {
+                            index: k,
+                            length: outer_len,
+                        });
+                    }
+                    let row = Value::intmap2_row(data, inner_size as usize, k as usize);
+                    expect_int(&row)
                 }
                 VK::Fn(map) => match Value::fn_get(map, &index_val) {
                     Some(v) => v.as_int().ok_or_else(|| type_mismatch("Int", v)),
