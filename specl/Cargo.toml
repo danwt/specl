@@ -71,6 +71,9 @@ memory-stats = "1"
 proptest = "1"
 criterion = { version = "0.5", features = ["html_reports"] }
 
+[profile.test]
+opt-level = 1
+
 [profile.release]
 lto = "fat"
 codegen-units = 1

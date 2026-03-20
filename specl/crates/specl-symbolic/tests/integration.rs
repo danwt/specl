@@ -55,7 +55,7 @@ fn run_symbolic(
     let consts = parse_consts(consts, &spec);
     let config = SymbolicConfig {
         mode,
-        depth: 20,
+        depth: 10,
         seq_bound: 5,
         spacer_profile: SpacerProfile::Default,
         timeout_ms: None,

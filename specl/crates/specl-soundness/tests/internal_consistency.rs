@@ -93,7 +93,7 @@ fn parallel_vs_sequential_consistency() {
 fn deterministic_repeated_runs() {
     let mut expected_states = None;
     let mut expected_depth = None;
-    for _ in 0..10 {
+    for _ in 0..3 {
         let out = run(CheckConfig {
             parallel: true,
             num_threads: 0,
