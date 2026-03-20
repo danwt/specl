@@ -1062,7 +1062,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
         let k = j.and_then(|j| next_non_nop(ops, j + 1));
 
         // Don't fuse if the second instruction is a jump target
-        let j_is_target = j.map_or(true, |j| jump_targets.get(j).copied().unwrap_or(false));
+        let j_is_target = j.is_none_or(|j| jump_targets.get(j).copied().unwrap_or(false));
         if j_is_target {
             i += 1;
             continue;
@@ -1070,7 +1070,7 @@ fn peephole_optimize(ops: &mut Vec<Op>) {
         let j = j.unwrap();
 
         // Try 3-op fusions first (more specific patterns win)
-        let k_is_target = k.map_or(true, |k| jump_targets.get(k).copied().unwrap_or(false));
+        let k_is_target = k.is_none_or(|k| jump_targets.get(k).copied().unwrap_or(false));
         if !k_is_target {
             if let Some(k) = k {
                 if try_fuse_3(ops, i, j, k) {

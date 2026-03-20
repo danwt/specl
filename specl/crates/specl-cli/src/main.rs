@@ -1773,7 +1773,7 @@ fn cmd_check_ts(
         golem: false,
         bmc_depth: sym_flags.bmc_depth,
         seq_bound: sym_flags.seq_bound,
-        spacer_profile: sym_flags.spacer_profile.clone(),
+        spacer_profile: sym_flags.spacer_profile,
         timeout: sym_flags.timeout,
     };
     let sym_result = run_symbolic_check_with_spec(
@@ -3680,7 +3680,7 @@ impl SymbolicFlags {
             mode: self.resolve_mode(),
             depth: self.bmc_depth,
             seq_bound: self.seq_bound,
-            spacer_profile: self.spacer_profile.clone(),
+            spacer_profile: self.spacer_profile,
             timeout_ms: if self.timeout == 0 {
                 None
             } else {
