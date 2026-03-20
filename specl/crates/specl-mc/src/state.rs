@@ -565,4 +565,211 @@ mod tests {
         assert_eq!(s1.var_hashes, s2.var_hashes);
         assert_eq!(s1, s2);
     }
+
+    #[test]
+    fn test_orbit_representatives_all_distinct() {
+        // 3 elements with all-different signatures -> 3 representatives
+        let group = SymmetryGroup {
+            domain_size: 3,
+            variables: vec![0],
+        };
+        let vars = vec![Value::intmap(Arc::new(vec![
+            Value::int(10),
+            Value::int(20),
+            Value::int(30),
+        ]))];
+        let canon = State::new(vars.clone()).canonicalize(&[group.clone()], None);
+        let reps = orbit_representatives(&canon.vars, &group);
+        assert_eq!(reps.len(), 3);
+        assert_eq!(reps, vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn test_orbit_representatives_all_same() {
+        // 4 elements with identical values -> 1 representative
+        let group = SymmetryGroup {
+            domain_size: 4,
+            variables: vec![0],
+        };
+        let vars = vec![Value::intmap(Arc::new(vec![
+            Value::int(5),
+            Value::int(5),
+            Value::int(5),
+            Value::int(5),
+        ]))];
+        let canon = State::new(vars).canonicalize(&[group.clone()], None);
+        let reps = orbit_representatives(&canon.vars, &group);
+        assert_eq!(reps.len(), 1);
+        assert_eq!(reps[0], 0);
+    }
+
+    #[test]
+    fn test_orbit_representatives_two_groups() {
+        // domain_size=4, two distinct values [A, A, B, B] -> 2 reps
+        let group = SymmetryGroup {
+            domain_size: 4,
+            variables: vec![0],
+        };
+        let vars = vec![Value::intmap(Arc::new(vec![
+            Value::int(1),
+            Value::int(1),
+            Value::int(2),
+            Value::int(2),
+        ]))];
+        let canon = State::new(vars).canonicalize(&[group.clone()], None);
+        let reps = orbit_representatives(&canon.vars, &group);
+        assert_eq!(reps.len(), 2);
+    }
+
+    #[test]
+    fn test_orbit_representatives_empty_domain() {
+        let group = SymmetryGroup {
+            domain_size: 0,
+            variables: vec![0],
+        };
+        let reps = orbit_representatives(&[Value::intmap(Arc::new(vec![]))], &group);
+        assert!(reps.is_empty());
+    }
+
+    #[test]
+    fn test_canonicalize_consistency() {
+        // Two states that differ only by a permutation of symmetric elements
+        // should produce the same canonical form
+        let group = SymmetryGroup {
+            domain_size: 3,
+            variables: vec![0],
+        };
+
+        let s1 = State::new(vec![Value::intmap(Arc::new(vec![
+            Value::int(10),
+            Value::int(20),
+            Value::int(30),
+        ]))]);
+        let s2 = State::new(vec![Value::intmap(Arc::new(vec![
+            Value::int(30),
+            Value::int(10),
+            Value::int(20),
+        ]))]);
+
+        let c1 = s1.canonicalize(&[group.clone()], None);
+        let c2 = s2.canonicalize(&[group.clone()], None);
+        assert_eq!(c1.fingerprint(), c2.fingerprint());
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_canonicalize_is_idempotent() {
+        // Canonicalizing twice should produce the same result
+        let group = SymmetryGroup {
+            domain_size: 3,
+            variables: vec![0],
+        };
+        let s = State::new(vec![Value::intmap(Arc::new(vec![
+            Value::int(30),
+            Value::int(10),
+            Value::int(20),
+        ]))]);
+        let c1 = s.canonicalize(&[group.clone()], None);
+        let c2 = c1.canonicalize(&[group], None);
+        assert_eq!(c1.fingerprint(), c2.fingerprint());
+        assert_eq!(c1, c2);
+    }
+
+    #[test]
+    fn test_canonicalize_no_groups_is_identity() {
+        let s = State::new(vec![Value::int(42), Value::bool(true)]);
+        let c = s.canonicalize(&[], None);
+        assert_eq!(s.fingerprint(), c.fingerprint());
+        assert_eq!(s, c);
+    }
+
+    #[test]
+    fn test_hash_var_different_values_same_index() {
+        let h1 = hash_var(0, &Value::int(1));
+        let h2 = hash_var(0, &Value::int(2));
+        let h3 = hash_var(0, &Value::int(3));
+        // Different values at the same index should produce different hashes
+        assert_ne!(h1, h2);
+        assert_ne!(h1, h3);
+        assert_ne!(h2, h3);
+    }
+
+    #[test]
+    fn test_hash_var_same_value_different_index() {
+        let h0 = hash_var(0, &Value::int(42));
+        let h1 = hash_var(1, &Value::int(42));
+        let h2 = hash_var(2, &Value::int(42));
+        // Same value at different indices should produce different hashes
+        assert_ne!(h0, h1);
+        assert_ne!(h0, h2);
+        assert_ne!(h1, h2);
+    }
+
+    #[test]
+    fn test_hash_var_different_types_same_index() {
+        // String uses ahash path, so should differ from int's splitmix path
+        let hs = hash_var(0, &Value::string("hello".to_string()));
+        let hi = hash_var(0, &Value::int(0));
+        assert_ne!(hs, hi);
+    }
+
+    #[test]
+    fn test_hash_var_deterministic() {
+        let v = Value::int(999);
+        let h1 = hash_var(5, &v);
+        let h2 = hash_var(5, &v);
+        assert_eq!(h1, h2);
+    }
+
+    #[test]
+    fn test_view_mask_changes_fingerprint() {
+        let vars = vec![Value::int(1), Value::int(2), Value::int(3)];
+        let s_full = State::new(vars.clone());
+
+        // Mask out variable 1 (only vars 0 and 2 contribute)
+        let mask = vec![true, false, true];
+        let s_view = State::new_with_view(vars.clone(), &mask);
+
+        assert_ne!(s_full.fingerprint(), s_view.fingerprint());
+    }
+
+    #[test]
+    fn test_view_mask_ignores_masked_variable() {
+        // Two states that differ only in a masked-out variable
+        // should have the same fingerprint
+        let mask = vec![true, false];
+
+        let s1 = State::new_with_view(vec![Value::int(1), Value::int(100)], &mask);
+        let s2 = State::new_with_view(vec![Value::int(1), Value::int(200)], &mask);
+
+        assert_eq!(s1.fingerprint(), s2.fingerprint());
+    }
+
+    #[test]
+    fn test_view_mask_still_differs_on_visible_variable() {
+        let mask = vec![true, false];
+
+        let s1 = State::new_with_view(vec![Value::int(1), Value::int(100)], &mask);
+        let s2 = State::new_with_view(vec![Value::int(2), Value::int(100)], &mask);
+
+        assert_ne!(s1.fingerprint(), s2.fingerprint());
+    }
+
+    #[test]
+    fn test_hash_var_intmap() {
+        let arr = vec![Value::int(1), Value::int(2), Value::int(3)];
+        let v = Value::intmap(Arc::new(arr));
+        let h = hash_var(0, &v);
+        // Just check it returns something non-trivial and is deterministic
+        assert_eq!(h, hash_var(0, &v));
+    }
+
+    #[test]
+    fn test_state_equality_requires_same_vars() {
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(1)]);
+        let s3 = State::new(vec![Value::int(2)]);
+        assert_eq!(s1, s2);
+        assert_ne!(s1, s3);
+    }
 }

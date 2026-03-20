@@ -798,4 +798,218 @@ mod tests {
 
         assert_eq!(store.len(), 400);
     }
+
+    #[test]
+    fn test_pre_seed_fingerprints_updates_count() {
+        let store = StateStore::with_tracking(false);
+        assert_eq!(store.len(), 0);
+
+        let s1 = State::new(vec![Value::int(10)]);
+        let s2 = State::new(vec![Value::int(20)]);
+        let s3 = State::new(vec![Value::int(30)]);
+        let fps = vec![
+            s1.fingerprint().as_u64(),
+            s2.fingerprint().as_u64(),
+            s3.fingerprint().as_u64(),
+        ];
+
+        store.pre_seed_fingerprints(&fps);
+        assert_eq!(store.len(), 3);
+
+        // Pre-seeded fingerprints should be recognized as already seen
+        assert!(store.contains(&s1.fingerprint()));
+        assert!(store.contains(&s2.fingerprint()));
+        assert!(store.contains(&s3.fingerprint()));
+
+        // Inserting a pre-seeded state should return false (already seen)
+        assert!(!store.insert(s1, None, None, None, 0));
+    }
+
+    #[test]
+    fn test_pre_seed_fingerprints_bloom() {
+        let store = StateStore::with_bloom(20, 3);
+        assert_eq!(store.len(), 0);
+
+        let s1 = State::new(vec![Value::int(100)]);
+        let fp = s1.fingerprint().as_u64();
+
+        store.pre_seed_fingerprints(&[fp]);
+        assert_eq!(store.len(), 1);
+        assert!(store.contains(&s1.fingerprint()));
+    }
+
+    #[test]
+    fn test_pre_seed_fingerprints_full_mode_noop() {
+        let store = StateStore::new();
+        let s1 = State::new(vec![Value::int(1)]);
+        let fp = s1.fingerprint().as_u64();
+
+        store.pre_seed_fingerprints(&[fp]);
+        // Full mode cannot be pre-seeded, count stays 0
+        assert_eq!(store.len(), 0);
+        assert!(!store.contains(&s1.fingerprint()));
+    }
+
+    #[test]
+    fn test_collision_counting() {
+        let store = StateStore::new();
+        assert_eq!(store.collisions(), 0);
+
+        // Insert two different states that happen to get the same fingerprint
+        // We simulate this by using with_fp directly
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
+        let shared_fp = s1.fingerprint();
+
+        store.insert(s1, None, None, None, 0);
+        // Force s2 to use s1's fingerprint to trigger a collision
+        store.insert_with_fp(shared_fp, s2, None, None, None, 0);
+
+        assert_eq!(store.collisions(), 1);
+        // Count should still be 1 (collision = rejected insert)
+        assert_eq!(store.len(), 1);
+    }
+
+    #[test]
+    fn test_collision_not_counted_in_view_mode() {
+        let mut store = StateStore::new();
+        store.set_view_mode(true);
+
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
+        let shared_fp = s1.fingerprint();
+
+        store.insert(s1, None, None, None, 0);
+        store.insert_with_fp(shared_fp, s2, None, None, None, 0);
+
+        // In view mode, same-fingerprint different-state is expected, not a collision
+        assert_eq!(store.collisions(), 0);
+    }
+
+    #[test]
+    fn test_all_backends_insert_and_contains() {
+        // Full
+        let full = StateStore::new();
+        let s = State::new(vec![Value::int(42)]);
+        assert!(full.insert(s.clone(), None, None, None, 0));
+        assert!(full.contains(&s.fingerprint()));
+        assert!(!full.insert(s.clone(), None, None, None, 0));
+
+        // Fingerprint
+        let fp_store = StateStore::with_tracking(false);
+        assert!(fp_store.insert(s.clone(), None, None, None, 0));
+        assert!(fp_store.contains(&s.fingerprint()));
+        assert!(!fp_store.insert(s.clone(), None, None, None, 0));
+
+        // Bloom
+        let bloom = StateStore::with_bloom(20, 3);
+        assert!(bloom.insert(s.clone(), None, None, None, 0));
+        assert!(bloom.contains(&s.fingerprint()));
+        assert!(!bloom.insert(s.clone(), None, None, None, 0));
+
+        // Collapse
+        let collapse = StateStore::with_collapse(1);
+        assert!(collapse.insert(s.clone(), None, None, None, 0));
+        assert!(collapse.contains(&s.fingerprint()));
+        assert!(!collapse.insert(s.clone(), None, None, None, 0));
+
+        // Tree
+        let tree = StateStore::with_tree(1);
+        assert!(tree.insert(s.clone(), None, None, None, 0));
+        assert!(tree.contains(&s.fingerprint()));
+        assert!(!tree.insert(s.clone(), None, None, None, 0));
+    }
+
+    #[test]
+    fn test_all_backends_count_consistency() {
+        let backends: Vec<StateStore> = vec![
+            StateStore::new(),
+            StateStore::with_tracking(false),
+            StateStore::with_bloom(20, 3),
+            StateStore::with_collapse(2),
+            StateStore::with_tree(2),
+        ];
+
+        for store in &backends {
+            assert!(store.is_empty());
+            for i in 0..10 {
+                let s = State::new(vec![Value::int(i), Value::bool(i % 2 == 0)]);
+                store.insert(s, None, None, None, 0);
+            }
+            assert_eq!(store.len(), 10);
+            assert!(!store.is_empty());
+        }
+    }
+
+    #[test]
+    fn test_tree_insert_and_trace() {
+        let store = StateStore::with_tree(1);
+
+        let s0 = State::new(vec![Value::int(0)]);
+        let s1 = State::new(vec![Value::int(1)]);
+        let fp0 = s0.fingerprint();
+        let fp1 = s1.fingerprint();
+
+        store.insert(s0, None, Some(0), None, 0);
+        store.insert(s1, Some(fp0), Some(1), None, 1);
+
+        assert!(store.has_full_tracking());
+        let action_names = vec!["init".to_string(), "step".to_string()];
+        let trace = store.trace_to(&fp1, &action_names);
+        assert_eq!(trace.len(), 2);
+        assert_eq!(*trace[0].0.vars, vec![Value::int(0)]);
+        assert_eq!(*trace[1].0.vars, vec![Value::int(1)]);
+    }
+
+    #[test]
+    fn test_insert_fp_only() {
+        let fp_store = StateStore::with_tracking(false);
+        let s = State::new(vec![Value::int(99)]);
+        let fp = s.fingerprint();
+
+        assert!(fp_store.insert_fp_only(fp));
+        assert!(!fp_store.insert_fp_only(fp));
+        assert_eq!(fp_store.len(), 1);
+
+        let bloom = StateStore::with_bloom(20, 3);
+        assert!(bloom.insert_fp_only(fp));
+        assert!(!bloom.insert_fp_only(fp));
+        assert_eq!(bloom.len(), 1);
+    }
+
+    #[test]
+    #[should_panic(expected = "insert_fp_only called on backend that requires state data")]
+    fn test_insert_fp_only_panics_on_full() {
+        let store = StateStore::new();
+        let fp = Fingerprint::from_u64(12345);
+        store.insert_fp_only(fp);
+    }
+
+    #[test]
+    fn test_seen_fingerprints() {
+        let store = StateStore::new();
+        let s1 = State::new(vec![Value::int(1)]);
+        let s2 = State::new(vec![Value::int(2)]);
+        store.insert(s1.clone(), None, None, None, 0);
+        store.insert(s2.clone(), None, None, None, 0);
+
+        let seen = store.seen_fingerprints();
+        assert_eq!(seen.len(), 2);
+        assert!(seen.contains(&s1.fingerprint().as_u64()));
+        assert!(seen.contains(&s2.fingerprint().as_u64()));
+    }
+
+    #[test]
+    fn test_clear_resets_state() {
+        let mut store = StateStore::new();
+        let s = State::new(vec![Value::int(1)]);
+        store.insert(s.clone(), None, None, None, 0);
+        assert_eq!(store.len(), 1);
+
+        store.clear(true);
+        assert_eq!(store.len(), 0);
+        assert!(store.is_empty());
+        assert!(!store.contains(&s.fingerprint()));
+        assert_eq!(store.collisions(), 0);
+    }
 }

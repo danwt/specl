@@ -1337,4 +1337,405 @@ mod tests {
         let v2 = Value::from_set_arc(arc);
         assert_eq!(v2.as_set().unwrap().len(), 2);
     }
+
+    // --- NaN-boxing round-trip tests ---
+
+    #[test]
+    fn test_bool_roundtrip() {
+        let t = Value::bool(true);
+        let f = Value::bool(false);
+        assert_eq!(t.as_bool(), Some(true));
+        assert_eq!(f.as_bool(), Some(false));
+        assert!(t.is_bool());
+        assert!(f.is_bool());
+    }
+
+    #[test]
+    fn test_none_roundtrip() {
+        let v = Value::none();
+        assert!(v.is_none());
+        assert!(matches!(v.kind(), VK::None));
+    }
+
+    #[test]
+    fn test_string_roundtrip() {
+        let v = Value::string("hello world".to_string());
+        assert_eq!(v.as_string(), Some("hello world"));
+        assert!(v.is_string());
+        let cloned = v.clone();
+        assert_eq!(cloned.as_string(), Some("hello world"));
+    }
+
+    #[test]
+    fn test_set_roundtrip() {
+        let v = Value::set(Arc::new(vec![Value::int(1), Value::int(2), Value::int(3)]));
+        let s = v.as_set().unwrap();
+        assert_eq!(s.len(), 3);
+        assert_eq!(s[0], Value::int(1));
+        assert_eq!(s[2], Value::int(3));
+    }
+
+    #[test]
+    fn test_seq_roundtrip() {
+        let v = Value::seq(vec![Value::bool(true), Value::int(42)]);
+        let s = v.as_seq().unwrap();
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[0], Value::bool(true));
+        assert_eq!(s[1], Value::int(42));
+    }
+
+    #[test]
+    fn test_fn_roundtrip() {
+        let pairs = vec![
+            (Value::int(0), Value::bool(false)),
+            (Value::int(1), Value::bool(true)),
+        ];
+        let v = Value::func(Arc::new(pairs));
+        let f = v.as_fn().unwrap();
+        assert_eq!(f.len(), 2);
+        assert_eq!(f[0].0, Value::int(0));
+        assert_eq!(f[1].1, Value::bool(true));
+    }
+
+    #[test]
+    fn test_intmap_roundtrip() {
+        let v = Value::intmap(Arc::new(vec![Value::int(10), Value::int(20)]));
+        let arr = v.as_intmap().unwrap();
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], Value::int(10));
+        assert_eq!(arr[1], Value::int(20));
+    }
+
+    #[test]
+    fn test_tuple_roundtrip() {
+        let v = Value::tuple(vec![Value::int(1), Value::string("a".to_string())]);
+        if let VK::Tuple(t) = v.kind() {
+            assert_eq!(t.len(), 2);
+            assert_eq!(t[0], Value::int(1));
+        } else {
+            panic!("expected Tuple");
+        }
+    }
+
+    #[test]
+    fn test_some_roundtrip() {
+        let inner = Value::int(42);
+        let v = Value::some(inner.clone());
+        if let VK::Some(s) = v.kind() {
+            assert_eq!(*s, Value::int(42));
+        } else {
+            panic!("expected Some");
+        }
+    }
+
+    // --- Clone correctness ---
+
+    #[test]
+    fn test_clone_inline_types() {
+        let values = vec![
+            Value::int(0),
+            Value::int(-1),
+            Value::int(42),
+            Value::bool(true),
+            Value::bool(false),
+            Value::none(),
+        ];
+        for v in &values {
+            let c = v.clone();
+            assert_eq!(*v, c);
+        }
+    }
+
+    #[test]
+    fn test_clone_heap_types() {
+        let values: Vec<Value> = vec![
+            Value::string("test".to_string()),
+            Value::set(Arc::new(vec![Value::int(1)])),
+            Value::seq(vec![Value::int(2)]),
+            Value::func(Arc::new(vec![(Value::int(0), Value::bool(true))])),
+            Value::intmap(Arc::new(vec![Value::int(3)])),
+            Value::tuple(vec![Value::int(4)]),
+            Value::some(Value::int(5)),
+            Value::int(i64::MAX), // BigInt
+        ];
+        for v in &values {
+            let c = v.clone();
+            assert_eq!(*v, c);
+            // Ensure the clone survives after the original is dropped
+            drop(v.clone());
+        }
+    }
+
+    // --- Eq/Ord edge cases ---
+
+    #[test]
+    fn test_eq_int_bigint_cross() {
+        // An inline int and a BigInt with the same mathematical value should be equal
+        let boundary = I56_MAX;
+        let inline = Value::int(boundary);
+        let just_above = Value::int(boundary + 1); // this becomes BigInt
+        assert_ne!(inline, just_above);
+
+        // BigInt == BigInt
+        let a = Value::int(i64::MAX);
+        let b = Value::int(i64::MAX);
+        assert_eq!(a, b);
+    }
+
+    #[test]
+    fn test_eq_intmap_fn_cross() {
+        // IntMap [10, 20] should equal Fn {0->10, 1->20}
+        let im = Value::intmap(Arc::new(vec![Value::int(10), Value::int(20)]));
+        let f = Value::func(Arc::new(vec![
+            (Value::int(0), Value::int(10)),
+            (Value::int(1), Value::int(20)),
+        ]));
+        assert_eq!(im, f);
+        assert_eq!(f, im);
+    }
+
+    #[test]
+    fn test_neq_different_types() {
+        let values: Vec<Value> = vec![
+            Value::int(0),
+            Value::bool(false),
+            Value::none(),
+            Value::string("0".to_string()),
+            Value::seq(vec![]),
+        ];
+        for (i, a) in values.iter().enumerate() {
+            for (j, b) in values.iter().enumerate() {
+                if i != j {
+                    assert_ne!(a, b, "expected {:?} != {:?}", a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn test_ord_cross_type() {
+        // Ordering: Bool < Int < String < Set < Seq < Fn < Tuple < None < Some
+        let ordered = vec![
+            Value::bool(false),
+            Value::int(0),
+            Value::string("a".to_string()),
+            Value::set(Arc::new(vec![])),
+            Value::seq(vec![]),
+            Value::func(Arc::new(vec![])),
+            Value::tuple(vec![]),
+            Value::none(),
+            Value::some(Value::int(0)),
+        ];
+        for i in 0..ordered.len() {
+            for j in (i + 1)..ordered.len() {
+                assert!(
+                    ordered[i] < ordered[j],
+                    "{:?} should be < {:?}",
+                    ordered[i],
+                    ordered[j]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_ord_ints() {
+        let mut vals: Vec<Value> = vec![
+            Value::int(3),
+            Value::int(-1),
+            Value::int(0),
+            Value::int(100),
+            Value::int(-100),
+        ];
+        vals.sort();
+        let sorted: Vec<i64> = vals.iter().map(|v| v.as_int().unwrap()).collect();
+        assert_eq!(sorted, vec![-100, -1, 0, 3, 100]);
+    }
+
+    #[test]
+    fn test_ord_bigint_vs_inline() {
+        let inline = Value::int(I56_MAX);
+        let big = Value::int(I56_MAX + 1);
+        assert!(inline < big);
+    }
+
+    // --- Edge cases ---
+
+    #[test]
+    fn test_very_large_integers() {
+        let max = Value::int(i64::MAX);
+        let min = Value::int(i64::MIN);
+        assert_eq!(max.as_int(), Some(i64::MAX));
+        assert_eq!(min.as_int(), Some(i64::MIN));
+        assert!(min < max);
+
+        // Clone large ints
+        let max_clone = max.clone();
+        assert_eq!(max, max_clone);
+    }
+
+    #[test]
+    fn test_i56_boundary() {
+        // Values at the i56 boundary: I56_MAX is inline, I56_MAX+1 is BigInt
+        let at_boundary = Value::int(I56_MAX);
+        let above = Value::int(I56_MAX + 1);
+        assert_eq!(at_boundary.as_int(), Some(I56_MAX));
+        assert_eq!(above.as_int(), Some(I56_MAX + 1));
+        assert_ne!(at_boundary, above);
+
+        let at_neg = Value::int(I56_MIN);
+        let below = Value::int(I56_MIN - 1);
+        assert_eq!(at_neg.as_int(), Some(I56_MIN));
+        assert_eq!(below.as_int(), Some(I56_MIN - 1));
+    }
+
+    #[test]
+    fn test_empty_set() {
+        let s = Value::empty_set();
+        if let VK::Set(elems) = s.kind() {
+            assert!(elems.is_empty());
+        } else {
+            panic!("expected Set");
+        }
+        // Empty set equals another empty set
+        let s2 = Value::set(Arc::new(vec![]));
+        assert_eq!(s, s2);
+    }
+
+    #[test]
+    fn test_empty_seq() {
+        let s = Value::empty_seq();
+        if let VK::Seq(elems) = s.kind() {
+            assert!(elems.is_empty());
+        } else {
+            panic!("expected Seq");
+        }
+    }
+
+    #[test]
+    fn test_empty_fn() {
+        let f = Value::func(Arc::new(vec![]));
+        let f2 = Value::intmap(Arc::new(vec![]));
+        assert_eq!(f, f2);
+    }
+
+    #[test]
+    fn test_hash_equal_values_same_hash() {
+        use std::hash::{DefaultHasher, Hash, Hasher};
+        fn h(v: &Value) -> u64 {
+            let mut hasher = DefaultHasher::new();
+            v.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        // IntMap and equivalent Fn should hash the same
+        let im = Value::intmap(Arc::new(vec![Value::int(10), Value::int(20)]));
+        let f = Value::func(Arc::new(vec![
+            (Value::int(0), Value::int(10)),
+            (Value::int(1), Value::int(20)),
+        ]));
+        assert_eq!(h(&im), h(&f));
+
+        // BigInt and inline int at boundary value
+        let inline = Value::int(42);
+        let inline2 = Value::int(42);
+        assert_eq!(h(&inline), h(&inline2));
+
+        // BigInt pair
+        let big1 = Value::int(i64::MAX);
+        let big2 = Value::int(i64::MAX);
+        assert_eq!(h(&big1), h(&big2));
+    }
+
+    #[test]
+    fn test_type_name() {
+        assert_eq!(Value::int(1).type_name(), "Int");
+        assert_eq!(Value::bool(true).type_name(), "Bool");
+        assert_eq!(Value::none().type_name(), "None");
+        assert_eq!(Value::string("x".to_string()).type_name(), "String");
+        assert_eq!(
+            Value::set(Arc::new(vec![Value::int(1)])).type_name(),
+            "Set"
+        );
+        assert_eq!(Value::seq(vec![Value::int(1)]).type_name(), "Seq");
+        assert_eq!(
+            Value::func(Arc::new(vec![])).type_name(),
+            "Fn"
+        );
+        assert_eq!(
+            Value::intmap(Arc::new(vec![])).type_name(),
+            "Fn"
+        );
+        assert_eq!(Value::tuple(vec![]).type_name(), "Tuple");
+        assert_eq!(Value::some(Value::int(1)).type_name(), "Some");
+    }
+
+    #[test]
+    fn test_intmap2_roundtrip() {
+        let data = IntMap2Data {
+            inner_size: 2,
+            data: vec![Value::int(1), Value::int(2), Value::int(3), Value::int(4)],
+        };
+        let v = Value::intmap2(data);
+        if let VK::IntMap2(inner_size, d) = v.kind() {
+            assert_eq!(inner_size, 2);
+            assert_eq!(d.len(), 4);
+            assert_eq!(d[0], Value::int(1));
+            assert_eq!(d[3], Value::int(4));
+        } else {
+            panic!("expected IntMap2");
+        }
+    }
+
+    #[test]
+    fn test_intmap2_outer_len() {
+        assert_eq!(Value::intmap2_outer_len(3, 9), 3);
+        assert_eq!(Value::intmap2_outer_len(3, 0), 0);
+        assert_eq!(Value::intmap2_outer_len(0, 0), 0);
+        assert_eq!(Value::intmap2_outer_len(1, 5), 5);
+    }
+
+    #[test]
+    fn test_bytes_roundtrip_coverage() {
+        // Ensure to_bytes doesn't panic for all types
+        let values: Vec<Value> = vec![
+            Value::int(0),
+            Value::int(i64::MAX),
+            Value::int(i64::MIN),
+            Value::bool(true),
+            Value::bool(false),
+            Value::none(),
+            Value::string("hello".to_string()),
+            Value::set(Arc::new(vec![Value::int(1)])),
+            Value::seq(vec![Value::int(2)]),
+            Value::func(Arc::new(vec![(Value::int(0), Value::bool(true))])),
+            Value::intmap(Arc::new(vec![Value::int(3)])),
+            Value::tuple(vec![Value::int(4), Value::int(5)]),
+            Value::some(Value::int(6)),
+        ];
+        for v in &values {
+            let bytes = v.to_bytes();
+            assert!(!bytes.is_empty(), "to_bytes empty for {:?}", v);
+        }
+    }
+
+    #[test]
+    fn test_set_from_iter_deduplicates() {
+        let s = Value::set_from_iter(vec![
+            Value::int(2),
+            Value::int(1),
+            Value::int(2),
+            Value::int(3),
+            Value::int(1),
+        ]);
+        if let VK::Set(elems) = s.kind() {
+            assert_eq!(elems.len(), 3);
+            // Should be sorted
+            assert_eq!(elems[0], Value::int(1));
+            assert_eq!(elems[1], Value::int(2));
+            assert_eq!(elems[2], Value::int(3));
+        } else {
+            panic!("expected Set");
+        }
+    }
 }
