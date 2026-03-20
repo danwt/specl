@@ -1653,19 +1653,10 @@ mod tests {
         assert_eq!(Value::bool(true).type_name(), "Bool");
         assert_eq!(Value::none().type_name(), "None");
         assert_eq!(Value::string("x".to_string()).type_name(), "String");
-        assert_eq!(
-            Value::set(Arc::new(vec![Value::int(1)])).type_name(),
-            "Set"
-        );
+        assert_eq!(Value::set(Arc::new(vec![Value::int(1)])).type_name(), "Set");
         assert_eq!(Value::seq(vec![Value::int(1)]).type_name(), "Seq");
-        assert_eq!(
-            Value::func(Arc::new(vec![])).type_name(),
-            "Fn"
-        );
-        assert_eq!(
-            Value::intmap(Arc::new(vec![])).type_name(),
-            "Fn"
-        );
+        assert_eq!(Value::func(Arc::new(vec![])).type_name(), "Fn");
+        assert_eq!(Value::intmap(Arc::new(vec![])).type_name(), "Fn");
         assert_eq!(Value::tuple(vec![]).type_name(), "Tuple");
         assert_eq!(Value::some(Value::int(1)).type_name(), "Some");
     }
