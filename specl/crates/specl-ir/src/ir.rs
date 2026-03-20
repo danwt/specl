@@ -613,6 +613,13 @@ impl CompiledExpr {
                 base: Box::new(base.shift_locals_inner(amount, depth)),
                 field: field.clone(),
             },
+            CompiledExpr::ActionCall { action_index, args } => CompiledExpr::ActionCall {
+                action_index: *action_index,
+                args: args
+                    .iter()
+                    .map(|a| a.shift_locals_inner(amount, depth))
+                    .collect(),
+            },
             // Leaves: no locals to shift
             CompiledExpr::Bool(_)
             | CompiledExpr::Int(_)
@@ -623,8 +630,7 @@ impl CompiledExpr {
             | CompiledExpr::Param(_)
             | CompiledExpr::Changes(_)
             | CompiledExpr::Unchanged(_)
-            | CompiledExpr::Enabled(_)
-            | CompiledExpr::ActionCall { .. } => self.clone(),
+            | CompiledExpr::Enabled(_) => self.clone(),
         }
     }
 }
