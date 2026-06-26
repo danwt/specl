@@ -196,12 +196,7 @@ impl<'a> EncoderCtx<'a> {
             CompiledExpr::Len(inner) => self.encode_len(inner),
 
             // === Sum ===
-            // Summing a collection in the symbolic backend needs the element
-            // domain unrolled into a chained Add; not yet supported here, so
-            // surface a clear error and let auto-routing fall back to BFS.
-            CompiledExpr::Sum(_) => Err(SymbolicError::Encoding(
-                "sum() is not yet supported by the symbolic backend; run with --bfs (bounded types required)".into(),
-            )),
+            CompiledExpr::Sum(inner) => self.encode_sum(inner),
 
             // === Frame ===
             CompiledExpr::Unchanged(var_idx) => self.encode_unchanged(*var_idx),
@@ -936,6 +931,93 @@ impl<'a> EncoderCtx<'a> {
             }
             _ => Err(SymbolicError::Encoding(
                 "nested len on non-dict kind".into(),
+            )),
+        }
+    }
+
+    /// Encode `sum(...)` as a chained Z3 Add. Mirrors the finite-domain unrolling
+    /// used for `len`: a dict variable sums its per-key value vars, a set sums the
+    /// member values, and a comprehension sums the element value where the filter
+    /// holds. Unsupported shapes return an error so auto-routing falls back to BFS.
+    fn encode_sum(&mut self, inner: &CompiledExpr) -> SymbolicResult<Dynamic> {
+        let zero = Int::from_i64(0);
+
+        // sum({ x in D if P }) -> Sum over D of (P ? value(x) : 0)
+        if let CompiledExpr::SetComprehension {
+            element,
+            domain,
+            filter,
+        } = inner
+        {
+            let values = self.resolve_domain_values(domain)?;
+            let mut terms: Vec<Int> = Vec::with_capacity(values.len());
+            for val in values {
+                let z3_val = Dynamic::from_ast(&Int::from_i64(val));
+                self.locals.push(z3_val);
+                let included = if let Some(f) = filter {
+                    self.encode_bool(f)?
+                } else {
+                    Bool::from_bool(true)
+                };
+                let elem = self.encode_int(element)?;
+                self.locals.pop();
+                terms.push(included.ite(&elem, &zero));
+            }
+            return Ok(Dynamic::from_ast(&if terms.is_empty() {
+                zero
+            } else {
+                Int::add(&terms)
+            }));
+        }
+
+        match inner {
+            CompiledExpr::Var(idx) | CompiledExpr::PrimedVar(idx) => {
+                let step = match inner {
+                    CompiledExpr::Var(_) => self.current_step,
+                    _ => self.next_step,
+                };
+                let entry = &self.layout.entries[*idx];
+                match &entry.kind {
+                    // A dict's values are one Z3 int var per key; sum them all.
+                    VarKind::ExplodedDict { .. } => {
+                        let z3_vars = &self.step_vars[step][*idx];
+                        let mut ints: Vec<Int> = Vec::with_capacity(z3_vars.len());
+                        for v in z3_vars {
+                            ints.push(v.as_int().ok_or_else(|| {
+                                SymbolicError::Encoding("sum: dict value is not an integer".into())
+                            })?);
+                        }
+                        Ok(Dynamic::from_ast(&if ints.is_empty() {
+                            zero
+                        } else {
+                            Int::add(&ints)
+                        }))
+                    }
+                    // A set over lo..hi is membership flags; element i has value lo+i.
+                    VarKind::ExplodedSet { lo, .. } => {
+                        let lo = *lo;
+                        let z3_vars = &self.step_vars[step][*idx];
+                        let mut terms: Vec<Int> = Vec::with_capacity(z3_vars.len());
+                        for (i, v) in z3_vars.iter().enumerate() {
+                            let b = v.as_bool().ok_or_else(|| {
+                                SymbolicError::Encoding("sum: set flag is not a bool".into())
+                            })?;
+                            let elem_val = Int::from_i64(lo + i as i64);
+                            terms.push(b.ite(&elem_val, &zero));
+                        }
+                        Ok(Dynamic::from_ast(&if terms.is_empty() {
+                            zero
+                        } else {
+                            Int::add(&terms)
+                        }))
+                    }
+                    _ => Err(SymbolicError::Unsupported(
+                        "sum() on this variable kind is not supported in symbolic mode".into(),
+                    )),
+                }
+            }
+            _ => Err(SymbolicError::Unsupported(
+                "sum() on this expression is not supported in symbolic mode".into(),
             )),
         }
     }
