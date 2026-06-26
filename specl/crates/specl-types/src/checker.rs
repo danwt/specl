@@ -640,7 +640,13 @@ impl TypeChecker {
                 if self.env.lookup_var(&var.name).is_none() {
                     return Err(TypeError::InvalidPrime { span: expr.span });
                 }
-                Type::Bool
+                // The model checker does not evaluate changes() yet — at runtime
+                // it would silently return true. Reject it rather than let an
+                // invariant quietly hold for the wrong reason.
+                return Err(TypeError::Unsupported {
+                    feature: "changes()".to_string(),
+                    span: expr.span,
+                });
             }
 
             ExprKind::Enabled(action) => {
@@ -651,7 +657,12 @@ impl TypeChecker {
                         span: action.span,
                     });
                 }
-                Type::Bool
+                // enabled() is not evaluated yet (it errors at runtime). Reject
+                // it at type-check time with a clear message instead.
+                return Err(TypeError::Unsupported {
+                    feature: "enabled()".to_string(),
+                    span: expr.span,
+                });
             }
 
             ExprKind::SeqHead(seq_expr) => {
@@ -1272,6 +1283,35 @@ var s: Set[Nat]
 init { all x in s: x >= 0 }
 "#;
         assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_enabled_and_changes_are_unsupported() {
+        // Neither is evaluated by the model checker yet; both must be rejected
+        // rather than silently producing a wrong value.
+        let changes_src = r#"
+module Test
+var x: Nat
+init { x == 0 }
+action Step() { require true; x = x + 1 }
+invariant I { changes(x) }
+"#;
+        assert!(matches!(
+            check(changes_src),
+            Err(TypeError::Unsupported { .. })
+        ));
+
+        let enabled_src = r#"
+module Test
+var x: Nat
+init { x == 0 }
+action Step() { require true; x = x + 1 }
+invariant I { enabled(Step) }
+"#;
+        assert!(matches!(
+            check(enabled_src),
+            Err(TypeError::Unsupported { .. })
+        ));
     }
 
     #[test]
