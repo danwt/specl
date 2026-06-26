@@ -944,6 +944,14 @@ impl Parser {
                 let span = start.merge(self.prev_span());
                 Ok(Expr::new(ExprKind::Len(Box::new(expr)), span))
             }
+            TokenKind::Sum => {
+                self.advance();
+                self.expect(TokenKind::LParen)?;
+                let expr = self.parse_expr()?;
+                self.expect(TokenKind::RParen)?;
+                let span = start.merge(self.prev_span());
+                Ok(Expr::new(ExprKind::Sum(Box::new(expr)), span))
+            }
             TokenKind::Keys => {
                 self.advance();
                 self.expect(TokenKind::LParen)?;

@@ -713,6 +713,35 @@ impl TypeChecker {
                 }
             }
 
+            ExprKind::Sum(expr) => {
+                let ty_raw = self.infer_expr(expr)?;
+                let ty = self.env.resolve_type(&ty_raw);
+                // sum aggregates the elements of a Seq/Set, or the values of a
+                // dict (Fn). The element/value type must be numeric.
+                let elem = match &ty {
+                    Type::Seq(e) | Type::Set(e) => Some(self.env.resolve_type(e)),
+                    Type::Fn(_, v) => Some(self.env.resolve_type(v)),
+                    // Polymorphic func param: defer; assume numeric.
+                    Type::Var(_) => None,
+                    _ => {
+                        return Err(TypeError::NotIterable {
+                            ty,
+                            span: expr.span,
+                        });
+                    }
+                };
+                if let Some(elem) = elem {
+                    if !elem.is_numeric() && !matches!(elem, Type::Var(_)) {
+                        return Err(TypeError::TypeMismatch {
+                            expected: Type::Int,
+                            found: elem,
+                            span: expr.span,
+                        });
+                    }
+                }
+                Type::Int
+            }
+
             ExprKind::Keys(expr) => {
                 let ty_raw = self.infer_expr(expr)?;
                 let ty = self.env.resolve_type(&ty_raw);
@@ -1236,6 +1265,40 @@ var s: Set[Nat]
 init { all x in s: x >= 0 }
 "#;
         assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_sum_numeric_collections() {
+        // sum over a dict's values, a set, and a sequence are all Int-typed.
+        let source = r#"
+module Test
+var d: Dict[0..2, 0..10]
+var s: Set[Nat]
+var q: Seq[Nat]
+init { sum(d) == 0 and sum(s) >= 0 and sum(q) == 0 }
+"#;
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_sum_non_numeric_is_error() {
+        // sum over a set of sets has a non-numeric element type.
+        let source = r#"
+module Test
+var s: Set[Set[Nat]]
+init { sum(s) == 0 }
+"#;
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn test_sum_non_collection_is_error() {
+        let source = r#"
+module Test
+var x: Nat
+init { sum(x) == 0 }
+"#;
+        assert!(check(source).is_err());
     }
 
     #[test]

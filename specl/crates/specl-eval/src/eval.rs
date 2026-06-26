@@ -629,6 +629,8 @@ pub fn eval(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<Value> {
             }
         }
 
+        CompiledExpr::Sum(inner) => Ok(Value::int(sum_value(&eval(inner, ctx)?)?)),
+
         CompiledExpr::Keys(expr) => {
             let val = eval(expr, ctx)?;
             match val.kind() {
@@ -1007,6 +1009,8 @@ pub fn eval_int(expr: &CompiledExpr, ctx: &mut EvalContext) -> EvalResult<i64> {
             }
         }
 
+        CompiledExpr::Sum(inner) => sum_value(&eval(inner, ctx)?),
+
         CompiledExpr::If {
             cond,
             then_branch,
@@ -1038,6 +1042,7 @@ pub(crate) fn is_int_expr(expr: &CompiledExpr) -> bool {
         expr,
         CompiledExpr::Int(_)
             | CompiledExpr::Len(_)
+            | CompiledExpr::Sum(_)
             | CompiledExpr::Binary {
                 op: BinOp::Add | BinOp::Sub | BinOp::Mul | BinOp::Div | BinOp::Mod,
                 ..
@@ -1371,6 +1376,39 @@ pub fn expect_int(val: &Value) -> EvalResult<i64> {
 #[inline(always)]
 pub fn expect_set(val: &Value) -> EvalResult<&[Value]> {
     val.as_set().ok_or_else(|| type_mismatch("Set", val))
+}
+
+/// Sum the elements of a Seq/Set, or the values of a dict (Fn/IntMap/IntMap2).
+/// Element/value types are checked numeric by the type checker, so every entry
+/// is expected to be an Int here.
+pub(crate) fn sum_value(val: &Value) -> EvalResult<i64> {
+    let mut total: i64 = 0;
+    match val.kind() {
+        VK::Seq(s) | VK::Set(s) => {
+            for v in s.iter() {
+                total += expect_int(v)?;
+            }
+        }
+        VK::IntMap(arr) => {
+            for v in arr.iter() {
+                total += expect_int(v)?;
+            }
+        }
+        // Flat backing store of a 2-level dict: summing all entries aggregates
+        // over every (outer, inner) key, which is the intended whole-dict sum.
+        VK::IntMap2(_inner_size, data) => {
+            for v in data.iter() {
+                total += expect_int(v)?;
+            }
+        }
+        VK::Fn(m) => {
+            for (_, v) in m.iter() {
+                total += expect_int(v)?;
+            }
+        }
+        _ => return Err(type_mismatch("Seq, Set, or Fn", val)),
+    }
+    Ok(total)
 }
 
 /// Convert an IntMap or IntMap2 value to an IntMap Arc.

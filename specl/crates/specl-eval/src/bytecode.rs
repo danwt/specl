@@ -69,6 +69,8 @@ pub enum Op {
     DictUpdate,
     /// Pop collection → push len as Int.
     Len,
+    /// Pop collection → push sum of its elements/values as Int.
+    Sum,
     /// Pop set, pop elem → push (elem in set).
     Contains,
     /// Pop set, pop elem → push (elem not in set).
@@ -438,6 +440,11 @@ impl Compiler {
 
             CompiledExpr::Len(inner) => {
                 self.compile_len(inner);
+            }
+
+            CompiledExpr::Sum(inner) => {
+                self.compile(inner);
+                self.emit(Op::Sum);
             }
 
             CompiledExpr::If {
@@ -2326,6 +2333,10 @@ fn vm_eval_inner(
                     _ => return Err(type_mismatch("Set, Seq, or Fn", &val)),
                 };
                 stack.push(Value::int(len));
+            }
+            Op::Sum => {
+                let val = pop_value(stack)?;
+                stack.push(Value::int(crate::eval::sum_value(&val)?));
             }
             Op::Contains => {
                 let right_val = pop_value(stack)?;

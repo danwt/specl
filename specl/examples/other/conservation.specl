@@ -1,0 +1,29 @@
+// Token conservation using sum() over a dict's values.
+// Demonstrates the sum builtin: sum(bal) aggregates the values of the dict.
+// The invariant holds because mint increments a balance and total together,
+// and transfer moves value between balances without changing the total.
+// Use: -c CAP=12
+
+module Conservation
+
+const CAP: 0..30 // max total supply
+
+var bal: Dict[0..2, 0..30]
+var total: 0..30
+
+init { bal = {h: 0 for h in 0..2} and total = 0 }
+
+action Mint(h: 0..2, amt: 1..3) {
+    require total + amt <= CAP
+    bal = bal | {h: bal[h] + amt}
+    and total = total + amt
+}
+
+action Transfer(from: 0..2, to: 0..2, amt: 1..3) {
+    require from != to
+    require bal[from] >= amt
+    bal = bal | {from: bal[from] - amt, to: bal[to] + amt}
+}
+
+// Total supply always equals the sum of individual balances.
+invariant Conservation { sum(bal) == total }

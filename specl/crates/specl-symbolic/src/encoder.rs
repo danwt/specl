@@ -195,6 +195,14 @@ impl<'a> EncoderCtx<'a> {
             // === Len ===
             CompiledExpr::Len(inner) => self.encode_len(inner),
 
+            // === Sum ===
+            // Summing a collection in the symbolic backend needs the element
+            // domain unrolled into a chained Add; not yet supported here, so
+            // surface a clear error and let auto-routing fall back to BFS.
+            CompiledExpr::Sum(_) => Err(SymbolicError::Encoding(
+                "sum() is not yet supported by the symbolic backend; run with --bfs (bounded types required)".into(),
+            )),
+
             // === Frame ===
             CompiledExpr::Unchanged(var_idx) => self.encode_unchanged(*var_idx),
 

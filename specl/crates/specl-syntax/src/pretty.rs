@@ -528,6 +528,11 @@ impl PrettyPrinter {
                 self.print_expr(expr);
                 self.write(")");
             }
+            ExprKind::Sum(expr) => {
+                self.write("sum(");
+                self.print_expr(expr);
+                self.write(")");
+            }
             ExprKind::Keys(expr) => {
                 self.write("keys(");
                 self.print_expr(expr);

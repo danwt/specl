@@ -272,6 +272,8 @@ pub enum TokenKind {
     Powerset,
     /// `union_all` - distributed union (union of all sets in set)
     UnionAll,
+    /// `sum` - sum of a sequence/set of numbers, or of a dict's values
+    Sum,
 
     // === Other operators ===
     /// `&`
@@ -364,6 +366,7 @@ impl TokenKind {
                 | TokenKind::Values
                 | TokenKind::Powerset
                 | TokenKind::UnionAll
+                | TokenKind::Sum
         )
     }
 
@@ -429,6 +432,7 @@ impl TokenKind {
             "values" => TokenKind::Values,
             "powerset" => TokenKind::Powerset,
             "union_all" => TokenKind::UnionAll,
+            "sum" => TokenKind::Sum,
             _ => return None,
         })
     }
@@ -528,6 +532,7 @@ impl fmt::Display for TokenKind {
             TokenKind::Values => write!(f, "values"),
             TokenKind::Powerset => write!(f, "powerset"),
             TokenKind::UnionAll => write!(f, "union_all"),
+            TokenKind::Sum => write!(f, "sum"),
             TokenKind::Ampersand => write!(f, "&"),
             TokenKind::Assign => write!(f, "="),
             TokenKind::Integer(n) => write!(f, "{}", n),

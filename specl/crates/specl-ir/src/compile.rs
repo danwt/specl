@@ -605,6 +605,8 @@ impl Compiler {
 
             ExprKind::Len(expr) => CompiledExpr::Len(Box::new(self.compile_expr(expr)?)),
 
+            ExprKind::Sum(expr) => CompiledExpr::Sum(Box::new(self.compile_expr(expr)?)),
+
             ExprKind::Keys(expr) => CompiledExpr::Keys(Box::new(self.compile_expr(expr)?)),
 
             ExprKind::Values(expr) => CompiledExpr::Values(Box::new(self.compile_expr(expr)?)),

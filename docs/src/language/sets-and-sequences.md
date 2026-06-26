@@ -23,6 +23,7 @@ Finite, unordered collections with no duplicates.
 | Difference | `S1 diff S2` | `Set[T]` |
 | Subset | `S1 subset_of S2` | `Bool` |
 | Size | `len(S)` | `Int` |
+| Sum | `sum(S)` | sums a `Set`/`Seq` of numbers, or a dict's values, to `Int` |
 | Powerset | `powerset(S)` | `Set[Set[T]]` |
 | Flatten | `union_all(S)` | flattens `Set[Set[T]]` to `Set[T]` |
 
