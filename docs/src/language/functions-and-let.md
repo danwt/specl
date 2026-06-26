@@ -45,6 +45,14 @@ let b = bar(y) in
     a + b
 ```
 
+If the bound value itself uses the membership operator `in`, parenthesize it so
+it is not read as the `let ... in` separator:
+
+```specl
+// parenthesize the membership test in the value position
+let present = (k in s) in present or not present
+```
+
 ### In invariants
 
 ```specl
