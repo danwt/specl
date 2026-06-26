@@ -19,7 +19,7 @@ use specl_mc::{
     StateStore,
 };
 use specl_symbolic::{SpacerProfile, SymbolicConfig, SymbolicError, SymbolicMode, SymbolicOutcome};
-use specl_syntax::{parse, pretty_print};
+use specl_syntax::parse;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
@@ -4136,7 +4136,15 @@ fn cmd_fmt(
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
 
-    let formatted = pretty_print(&module);
+    // Never silently drop comments: if the file has comments the formatter
+    // cannot yet reattach, it is left unchanged.
+    let (formatted, kept_for_comments) = specl_syntax::format_or_keep(&source, &module);
+    if kept_for_comments && !json {
+        eprintln!(
+            "fmt: note: {} has comments, which the formatter does not yet preserve — left unchanged",
+            file.display()
+        );
+    }
 
     if check {
         // Check mode: exit 1 if file is not already formatted
