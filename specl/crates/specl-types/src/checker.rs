@@ -1133,7 +1133,14 @@ impl TypeChecker {
             (Type::Nat, Type::Range(lo, _)) | (Type::Range(lo, _), Type::Nat) if *lo >= 0 => {
                 Ok(Substitution::new())
             }
-            (Type::Range(a_lo, a_hi), Type::Range(b_lo, b_hi)) if a_lo == b_lo && a_hi == b_hi => {
+            // Ranges unify when one contains the other, so a narrower value
+            // range widens into a wider declared range (e.g. a `1..4` const used
+            // where a `0..8` slot is expected). This matches the existing
+            // looseness of Int<->Range unification, which ignores bounds
+            // entirely. Disjoint or partially-overlapping ranges stay an error.
+            (Type::Range(a_lo, a_hi), Type::Range(b_lo, b_hi))
+                if (a_lo >= b_lo && a_hi <= b_hi) || (b_lo >= a_lo && b_hi <= a_hi) =>
+            {
                 Ok(Substitution::new())
             }
 
@@ -1265,6 +1272,29 @@ var s: Set[Nat]
 init { all x in s: x >= 0 }
 "#;
         assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_subrange_widens_into_wider_range() {
+        // A `1..4` const used where a `0..8` dict value is expected (issue #88).
+        let source = r#"
+module Test
+const INIT: 1..4
+var wallet: Dict[0..1, 0..8]
+init { wallet = {u: INIT for u in 0..1} }
+"#;
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_disjoint_ranges_still_error() {
+        let source = r#"
+module Test
+const A: 100..200
+var x: 0..3
+init { x == A }
+"#;
+        assert!(check(source).is_err());
     }
 
     #[test]
