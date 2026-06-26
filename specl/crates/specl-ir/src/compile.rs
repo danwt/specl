@@ -400,8 +400,18 @@ impl Compiler {
                                 args.len()
                             )));
                         }
-                        // Reject recursion: inlining a function already on the
-                        // stack would never terminate (it inlines at call sites).
+                        // Inline: wrap body in nested let bindings for each arg
+                        // func(a, b) { body } called with (x, y) becomes:
+                        // let a = x in let b = y in body.
+                        // Args are compiled in the caller's context BEFORE marking
+                        // this function as being inlined, so nested non-recursive
+                        // use like `Min(Min(a, b), c)` is not mistaken for recursion.
+                        let compiled_args: Vec<_> = args
+                            .iter()
+                            .map(|a| self.compile_expr(a))
+                            .collect::<CompileResult<_>>()?;
+                        // Reject recursion: reaching a call to a function whose body
+                        // we are already inlining would never terminate.
                         if self.inlining.iter().any(|n| n == name) {
                             return Err(CompileError::Unsupported(format!(
                                 "recursive function `{}`: functions cannot call themselves (directly or indirectly), because they are inlined at compile time",
@@ -409,13 +419,6 @@ impl Compiler {
                             )));
                         }
                         self.inlining.push(name.clone());
-                        // Inline: wrap body in nested let bindings for each arg
-                        // func(a, b) { body } called with (x, y) becomes:
-                        // let a = x in let b = y in body
-                        let compiled_args: Vec<_> = args
-                            .iter()
-                            .map(|a| self.compile_expr(a))
-                            .collect::<CompileResult<_>>()?;
                         // Push all params onto locals stack
                         for param in &func_def.params {
                             self.locals.push(param.clone());
@@ -1065,6 +1068,22 @@ invariant I { sumSeq(xs) == 6 }
         let module = parse(source).unwrap();
         let err = compile(&module).unwrap_err();
         assert!(format!("{err}").contains("recursive"));
+    }
+
+    #[test]
+    fn test_nested_nonrecursive_call_is_ok() {
+        // Min(Min(a, b), c): the same function nested as an argument is NOT
+        // recursion and must compile (regression for the inlining-stack guard).
+        let source = r#"
+module Nested
+var x: 0..9
+init { x == 0 }
+func Min(a, b) { if a <= b then a else b }
+action Step() { require true; x = Min(Min(x, 3), 5) }
+invariant I { x <= 9 }
+"#;
+        let module = parse(source).unwrap();
+        assert!(compile(&module).is_ok());
     }
 
     #[test]
