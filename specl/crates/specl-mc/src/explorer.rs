@@ -44,6 +44,13 @@ pub enum CheckError {
 
     #[error("constant '{name}' not provided")]
     MissingConstant { name: String },
+
+    #[error("dict variable '{var}' is declared over {expected} keys but init produced {found}; the init block must cover the whole key domain")]
+    DictDomainMismatch {
+        var: String,
+        expected: usize,
+        found: usize,
+    },
 }
 
 pub type CheckResult<T> = Result<T, CheckError>;
@@ -3121,6 +3128,41 @@ impl Explorer {
     }
 
     /// Generate all initial states satisfying the init predicate.
+    /// Reject dict variables whose initial value does not cover their declared
+    /// key domain. A `Dict[0..N, _]` must hold all keys; a partial init otherwise
+    /// causes out-of-range access downstream (e.g. under symmetry reduction,
+    /// which permutes over the full declared domain).
+    fn validate_dict_domains(&self, states: &[State]) -> CheckResult<()> {
+        use specl_types::Type;
+        for (i, var) in self.spec.vars.iter().enumerate() {
+            let expected = match &var.ty {
+                Type::Fn(key, _) => match key.as_ref() {
+                    Type::Range(lo, hi) if hi >= lo => (hi - lo + 1) as usize,
+                    _ => continue,
+                },
+                _ => continue,
+            };
+            for state in states {
+                let found = match state.vars[i].kind() {
+                    VK::IntMap(arr) => arr.len(),
+                    VK::IntMap2(inner_size, data) => {
+                        Value::intmap2_outer_len(inner_size as usize, data.len())
+                    }
+                    VK::Fn(m) => m.len(),
+                    _ => continue,
+                };
+                if found != expected {
+                    return Err(CheckError::DictDomainMismatch {
+                        var: var.name.clone(),
+                        expected,
+                        found,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn generate_initial_states(&self) -> CheckResult<Vec<State>> {
         // Try direct evaluation first (fast path)
         match generate_initial_states_direct(&self.spec, &self.consts) {
@@ -3129,6 +3171,7 @@ impl Explorer {
                     count = states.len(),
                     "generated initial states via direct evaluation"
                 );
+                self.validate_dict_domains(&states)?;
                 // Re-fingerprint with view mask if active
                 if let Some(ref mask) = self.view_mask {
                     let states = states
@@ -3166,6 +3209,7 @@ impl Explorer {
             },
         );
 
+        self.validate_dict_domains(&states)?;
         Ok(states)
     }
 
@@ -5392,6 +5436,24 @@ action SetFlag(i: 0..9) {
         assert!(
             states_sym <= 15,
             "Should have at most ~11-15 equivalence classes (0-10 flags set)"
+        );
+    }
+
+    #[test]
+    fn test_partial_dict_init_is_error_not_panic() {
+        // bal is declared over keys 0..3 (4 keys) but init fills only 0..1 (2).
+        // This must be a clean error, not a panic (e.g. under symmetry).
+        let source = r#"
+module Partial
+var bal: Dict[0..3, 0..5]
+init { bal == {h: 0 for h in 0..1} }
+action Noop() { require true; bal = bal }
+invariant I { bal[0] >= 0 }
+"#;
+        let result = check_spec(source, vec![]);
+        assert!(
+            matches!(result, Err(CheckError::DictDomainMismatch { .. })),
+            "expected DictDomainMismatch, got: {result:?}"
         );
     }
 
