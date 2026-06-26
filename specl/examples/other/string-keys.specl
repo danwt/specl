@@ -1,0 +1,28 @@
+// String-keyed dictionary: named entities as keys instead of integer indices.
+// The keys are fixed by init; values vary. Accessed via string literals and via
+// quantification over keys(m). (Action parameters cannot be String-typed, since
+// they have no finite domain to enumerate — iterate keys(m) instead.)
+// Use: No constants needed
+
+module StringKeys
+
+// Account balances keyed by name.
+var bal: Dict[String, 0..4]
+
+init { bal == {"alice": 2, "bob": 2} }
+
+action AliceToBob() {
+    require bal["alice"] >= 1
+    bal = bal | {"alice": bal["alice"] - 1, "bob": bal["bob"] + 1}
+}
+
+action BobToAlice() {
+    require bal["bob"] >= 1
+    bal = bal | {"bob": bal["bob"] - 1, "alice": bal["alice"] + 1}
+}
+
+// Total is conserved across transfers (sum over a string-keyed dict).
+invariant Conservation { sum(bal) == 4 }
+
+// Every balance stays within range, checked by quantifying over the keys.
+invariant InRange { all k in keys(bal): bal[k] <= 4 }

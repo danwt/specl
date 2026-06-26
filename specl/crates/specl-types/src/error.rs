@@ -53,6 +53,9 @@ pub enum TypeError {
 
     #[error("operands must be numeric, found {found}")]
     ExpectedNumeric { found: Type, span: Span },
+
+    #[error("`{feature}` is not yet supported by the model checker")]
+    Unsupported { feature: String, span: Span },
 }
 
 impl TypeError {
@@ -71,7 +74,8 @@ impl TypeError {
             | TypeError::UnificationFailure { span, .. }
             | TypeError::OccursCheck { span }
             | TypeError::ExpectedBool { span, .. }
-            | TypeError::ExpectedNumeric { span, .. } => *span,
+            | TypeError::ExpectedNumeric { span, .. }
+            | TypeError::Unsupported { span, .. } => *span,
         }
     }
 }

@@ -69,6 +69,17 @@ var role: Dict[Int, Int]
 init { role = {p: 0 for p in 0..N} }    // comprehension
 ```
 
+Keys may also be strings, for named entities instead of integer indices:
+
+```specl
+var bal: Dict[String, 0..4]
+init { bal = {"alice": 2, "bob": 2} }
+```
+
+The key set is fixed by `init`; iterate it with `keys(d)`. Action parameters
+cannot be `String`-typed (they have no finite domain to enumerate) — quantify
+over `keys(d)` instead.
+
 See the dedicated [Dicts](./dicts.md) page for full details.
 
 ### `Option[T]`

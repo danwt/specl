@@ -3,7 +3,7 @@
 use dashmap::DashMap;
 use ropey::Rope;
 use specl_syntax::{
-    parse, pretty_print, ConstValue, Decl, Expr, ExprKind, Lexer, Span, Token, TokenKind, TypeExpr,
+    parse, ConstValue, Decl, Expr, ExprKind, Lexer, Span, Token, TokenKind, TypeExpr,
 };
 use specl_types::check_module;
 use std::panic;
@@ -29,10 +29,15 @@ fn safe_parse(source: &str) -> Option<specl_syntax::Module> {
 }
 
 /// Format a module, catching panics from pretty printer bugs.
-fn safe_pretty_print(module: &specl_syntax::Module) -> Option<String> {
+///
+/// Returns `None` (make no edit) if the source has comments the formatter cannot
+/// yet preserve, so a format-on-save never deletes comments.
+fn safe_pretty_print(source: &str, module: &specl_syntax::Module) -> Option<String> {
     let module_ref = panic::AssertUnwindSafe(module);
-    match panic::catch_unwind(move || pretty_print(*module_ref)) {
-        Ok(s) => Some(s),
+    let source_ref = panic::AssertUnwindSafe(source);
+    match panic::catch_unwind(move || specl_syntax::format_or_keep(*source_ref, *module_ref)) {
+        Ok((_, kept_for_comments)) if kept_for_comments => None,
+        Ok((formatted, _)) => Some(formatted),
         Err(payload) => {
             let msg = panic_payload_to_string(&payload);
             error!("pretty printer panicked: msg={msg}");
@@ -2373,7 +2378,7 @@ impl LanguageServer for SpeclLanguageServer {
             return Ok(None);
         };
 
-        let Some(formatted) = safe_pretty_print(&module) else {
+        let Some(formatted) = safe_pretty_print(&content, &module) else {
             return Ok(None);
         };
 
@@ -2411,7 +2416,7 @@ impl LanguageServer for SpeclLanguageServer {
             return Ok(None);
         };
 
-        let Some(formatted) = safe_pretty_print(&module) else {
+        let Some(formatted) = safe_pretty_print(&content, &module) else {
             return Ok(None);
         };
 
@@ -2465,7 +2470,7 @@ impl LanguageServer for SpeclLanguageServer {
             return Ok(None);
         };
 
-        let Some(formatted) = safe_pretty_print(&module) else {
+        let Some(formatted) = safe_pretty_print(&content, &module) else {
             return Ok(None);
         };
 

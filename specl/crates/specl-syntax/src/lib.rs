@@ -9,5 +9,5 @@ pub mod token;
 pub use ast::*;
 pub use lexer::Lexer;
 pub use parser::{parse, ParseError, Parser};
-pub use pretty::{pretty_print, pretty_print_expr, pretty_print_type};
+pub use pretty::{format_or_keep, pretty_print, pretty_print_expr, pretty_print_type};
 pub use token::{Span, Token, TokenKind};

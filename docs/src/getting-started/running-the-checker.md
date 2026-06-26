@@ -77,4 +77,8 @@ specl fmt spec.specl --lint        # fast syntax + type + compile check
 specl info spec.specl -c N=3      # analyze spec: state space, estimates, tips
 ```
 
+The formatter does not yet reattach comments to the syntax tree, so to avoid
+deleting them it leaves any file that contains comments unchanged (printing a
+note). Comment-free files are formatted normally.
+
 See [Advanced Commands](../model-checker/advanced-commands.md) for the full CLI reference.

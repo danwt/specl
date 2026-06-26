@@ -19,7 +19,7 @@ use specl_mc::{
     StateStore,
 };
 use specl_symbolic::{SpacerProfile, SymbolicConfig, SymbolicError, SymbolicMode, SymbolicOutcome};
-use specl_syntax::{parse, pretty_print};
+use specl_syntax::parse;
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::IsTerminal;
@@ -1748,7 +1748,7 @@ fn cmd_check_ts(
         );
     }
     if want_bfs {
-        return run_bfs_check(spec, consts, bfs_flags, None);
+        return run_bfs_check(spec, consts, bfs_flags, None, 0);
     }
 
     // Auto-select strategy
@@ -1758,7 +1758,7 @@ fn cmd_check_ts(
     }
 
     if !auto_symbolic {
-        return run_bfs_check(spec, consts, bfs_flags, None);
+        return run_bfs_check(spec, consts, bfs_flags, None, 0);
     }
 
     let auto_sym_flags = SymbolicFlags {
@@ -1801,7 +1801,7 @@ fn cmd_check_ts(
         eprintln!();
         eprintln!("Symbolic checking failed. Falling back to BFS exploration...");
     }
-    run_bfs_check(spec, consts, bfs_flags, None)
+    run_bfs_check(spec, consts, bfs_flags, None, 0)
 }
 
 /// Symbolic checking path for `.ts.json` files.
@@ -1834,12 +1834,14 @@ fn run_symbolic_check_with_spec(
 fn cmd_check(file: &PathBuf, constants: &[String], flags: &BfsFlags) -> CliResult<()> {
     let (module, spec, source) = compile_spec(file)?;
 
-    if !flags.quiet {
-        warn_unsupported_features(&module);
-    }
+    let ignored_liveness = if !flags.quiet {
+        warn_unsupported_features(&module)
+    } else {
+        count_ignored_liveness(&module)
+    };
 
     let consts = parse_constants(constants, &spec)?;
-    run_bfs_check(spec, consts, flags, Some((&source, file)))
+    run_bfs_check(spec, consts, flags, Some((&source, file)), ignored_liveness)
 }
 
 /// Shared BFS check execution: analysis, auto-enable, config, explore, render.
@@ -1849,6 +1851,7 @@ fn run_bfs_check(
     consts: Vec<Value>,
     flags: &BfsFlags,
     source: Option<(&Arc<String>, &PathBuf)>,
+    ignored_liveness: usize,
 ) -> CliResult<()> {
     let var_names: Vec<String> = spec.vars.iter().map(|v| v.name.clone()).collect();
     let action_names: Vec<String> = spec.actions.iter().map(|a| a.name.clone()).collect();
@@ -2038,6 +2041,7 @@ fn run_bfs_check(
         bloom: flags.bloom,
         directed: flags.directed,
         explorer: &explorer,
+        ignored_liveness,
     });
 
     if exit_code != 0 {
@@ -2588,9 +2592,24 @@ fn filter_invariants(spec: &mut specl_ir::CompiledSpec, check_only: &[String]) -
     Ok(())
 }
 
+/// Count liveness/fairness declarations the checker ignores, without printing.
+fn count_ignored_liveness(module: &specl_syntax::Module) -> usize {
+    module
+        .decls
+        .iter()
+        .filter(|d| {
+            matches!(
+                d,
+                specl_syntax::Decl::Property(_) | specl_syntax::Decl::Fairness(_)
+            )
+        })
+        .count()
+}
+
 /// Warn about unsupported liveness features (property, fairness, temporal operators).
-/// These are parsed but silently ignored by the compiler/checker.
-fn warn_unsupported_features(module: &specl_syntax::Module) {
+/// These are parsed but silently ignored by the compiler/checker. Returns the
+/// number of ignored declarations so the caller can qualify an OK verdict.
+fn warn_unsupported_features(module: &specl_syntax::Module) -> usize {
     let mut has_properties = false;
     let mut has_fairness = false;
     let mut property_names = Vec::new();
@@ -2622,6 +2641,8 @@ fn warn_unsupported_features(module: &specl_syntax::Module) {
              Fairness declarations will be ignored."
         );
     }
+
+    property_names.len() + usize::from(has_fairness)
 }
 
 fn parse_constants(constants: &[String], spec: &specl_ir::CompiledSpec) -> CliResult<Vec<Value>> {
@@ -3052,6 +3073,10 @@ struct BfsResultContext<'a> {
     bloom: bool,
     directed: bool,
     explorer: &'a Explorer,
+    /// Number of liveness/fairness declarations the checker ignored. When > 0
+    /// and the result is OK, the verdict says it covered safety only, so an
+    /// ignored property is not mistaken for a passing one.
+    ignored_liveness: usize,
 }
 
 /// Render a BFS check result in the specified output format. Returns the exit code.
@@ -3234,7 +3259,14 @@ fn render_text_output(ctx: BfsResultContext<'_>) -> i32 {
             max_depth,
         } => {
             println!();
-            println!("Result: OK");
+            if ctx.ignored_liveness > 0 {
+                println!(
+                    "Result: OK (safety invariants only; {} liveness/fairness declaration(s) not checked)",
+                    ctx.ignored_liveness
+                );
+            } else {
+                println!("Result: OK");
+            }
             println!(
                 "  States explored: {}",
                 format_large_number(states_explored as u128)
@@ -4104,7 +4136,15 @@ fn cmd_fmt(
     let module =
         parse(&source).map_err(|e| CliError::from_parse_error(e, source.clone(), &filename))?;
 
-    let formatted = pretty_print(&module);
+    // Never silently drop comments: if the file has comments the formatter
+    // cannot yet reattach, it is left unchanged.
+    let (formatted, kept_for_comments) = specl_syntax::format_or_keep(&source, &module);
+    if kept_for_comments && !json {
+        eprintln!(
+            "fmt: note: {} has comments, which the formatter does not yet preserve — left unchanged",
+            file.display()
+        );
+    }
 
     if check {
         // Check mode: exit 1 if file is not already formatted

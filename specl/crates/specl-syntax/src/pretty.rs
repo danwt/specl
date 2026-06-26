@@ -1,6 +1,8 @@
 //! Pretty printer for the Specl AST.
 
 use crate::ast::*;
+use crate::lexer::Lexer;
+use crate::token::TokenKind;
 use std::fmt::Write;
 
 /// Pretty print a module to a string.
@@ -8,6 +10,38 @@ pub fn pretty_print(module: &Module) -> String {
     let mut printer = PrettyPrinter::new();
     printer.print_module(module);
     printer.output
+}
+
+/// The text of every comment in `source`, in source order.
+fn collect_comment_texts(source: &str) -> Vec<String> {
+    Lexer::new(source)
+        .tokenize()
+        .into_iter()
+        .filter_map(|t| match t.kind {
+            TokenKind::Comment(s) | TokenKind::DocComment(s) => Some(s),
+            _ => None,
+        })
+        .collect()
+}
+
+/// Format `module`, but never silently drop a comment.
+///
+/// The formatter is AST-based and the parser discards comments as trivia, so
+/// pretty-printing a spec that has comments would delete them. Until comments
+/// are reattached to the AST, this guard returns the original `source` unchanged
+/// whenever formatting would lose a comment. The returned bool is `true` when the
+/// original was kept for this reason (i.e. the file was not reformatted).
+pub fn format_or_keep(source: &str, module: &Module) -> (String, bool) {
+    let formatted = pretty_print(module);
+    let mut before = collect_comment_texts(source);
+    let mut after = collect_comment_texts(&formatted);
+    before.sort();
+    after.sort();
+    if before == after {
+        (formatted, false)
+    } else {
+        (source.to_string(), true)
+    }
 }
 
 /// Pretty print an expression to a string.
@@ -528,6 +562,11 @@ impl PrettyPrinter {
                 self.print_expr(expr);
                 self.write(")");
             }
+            ExprKind::Sum(expr) => {
+                self.write("sum(");
+                self.print_expr(expr);
+                self.write(")");
+            }
             ExprKind::Keys(expr) => {
                 self.write("keys(");
                 self.print_expr(expr);
@@ -624,6 +663,26 @@ mod tests {
         let m2 = parse(&p1).unwrap_or_else(|e| panic!("second parse failed: {e}\npretty:\n{p1}"));
         let p2 = pretty_print(&m2);
         assert_eq!(p1, p2, "roundtrip mismatch:\nfirst:\n{p1}\nsecond:\n{p2}");
+    }
+
+    #[test]
+    fn test_format_or_keep_preserves_comments() {
+        // A file with comments is left unchanged (kept) rather than having its
+        // comments deleted by the formatter.
+        let source = "module Test // trailing\n// leading\nvar x: Nat\ninit { x == 0 }";
+        let module = parse(source).unwrap();
+        let (out, kept) = format_or_keep(source, &module);
+        assert!(kept, "file with comments should be kept");
+        assert_eq!(out, source, "kept output must equal the original source");
+    }
+
+    #[test]
+    fn test_format_or_keep_formats_when_no_comments() {
+        let source = "module Test\nvar x:Nat\ninit{x==0}";
+        let module = parse(source).unwrap();
+        let (out, kept) = format_or_keep(source, &module);
+        assert!(!kept, "comment-free file should be formatted, not kept");
+        assert_eq!(out, pretty_print(&module));
     }
 
     #[test]

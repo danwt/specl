@@ -111,6 +111,16 @@ impl TypeChecker {
                 // Bind parameters
                 for param in &d.params {
                     let ty = self.convert_type_expr(&param.ty)?;
+                    // Action parameters are enumerated over a finite domain. A
+                    // String parameter has no such domain (it would be silently
+                    // mis-enumerated), so reject it. String-keyed dicts are still
+                    // supported; iterate their keys with `keys(d)` instead.
+                    if matches!(self.env.resolve_type(&ty), Type::String) {
+                        return Err(TypeError::Unsupported {
+                            feature: "String-typed action parameter".to_string(),
+                            span: param.name.span,
+                        });
+                    }
                     self.env.bind_local(param.name.name.clone(), ty);
                 }
 
@@ -640,7 +650,13 @@ impl TypeChecker {
                 if self.env.lookup_var(&var.name).is_none() {
                     return Err(TypeError::InvalidPrime { span: expr.span });
                 }
-                Type::Bool
+                // The model checker does not evaluate changes() yet — at runtime
+                // it would silently return true. Reject it rather than let an
+                // invariant quietly hold for the wrong reason.
+                return Err(TypeError::Unsupported {
+                    feature: "changes()".to_string(),
+                    span: expr.span,
+                });
             }
 
             ExprKind::Enabled(action) => {
@@ -651,7 +667,12 @@ impl TypeChecker {
                         span: action.span,
                     });
                 }
-                Type::Bool
+                // enabled() is not evaluated yet (it errors at runtime). Reject
+                // it at type-check time with a clear message instead.
+                return Err(TypeError::Unsupported {
+                    feature: "enabled()".to_string(),
+                    span: expr.span,
+                });
             }
 
             ExprKind::SeqHead(seq_expr) => {
@@ -711,6 +732,35 @@ impl TypeChecker {
                         });
                     }
                 }
+            }
+
+            ExprKind::Sum(expr) => {
+                let ty_raw = self.infer_expr(expr)?;
+                let ty = self.env.resolve_type(&ty_raw);
+                // sum aggregates the elements of a Seq/Set, or the values of a
+                // dict (Fn). The element/value type must be numeric.
+                let elem = match &ty {
+                    Type::Seq(e) | Type::Set(e) => Some(self.env.resolve_type(e)),
+                    Type::Fn(_, v) => Some(self.env.resolve_type(v)),
+                    // Polymorphic func param: defer; assume numeric.
+                    Type::Var(_) => None,
+                    _ => {
+                        return Err(TypeError::NotIterable {
+                            ty,
+                            span: expr.span,
+                        });
+                    }
+                };
+                if let Some(elem) = elem {
+                    if !elem.is_numeric() && !matches!(elem, Type::Var(_)) {
+                        return Err(TypeError::TypeMismatch {
+                            expected: Type::Int,
+                            found: elem,
+                            span: expr.span,
+                        });
+                    }
+                }
+                Type::Int
             }
 
             ExprKind::Keys(expr) => {
@@ -1104,7 +1154,14 @@ impl TypeChecker {
             (Type::Nat, Type::Range(lo, _)) | (Type::Range(lo, _), Type::Nat) if *lo >= 0 => {
                 Ok(Substitution::new())
             }
-            (Type::Range(a_lo, a_hi), Type::Range(b_lo, b_hi)) if a_lo == b_lo && a_hi == b_hi => {
+            // Ranges unify when one contains the other, so a narrower value
+            // range widens into a wider declared range (e.g. a `1..4` const used
+            // where a `0..8` slot is expected). This matches the existing
+            // looseness of Int<->Range unification, which ignores bounds
+            // entirely. Disjoint or partially-overlapping ranges stay an error.
+            (Type::Range(a_lo, a_hi), Type::Range(b_lo, b_hi))
+                if (a_lo >= b_lo && a_hi <= b_hi) || (b_lo >= a_lo && b_hi <= a_hi) =>
+            {
                 Ok(Substitution::new())
             }
 
@@ -1236,6 +1293,118 @@ var s: Set[Nat]
 init { all x in s: x >= 0 }
 "#;
         assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_string_keyed_dict_ok_but_string_param_rejected() {
+        // A string-keyed dict type-checks (keys come from init)...
+        let dict_ok = r#"
+module M
+var m: Dict[String, 0..3]
+init { m == {"a": 0, "b": 0} }
+action IncA() { require m["a"] < 3; m = m | {"a": m["a"] + 1} }
+invariant I { m["a"] <= 3 }
+"#;
+        assert!(check(dict_ok).is_ok());
+
+        // ...but a String-typed action parameter has no finite domain and is rejected.
+        let str_param = r#"
+module M
+var m: Dict[String, 0..3]
+init { m == {"a": 0} }
+action Inc(k: String) { require k in keys(m); m = m | {k: m[k] + 1} }
+invariant I { m["a"] <= 3 }
+"#;
+        assert!(matches!(
+            check(str_param),
+            Err(TypeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn test_enabled_and_changes_are_unsupported() {
+        // Neither is evaluated by the model checker yet; both must be rejected
+        // rather than silently producing a wrong value.
+        let changes_src = r#"
+module Test
+var x: Nat
+init { x == 0 }
+action Step() { require true; x = x + 1 }
+invariant I { changes(x) }
+"#;
+        assert!(matches!(
+            check(changes_src),
+            Err(TypeError::Unsupported { .. })
+        ));
+
+        let enabled_src = r#"
+module Test
+var x: Nat
+init { x == 0 }
+action Step() { require true; x = x + 1 }
+invariant I { enabled(Step) }
+"#;
+        assert!(matches!(
+            check(enabled_src),
+            Err(TypeError::Unsupported { .. })
+        ));
+    }
+
+    #[test]
+    fn test_subrange_widens_into_wider_range() {
+        // A `1..4` const used where a `0..8` dict value is expected (issue #88).
+        let source = r#"
+module Test
+const INIT: 1..4
+var wallet: Dict[0..1, 0..8]
+init { wallet = {u: INIT for u in 0..1} }
+"#;
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_disjoint_ranges_still_error() {
+        let source = r#"
+module Test
+const A: 100..200
+var x: 0..3
+init { x == A }
+"#;
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn test_sum_numeric_collections() {
+        // sum over a dict's values, a set, and a sequence are all Int-typed.
+        let source = r#"
+module Test
+var d: Dict[0..2, 0..10]
+var s: Set[Nat]
+var q: Seq[Nat]
+init { sum(d) == 0 and sum(s) >= 0 and sum(q) == 0 }
+"#;
+        assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_sum_non_numeric_is_error() {
+        // sum over a set of sets has a non-numeric element type.
+        let source = r#"
+module Test
+var s: Set[Set[Nat]]
+init { sum(s) == 0 }
+"#;
+        assert!(check(source).is_err());
+    }
+
+    #[test]
+    fn test_sum_non_collection_is_error() {
+        let source = r#"
+module Test
+var x: Nat
+init { sum(x) == 0 }
+"#;
+        assert!(check(source).is_err());
     }
 
     #[test]

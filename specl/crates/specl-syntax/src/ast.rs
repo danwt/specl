@@ -343,6 +343,8 @@ pub enum ExprKind {
     SeqTail(Box<Expr>),
     /// Length `len(x)` - get length of sequence, set, or function.
     Len(Box<Expr>),
+    /// Sum `sum(x)` - sum of a sequence/set of numbers, or of a dict's values.
+    Sum(Box<Expr>),
     /// Function keys `keys(f)` - get domain of function as set.
     Keys(Box<Expr>),
     /// Function values `values(f)` - get range of function as set.

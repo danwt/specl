@@ -57,6 +57,7 @@
 | Function | Meaning | Type |
 |----------|---------|------|
 | `len(x)` | Length/size | `Seq[T] -> Int` or `Set[T] -> Int` |
+| `sum(x)` | Sum of numbers | `Seq[Int] -> Int`, `Set[Int] -> Int`, or `Dict[K,Int] -> Int` (sums values) |
 | `head(s)` | First element | `Seq[T] -> T` |
 | `tail(s)` | All but first | `Seq[T] -> Seq[T]` |
 | `keys(d)` | Dict keys | `Dict[K,V] -> Set[K]` |

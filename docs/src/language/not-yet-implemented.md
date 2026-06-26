@@ -1,6 +1,6 @@
 # Not Yet Implemented
 
-The following features parse and type-check but are **not yet supported** by the model checker. Using them will not cause errors, but they will have no effect on verification.
+The following features are **not yet supported** by the model checker. Temporal operators and fairness parse and type-check and are reported as ignored (a warning), so they have no effect on verification. `enabled`/`changes` and recursive functions are rejected with an error (see their sections below).
 
 ## Temporal operators
 
@@ -28,7 +28,10 @@ enabled(Action)           // true if Action is enabled in the current state
 changes(var)              // true if var changes in this transition
 ```
 
-Parsed and type-checked, but not evaluated.
+Not yet evaluated by the model checker. Because they have no working semantics
+yet (`changes` would silently return true, `enabled` would error at runtime),
+the type checker rejects them with a clear "not yet supported" error rather than
+letting an invariant hold for the wrong reason.
 
 ## Module composition
 
@@ -36,7 +39,10 @@ Parsed and type-checked, but not evaluated.
 
 ## Recursive functions
 
-Functions cannot currently call themselves.
+Functions cannot call themselves, directly or indirectly. Because functions are
+inlined at their call sites during compilation, recursion is rejected with a
+compile error (`recursive function ...`) rather than being silently accepted or
+overflowing the stack.
 
 ## Planned future features
 

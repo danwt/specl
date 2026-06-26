@@ -221,6 +221,8 @@ pub enum CompiledExpr {
     SeqTail(Box<CompiledExpr>),
     /// Length of sequence, set, or function.
     Len(Box<CompiledExpr>),
+    /// Sum of a sequence/set of numbers, or of a dict's values.
+    Sum(Box<CompiledExpr>),
     /// Keys of function (domain as set).
     Keys(Box<CompiledExpr>),
     /// Values of function (range as set).
@@ -405,6 +407,7 @@ impl CompiledExpr {
                 f(hi);
             }
             CompiledExpr::Len(e)
+            | CompiledExpr::Sum(e)
             | CompiledExpr::Keys(e)
             | CompiledExpr::Values(e)
             | CompiledExpr::BigUnion(e)
@@ -502,6 +505,9 @@ impl CompiledExpr {
             },
             CompiledExpr::Len(inner) => {
                 CompiledExpr::Len(Box::new(inner.shift_locals_inner(amount, depth)))
+            }
+            CompiledExpr::Sum(inner) => {
+                CompiledExpr::Sum(Box::new(inner.shift_locals_inner(amount, depth)))
             }
             CompiledExpr::If {
                 cond,
@@ -773,6 +779,8 @@ pub fn expr_cost(expr: &CompiledExpr) -> u32 {
         CompiledExpr::Len(inner) | CompiledExpr::Keys(inner) | CompiledExpr::Values(inner) => {
             2 + expr_cost(inner)
         }
+        // Cost scales with collection size at runtime; charge a bit more than len.
+        CompiledExpr::Sum(inner) => 4 + expr_cost(inner),
         CompiledExpr::BigUnion(inner) | CompiledExpr::Powerset(inner) => 10 + expr_cost(inner),
 
         CompiledExpr::FnUpdate { base, key, value } => {

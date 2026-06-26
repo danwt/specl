@@ -113,6 +113,18 @@ fn bmc_cas_register_ok() {
 // ============================================================================
 
 #[test]
+fn inductive_conservation_sum_ok() {
+    // Exercises symbolic sum() over a dict: total == sum(balances) is inductive
+    // and must be proven, not error or fall back.
+    let outcome =
+        run_symbolic("conservation.specl", &[("CAP", 12)], SymbolicMode::Inductive).unwrap();
+    assert!(
+        matches!(outcome, SymbolicOutcome::Ok { .. }),
+        "expected Ok, got: {outcome:?}"
+    );
+}
+
+#[test]
 fn inductive_reader_writer_ok() {
     let outcome =
         run_symbolic("reader-writer.specl", &[("N", 2)], SymbolicMode::Inductive).unwrap();
