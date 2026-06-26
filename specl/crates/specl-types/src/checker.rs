@@ -111,6 +111,16 @@ impl TypeChecker {
                 // Bind parameters
                 for param in &d.params {
                     let ty = self.convert_type_expr(&param.ty)?;
+                    // Action parameters are enumerated over a finite domain. A
+                    // String parameter has no such domain (it would be silently
+                    // mis-enumerated), so reject it. String-keyed dicts are still
+                    // supported; iterate their keys with `keys(d)` instead.
+                    if matches!(self.env.resolve_type(&ty), Type::String) {
+                        return Err(TypeError::Unsupported {
+                            feature: "String-typed action parameter".to_string(),
+                            span: param.name.span,
+                        });
+                    }
                     self.env.bind_local(param.name.name.clone(), ty);
                 }
 
@@ -1283,6 +1293,32 @@ var s: Set[Nat]
 init { all x in s: x >= 0 }
 "#;
         assert!(check(source).is_ok());
+    }
+
+    #[test]
+    fn test_string_keyed_dict_ok_but_string_param_rejected() {
+        // A string-keyed dict type-checks (keys come from init)...
+        let dict_ok = r#"
+module M
+var m: Dict[String, 0..3]
+init { m == {"a": 0, "b": 0} }
+action IncA() { require m["a"] < 3; m = m | {"a": m["a"] + 1} }
+invariant I { m["a"] <= 3 }
+"#;
+        assert!(check(dict_ok).is_ok());
+
+        // ...but a String-typed action parameter has no finite domain and is rejected.
+        let str_param = r#"
+module M
+var m: Dict[String, 0..3]
+init { m == {"a": 0} }
+action Inc(k: String) { require k in keys(m); m = m | {k: m[k] + 1} }
+invariant I { m["a"] <= 3 }
+"#;
+        assert!(matches!(
+            check(str_param),
+            Err(TypeError::Unsupported { .. })
+        ));
     }
 
     #[test]

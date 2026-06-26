@@ -162,10 +162,16 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
             }
             None => {
                 state_space_bound = None;
-                warnings.push(Warning::UnboundedType {
-                    var: var.name.clone(),
-                    ty: format!("{}", var.ty),
-                });
+                // A dict with a non-range key (e.g. String) has unknown static
+                // size, but its keys are fixed by init, so BFS can still
+                // enumerate it as long as its values are bounded. Only flag a
+                // genuinely unbounded value leaf (Nat/Int), which forces symbolic.
+                if !bfs_enumerable(&var.ty) {
+                    warnings.push(Warning::UnboundedType {
+                        var: var.name.clone(),
+                        ty: format!("{}", var.ty),
+                    });
+                }
             }
         }
     }
@@ -316,6 +322,20 @@ pub fn analyze(spec: &CompiledSpec) -> SpecProfile {
 }
 
 /// Compute the domain size for a type. Returns None for unbounded types.
+/// Whether BFS can enumerate values of this type even when its static domain
+/// size is unknown. Dict keys are fixed by init, so a dict is enumerable iff its
+/// value type is; unbounded scalar leaves (Nat/Int/String) are not.
+fn bfs_enumerable(ty: &Type) -> bool {
+    match ty {
+        Type::Bool | Type::Range(..) => true,
+        Type::Nat | Type::Int | Type::String => false,
+        Type::Set(elem) | Type::Seq(elem) => bfs_enumerable(elem),
+        // Keys come from init regardless of key type; only the values vary.
+        Type::Fn(_key, val) => bfs_enumerable(val),
+        _ => false,
+    }
+}
+
 fn type_domain_size(ty: &Type) -> Option<u128> {
     match ty {
         Type::Bool => Some(2),
@@ -444,6 +464,24 @@ mod tests {
             .recommendations
             .iter()
             .any(|r| matches!(r, Recommendation::UseSymbolic { .. })));
+    }
+
+    #[test]
+    fn test_string_keyed_dict_not_flagged_unbounded() {
+        // A dict with a String key but bounded values is BFS-enumerable (keys
+        // are fixed by init), so it must NOT raise an unbounded-type warning
+        // that would force symbolic.
+        let spec = compile_spec(
+            "module Test\nvar m: Dict[String, 0..3]\ninit { m == {\"a\": 0} }\naction IncA() { require m[\"a\"] < 3; m = m | {\"a\": m[\"a\"] + 1} }\ninvariant Safe { m[\"a\"] <= 3 }"
+        );
+        let profile = analyze(&spec);
+        assert!(
+            !profile
+                .warnings
+                .iter()
+                .any(|w| matches!(w, Warning::UnboundedType { .. })),
+            "string-keyed dict with bounded values should not be flagged unbounded"
+        );
     }
 
     #[test]
