@@ -56,6 +56,10 @@ struct Compiler {
     action_indices: HashMap<String, usize>,
     /// User-defined function definitions (for inlining).
     func_defs: HashMap<String, FuncDef>,
+    /// Names of functions currently being inlined, to detect recursion.
+    /// Functions are inlined at call sites, so a recursive call would otherwise
+    /// recurse forever and overflow the stack.
+    inlining: Vec<String>,
     /// Current local variable stack (for let bindings, quantifiers).
     locals: Vec<String>,
     /// Current action parameters (during action compilation).
@@ -70,6 +74,7 @@ impl Compiler {
             const_indices: HashMap::new(),
             action_indices: HashMap::new(),
             func_defs: HashMap::new(),
+            inlining: Vec::new(),
             locals: Vec::new(),
             params: Vec::new(),
         }
@@ -395,6 +400,15 @@ impl Compiler {
                                 args.len()
                             )));
                         }
+                        // Reject recursion: inlining a function already on the
+                        // stack would never terminate (it inlines at call sites).
+                        if self.inlining.iter().any(|n| n == name) {
+                            return Err(CompileError::Unsupported(format!(
+                                "recursive function `{}`: functions cannot call themselves (directly or indirectly), because they are inlined at compile time",
+                                name
+                            )));
+                        }
+                        self.inlining.push(name.clone());
                         // Inline: wrap body in nested let bindings for each arg
                         // func(a, b) { body } called with (x, y) becomes:
                         // let a = x in let b = y in body
@@ -407,6 +421,7 @@ impl Compiler {
                             self.locals.push(param.clone());
                         }
                         let body = self.compile_expr(&func_def.body)?;
+                        self.inlining.pop();
                         // Pop all params
                         for _ in &func_def.params {
                             self.locals.pop();
@@ -1035,6 +1050,37 @@ impl Compiler {
 mod tests {
     use super::*;
     use specl_syntax::parse;
+
+    #[test]
+    fn test_recursive_function_is_error_not_crash() {
+        // Functions are inlined, so recursion must be rejected at compile time
+        // rather than overflowing the stack.
+        let source = r#"
+module Rec
+var xs: Seq[0..5]
+init { xs == [1, 2, 3] }
+func sumSeq(s) { if len(s) == 0 then 0 else head(s) + sumSeq(tail(s)) }
+invariant I { sumSeq(xs) == 6 }
+"#;
+        let module = parse(source).unwrap();
+        let err = compile(&module).unwrap_err();
+        assert!(format!("{err}").contains("recursive"));
+    }
+
+    #[test]
+    fn test_mutually_recursive_functions_are_error() {
+        let source = r#"
+module Mutual
+var x: 0..3
+init { x == 0 }
+func isEven(n) { if n == 0 then true else isOdd(n - 1) }
+func isOdd(n) { if n == 0 then false else isEven(n - 1) }
+invariant I { isEven(x) or isOdd(x) }
+"#;
+        let module = parse(source).unwrap();
+        let err = compile(&module).unwrap_err();
+        assert!(format!("{err}").contains("recursive"));
+    }
 
     #[test]
     fn test_compile_simple() {

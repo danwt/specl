@@ -36,7 +36,10 @@ Parsed and type-checked, but not evaluated.
 
 ## Recursive functions
 
-Functions cannot currently call themselves.
+Functions cannot call themselves, directly or indirectly. Because functions are
+inlined at their call sites during compilation, recursion is rejected with a
+compile error (`recursive function ...`) rather than being silently accepted or
+overflowing the stack.
 
 ## Planned future features
 
