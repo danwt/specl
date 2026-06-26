@@ -25,5 +25,3 @@ MC*.out
 *.z3-trace
 
 fuzz/target/
-# Soundness oracle: downloaded TLC jar
-specl/tools/soundness/tla2tools.jar
